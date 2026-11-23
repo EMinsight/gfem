@@ -391,6 +391,7 @@ def _refused_methods(directory):
         "power_flow": _feature(lambda: gfem.power_flow(field, "sub", model=model)),
         "region_mean": _feature(lambda: gfem.region_mean(field, "sub")),
         "electric_energy": _feature(lambda: gfem.electric_energy(field, model=model)),
+        "dissipated_power": _feature(lambda: gfem.dissipated_power(field, model=model)),
         "error_estimate": _feature(
             lambda: gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
         ),
@@ -406,6 +407,7 @@ def test_export_power_flow_and_error_estimate_raise_their_keys_on_every_rank(tmp
         "power_flow": "power_flow",
         "region_mean": "region_mean",
         "electric_energy": "electric_energy",
+        "dissipated_power": "dissipated_power",
         "error_estimate": "error_estimate",
     }
     assert total == 0 + 1 + 2

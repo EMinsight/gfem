@@ -213,6 +213,8 @@ _ENTRIES = {
     "region_mean": f"Read the field at points with Field.at, or {SLAB}.",
     "element_mean": f"Read the field at points with Field.at, or {SLAB}.",
     "electric_energy": f"For the energies, {SLAB}.",
+    "dissipated_power": "Pose the driven solve on the slab from "
+    "gfem.Mesh.from_gmsh_cross_section, the mesh the thermal problem runs on.",
     "interface_participation": f"For the participations, {SLAB}.",
     "characteristic_impedance": "A line port's mode carries 1 W/m and has no "
     "characteristic impedance: its S-parameters need no reference impedance.",

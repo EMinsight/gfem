@@ -64,6 +64,7 @@ __all__ = [
     "INTERFACE_KINDS",
     "InterfaceParticipation",
     "characteristic_impedance",
+    "dissipated_power",
     "electric_energy",
     "element_mean",
     "interface_participation",
@@ -896,6 +897,141 @@ def _check_estimated_side(names: tuple[str, ...], model: Model) -> None:
             f"dispersive region {odd[0]!r}, where the absorbed-power estimate "
             "was not verified: use gfem.FieldEstimator().",
         )
+
+
+# --- dissipated power -------------------------------------------------------------
+
+
+def dissipated_power(field: Field, *, model: Model) -> dict[str, jax.Array]:
+    r"""Time-averaged power a driven field dissipates in each region and sheet, W.
+
+    The electric loss of each volume region,
+    :math:`\frac{1}{2} \omega \varepsilon_0 \int_r E^* \cdot
+    (-\mathrm{Im}\, \varepsilon_\mathrm{eff}) E\, dV` with the loss tangent,
+    the conductivity, a complex or anisotropic permittivity and a
+    `gfem.PermittivityLaw` at the field's frequency in
+    :math:`\varepsilon_\mathrm{eff}`, and the loss of each surface carrying
+    a `gfem.Conductor` or `gfem.Impedance`,
+    :math:`\frac{1}{2} \int_S \mathrm{Re}(Y_s) |E_t|^2 dS` times the sheet's
+    fill. The power is read from the driven operator's lossy pieces, so it
+    is exact for the solved field: a region's value is minus
+    `power_flow` out of it when no sheet lies on its boundary, and the
+    values sum to :math:`1 - \sum_j |S_{ji}|^2` on a model whose ports have
+    real reference impedances and that radiates nothing.
+
+    A driven field is the one for 1 W incident at its excited port
+    (`gfem.conventions`), so each value reads as the fraction of the
+    incident power dissipated there. With a complex port reference
+    impedance the field is per unit :math:`|a|^2`, which is not exactly 1 W
+    incident. On a slab cross-section the fraction is the same per length.
+
+    What is not heat gets no value: a perfectly matched layer (its regions
+    have no key), an `gfem.Absorbing` face, a wave or Floquet port, and a
+    lumped port's resistance, whose power is the network's load.
+
+    Differentiable: inside `jax.grad`, `jax.jit` or `jax.vmap` the field
+    carries the gradient through its solve, and the loss tangent,
+    conductivity and permittivity (real or complex, per axis) of a lossy
+    region, a permittivity law's parameters, a `gfem.SheetField` fill and an
+    `gfem.Impedance` resistance add their direct share. An adaptive sweep's
+    field, the field's frequency and the node coordinates raise.
+
+    Args:
+        field: A driven electric field (quantity ``"E"``, in H(curl),
+            complex, with a real ``omega``), e.g. ``result.e_field(f)``.
+        model: The model the field was solved with: the materials and
+            boundaries whose loss is read.
+
+    Returns:
+        A 0-d float64 array, W, per volume region of the solve domain
+        outside a perfectly matched layer (lossless regions at 0.0) and per
+        surface carrying a `gfem.Conductor` or `gfem.Impedance`.
+
+    Raises:
+        TypeError: ``field`` is not a `gfem.Field`, or ``model`` is not a
+            `gfem.Model`.
+        ValueError: The field is not a driven electric field (another
+            quantity, static, an eigenmode's complex omega, real
+            coefficients), or was not solved on ``model``; or a name is
+            both a volume region and a sheet surface.
+        NotImplementedError: A region has a complex ``mu_r`` (magnetic loss
+            is not heat in this version), the model holds a
+            metal-dielectric blend with a permittivity law, or the model is
+            2D (pose the driven solve on the slab of
+            `gfem.Mesh.from_gmsh_cross_section`).
+        gfem.MeshRefinementUnsupportedError: Called while an objective is
+            classified for `gfem.refine_mesh`.
+        gfem.DistributedUnsupportedError: The field is a piece across ranks.
+        NonDifferentiableError: While `jax.grad` traces it: the node
+            coordinates or the field's ``omega`` are differentiated, or the
+            field is one of an adaptive sweep (`gfem.ReducedFields`).
+    """
+    from gfem._field import Field
+    from gfem.model import Model
+
+    refuse_entry(getattr(field, "mesh", None), "dissipated_power")
+    if not isinstance(field, Field):
+        raise TypeError(
+            f"dissipated_power needs a gfem.Field, got {type(field).__name__}."
+        )
+    if field._communicator is not None:  # noqa: SLF001
+        _mpi.refuse_feature("dissipated_power")
+    if not isinstance(model, Model):
+        raise TypeError(
+            f"dissipated_power needs model= a gfem.Model, got {type(model).__name__}."
+        )
+    if _objective.recording() is not None:
+        raise MeshRefinementUnsupportedError(
+            "dissipated_power",
+            "The objective reads gfem.dissipated_power, whose error is not "
+            "estimated in this version: refine on the S-parameters or on "
+            "gfem.power_flow instead.",
+        )
+    from gfem._engine.dispersion import refuse_blends
+
+    refuse_blends(model, "gfem.dissipated_power")
+    _check_time_harmonic(
+        field, "dissipated_power", static="solve a gfem.Driven problem"
+    )
+    if jnp.iscomplexobj(field.omega):
+        raise ValueError(
+            "dissipated_power needs a driven field with a real omega: an "
+            "eigenmode has no drive, so its amplitude and its heat are "
+            "undefined; solve a driven problem at the mode's frequency."
+        )
+    if not field.is_complex:
+        raise ValueError(
+            "dissipated_power needs a complex phasor field, got real "
+            "coefficients: solve a gfem.Driven problem."
+        )
+    from gfem._engine.heat import sheet_surfaces
+    from gfem._heat import loss_matrices
+
+    sheets = sheet_surfaces(model)
+    mesh = model.mesh
+    for name in sheets:
+        if name in mesh.volumes:
+            raise ValueError(
+                f"{name!r} names both a volume region and a sheet surface, so "
+                "dissipated_power would give two values under one key: rename "
+                "one of them in the mesh."
+            )
+    matrices = loss_matrices([field], model)
+    tets = matrices["tetrahedra_re"][:, 0, 0]
+    faces = matrices["triangles_re"][:, 0, 0]
+    from gfem._engine.power_flow import _check_support
+    from gfem._pml import physical_regions
+
+    support = _check_support(field, model)
+    out = {}
+    for region in physical_regions(mesh.volumes, model.pml):
+        elements = mesh.elements(region)
+        elements = elements[support[elements]]
+        if len(elements):
+            out[region] = jnp.sum(tets[elements])
+    for name in sheets:
+        out[name] = jnp.sum(faces[mesh.elements(name)])
+    return out
 
 
 # --- region mean -----------------------------------------------------------------
