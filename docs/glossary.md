@@ -819,6 +819,33 @@ Radiative efficiency
   The share of a {term}`point dipole`'s {term}`emitted power` that leaves the
   model (through ports, a {term}`perfectly matched layer` or absorbing faces)
   rather than being absorbed by lossy materials.
+
+Exterior medium
+  The constant, isotropic, lossless material a field radiates into, the
+  model's background: its wavenumber and wave impedance scale the
+  {term}`far-field amplitude`.
+
+Far-field amplitude
+  The field far from every source with its outgoing spherical factor
+  $e^{-ikr}/r$ removed, in V, per direction (`gfem.far_field`, `FarField`).
+
+Far-field layer
+  The elements just outside the side `gfem.far_field` reads, all in the
+  {term}`exterior medium`; by default the physical elements that touch a
+  {term}`perfectly matched layer` or an absorbing face.
+
+Radiation intensity
+  The power radiated per unit solid angle, $|F|^2/(2\eta)$ in W/sr.
+
+Directivity
+  $4\pi$ times the {term}`radiation intensity` over the radiated power. The
+  gain divides by the accepted power instead, the realized gain by the
+  incident power, and the radiation efficiency is the radiated over the
+  accepted power (IEEE 145).
+
+Ground plane
+  A flat PEC or PMC exterior face that the {term}`far-field layer` meets: the
+  far field of the half-space above it includes the image of every source.
 ```
 
 ## Thermal

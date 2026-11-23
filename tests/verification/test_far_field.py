@@ -141,7 +141,7 @@ def test_t12_a_ground_plane_adds_the_image_of_the_dipole(grounded, wall, sign):
     theta = theta[theta[:, 0] < math.pi / 2]  # the half-space above the plane
     rhat = _basis(theta, phi)[0]
     for d in dipoles:
-        p = np.asarray(d.moment, float)
+        p = np.real(np.asarray(d.moment))
         # over a perfect conductor the image moment is (-px, -py, pz)
         image_p = sign * np.array([-p[0], -p[1], p[2]])
         exact = _dipoles_far_field(rhat, [(p, r0), (image_p, image_r)])
