@@ -76,7 +76,8 @@ numerically only. A pooled factorization belongs to at most one live set-up, and
 whose factorization failed is never pooled: PETSc refuses a numeric factorization
 after a failed one. A pooled factorization holds its factors, so the solve cache
 counts the pool against ``retain_memory``; ``retain_memory=0`` empties it at the end
-of each solve, and ``gfem.release_memory()`` and the process's exit free it.
+of each solve, and of each forward and backward a differentiated solve runs, and
+``gfem.release_memory()`` and the process's exit free it.
 
 petsc4py cannot reach the KSP behind ``PCTELESCOPE``, so `_petsc.telescope_ksp`
 reads it through ``libpetsc``. Its MUMPS factor gives the bytes the pool and the
