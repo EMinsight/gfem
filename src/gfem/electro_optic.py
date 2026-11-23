@@ -271,15 +271,7 @@ def _same_mesh(
     held = engine.in_support(mesh, layout)[tets]
     if not held.all():
         k = int(np.flatnonzero(~held)[0])
-        names = mesh._region_names()  # noqa: SLF001
-        region = names[int(np.asarray(mesh.tetrahedron_tags)[tets[k]])]
-        p = points[k * q]
-        raise ValueError(
-            f"Point ({', '.join(f'{x:.6g}' for x in p)}) m lies in volume region "
-            f"{region!r}, where the field is not defined (its support is "
-            f"{list(layout.support)}, minus the volumes the model excludes from "
-            "the solve)."
-        )
+        raise engine.outside_support(mesh, layout, int(tets[k]), points[k * q])
     return engine.Located(np.repeat(tets, q), np.tile(bary, (len(tets), 1)))
 
 

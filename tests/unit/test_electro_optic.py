@@ -350,6 +350,17 @@ def test_a_crystal_outside_the_potential_raises_naming_the_point(tmp_path, model
         _shift(model, _potential(window))
 
 
+def test_a_crystal_outside_the_potential_s_support_raises_naming_the_region(
+    model, potential
+):
+    # the same mesh, the crystal left out of the support: probe's message
+    clad_only = dataclasses.replace(potential, support=("clad",))
+    with pytest.raises(
+        ValueError, match=r"Point \(.*\) m lies in volume region '(core|foot)'"
+    ):
+        _shift(model, clad_only)
+
+
 def test_a_sequence_of_frequencies_or_an_unknown_port_raises(model, potential):
     with pytest.raises(ValueError, match="one frequency"):
         gfem.electro_optic_shift(
