@@ -10,12 +10,29 @@ terminal.
 import ast
 import pathlib
 import re
+from types import SimpleNamespace
 
+import jax
+import jax.numpy as jnp
+import numpy as np
 import pytest
+import structured_meshes as sm
+from solver_misses import cannot_converge_at
 
 import gfem
 import gfem.log
 from gfem import _progress
+from gfem._engine import driven
+from gfem._engine.cache import Entry
+from gfem._engine.driven import DrivenRule, port_loads
+from gfem._engine.driven_sweep import (
+    ADJOINT_ROW,
+    UNIFORM_ROW,
+    FixedAngleChildren,
+    SweepSplit,
+)
+from gfem._engine.solve_request import SolveRequest
+from gfem._engine.sweep_outputs import SweepOutputs
 
 _ENV = (
     "FORCE_COLOR",
@@ -318,3 +335,163 @@ def test_timing_phases_show_whether_or_not_their_records_are_logged(board):
         pass
     phases = [e[2] for e in board.events if e[0] == "phase"]
     assert phases == ["solve", "setup", "solve", ""]
+
+
+# ---------------------------------------------------------------- uniform sweep
+
+F = (21e9, 22e9, 23e9)
+DIRECT = gfem.SolverOptions(linear_solver="direct")
+
+
+@pytest.fixture(scope="module")
+def line(tmp_path_factory):
+    path = tmp_path_factory.mktemp("line") / "line.msh"
+    sm.write_msh22(path, sm.strip_line(3.0, 2.0, 1.0, (3, 2, 1)))
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+    return gfem.Model(
+        mesh,
+        materials={"dielectric": gfem.Material(eps_r=2.0)},
+        boundaries=[
+            gfem.PEC("bottom"),
+            gfem.PEC("top"),
+            gfem.Absorbing("side", order=2),
+        ],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z"),
+        ],
+    )
+
+
+def loops(board):
+    """The loop rows the board drew, spinner rows of phases left out."""
+    return [
+        (r["label"], r["total"], r["done"], r["closed"])
+        for r in board.rows.values()
+        if not r["spinner"]
+    ]
+
+
+def test_a_uniform_sweep_advances_its_row_once_per_frequency(line, board):
+    gfem.release_memory()
+    gfem.solve(line, gfem.Driven(F), options=DIRECT)
+    assert loops(board) == [("uniform sweep", 3, 3, True)]
+    advances = [e[3] for e in board.events if e[:2] == ("advance", "uniform sweep")]
+    assert [a["frequency"] for a in advances] == list(F)
+    # a direct solve has no Krylov iterations
+    assert all(a["iterations"] == () for a in advances)
+    # the solve's phases ran in the row
+    phases = {e[2] for e in board.events if e[:2] == ("phase", "uniform sweep")}
+    assert {"assemble", "setup", "solve"} <= phases
+    # discretizing ran before the row opened, as a spinner
+    assert ("open", "discretize", None, 0, True) in board.events
+
+
+def test_a_sweep_stopping_at_an_unsolved_frequency_closes_its_row(
+    line, board, monkeypatch
+):
+    gfem.release_memory()
+    cannot_converge_at(monkeypatch, F[1:2])
+    options = gfem.SolverOptions(linear_solver="bddc_gmres")
+    with pytest.raises(gfem.errors.LinearSolverConvergenceError):
+        gfem.solve(line, gfem.Driven(F), options=options)
+    assert loops(board) == [("uniform sweep", 3, 1, True)]
+    assert all(r["closed"] for r in board.rows.values())
+
+
+def test_a_gradient_adds_the_adjoint_sweep_s_row(line, board):
+    gfem.release_memory()
+    n = len(line.mesh.tetrahedra)
+
+    def objective(eps):
+        model = line.with_material("dielectric", gfem.MaterialField(eps_r=eps))
+        s = gfem.solve(model, gfem.Driven(F[:2]), options=DIRECT).s.values
+        return jnp.sum(jnp.abs(s) ** 2)
+
+    jax.grad(objective)(jnp.full(n, 2.0))
+    assert loops(board) == [
+        ("uniform sweep", 2, 2, True),
+        ("uniform sweep (adjoint)", 2, 2, True),
+    ]
+    advances = [
+        e[3] for e in board.events if e[:2] == ("advance", "uniform sweep (adjoint)")
+    ]
+    assert sorted(a["frequency"] for a in advances) == list(F[:2])
+
+
+def test_an_adjoint_only_pass_has_the_adjoint_sweep_s_row(line, board):
+    gfem.release_memory()
+    rule = DrivenRule(line, gfem.Driven(F[:2], excite="p1"), DIRECT)
+    rule.solve_adjoints(line, port_loads(("p2",)))
+    assert loops(board) == [("uniform sweep (adjoint)", 2, 2, True)]
+
+
+def test_a_2d_sweep_has_the_uniform_sweep_s_row(board):
+    data = pathlib.Path(__file__).parents[2] / "docs" / "tutorials" / "data"
+    mesh = gfem.Mesh.from_gmsh(data / "line2d.msh", length_unit="mm")
+    model = gfem.Model(
+        mesh,
+        materials={"feed": gfem.Material(), "design": gfem.Material(eps_r=4.0)},
+        boundaries=(gfem.PEC("side"),),
+        ports=(gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")),
+    )
+    problem = gfem.Driven((4e9, 5e9), excite="p1", polarization="Hz")
+    gfem.solve(model, problem, options=DIRECT)
+    assert loops(board) == [("uniform sweep", 2, 2, True)]
+
+
+class _Child:
+    """A fixed-angle sweep's one-frequency rule: its rows as the real rule's."""
+
+    def __init__(self, model, problem, options, **_):  # noqa: ARG002
+        (self.f,) = problem.frequency
+
+    def forward(self, model, *, keep, request):  # noqa: ARG002
+        with _progress.task(UNIFORM_ROW, total=1) as row:
+            row.advance(frequency=self.f)
+        out = SweepOutputs.uniform(
+            (0,),
+            s=np.zeros((1, 1, 1), complex),
+            z_ref=np.full((1, 1), 50.0),
+            iterations=[],
+            reused=[],
+            e_field=None,
+            waves=[],
+        )
+        return out.outputs(), Entry(physics="em", fields={"solution": np.ones((2, 1))})
+
+    def backward(self, model, entry, cotangents, *, wanted, port_modes):  # noqa: ARG002
+        with _progress.task(ADJOINT_ROW, total=1) as row:
+            row.advance(frequency=self.f)
+        return []
+
+    def forget_operator(self):
+        pass
+
+
+def test_a_fixed_angle_sweep_s_children_advance_their_parent_s_rows(board, monkeypatch):
+    monkeypatch.setattr(driven, "DrivenRule", _Child)
+    problem = gfem.Driven(F, wave_vector=(10.0, 0.0, 0.0), wave_vector_frequency=F[0])
+    rule = SimpleNamespace(
+        adaptive=False,
+        problem=problem,
+        options=gfem.SolverOptions(threads=1),
+        linear=SimpleNamespace(kind="direct"),
+        kept=(),
+        excite=("p1",),
+        gauge=None,
+        comm=None,
+        order_frequency=F,
+        wave_ports=(),
+        port_names=("p1",),
+        physics="em",
+        stretch=None,
+    )
+    rule.children = FixedAngleChildren(rule)
+    split = SweepSplit.of(rule)
+    _, entry = split.forward(None, keep=True, request=SolveRequest())
+    # the cotangent reaches the first and last frequencies only
+    cotangent = np.zeros((3, 1, 1))
+    cotangent[[0, 2]] = 1.0
+    split.runner.backward(None, entry, {"s": cotangent}, wanted=None)
+    assert loops(board) == [(UNIFORM_ROW, 3, 3, True), (ADJOINT_ROW, 3, 3, True)]
