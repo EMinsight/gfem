@@ -243,3 +243,45 @@ def test_a_directory_that_is_not_a_cache_raises_before_solving(
 def test_cache_must_be_a_path(stack):
     with pytest.raises(TypeError, match="cache must be a directory path"):
         gfem.solve(stack, ELECTROSTATIC, options=OPTIONS, cache=True)
+
+
+def test_an_eigenmode_solve_with_a_wave_port_is_read_back(tmp_path, monkeypatch):
+    from gfem._eigen.rule import EigenmodeRule
+
+    calls = []
+    forward = EigenmodeRule.forward
+
+    def counted(self, *args, **kwargs):
+        calls.append(1)
+        return forward(self, *args, **kwargs)
+
+    monkeypatch.setattr(EigenmodeRule, "forward", counted)
+    # WR-90 from a short at z = 0 through eps_r = 4 to z = 10 mm, then air to
+    # a wave port at z = 15 mm (mm)
+    edges = (np.linspace(0, 22.86, 5), np.linspace(0, 10.16, 2), np.linspace(0, 15, 7))
+
+    def surface(c):
+        return "port" if abs(c[2] - 15) < 1e-9 else "walls"
+
+    path = tmp_path / "guide.msh"
+
+    def volume(c):
+        return "dielectric" if c[2] < 10 else "air"
+
+    sm.write_msh22(path, sm.structured(edges, volume, surface))
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={
+            "dielectric": gfem.Material(eps_r=4.0),
+            "air": gfem.Material(eps_r=1.0),
+        },
+        boundaries=[gfem.PEC("walls")],
+        ports=[gfem.WavePort("p1", "port")],
+    )
+    problem = gfem.Eigenmode(target=11.67e9)
+    options = gfem.SolverOptions(order=2, linear_solver="direct")
+    first = gfem.solve(model, problem, options=options, cache=tmp_path / "c")
+    second = gfem.solve(model, problem, options=options, cache=tmp_path / "c")
+    assert len(calls) == 1
+    assert list(second.q_port) == ["p1"]
+    _assert_bit_equal(second, first)

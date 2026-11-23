@@ -156,6 +156,7 @@ from gfem.errors import (
     LayerClearanceWarning,
     LinearSolverConvergenceError,
     LowFrequencyWarning,
+    NonDifferentiableError,
     SolverUnavailableError,
 )
 from gfem.mesh import Mesh, _at_imported_nodes
@@ -338,6 +339,13 @@ class EigenmodeRule:
         #: Ports with a resistance (coupling Q) and with an inductance
         #: (participation), in model order.
         self.resistive = tuple(p.name for p in lumped if p.rlc[0] is not None)
+        #: The ports with a coupling Q (``q_port``), in model order: the
+        #: resistive lumped ports and the wave ports.
+        self.coupled = tuple(
+            p.name
+            for p in model.ports
+            if isinstance(p, WavePort) or p.name in self.resistive
+        )
         self.inductive = tuple(p.name for p in lumped if p.rlc[1] is not None)
         #: The surfaces of the `Impedance` sheets with an inductance (sheet
         #: participation), in model order.
@@ -397,7 +405,7 @@ class EigenmodeRule:
 
         Returns:
             ``{"omega": (n,) complex rad/s, "error": (n,), "q_port":
-            (n_resistive, n), "participation": (n_inductive, n), "bulk":
+            (n_coupled, n), "participation": (n_inductive, n), "bulk":
             (n_regions, n), "principal": (n_anisotropic, n, 3), "sheet":
             (n_kinetic, n), "e_field": (ndof, n) complex, "cluster": (n,)
             int}``, modes nearest the
@@ -458,7 +466,7 @@ class EigenmodeRule:
                         dispersion.check_band(model, f, f"mode {j} at")
                         # the mode energy's weight
                         dispersion.check_energy(model, f, f"mode {j} at")
-                outputs, x = self._postprocess(model, op, divfree, modes)
+                outputs, x = self._outputs(model, op, divfree, modes, ports)
                 ks = [m.k for m in modes]
                 self._warn_modes(found, built.scale)
                 lowest = min(k.real for k in ks) * const.c / built.scale
@@ -975,6 +983,76 @@ class EigenmodeRule:
         }
         return outputs, solve
 
+    def _outputs(
+        self,
+        model: Model,
+        op: DrivenOperator,
+        divfree: DivFreeProjector,
+        modes: list[Refined],
+        ports: Sequence[EigenPort],
+    ) -> tuple[dict[str, object], np.ndarray]:
+        """`_postprocess`, with every coupled port's ``q_port`` (`_coupling_q`)."""
+        outputs, x = self._postprocess(model, op, divfree, modes)
+        outputs["q_port"] = self._coupling_q(
+            outputs, x, [m.k for m in modes], ports, op
+        )
+        return outputs, x
+
+    def _lumped_q_port(self, cts: dict[str, np.ndarray]) -> None:
+        """Keep the rows of ``cts["q_port"]`` (if any) for `resistive` alone.
+
+        Raises:
+            NonDifferentiableError: A nonzero cotangent on a wave port's row.
+        """
+        ct = cts.get("q_port")
+        if ct is None:
+            return
+        rows = []
+        for name, row in zip(self.coupled, ct, strict=True):
+            if name in self.resistive:
+                rows.append(row)
+            elif np.any(row):
+                raise NonDifferentiableError(
+                    f"NonDifferentiableError: gfem cannot differentiate "
+                    f"q_port[{name!r}], the coupling Q of a wave port, in this "
+                    "version. Differentiate omega or q instead, or wrap it in "
+                    "jax.lax.stop_gradient to use its value without its derivative."
+                )
+        cts["q_port"] = np.array(rows).reshape(len(rows), *ct.shape[1:])
+
+    def _coupling_q(
+        self,
+        outputs: dict[str, object],
+        x: np.ndarray,
+        ks: list[complex],
+        ports: Sequence[EigenPort],
+        op: DrivenOperator,
+    ) -> np.ndarray:
+        r"""``(n_coupled, n)`` the coupling Q of `coupled`, in model order.
+
+        A resistive lumped port's row is ``outputs["q_port"]``'s. A wave
+        port's is :math:`\mathrm{Re}\,\omega\,E / P_p` with :math:`P_p`
+        the power its mode carries out (`PortTerm.outgoing_power`) for the
+        modes ``x`` normalized to :math:`E` = `MODE_ENERGY`, ``ks`` their
+        wavenumbers.
+        """
+        lumped = cast("np.ndarray", outputs["q_port"])
+        out = np.zeros((len(self.coupled), len(ks)))
+        rows = {name: lumped[p] for p, name in enumerate(self.resistive)}
+        per_k = const.c / op.built.scale
+        pair = _layout(op).pair
+        for port in ports:
+            term = port.term
+            for j, k in enumerate(ks):
+                power = term.outgoing_power(k, x[:, j], pair)
+                w = (k * per_k).real
+                for p, wave in enumerate(term.ports):
+                    row = rows.setdefault(wave.name, np.zeros(len(ks)))
+                    row[j] = w * MODE_ENERGY / power[p] if power[p] > 0 else math.inf
+        for i, name in enumerate(self.coupled):
+            out[i] = rows[name]
+        return out
+
     def _phase(
         self,
         x: np.ndarray,
@@ -1116,7 +1194,7 @@ class EigenmodeRule:
         return {
             "omega": jax.ShapeDtypeStruct((n,), jnp.complex128),
             "error": jax.ShapeDtypeStruct((n,), jnp.float64),
-            "q_port": jax.ShapeDtypeStruct((len(self.resistive), n), jnp.float64),
+            "q_port": jax.ShapeDtypeStruct((len(self.coupled), n), jnp.float64),
             "participation": jax.ShapeDtypeStruct(
                 (len(self.inductive), n), jnp.float64
             ),
@@ -1419,6 +1497,7 @@ class EigenmodeRule:
             for n in names
             if n in cotangents and np.any(cotangents[n])
         }
+        self._lumped_q_port(cts)
         # the normalized field's cotangent, complex (non-periodic: the solve
         # space is the unpaired one)
         field = cotangents.get("e_field")
@@ -1749,7 +1828,7 @@ class EigenmodeRule:
             error=jnp.asarray(outputs["error"]),
             q_port={
                 name: jnp.asarray(outputs["q_port"][p])
-                for p, name in enumerate(self.resistive)
+                for p, name in enumerate(self.coupled)
             },
             participation={
                 name: jnp.asarray(outputs["participation"][p])
