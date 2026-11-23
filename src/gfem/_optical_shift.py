@@ -59,6 +59,18 @@ def _values(value: Any, pos: np.ndarray) -> Any:
     return np.broadcast_to(arr, pos.shape) if arr.ndim == 0 else arr[pos]
 
 
+def _field_values(material: MaterialField, name: str, pos: np.ndarray) -> Any:
+    """A material field's property on elements ``pos`` (``None``: unset or traced).
+
+    A region-wide value (one value, or three principal values) stays whole.
+    """
+    value = getattr(material, name)
+    if value is None or is_traced(value):
+        return None
+    arr = np.asarray(value)
+    return arr if arr.ndim == material.has_principal_values(name) else arr[pos]
+
+
 def _lossy(material: Material | MaterialField, pos: np.ndarray) -> str | None:
     """Which loss a region's material has on elements ``pos``, or ``None``."""
     if isinstance(material, Material):
@@ -69,10 +81,10 @@ def _lossy(material: Material | MaterialField, pos: np.ndarray) -> str | None:
     else:
         if material.blend_ends is not None:
             return "a permittivity law (a density blend's end)"
-        eps, tan, sigma = material.eps_r, material.tan_delta, material.conductivity
-        eps = None if eps is None or is_traced(eps) else _values(eps, pos)
-        tan = None if tan is None or is_traced(tan) else _values(tan, pos)
-        sigma = None if sigma is None or is_traced(sigma) else _values(sigma, pos)
+        eps, tan, sigma = (
+            _field_values(material, name, pos)
+            for name in ("eps_r", "tan_delta", "conductivity")
+        )
     if eps is not None and np.any(np.asarray(eps).imag != 0):
         return "a complex eps_r"
     if tan is not None and np.any(np.asarray(tan) != 0):
@@ -128,6 +140,7 @@ def _mode_weights(
     faces: np.ndarray,
     *,
     tensor: bool = False,
+    rule: type | None = None,
 ) -> tuple[int, jax.Array, jax.Array, float]:
     r"""The port's mode on ``model`` and its first-order weight per section triangle.
 
@@ -142,6 +155,8 @@ def _mode_weights(
             :math:`W_t = \tfrac{c\varepsilon_0}{4}\mathrm{Re}\int_t E_0E_0^H\,dA`
             (global frame) instead of the scalar one; its trace is the
             scalar weight over :math:`2 n_{0,t}`.
+        rule: The weights rule (a `ShiftWeightsRule` whose refusals name
+            the shift), ``None`` for the thermo-optic one.
 
     Returns:
         The mode number, ``n_eff`` (a constant), the weights (``(n_tri,)``
@@ -156,12 +171,14 @@ def _mode_weights(
     from gfem.problems import PortMode
 
     problem = PortMode(port, frequency, mode=mode)
-    rule = ShiftWeightsRule(model, problem, SolverOptions(), faces, tensor=tensor)
+    made = (rule or ShiftWeightsRule)(
+        model, problem, SolverOptions(), faces, tensor=tensor
+    )
     if is_traced(model):
-        outputs = solve_vjp(rule, model, problem)
+        outputs = solve_vjp(made, model, problem)
     else:
-        outputs, _ = rule.forward(model, keep=False)
+        outputs, _ = made.forward(model, keep=False)
     k0 = 2 * math.pi * frequency / scipy.constants.c
     gamma = jnp.asarray(outputs["gamma"])[0]
     n_eff = jnp.real(gamma / (1j * k0))
-    return rule.mode, n_eff, jnp.asarray(outputs["weights"]), k0
+    return made.mode, n_eff, jnp.asarray(outputs["weights"]), k0
