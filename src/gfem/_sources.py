@@ -430,7 +430,13 @@ class IncidentField:
     arguments, NumPy in and out; gfem does not differentiate through it.
 
     A result holding one cannot be written to a file (`gfem.Job.to_json`,
-    result bundles): the function is code, not data.
+    result bundles), and a solve cache passes it by with a
+    `gfem.SolveCacheWarning`: the function is code, not data. Across MPI
+    ranks each rank calls it on its own points, so it must be the same
+    function on every rank. Over frequency workers it must load in a
+    spawned process: a function at module level of a script or an
+    importable module, not a lambda or one defined in a notebook
+    (`ValueError` before any worker starts).
 
     Args:
         name: The label of its column and of its kept fields; unique among

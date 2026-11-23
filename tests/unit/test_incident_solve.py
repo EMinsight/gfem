@@ -379,13 +379,6 @@ def test_a_beam_too_tight_at_one_frequency_is_refused_before_factorization(meshe
         gfem.solve(_model(meshes["empty"]), problem, options=OPTIONS)
 
 
-def test_frequency_workers_do_not_take_incident_fields_yet(meshes):
-    options = gfem.SolverOptions(order=1, frequency_workers=2)
-    problem = gfem.Driven([F, 1.1 * F], sources=WAVE)
-    with pytest.raises(NotImplementedError, match="frequency_workers=1"):
-        gfem.solve(_model(meshes["empty"]), problem, options=options)
-
-
 # --- gradients ------------------------------------------------------------------------
 
 

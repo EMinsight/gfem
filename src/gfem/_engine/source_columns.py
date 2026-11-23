@@ -70,6 +70,7 @@ def _incident(
         sources,
         order=context.order,
         stretch=context.stretch,
+        comm=context.comm,
     )
 
 
