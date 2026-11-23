@@ -304,10 +304,15 @@ def same_code(
 
 
 def load_reference(case: case_mod.Case) -> tuple[dict[str, Any] | None, str | None]:
-    """The case directory's ``reference.json`` and its sha256, if there is one."""
-    if case.directory is None:
+    """The case's ``reference.json`` and its sha256, if there is one.
+
+    The file is the case directory's own, or that of the sibling case its
+    ``[reference] case`` key names (:func:`case_mod.reference_directory`).
+    """
+    directory = case_mod.reference_directory(case)
+    if directory is None:
         return None, None
-    path = case.directory / refdoc.FILE
+    path = directory / refdoc.FILE
     reference = refdoc.load(path)
     return reference, records.file_sha256(path) if reference is not None else None
 

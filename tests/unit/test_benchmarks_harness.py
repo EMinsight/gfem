@@ -142,6 +142,7 @@ SRUN = (
     "{R}",
     "-c",
     "{T}",
+    "--mem=0",
     "--cpu-bind=cores",
     "--distribution=block:block",
     "--hint=nomultithread",
@@ -880,6 +881,76 @@ def test_submit_dry_run_prints_sbatch_lines_and_submits_nothing(site, tmp_path, 
     assert "--exclusive" in line
     assert line.endswith(f"{rd.path.resolve()} tiny-wheels")
     assert not (rd.path / "submitted.tsv").exists()
+
+
+def _no_sacct(*_args, **_kw):
+    raise AssertionError("nothing submitted yet, so no command runs")
+
+
+def _sbatch_line(out: str) -> str:
+    return next(ln for ln in out.splitlines() if ln.startswith("sbatch "))
+
+
+def test_submit_time_overrides_the_planned_limit_and_its_estimate(
+    site, tmp_path, capsys
+):
+    rd = _plan(site, tmp_path)
+    assert "\t2:00:00\t" not in (rd.path / "plan.tsv").read_text()
+    assert (
+        slurm.submit(rd, dry_run=True, time_limit="2:00:00", ceiling=1e3, run=_no_sacct)
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "--time=2:00:00" in _sbatch_line(out)
+    # one node, a 2 h limit = 1.5 x an 80 min estimate: 112 x 4/3 core-h
+    assert "estimate 149.3 core-h" in out
+
+
+def test_the_submit_command_takes_a_time_override(site, tmp_path, capsys):
+    rd = _plan(site, tmp_path)
+    argv = ["submit", str(rd.path), "--dry-run", "--ceiling", "1000"]
+    assert main([*argv, "--time", "2:00:00"]) == 0
+    assert "--time=2:00:00" in _sbatch_line(capsys.readouterr().out)
+    assert main([*argv, "--time", "2h"]) != 0
+    assert "H:MM:SS" in capsys.readouterr().err
+
+
+def test_submit_time_past_two_hours_takes_the_long_qos(site, tmp_path, capsys):
+    rd = _plan(site, tmp_path)
+    slurm.submit(rd, dry_run=True, time_limit="2:00:01", ceiling=1e3, run=_no_sacct)
+    line = _sbatch_line(capsys.readouterr().out)
+    assert "--qos=q_long" in line
+    assert "--time=2:00:01" in line
+
+
+@pytest.mark.parametrize("bad", ["2h", "2:00", "1:60:00", "0:00:00", "-1:00:00"])
+def test_submit_refuses_a_time_that_is_not_h_mm_ss(site, tmp_path, bad):
+    rd = _plan(site, tmp_path)
+    with pytest.raises(config.ConfigError, match="H:MM:SS"):
+        slurm.submit(rd, dry_run=True, time_limit=bad, run=_no_sacct)
+
+
+def test_submit_records_the_time_override(site, tmp_path, monkeypatch):
+    rd = _plan(site, tmp_path)
+    monkeypatch.setattr(slurm.stacks, "provenance", lambda _resolved: {})
+    calls = []
+
+    def run(argv, **_kw):
+        calls.append(argv)
+        return _done("31337;cluster\n")
+
+    code = slurm.submit(
+        rd,
+        time_limit="2:00:00",
+        ceiling=1e3,
+        run=run,
+        prepare=lambda _resolved: tmp_path,
+    )
+    assert code == 0
+    assert "--time=2:00:00" in calls[0]
+    row = slurm.submitted(rd.path)[0]
+    assert row["time_limit"] == "2:00:00"
+    assert row["est_core_h"] == "149.3"
 
 
 def test_the_job_constraint_joins_the_sites():

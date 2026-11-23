@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+from benchmarks.report import views
+
 DASH = "—"
 BUCKET_LABELS = (
     ("mesh_read_s", "mesh read"),
@@ -180,17 +182,67 @@ def _gates(r: Mapping[str, Any]) -> list[str]:
     return out
 
 
+def _shown(error: float | None, bound: float | None) -> str:
+    r"""An error against a reference of bound ``bound``.
+
+    Resolved (:math:`e \ge 10b`): the value. Unresolved: the true error lies within
+    :math:`b` of :math:`e`, so ``e ± b``, or ``≤ e + b`` when :math:`e < b`.
+    """
+    if error is None:
+        return DASH
+    if bound is None or error >= 10 * bound:
+        return e(error)
+    if error >= bound:
+        return f"{e(error)} ± {e(bound)} (unresolved)"
+    return f"≤ {e(error + bound)} (unresolved)"
+
+
 def _error_display(a: Mapping[str, Any]) -> str:
     if a["error"] is None:
         return a["accuracy_reason"] or DASH
-    if a["resolved"] is False:
-        return f"≤ 10·bound = {e(10 * a['bound'])} (unresolved)"
-    return e(a["error"])
+    return _shown(a["error"], a["bound"])
 
 
-def _error_cost(case: Mapping[str, Any]) -> list[str]:
+def _floor_lines(
+    floors: Mapping[str, Mapping[str, Any]], at_floor: Mapping[str, Mapping[str, Any]]
+) -> list[str]:
+    """The discretization floor per order, and which runs sit on it."""
+    if not floors:
+        return []
+    shown = ", ".join(
+        f"p{k} {_shown(f['error'], f['bound'])}" for k, f in floors.items()
+    )
+    out = [f"Discretization floor (same-mesh error): {shown}.", ""]
+    for order, a in at_floor.items():
+        if not a["off"]:
+            out.append(
+                f"All {a['n']} runs of order {order} are at the p{order} floor "
+                f"(largest deviation {_percent(a['largest_deviation'])}): accuracy "
+                "differences between codes do not show at this order on this mesh; "
+                "compare codes by same-code error along the tolerance ladder."
+            )
+        else:
+            off = ", ".join(
+                f"{o['solver']} {o['layout']}"
+                + (f" tol {tol(o['tolerance'])}" if o["tolerance"] is not None else "")
+                + f" ({_percent(o['deviation'])} off)"
+                for o in a["off"]
+            )
+            out.append(
+                f"{a['at_floor']} of {a['n']} runs of order {order} are at the "
+                f"p{order} floor (within 1 %); off the floor: {off}."
+            )
+        out.append("")
+    return out
+
+
+def _percent(x: float) -> str:
+    return f"{100 * x:.2g} %"
+
+
+def _error_cost(case: Mapping[str, Any], h: str = "###") -> list[str]:
     ec = case["error_cost"]
-    out = ["### Error against cost", ""]
+    out = [f"{h} Error against cost", ""]
     out += _figure(case, "error_cost", f"{case['name']}: error against work time")
     if ec["reference"]:
         out.append(
@@ -206,16 +258,12 @@ def _error_cost(case: Mapping[str, Any]) -> list[str]:
                     tol(p["tolerance"]),
                     g(p["work_s"]),
                     g(p["peak_rss_sum_gib"]),
-                    f"≤ {e(p['plotted'])} (unresolved)"
-                    if p["unresolved"]
-                    else e(p["error"]),
+                    _shown(p["error"], p["bound"]),
                 ]
                 for p in ec["points"]
             ),
         )
-        if ec["floors"]:
-            floors = ", ".join(f"p{k} {e(v)}" for k, v in ec["floors"].items())
-            out += [f"Discretization floor (same-mesh error): {floors}.", ""]
+        out += _floor_lines(ec["floors"], ec["at_floor"])
         if ec["unresolved_band"] is not None:
             out += [
                 f"Below reference resolution: errors under {e(ec['unresolved_band'])}.",
@@ -300,8 +348,8 @@ def _error_cost(case: Mapping[str, Any]) -> list[str]:
     return out
 
 
-def _time(case: Mapping[str, Any]) -> list[str]:
-    out = ["### Time", ""]
+def _time(case: Mapping[str, Any], h: str = "###") -> list[str]:
+    out = [f"{h} Time", ""]
     out += _figure(case, "phases", f"{case['name']}: phases")
     head = [
         "solver",
@@ -387,8 +435,8 @@ def _time(case: Mapping[str, Any]) -> list[str]:
     return [*out, ""]
 
 
-def _memory(case: Mapping[str, Any]) -> list[str]:
-    out = ["### Memory", ""]
+def _memory(case: Mapping[str, Any], h: str = "###") -> list[str]:
+    out = [f"{h} Memory", ""]
     out += _figure(case, "memory", f"{case['name']}: peak RSS sum")
     rows = []
     for p in case["phases"]:
@@ -429,8 +477,8 @@ def _memory(case: Mapping[str, Any]) -> list[str]:
     return [*out, ""]
 
 
-def _accuracy(case: Mapping[str, Any]) -> list[str]:
-    out = ["### Accuracy", ""]
+def _reference(case: Mapping[str, Any]) -> list[str]:
+    out = []
     ref = case["reference"]
     if ref["id"] is not None and ref["in_store"]:
         bounds = ", ".join(
@@ -457,7 +505,13 @@ def _accuracy(case: Mapping[str, Any]) -> list[str]:
         out.append(
             f"Rescored cells: vs `{case['rescored_against']}`; stored values beside."
         )
-    out.append("")
+    return out
+
+
+def _accuracy(case: Mapping[str, Any], h: str = "###", *, shared: bool = True):
+    out = [f"{h} Accuracy", ""]
+    if shared:
+        out += [*_reference(case), ""]
     head = [
         "solver",
         "order",
@@ -497,14 +551,12 @@ def _accuracy(case: Mapping[str, Any]) -> list[str]:
             elif rs["error"] is None:
                 row.append(f"{rs['reason']} (rescored vs {rs['against']})")
             else:
-                shown = (
-                    e(rs["error"])
-                    if rs["resolved"] is not False
-                    else (f"≤ {e(10 * rs['bound'])} (unresolved)")
-                )
+                shown = _shown(rs["error"], rs["bound"])
                 row.append(f"{shown} (rescored vs {rs['against']})")
         rows.append(row)
     out += table(head, rows)
+    if case["error_cost"]["reference"]:
+        out += _floor_lines(case["error_cost"]["floors"], case["accuracy_floor"])
     if any(a["delta_floor"] for a in case["accuracy"]):
         out += [
             "Palace's error has a floor of δ, a definition difference, not accuracy.",
@@ -515,8 +567,13 @@ def _accuracy(case: Mapping[str, Any]) -> list[str]:
         what = "mode" if items["x"] == "mode" else "frequency Hz"
         out += _figure(case, "error_items", f"{case['name']}: error per {what}")
         xs = items["lines"][0]["x"]
+        bounds = items.get("bound")
         out += table(
-            [what, *[f"{ln['solver']} ({ln['layout']})" for ln in items["lines"]]],
+            [
+                what,
+                *[f"{ln['solver']} ({ln['layout']})" for ln in items["lines"]],
+                *(["reference bound"] if bounds is not None else []),
+            ],
             (
                 [
                     g(x, 6),
@@ -524,6 +581,7 @@ def _accuracy(case: Mapping[str, Any]) -> list[str]:
                         e(ln["error"][i]) if i < len(ln["error"]) else DASH
                         for ln in items["lines"]
                     ],
+                    *([e(bounds[i])] if bounds is not None else []),
                 ]
                 for i, x in enumerate(xs)
             ),
@@ -531,8 +589,8 @@ def _accuracy(case: Mapping[str, Any]) -> list[str]:
     return out
 
 
-def _layouts(case: Mapping[str, Any]) -> list[str]:
-    out = ["### Layouts", ""]
+def _layouts(case: Mapping[str, Any], h: str = "###") -> list[str]:
+    out = [f"{h} Layouts", ""]
     out += _figure(case, "layouts", f"{case['name']}: work time per layout")
     rows = [
         [
@@ -573,9 +631,9 @@ def _layouts(case: Mapping[str, Any]) -> list[str]:
     return out
 
 
-def _snapshot(case: Mapping[str, Any]) -> list[str]:
+def _snapshot(case: Mapping[str, Any], h: str = "###", *, shared: bool = True):
     comp = case["comparison"]
-    title = "### Cross-solver snapshot"
+    title = f"{h} Cross-solver snapshot"
     if comp["label"]:
         title += f" ({comp['label']})"
     out = [title, ""]
@@ -631,13 +689,16 @@ def _snapshot(case: Mapping[str, Any]) -> list[str]:
                 "Iterative kinds compare only at equal achieved error (table above).",
                 "",
             ]
-    out += ["Structural differences (reported, never removed):", ""]
-    for solver, facts in case["structural"].items():
-        for f in facts:
-            out.append(f"- {solver}: {f}")
-    for code, pins in case["pins"].items():
-        out.append(f"- pinned for {code}: " + "; ".join(pins))
-    return [*out, ""]
+    if not shared:
+        return out
+    return [*out, *_structural(case), ""]
+
+
+def _structural(case: Mapping[str, Any]) -> list[str]:
+    out = ["Structural differences (reported, never removed):", ""]
+    out += [f"- {s}: {f}" for s, facts in case["structural"].items() for f in facts]
+    out += [f"- pinned for {c}: " + "; ".join(p) for c, p in case["pins"].items()]
+    return out
 
 
 def _trend(r: Mapping[str, Any]) -> list[str]:
@@ -683,14 +744,119 @@ def _trend(r: Mapping[str, Any]) -> list[str]:
     return out
 
 
+def _scaling(case: Mapping[str, Any]) -> list[str]:
+    sc = case["scaling"]
+    out = [f"### {case['name']} scaling across core budgets", ""]
+    out += _figure(case, "scaling", f"{case['name']}: work time and memory per budget")
+    out += [
+        (
+            "Per solver at its best layout of each budget (anchor tolerance), the "
+            "default layout beside. Speedup $S(c) = T(c_0)/T(c)$ and parallel "
+            "efficiency $E(c) = c_0\\,T(c_0)/(c\\,T(c))$ on median work time "
+            "$T$, against the solver's smallest budget $c_0$ on the same node "
+            "class; a node class change restarts the line. Never extrapolated."
+        ),
+        "",
+    ]
+    rows = []
+    for s in sc["solvers"]:
+        for p in s["points"]:
+            labels = [p["restart"]] if "restart" in p else []
+            default = DASH
+            if p["default_layout"] is not None:
+                default = f"{g(p['default_work_s'])} ({p['default_layout']})"
+            rows.append(
+                [
+                    s["solver"],
+                    p["core_budget"],
+                    p["node_class"] or DASH,
+                    p["nodes"] or DASH,
+                    p["layout"],
+                    p["n"],
+                    g(p["work_s"]),
+                    f"{g(p['work_min_s'])}-{g(p['work_max_s'])}",
+                    default,
+                    f"c{p['baseline']}",
+                    g(p["speedup"]),
+                    g(p["efficiency"]),
+                    g(p["peak_rss_sum_gib"]),
+                    g(p["peak_rss_largest_node_gib"]),
+                    _error_display(p),
+                    ", ".join(p["jobs"]) or DASH,
+                    ", ".join(labels + p["labels"]),
+                ]
+            )
+    out += table(
+        [
+            "solver",
+            "cores",
+            "class",
+            "nodes",
+            "best layout",
+            "n",
+            "work s",
+            "min-max",
+            "default work s",
+            "$c_0$",
+            "$S$",
+            "$E$",
+            "peak RSS sum GiB",
+            "largest node GiB",
+            "error",
+            "jobs",
+            "",
+        ],
+        rows,
+    )
+    if sc["ratios"]:
+        out += ["Cross-code ratios per budget, at best layout:", ""]
+        out += table(
+            ["cores", "class", "ratio", "work", "memory", "pairing", ""],
+            (
+                [
+                    x["core_budget"],
+                    x["node_class"] or DASH,
+                    f"{x['solver']} / {x['against']}",
+                    g(x["work"]),
+                    g(x["memory"]),
+                    x["pairing"],
+                    x["caveat"] or "",
+                ]
+                for x in sc["ratios"]
+            ),
+        )
+    return out
+
+
+def _budget_heading(case: Mapping[str, Any], block: Mapping[str, Any]) -> str:
+    """``<case> at c<budget> (<class>, <N> node(s))``."""
+    where = [block["node_class"] or "node class unknown"]
+    if n := block["nodes"]:
+        where.append(f"{n} node" + ("s" if n > 1 else ""))
+    return f"{case['name']} at c{block['core_budget']} ({', '.join(where)})"
+
+
 def render(r: Mapping[str, Any]) -> str:
     """``index.md``."""
     out = _header(r) + _nodes(r) + _gates(r)
     for case in r["cases"]:
         out += [f"## {case['name']}", ""]
         out += ["Campaigns: " + ", ".join(f"`{x}`" for x in case["campaigns"]), ""]
-        out += _error_cost(case) + _time(case) + _memory(case) + _accuracy(case)
-        out += _layouts(case) + _snapshot(case)
+        if "budgets" not in case:
+            out += _error_cost(case) + _time(case) + _memory(case) + _accuracy(case)
+            out += _layouts(case) + _snapshot(case)
+            continue
+        ref = _reference(case)
+        out += [*ref, ""] if ref else []
+        out += [*_structural(case), ""]
+        for block in views.budget_views(case):
+            view = {**case, **block, "name": views.budget_title(case, block)}
+            out += [f"### {_budget_heading(case, block)}", ""]
+            out += _error_cost(view, "####") + _time(view, "####")
+            out += _memory(view, "####") + _accuracy(view, "####", shared=False)
+            out += _layouts(view, "####") + _snapshot(view, "####", shared=False)
+        if "scaling" in case:
+            out += _scaling(case)
     out += _trend(r)
     out += ["## Caveats", ""]
     out += [f"{i}. {c}" for i, c in enumerate(r["caveats"], 1)]

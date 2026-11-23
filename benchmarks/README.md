@@ -29,7 +29,8 @@ benchmarks/
   adapters/          solver adapters: gfem.py, gfem_worker.py, palace.py
   stacks/            stack descriptions (*.toml) and kind modules (wheels, native)
   cases/<name>/      case.toml, mesh.msh.xz (if small), reference.json, source/
-  campaigns/         campaign files: smoke, smoke-r10m, release-gfem, reference-*
+  campaigns/         campaign files: smoke, smoke-r10m, release-gfem, reference-*,
+                     the campaign series full-* and its rehearsal-scale-c16
   references/        closed forms and the microstrip ladder (rung case files)
   report/            load, views, markdown, figures
 ```
@@ -138,9 +139,12 @@ every cross-code view. They are never removed or normalised:
 Every run, both codes, every rank count:
 
 ```
-srun --exact -n R -c T --cpu-bind=cores --distribution=block:block \
+srun --exact -n R -c T --mem=0 --cpu-bind=cores --distribution=block:block \
      --hint=nomultithread --ear=off --mpi=<plugin> <argv>
 ```
+
+`--mem=0` gives every run step the whole node's memory: a core budget limits cores
+only, and memory use stays visible as peak RSS.
 
 Plugins: gfem `none` at R = 1 and `pmix` above; wheels Palace `pmi2`; native stacks
 per stack file. If a stack sets `launch_r1 = "taskset"` (decided by the stack check),
@@ -248,11 +252,12 @@ lumped ports; each code runs at its defaults except the pins above.
 | `lcavity` | eigen, PEC L-shaped cavity, target 100 GHz, 1 mode | 246 416 (p2) | committed, mm | closed form, f1 = 148 140 269 652.022 Hz |
 | `bragg` | eigen, Bloch periodic, $k = \pi/a$ along $x$, 2 modes; a physics case | 10 620 (p3) | committed, mm, R1 mesh split once | transfer-matrix roots, ceiling 1e-5 rel |
 | `r10M_void` | driven, 50 GHz, port 1 only, S11 and S21 | 10 248 856 (p2) | external, um | none (`accuracy: null`, `no_reference`); DOF pinned |
+| `microstrip_p3` | microstrip's problem; the mid-size scale case | 907 791 (p3) | microstrip's (`../microstrip/mesh.msh.xz`) | microstrip's (`[reference] case = "microstrip"`) |
 
 Meshes whose xz file is at most 1 MiB are committed as `cases/<case>/mesh.msh.xz`;
 larger ones live in mesh stores as `<sha256>.msh.xz`. A case's problem does not
 change across Palace versions. Wall caps (in the campaign files): bragg 120 s,
-lcavity and microstrip 600 s, r10M_void 1 800 s. The `est_s` hints of a case file
+lcavity and microstrip 600 s, r10M_void and microstrip_p3 1 800 s. The `est_s` hints of a case file
 feed only the plan's estimate and are left out of the case's definition hash.
 
 ## Converged references
@@ -261,7 +266,9 @@ Each case directory holds one `reference.json` (`suite-reference/1`): `id`
 (`<case>-<YYYYMMDD>-<sha7>`), `physics_sha256` (what the scorer matches), `meshes`
 (per mesh sha256 its DOF per order: the DOF guard's pins), `method`, `quantities`
 with their `bound`, `ceiling` and `same_mesh_error` per order, `cross_checks`,
-provenance. A reference is replaced only by a file with a new id and `computed_utc`;
+provenance. A case file with `[reference] case = "<sibling>"` (same physics,
+another order) has no file of its own: it is scored, and DOF-pinned, by the named
+suite case's `reference.json`, so the reference id stays single. A reference is replaced only by a file with a new id and `computed_utc`;
 the old one stays archived in the records store under `references/<id>/`.
 
 - `python -m benchmarks reference lcavity` (also `bragg`, `r10M_void`) writes the
@@ -287,8 +294,8 @@ Scoring (`close`, once per `ok` record): S is $\max |S_{ij} - S_{\mathrm{ref},ij
 over entries and frequencies; eigenfrequencies
 $\max_k |\mathrm{Re}\, f_k - f_{\mathrm{ref},k}| / f_{\mathrm{ref},k}$ with modes paired
 in ascending real part at or above the target. An error below $10\times$ the bound is
-"unresolved" and printed as such. A mismatched reference gives `accuracy: null` and
-`reference_matches: fail`.
+"unresolved" (see the report's accuracy display below). A mismatched reference gives
+`accuracy: null` and `reference_matches: fail`.
 
 ## Records and the store
 
@@ -429,14 +436,26 @@ Budget unit: billed core-hours, sacct $\mathrm{CPUTimeRAW} / 2 / 3600$ (one GPP 
    replace an axis; `--list` prints the axis values. By default one job is one case x
    stack on one exclusive node; `[jobs] group = "stack"` makes one job per stack. The
    time limit is 1.5x the estimate; QOS `debug` up to 2 h, else `long`. Planned
-   today: `smoke` 3 jobs / 149 runs / ~469 core-h, `smoke-r10m` 1 job / 4 runs / ~50,
+   today: `smoke` 3 jobs / 149 runs / ~539 core-h, `smoke-r10m` 1 job / 4 runs / ~47,
    `release-gfem` 1 job / 23 runs / ~46 (gfem petsc-mumps and bddc on bragg, a
    Bloch-periodic eigenproblem, are planned once as `refused`).
+
+   The campaign series is 16 files, one job per case, at the core budgets
+   8, 16, 32, 56 and 112 on one node: `full-c<b>` (lcavity, microstrip, every layout
+   of the grid, the tolerance ladder on microstrip's iterative kinds) 10 jobs / 696
+   runs / ~2 397 core-h, `full-bragg-c<b>` and `full-bragg-pmg-c16` 6 jobs / 125
+   runs / ~133, `full-scale-c<b>` (r10M_void and microstrip_p3 on highmem nodes,
+   default and `<b/4>x4` layouts; gfem:direct at `<b/4>x4` is planned once as
+   `refused`) 10 jobs / 400 runs / ~5 946. In all: 26 jobs, 1 221 runs, ~8 476
+   core-h. `rehearsal-scale-c16` (2 jobs / 20 runs / ~385, one repeat) is the dress
+   rehearsal run before the series, outside it. The estimates come from the case
+   files' `est_s` hints, keyed `"<solver>@<RxT>"` for every layout of every budget.
 
 3. **Submit** from the same tree:
 
    ```sh
-   python -m benchmarks submit RUNDIR [--job J] [--qos Q] [--ceiling C] [--dry-run]
+   python -m benchmarks submit RUNDIR [--job J] [--qos Q] [--time H:MM:SS] \
+       [--ceiling C] [--dry-run]
    ```
 
    `submit` refuses when `prior_core_h` + billed core-h of every `submitted.tsv`
@@ -446,7 +465,12 @@ Budget unit: billed core-hours, sacct $\mathrm{CPUTimeRAW} / 2 / 3600$ (one GPP 
    It then prepares the stacks, stages the meshes, `sbatch`es
    `benchmarks/job.sbatch RUNDIR JOB` per job and appends the ids to
    `RUNDIR/submitted.tsv`. `--dry-run` prints the budget line and the sbatch lines
-   only. Each job writes its machine facts once (`jobs/<jobid>/`, including a
+   only. `--time H:MM:SS` replaces the planned time limit of every job submitted,
+   for a rerun after a job ran out of time (its remaining lines `not_started` with
+   `job_time_left`): the estimate becomes $\text{limit} / 1.5$ for the new limit
+   and, without `--qos`, the QOS follows it (`debug` up to 2 h, else `long`). `submitted.tsv`
+   records the limit and estimate used; `plan.tsv` keeps the planned ones. Each job
+   writes its machine facts once (`jobs/<jobid>/`, including a
    `tools/scale_bench.py node` machine benchmark), then runs
    `python -m benchmarks step RUNDIR JOB LINE` for each steps line.
 
@@ -517,12 +541,59 @@ convention `../gfem-bench-data/reports/<report-id>`.
   `DIR: unchanged` and exits 0, or names the files that differ and exits 1. Figures
   made with another matplotlib version, or with none importable, are regenerated but
   not compared ("figures regenerated with matplotlib X ... not compared"); tables and
-  JSON must still match.
+  JSON must still match. `report.json` records the harness commit that rendered it
+  (`harness_revision`, `-dirty` when the checkout had changes); `--check` keeps the
+  stored one and prints "rendered at harness X; regenerated at Y" when the checking
+  tree differs. It also records the reference families read per case
+  (`reference_families`: the case and its `[reference] case` sibling), and
+  `--check` reuses that map rather than the checking tree's case files.
 
 Sections: gates and failures, then per case the structural block, error against work
-time, phase bars, memory, accuracy, layouts and a cross-solver snapshot; a trend
+time, phase bars, memory, accuracy, layouts and a cross-solver snapshot (per budget,
+then a scaling view, on a multi-budget case; see below); a trend
 section with at least two gfem commits; caveats. A job whose machine benchmark is
 more than 10 % below the campaign median is flagged "slow node".
+
+**Accuracy display**. The scored error $e$ of a max-norm metric lies within
+the reference bound $b$ of the true error, so a resolved error ($e \ge 10b$) prints as
+its value, an unresolved one as `e ± b (unresolved)` when $b \le e < 10b$ and as
+`≤ e+b (unresolved)` when $e < b$: in the accuracy table, panel (a), the rescored
+column and the scaling view. Panel (a) plots unresolved errors at $e$ with a
+$\pm b$ bar. Each order's discretization floor $f_p$ (the reference's same-mesh
+error) is printed the same way, after panel (a) and after the accuracy table, with a
+shaded $\pm b$ band in the figure when unresolved; then, per order with scored runs,
+a sentence says whether every run is at the floor, $|e - f_p| \le 0.01 f_p$, or lists
+the runs off it. When a case has an unresolved cell, its per-item error table gains a
+"reference bound" column (the reference's per-frequency bound where it has one).
+Scoring and records are unchanged.
+
+**Core budgets.** A cell is keyed by case, core budget, node class, solver, stack,
+layout and tolerance, and every per-case view is computed per (core budget, node
+class): best and default layout, ladder, equal-error table and snapshot ratios hold
+one budget's records only. A record without a node class (never started, refused)
+takes its job's class. A case run at a single (budget, class) prints as above. A case
+with several prints its reference and structural block once, then one
+`### <case> at c<budget> (<class>, <N> node(s))` subsection per budget, smallest
+first, holding the views in the order above; `report.json` holds them under
+`cases[i].budgets` and the figures carry a `-c<budget>` suffix
+(`-c<budget>-<class>` when one budget ran on two node classes).
+
+**Scaling view.** A case with passing cells at two or more core budgets gets a
+`### <case> scaling across core budgets` section after its budget subsections
+(`report.json` `cases[i].scaling`, figure `fig-<case>-scaling.svg`: (a) work time and
+(b) peak RSS sum against core budget, log-log, each solver's ideal line from its
+smallest budget dotted). Per solver and (budget, class), at the anchor tolerance: the
+best-layout cell (the default, labelled, when no layout has 3 repeats) with median
+work time and min-max, the default layout's work time beside, peak RSS sum, the
+largest node's RSS on multi-node points (first node only), n, jobs and the error.
+Speedup $S(c) = T(c_0)/T(c)$ and parallel efficiency $E(c) = c_0 T(c_0)/(c T(c))$ are
+taken against the solver's smallest budget $c_0$ of the same node class; a node class
+change restarts the line, and nothing is extrapolated. A multi-node Palace point on
+`wheels` is labelled "TCP between nodes". Cross-code ratios per budget (Palace over
+gfem, work time and memory, direct against direct, iterative against iterative) are
+labelled "different nodes" unless both cells share one job; iterative ratios carry
+the note that nominal tolerances differ, the per-budget equal-error table being the
+fair comparison. A single-budget case has no scaling view and prints as before.
 
 ## Extending the suite
 

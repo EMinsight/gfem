@@ -192,6 +192,37 @@ def test_a_bad_case_file_is_refused(tmp_path, old, new, match):
         case.load_case(path)
 
 
+REFERENCE_KEY = 'order = 2\n\n[reference]\ncase = "big"'
+
+
+def test_a_reference_key_names_the_family_case_without_changing_the_physics(tmp_path):
+    plain = case.load_case(_write_case(tmp_path / "plain" / "tiny"))
+    text = CASE_TOML.replace("order = 2", REFERENCE_KEY, 1)
+    c = case.load_case(_write_case(tmp_path / "keyed" / "tiny", text))
+    assert plain.reference_case is None
+    assert c.reference_case == "big"
+    assert case.reference_directory(plain) == tmp_path / "plain" / "tiny"
+    assert case.reference_directory(c) == tmp_path / "keyed" / "big"
+    assert case.physics_sha256(c) == case.physics_sha256(plain)
+    assert case.definition_sha256(c) != case.definition_sha256(plain)
+    assert tomllib.loads(case.dumps(c.to_dict())) == tomllib.loads(text)
+
+
+@pytest.mark.parametrize(
+    ("reference", "match"),
+    [
+        ('case = "../big"', "reference.case"),
+        ('case = ""', "reference.case"),
+        ("case = 3", "reference.case"),
+        ('case = "big"\nid = "x"', "id"),
+    ],
+)
+def test_a_bad_reference_key_is_refused(tmp_path, reference, match):
+    text = CASE_TOML.replace("order = 2", f"order = 2\n\n[reference]\n{reference}", 1)
+    with pytest.raises(CaseError, match=match):
+        case.load_case(_write_case(tmp_path / "tiny", text))
+
+
 def test_case_name_must_match_its_directory(tmp_path):
     with pytest.raises(CaseError, match="other"):
         case.load_case(_write_case(tmp_path / "other"))
@@ -475,3 +506,39 @@ def test_case_commands_refuse_missing_inputs_without_writing(tmp_path, capsys):
         assert main([*argv, "--cases", str(tmp_path / "cases")]) == 2
         assert "no such" in capsys.readouterr().err
     assert not (tmp_path / "cases").exists()
+
+
+# --- the microstrip_p3 suite case --------------------------------------------------
+
+
+def test_a_plan_with_microstrip_p3_pins_it_at_907_791_dof(tmp_path):
+    from benchmarks.harness import config, matrix, slurm
+
+    text = """\
+schema = 1
+cases = ["microstrip_p3"]
+solvers = ["gfem:direct", "gfem:petsc-mumps", "gfem:bddc", "palace:mumps", "palace:pmg"]
+layouts = ["default", "4x4"]
+core_budget = 16
+repeats = 1
+node_class = "standard"
+anchor_tolerance = 1e-8
+
+[wall_cap_s]
+microstrip_p3 = 1800
+
+[stacks.wheels.versions]
+palace = "0.19.0"
+"""
+    path = tmp_path / "p3.toml"
+    path.write_text(text)
+    site = config.load_site(config.CASES_DIR.parent / "site.example.toml", environ={})
+    plan = matrix.expand(config.load_campaign(path), site, commit="858bc66" + "0" * 33)
+    assert {c.case for c in plan.cells} == {"microstrip_p3"}
+    refused = {(c.solver, c.layout) for c in plan.cells if c.refused}
+    assert refused == {("gfem:direct", "4x4")}  # one rank only
+    direct = next(c for c in plan.cells if c.solver == "gfem:direct" and not c.refused)
+    assert direct.est_s == 70  # its "gfem:direct@1x16" hint
+    p3 = case.load_case(config.CASES_DIR / "microstrip_p3")
+    assert slurm.pinned_ndof(p3) == 907_791
+    assert case.reference_directory(p3) == config.CASES_DIR / "microstrip"

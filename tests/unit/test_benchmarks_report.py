@@ -14,7 +14,8 @@ from pathlib import Path
 import pytest
 
 from benchmarks.__main__ import main
-from benchmarks.report import views
+from benchmarks.harness import config, matrix
+from benchmarks.report import harness_revision, views
 
 BENCH = Path(__file__).parent / "data" / "bench"
 FIXTURE = BENCH / "campaign"
@@ -203,12 +204,12 @@ def test_unresolved_errors_and_delta_beside_palace(fixture_report):
     acc = _case(report, "microstrip")["accuracy"]
     direct = next(a for a in acc if a["solver"] == "gfem:direct")
     assert direct["resolved"] is False
-    assert "≤ 10·bound = 2.00e-06 (unresolved)" in md
-    assert "1.50e-06" not in [
+    assert [
         line.split("|")[6].strip()
-        for line in md.splitlines()
+        for line in _section(md, "microstrip").splitlines()
         if line.startswith("| gfem:direct | 2 |")
-    ]
+    ] == ["1.50e-06 ± 2.00e-07 (unresolved)"]
+    assert "10·bound" not in md
     mumps = next(a for a in acc if a["solver"] == "palace:mumps")
     assert mumps["delta"] == 5e-4
     assert mumps["delta_floor"] is True
@@ -257,6 +258,176 @@ def test_eigen_case_errors_per_mode(fixture_report):
     assert gfem["x"] == [1]
     assert gfem["error"] == [3.89e-4]
     assert lc["error_cost"]["ladders"] == []
+
+
+# --- unresolved errors and the discretization floor -------------------------------
+
+
+@pytest.mark.parametrize(
+    ("error", "bound", "shown"),
+    [
+        (2.5, 0.25, "2.50e+00"),  # e = 10 b: resolved, bare
+        (2.4, 0.25, "2.40e+00 ± 2.50e-01 (unresolved)"),
+        (0.25, 0.25, "2.50e-01 ± 2.50e-01 (unresolved)"),  # e = b: the interval
+        (0.125, 0.25, "≤ 3.75e-01 (unresolved)"),  # e < b: at most e + b
+        (0.125, None, "1.25e-01"),
+        (None, 0.25, "—"),
+    ],
+)
+def test_an_error_is_shown_bare_only_when_resolved(error, bound, shown):
+    from benchmarks.report.markdown import _shown
+
+    assert _shown(error, bound) == shown
+
+
+def _section(md: str, case: str) -> str:
+    start = md.index(f"## {case}\n")
+    end = md.find("\n## ", start + 1)
+    return md[start : end if end >= 0 else None]
+
+
+def test_panel_a_plots_an_unresolved_error_at_its_value_with_its_bound(
+    fixture_report,
+):
+    report, md = fixture_report
+    ec = _case(report, "microstrip")["error_cost"]
+    direct = next(p for p in ec["points"] if p["solver"] == "gfem:direct")
+    assert direct["plotted"] == direct["error"] == 1.5e-6
+    assert direct["bound"] == 2e-7
+    assert direct["unresolved"] is True
+    row = "| gfem:direct | 1x16 | — | 30.5 | 6.1 | 1.50e-06 ± 2.00e-07 (unresolved) |"
+    assert row in md
+    assert ec["floors"] == {"2": {"error": 1.5e-6, "bound": 2e-7, "resolved": False}}
+    floor = (
+        "Discretization floor (same-mesh error): p2 1.50e-06 ± 2.00e-07 (unresolved)."
+    )
+    assert _section(md, "microstrip").count(floor) == 2  # panel (a) and accuracy
+    assert "unresolved errors are shown as value ± reference bound" in md
+
+
+def test_runs_off_the_floor_are_named_per_order(fixture_report):
+    report, md = fixture_report
+    lc = _case(report, "lcavity")
+    assert lc["accuracy_floor"]["2"]["n"] == 2
+    assert lc["accuracy_floor"]["2"]["at_floor"] == 1
+    assert [o["solver"] for o in lc["accuracy_floor"]["2"]["off"]] == ["palace:mumps"]
+    line = (
+        "1 of 2 runs of order 2 are at the p2 floor (within 1 %); off the floor: "
+        "palace:mumps 16x1 tol 1e-10 (5.4 % off)."
+    )
+    assert _section(md, "lcavity").count(line) == 2
+    assert "Discretization floor (same-mesh error): p2 3.89e-04." in md
+
+
+def test_all_runs_at_the_floor_say_codes_compare_by_same_code_error(tmp_path):
+    def edit(d):
+        if d["name"].startswith("lcavity/palace") and d.get("accuracy"):
+            d["accuracy"]["value"] = 0.000389
+            d["accuracy"]["per_item"] = [0.000389]
+
+    out = _report(tmp_path, str(_store(tmp_path, edit)), "--no-figures")
+    report = json.loads((out / "report.json").read_text())
+    md = (out / "index.md").read_text()
+    floor = _case(report, "lcavity")["error_cost"]["at_floor"]["2"]
+    assert (floor["n"], floor["at_floor"], floor["off"]) == (2, 2, [])
+    assert floor["largest_deviation"] == pytest.approx(1.8e-4, rel=0.01)
+    line = (
+        "All 2 runs of order 2 are at the p2 floor (largest deviation 0.018 %): "
+        "accuracy differences between codes do not show at this order on this "
+        "mesh; compare codes by same-code error along the tolerance ladder."
+    )
+    assert _section(md, "lcavity").count(line) == 2
+
+
+def test_a_case_without_reference_prints_no_floor(tmp_path):
+    def edit(d):
+        if d["name"].startswith("lcavity/") and d.get("accuracy"):
+            d["accuracy"] = None
+            d["accuracy_reason"] = "no_reference"
+            d["case"]["reference"] = None
+
+    out = _report(tmp_path, str(_store(tmp_path, edit)), "--no-figures")
+    lc = _case(json.loads((out / "report.json").read_text()), "lcavity")
+    assert lc["error_cost"]["floors"] == {}
+    assert lc["error_cost"]["at_floor"] == {}
+    assert lc["accuracy_floor"] == {}
+    text = _section((out / "index.md").read_text(), "lcavity")
+    assert "(a) No converged reference: no accuracy panel." in text
+    assert "floor" not in text
+    assert "±" not in text
+    assert "reference bound" not in text
+
+
+def test_error_items_carry_the_reference_bound_when_a_cell_is_unresolved(tmp_path):
+    camp = _store(tmp_path)
+    ref = tmp_path / "store/references/microstrip-20261118-858bc66/reference.json"
+    doc = json.loads(ref.read_text())
+    doc["quantities"]["s"]["bound_per_frequency"] = [1e-7, 1.5e-7, 2e-7]
+    ref.write_text(json.dumps(doc))
+    out = _report(tmp_path, str(camp), "--no-figures")
+    md = (out / "index.md").read_text()
+    report = json.loads((out / "report.json").read_text())
+    ms = _case(report, "microstrip")
+    assert ms["error_items"]["bound"] == [1e-7, 1.5e-7, 2e-7]
+    assert "| reference bound |" in _section(md, "microstrip")
+    assert "| 5e+10 | 1.50e-06 | 1.50e-06 | 5.00e-04 | 5.00e-04 | 2.00e-07 |" in md
+    # lcavity is resolved: its per-mode table is unchanged
+    assert "reference bound" not in _section(md, "lcavity")
+    assert "bound" not in _case(report, "lcavity")["error_items"]
+
+
+def test_report_records_the_harness_revision(tmp_path, capsys):
+    out = _report(tmp_path, str(_store(tmp_path)), "--no-figures")
+    stored = json.loads((out / "report.json").read_text())
+    # the tree's commit: its COMMIT file when shipped (no .git), else git HEAD,
+    # marked dirty when the checkout has changes
+    head = matrix.source_commit()[0]
+    assert len(head) == 40
+    here = stored["harness_revision"]
+    assert here in (head, f"{head}-dirty")
+    # a report rendered at another revision still checks: the field is provenance
+    stored["harness_revision"] = "0" * 40
+    (out / "report.json").write_text(
+        json.dumps(stored, indent=1, sort_keys=True, ensure_ascii=False) + "\n"
+    )
+    assert main(["report", "--check", str(out)]) == 0
+    printed = capsys.readouterr().out
+    assert "unchanged" in printed
+    assert f"rendered at harness {'0' * 40}; regenerated at {here}" in printed
+
+
+def _git(root, *args):
+    subprocess.run(
+        [shutil.which("git") or "git", "-C", str(root), *args],
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_harness_revision_marks_a_checkout_with_changes_dirty(tmp_path):
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("a\n")
+    _git(tmp_path, "add", "a.txt")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.org",
+        "commit",
+        "-qm",
+        "a",
+    )
+    head = matrix.source_commit(tmp_path)[0]
+    assert harness_revision(tmp_path) == head
+    (tmp_path / "a.txt").write_text("b\n")
+    assert harness_revision(tmp_path) == f"{head}-dirty"
+
+
+def test_harness_revision_of_a_shipped_tree_is_its_commit_file(tmp_path):
+    (tmp_path / "COMMIT").write_text("c" * 40 + "\n")
+    (tmp_path / "extra.txt").write_text("not tracked anywhere\n")
+    assert harness_revision(tmp_path) == "c" * 40
 
 
 # --- refusals ---------------------------------------------------------------------
@@ -351,6 +522,36 @@ def test_newer_reference_prints_the_rescore_command(fixture_report):
     assert "a newer reference `microstrip-20261125-aaaaaaa`" in md
 
 
+def test_newer_reference_follows_the_case_files_reference_key(tmp_path):
+    # microstrip_p3 is scored by the microstrip reference ([reference] case key)
+    def edit(d):
+        if d["run"]["case"] == "microstrip":
+            d["run"]["case"] = "microstrip_p3"
+
+    report = _json(tmp_path, _store(tmp_path, edit))
+    p3 = _case(report, "microstrip_p3")
+    assert p3["reference"]["newer"]["id"] == "microstrip-20261125-aaaaaaa"
+    assert p3["rescore_flag"] == "--rescore microstrip_p3=microstrip-20261125-aaaaaaa"
+
+
+def test_check_reuses_the_stored_reference_families(tmp_path, capsys, monkeypatch):
+    def edit(d):
+        if d["run"]["case"] == "microstrip":
+            d["run"]["case"] = "microstrip_p3"
+
+    out = _report(tmp_path, str(_store(tmp_path, edit)), "--no-figures")
+    stored = json.loads((out / "report.json").read_text())
+    assert stored["reference_families"]["microstrip_p3"] == [
+        "microstrip",
+        "microstrip_p3",
+    ]
+    assert stored["reference_families"]["lcavity"] == ["lcavity"]
+    # a checking tree whose case files lack the [reference] sibling key
+    monkeypatch.setattr(config, "CASES_DIR", tmp_path / "no-cases")
+    assert main(["report", "--check", str(out)]) == 0
+    assert "unchanged" in capsys.readouterr().out
+
+
 def test_rescore_marks_cells_and_rewrites_no_record(tmp_path):
     camp = _store(tmp_path)
     before = {p: p.read_bytes() for p in camp.rglob("*.json")}
@@ -441,6 +642,244 @@ def test_trend_over_two_gfem_commits_restarts_on_a_key_change(tmp_path):
     ms = _case(report, "microstrip")
     assert ms["campaigns"] == ["20261201-aaaaaaa-smoke"]
     assert _phase(ms, "gfem:direct", "1x16")["n"] == 3
+
+
+# --- core budgets ------------------------------------------------------------------
+
+
+def _budget_campaign(tmp_path: Path, budget: int, edit=None, *, tag: str = "") -> Path:
+    """The fixture campaign rerun at ``budget`` cores, same gfem commit."""
+    cid = f"20261120-858bc66-smoke-c{budget}{tag}"
+
+    def at_budget(d):
+        d["campaign"] = cid
+        d["run"]["core_budget"] = budget
+        if edit is not None:
+            edit(d)
+
+    camp = _store(tmp_path, at_budget, name=f"campaign-c{budget}{tag}")
+    manifest = json.loads((camp / "campaign.json").read_text())
+    manifest["id"] = cid
+    manifest["core_budget"] = budget
+    (camp / "campaign.json").write_text(json.dumps(manifest))
+    return camp
+
+
+def _two_budgets(tmp_path: Path) -> Path:
+    """c8 and c16 of the fixture; at c8 gfem:bddc is fastest at 2x8 (halved)."""
+
+    def faster_2x8(d):
+        run = d["run"]
+        if run["solver"] == "gfem:bddc" and run["layout"]["ranks"] == 2:
+            d["timings"]["work_s"] = (d["timings"]["work_s"] or 0) * 0.5
+
+    c8 = _budget_campaign(tmp_path, 8, faster_2x8)
+    c16 = _budget_campaign(tmp_path, 16)
+    return _report(tmp_path, str(c8), str(c16), "--no-figures", name="budgets")
+
+
+def _budget(case: dict, budget: int) -> dict:
+    return next(b for b in case["budgets"] if b["core_budget"] == budget)
+
+
+def test_each_core_budget_has_its_own_best_layout(tmp_path):
+    out = _two_budgets(tmp_path)
+    ms = _case(json.loads((out / "report.json").read_text()), "microstrip")
+    assert [(b["core_budget"], b["node_class"]) for b in ms["budgets"]] == [
+        (8, "standard"),
+        (16, "standard"),
+    ]
+    # c16 is the fixture: 4x4 best (11.0 s); c8 halves 2x8 below it
+    assert _layouts(_budget(ms, 16), "gfem:bddc")["best"] == "4x4"
+    assert _layouts(_budget(ms, 8), "gfem:bddc")["best"] == "2x8"
+    assert _phase(_budget(ms, 8), "gfem:direct", "1x16")["n"] == 3
+    assert "layouts" not in ms
+    assert ms["reference"]["id"] is not None
+
+
+def test_each_core_budget_gets_a_subsection(tmp_path):
+    index = (_two_budgets(tmp_path) / "index.md").read_text()
+    c8 = index.index("### microstrip at c8 (standard, 1 node)")
+    c16 = index.index("### microstrip at c16 (standard, 1 node)")
+    assert index.index("## microstrip") < c8 < c16
+    section = index[c8:c16]
+    assert "#### Error against cost" in section
+    assert "#### Layouts" in section
+    assert index.count("Structural differences (reported, never removed)") == 2
+
+
+def test_figures_of_several_budgets_carry_the_budget(tmp_path):
+    pytest.importorskip("matplotlib")
+    c8 = _budget_campaign(tmp_path, 8)
+    c16 = _budget_campaign(tmp_path, 16)
+    out = _report(tmp_path, str(c8), str(c16), name="figs")
+    svgs = sorted(p.name for p in out.glob("fig-microstrip-*.svg"))
+    assert "fig-microstrip-error-cost-c8.svg" in svgs
+    assert "fig-microstrip-layouts-c16.svg" in svgs
+    assert "fig-microstrip-error-cost.svg" not in svgs
+    index = (out / "index.md").read_text()
+    for name in svgs:
+        assert f"]({name})" in index
+
+
+def _slower(factor: float):
+    """Every work time of a campaign times ``factor``."""
+
+    def edit(d):
+        if d.get("timings", {}).get("work_s") is not None:
+            d["timings"]["work_s"] *= factor
+
+    return edit
+
+
+def _on(node_class: str, *, factor: float = 1.0, nodes: int = 1):
+    """Every record on ``node_class`` nodes (``nodes`` of them), work times scaled."""
+
+    def edit(d):
+        _slower(factor)(d)
+        machine = d.get("provenance", {}).get("machine")
+        if machine is not None:
+            machine["node_class"] = node_class
+            machine["nodes"] = [f"node{k:03d}" for k in range(1, nodes + 1)]
+
+    return edit
+
+
+def _point(case: dict, solver: str, budget: int) -> dict:
+    line = next(s for s in case["scaling"]["solvers"] if s["solver"] == solver)
+    return next(p for p in line["points"] if p["core_budget"] == budget)
+
+
+def test_scaling_gives_speedup_and_efficiency_against_the_smallest_budget(tmp_path):
+    c8 = _budget_campaign(tmp_path, 8, _slower(1.6))
+    c16 = _budget_campaign(tmp_path, 16)
+    ms = _case(_json(tmp_path, c8, c16), "microstrip")
+    first, second = (_point(ms, "gfem:direct", b) for b in (8, 16))
+    assert (first["speedup"], first["efficiency"]) == (1.0, 1.0)
+    # T(c8) = 1.6 T(c16): S = 1.6, E = 8 * 1.6 / 16 = 0.8
+    assert second["speedup"] == pytest.approx(1.6, rel=1e-5)
+    assert second["efficiency"] == pytest.approx(0.8, rel=1e-5)
+    assert second["work_s"] == pytest.approx(30.5)
+    assert first["work_s"] == pytest.approx(1.6 * 30.5, rel=1e-5)
+    # best layout of each budget, the default beside it
+    bddc = _point(ms, "gfem:bddc", 16)
+    assert (bddc["layout"], bddc["default_layout"]) == ("4x4", "1x16")
+    assert bddc["work_s"] == pytest.approx(11.0)  # median of 10.8, 11.0, 11.2
+    assert bddc["default_work_s"] == pytest.approx(12.2)  # of 12.0, 12.2, 12.4
+    assert bddc["error"] is not None
+    assert bddc["peak_rss_sum_gib"] is not None
+
+
+def test_a_scaling_point_without_best_layout_is_the_default_labelled_n(tmp_path):
+    def two_repeats(d):
+        if d["name"].startswith("microstrip/gfem-direct") and d["run"]["repeat"] == 3:
+            d["status"] = "failed"
+
+    c8 = _budget_campaign(tmp_path, 8, two_repeats)
+    c16 = _budget_campaign(tmp_path, 16)
+    ms = _case(_json(tmp_path, c8, c16), "microstrip")
+    p8 = _point(ms, "gfem:direct", 8)
+    assert (p8["layout"], p8["n"]) == ("1x16", 2)
+    assert p8["labels"] == ["default, n = 2"]
+    assert _point(ms, "gfem:direct", 16)["labels"] == []
+
+
+def test_scaling_cross_code_ratio_is_labelled_different_nodes(tmp_path):
+    c8 = _budget_campaign(tmp_path, 8, _slower(1.6))
+    c16 = _budget_campaign(tmp_path, 16)
+    ms = _case(_json(tmp_path, c8, c16), "microstrip")
+    ratios = ms["scaling"]["ratios"]
+    direct = next(
+        r
+        for r in ratios
+        if r["core_budget"] == 16
+        and (r["solver"], r["against"]) == ("palace:mumps", "gfem:direct")
+    )
+    assert direct["work"] == pytest.approx(41.0 / 30.5, rel=1e-5)
+    assert direct["pairing"] == "different nodes"
+    iterative = next(
+        r
+        for r in ratios
+        if r["core_budget"] == 8
+        and (r["solver"], r["against"]) == ("palace:pmg", "gfem:bddc")
+    )
+    assert iterative["pairing"] == "different nodes"
+    assert "equal achieved error" in iterative["caveat"]
+    assert direct["caveat"] is None
+
+
+def test_a_node_class_change_restarts_the_scaling_line(tmp_path):
+    c8 = _budget_campaign(tmp_path, 8, _on("standard", factor=3.0))
+    c16 = _budget_campaign(tmp_path, 16, _on("highmem"))
+    c32 = _budget_campaign(tmp_path, 32, _on("highmem", factor=0.5, nodes=2))
+    ms = _case(_json(tmp_path, c8, c16, c32), "microstrip")
+    p8, p16, p32 = (_point(ms, "gfem:direct", b) for b in (8, 16, 32))
+    assert "restart" not in p8
+    assert p16["restart"] == "line restarts: node class standard -> highmem"
+    assert (p16["speedup"], p16["efficiency"]) == (1.0, 1.0)
+    assert p16["baseline"] == 16
+    # against c16 on highmem, not c8 on standard: S = 2, E = 16 * 2 / 32 = 1
+    assert p32["speedup"] == pytest.approx(2.0)
+    assert p32["efficiency"] == pytest.approx(1.0)
+    assert "restart" not in p32
+    assert "TCP between nodes" in _point(ms, "palace:mumps", 32)["labels"]
+    assert "TCP between nodes" not in p32["labels"]
+
+
+def test_one_budget_on_two_node_classes_restarts_the_line_once(tmp_path):
+    c8 = _budget_campaign(tmp_path, 8, _on("standard", factor=2.0))
+    c16 = _budget_campaign(tmp_path, 16, _on("standard"))
+    c16h = _budget_campaign(tmp_path, 16, _on("highmem"), tag="-hm")
+    ms = _case(_json(tmp_path, c8, c16, c16h), "microstrip")
+    line = next(s for s in ms["scaling"]["solvers"] if s["solver"] == "gfem:direct")
+    order = [(p["core_budget"], p["node_class"]) for p in line["points"]]
+    assert order == [(8, "standard"), (16, "standard"), (16, "highmem")]
+    restarts = [p.get("restart") for p in line["points"]]
+    assert restarts == [None, None, "line restarts: node class standard -> highmem"]
+
+
+def test_scaling_section_and_figure(tmp_path):
+    c8 = _budget_campaign(tmp_path, 8, _slower(1.6))
+    c16 = _budget_campaign(tmp_path, 16)
+    out = _report(tmp_path, str(c8), str(c16), "--no-figures", name="scal")
+    index = (out / "index.md").read_text()
+    section = index.index("### microstrip scaling across core budgets")
+    assert index.index("### microstrip at c16 (standard, 1 node)") < section
+    end = index.index("## lcavity")
+    assert section < end
+    text = index[section:end]
+    assert "$S(c) = T(c_0)/T(c)$" in text
+    assert "| palace:mumps / gfem:direct |" in text
+    assert "different nodes" in text
+    pytest.importorskip("matplotlib")
+    figs = _report(tmp_path, str(c8), str(c16), name="scalfig")
+    assert (figs / "fig-microstrip-scaling.svg").is_file()
+    assert "](fig-microstrip-scaling.svg)" in (figs / "index.md").read_text()
+
+
+def test_a_single_budget_keeps_the_case_keys(fixture_report):
+    assert sorted(_case(fixture_report[0], "microstrip")) == [
+        "accuracy",
+        "accuracy_floor",
+        "campaigns",
+        "cells",
+        "comparison",
+        "error_cost",
+        "error_items",
+        "figures",
+        "kind",
+        "layouts",
+        "name",
+        "notes",
+        "phases",
+        "pins",
+        "reference",
+        "rescore_flag",
+        "rescored_against",
+        "snapshot",
+        "structural",
+    ]
+    assert "### microstrip at" not in fixture_report[1]
 
 
 # --- figures ----------------------------------------------------------------------
