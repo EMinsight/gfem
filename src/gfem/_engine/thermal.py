@@ -51,7 +51,7 @@ import scipy.sparse.csgraph
 from gfem._adjoint.solve_vjp import adjoint_tolerance, input_kind
 from gfem._boundaries import Convection, FixedTemperature, HeatFlux
 from gfem._checks import is_traced
-from gfem._engine import quadrature
+from gfem._engine import heat_flow, quadrature
 from gfem._engine.cache import Entry, _alone, retain_budget
 from gfem._engine.coefficients import element_values, p0, surface_p0
 from gfem._engine.domain import boundary_region
@@ -87,7 +87,13 @@ from gfem.model import Model
 from gfem.options import SolverOptions
 from gfem.problems import SteadyThermal, TransientThermal
 from gfem.results import Field, SteadyThermalResult, TransientThermalResult
-from gfem.thermal import Trace, _FieldTrace, _tet_volumes, _triangle_areas
+from gfem.thermal import (
+    Trace,
+    _FieldTrace,
+    _HeatTrace,
+    _tet_volumes,
+    _triangle_areas,
+)
 
 __all__ = ["Loads", "SteadyThermalRule", "ThermalRule", "TransientThermalRule"]
 
@@ -930,6 +936,214 @@ class SteadyThermalRule(ThermalRule):
 
 # --- transient ------------------------------------------------------------------
 
+
+@dataclasses.dataclass(frozen=True)
+class _HeatRow:
+    r"""A heat-out trace's weights on one model (`gfem.Trace.heat_out`).
+
+    The trace at :math:`t_n` is
+
+    .. math::
+
+        Q_n = \left[ a^T S_n - e^T (u_n - u_0) + t_n Q_0
+            + \sigma_n P \right] / d
+
+    for the running quadrature :math:`S_n` of the rise (`Stepper.quadrature`),
+    :math:`a` the balance's temperature weights, :math:`e` the side's heat
+    capacity (`gfem._engine.heat_flow.stored`), :math:`Q_0` the source-free
+    temperature's flow, :math:`\sigma_n = \sum_{m<n} s_m\, dt` the
+    waveform's integral, :math:`P` the side's source power at scale 1 and
+    :math:`d` the slab thickness (per length) or 1.
+
+    Attributes:
+        index: The trace's column among the problem's traces.
+        balance: The side's steady `gfem._engine.heat_flow.Balance`.
+        stored: :math:`e` per DOF, J/K.
+        divisor: :math:`d`.
+    """
+
+    index: int
+    balance: heat_flow.Balance
+    stored: np.ndarray
+    divisor: float
+
+    def power(self, density: np.ndarray, face: np.ndarray | None) -> float:
+        """:math:`P`: the sources' power the side reads, W."""
+        out = float(self.balance.source @ density)
+        if face is not None:
+            out += float(self.balance.face_source @ face)
+        return out
+
+    def background(self, t0: np.ndarray) -> float:
+        """:math:`Q_0`: the source-free temperature's flow, W."""
+        return self.balance.flow(t0, np.zeros(len(self.balance.source)))
+
+
+class _HeatRecorder:
+    """The heat-out traces of one forward: the running sums of `_HeatRow`."""
+
+    def __init__(  # noqa: PLR0917 - one forward's state, built once
+        self,
+        rows: list[_HeatRow],
+        stepper: Stepper,
+        dt: float,
+        t0: np.ndarray,
+        start: np.ndarray,
+        density: np.ndarray,
+        face: np.ndarray | None,
+    ) -> None:
+        self.rows = rows
+        self.quadrature = stepper.quadrature
+        self.dt = dt
+        self.start = start
+        #: S_n and sigma_n
+        self.integral = np.zeros_like(start)
+        self.sigma = 0.0
+        self.temperature = [r.balance.temperature for r in rows]
+        self.background = [r.background(t0) for r in rows]
+        self.power = [r.power(density, face) for r in rows]
+
+    def step(
+        self, u: np.ndarray, stage: np.ndarray | None, nxt: np.ndarray, load: float
+    ) -> None:
+        """Add step ``u -> nxt`` (``load``: its scale times dt) to the sums."""
+        if not self.rows:
+            return
+        b0, b1, b2 = self.quadrature
+        dt = self.dt
+        increment = b0 * u + b2 * nxt
+        if stage is not None:
+            increment = increment + b1 * stage
+        self.integral = self.integral + dt * increment
+        self.sigma += load
+
+    def record(self, out: np.ndarray, u: np.ndarray, t: float) -> None:
+        """Write each trace's ``Q`` at time ``t`` (state ``u``) into ``out``."""
+        for row, a, q0, p in zip(
+            self.rows, self.temperature, self.background, self.power, strict=True
+        ):
+            value = a @ self.integral - row.stored @ (u - self.start)
+            out[row.index] = (value + t * q0 + self.sigma * p) / row.divisor
+
+
+class _HeatAdjoint:
+    r"""The heat-out traces' cotangents in a reverse sweep (`_HeatRow`).
+
+    With :math:`c_n` a trace's cotangent over its divisor and :math:`G_m =
+    \sum_{n>m} c_n` (the cotangent of step m's increment of :math:`S`):
+
+    - ``u_n`` reads ``-e c_n`` (``+e G_0`` for ``u_0``), ``dt b2 a G_n-1`` as
+      the end of step n - 1 and ``dt b0 a G_n`` as the start of step n;
+    - step m's stage reads ``dt b1 a G_m``;
+    - T0 reads ``a sum_n c_n t_n``, step m's scale ``dt P G_m`` and the
+      densities ``(sum_n c_n sigma_n)`` times the balance's source weights;
+    - the explicit conductivity pair is the balance's on ``sum_n c_n (S_n +
+      t_n T0)`` and the capacity pair ``-e`` on ``sum_n c_n (u_n - u_0)``,
+      both summed as the sweep goes (`accumulate`).
+    """
+
+    def __init__(
+        self,
+        rows: list[_HeatRow],
+        cotangents: np.ndarray,
+        stepper: Stepper,
+        dt: float,
+        scales: np.ndarray,
+    ) -> None:
+        self.rows = rows
+        self.quadrature = stepper.quadrature
+        self.dt = dt
+        steps = len(scales)
+        self.c = [cotangents[:, r.index] / r.divisor for r in rows]
+        # G_m = sum_{n > m} c_n, m = 0 .. steps - 1
+        self.after = [np.cumsum(c[::-1])[::-1][1:] for c in self.c]
+        self.a = [r.balance.temperature for r in rows]
+        self.sigma = np.concatenate([[0.0], np.cumsum(scales * dt)])
+        self.time = np.arange(steps + 1) * dt
+        ndof = len(rows[0].stored) if rows else 0
+        self.integral = [np.zeros(ndof) for _ in rows]
+        self.change = [np.zeros(ndof) for _ in rows]
+
+    def direct(self, n: int, ndof: int) -> np.ndarray:
+        """dQ/du_n, contracted with the cotangents."""
+        out = np.zeros(ndof)
+        b0, _, b2 = self.quadrature
+        steps = len(self.time) - 1
+        for row, c, after, a in zip(self.rows, self.c, self.after, self.a, strict=True):
+            out -= (c[n] if n else -after[0]) * row.stored
+            weight = 0.0
+            if n >= 1:
+                weight += b2 * after[n - 1]
+            if n < steps:
+                weight += b0 * after[n]
+            out += self.dt * weight * a
+        return out
+
+    def stage(self, n: int, ndof: int) -> np.ndarray:
+        """dQ/d(stage of step n), contracted with the cotangents."""
+        out = np.zeros(ndof)
+        b1 = self.quadrature[1]
+        for after, a in zip(self.after, self.a, strict=True):
+            out += self.dt * b1 * after[n] * a
+        return out
+
+    def source_free(self, ndof: int) -> np.ndarray:
+        """dQ/dT0, contracted with the cotangents."""
+        out = np.zeros(ndof)
+        for c, a in zip(self.c, self.a, strict=True):
+            out += (c @ self.time) * a
+        return out
+
+    def scale(self, n: int, density: np.ndarray, face: np.ndarray | None) -> float:
+        """dQ/d(the scale of step n), contracted with the cotangents."""
+        return sum(
+            self.dt * after[n] * row.power(density, face)
+            for row, after in zip(self.rows, self.after, strict=True)
+        )
+
+    def densities(self) -> tuple[np.ndarray, np.ndarray]:
+        """dQ/d(density) and dQ/d(face density), contracted with the cotangents."""
+        volume = sum(
+            (c @ self.sigma) * row.balance.source
+            for row, c in zip(self.rows, self.c, strict=True)
+        )
+        face = sum(
+            (c @ self.sigma) * row.balance.face_source
+            for row, c in zip(self.rows, self.c, strict=True)
+        )
+        return np.asarray(volume), np.asarray(face)
+
+    def accumulate(
+        self, n: int, u: np.ndarray, stage: np.ndarray | None, nxt: np.ndarray
+    ) -> None:
+        """Add step n (``u -> nxt``) to the explicit pairs' fields."""
+        b0, b1, b2 = self.quadrature
+        increment = b0 * u + b2 * nxt
+        if stage is not None:
+            increment = increment + b1 * stage
+        for k, (c, after) in enumerate(zip(self.c, self.after, strict=True)):
+            self.integral[k] += self.dt * after[n] * increment
+            self.change[k] += c[n + 1] * nxt
+            if n == 0:
+                self.change[k] -= after[0] * u
+
+    def pairs(
+        self, rule: TransientThermalRule, model: Model, t0: np.ndarray, properties: set
+    ) -> list[Integrated]:
+        """The explicit conductivity and capacity pairs."""
+        out = []
+        for row, c, s, du in zip(
+            self.rows, self.c, self.integral, self.change, strict=True
+        ):
+            if "thermal_conductivity" in properties:
+                right = s + (c @ self.time) * t0
+                out.append(row.balance.conductivity(rule, model, right))
+            if properties & {"mass_density", "specific_heat"}:
+                side = row.balance.side
+                out.append(heat_flow.capacity_pair(rule, model, side, du))
+        return out
+
+
 #: TR-BDF2's stage fraction (Bank et al. 1985): L-stable, both stages on one matrix.
 GAMMA = 2.0 - np.sqrt(2.0)
 
@@ -974,6 +1188,20 @@ class Stepper:
     def _solve(self, rhs: np.ndarray) -> np.ndarray:
         rhs = np.where(self.free, rhs, 0.0)
         return self.solve(self.handle, rhs)
+
+    @property
+    def quadrature(self) -> tuple[float, float, float]:
+        """The weights of ``u_n``, the stage and ``u_n+1`` in a step's time integral.
+
+        Over one step, ``int u dt = dt (b0 u_n + b1 stage + b2 u_n+1)`` is
+        what the scheme's own stage equations integrate: TR-BDF2 (sqrt(2)/4,
+        sqrt(2)/4, 1 - sqrt(2)/2), as its two stages give with c1 - c0 = 1;
+        theta (1 - theta, 0, theta).
+        """
+        if self.scheme == "tr_bdf2":
+            half = 1.0 / (2.0 * (2.0 - GAMMA))
+            return half, half, GAMMA / 2.0
+        return 1.0 - self.theta, 0.0, self.theta
 
     def stage(self, u: np.ndarray, load: np.ndarray) -> np.ndarray:
         """TR-BDF2's trapezoid stage from ``u_n`` (recomputed by a reverse sweep)."""
@@ -1039,6 +1267,11 @@ class TransientThermalRule(ThermalRule):
             self._check_loose(model)
         for name, trace in problem.traces.items():
             _check_trace(model.mesh, self.regions, name, trace)
+        if any(isinstance(t, _HeatTrace) for t in problem.traces.values()):
+            # the sides are topology: built here on the imported nodes to
+            # raise before the solve
+            still = model.replace(mesh=self._still())
+            self._sides(still)
 
     def _check_loose(self, model: Model) -> None:
         """A sinkless part needs a uniform start and no heat flux.
@@ -1169,10 +1402,39 @@ class TransientThermalRule(ThermalRule):
         n = self._ndof()
         on_t, on_rise = np.zeros((len(traces), n)), np.zeros((len(traces), n))
         for k, trace in enumerate(traces):
+            if isinstance(trace, _HeatTrace):
+                continue  # recorded from the balance (`_heat_rows`)
             on_t[k], on_rise[k] = trace_rows(
                 trace, mesh, self._layout(), self._field, n
             )
         return on_t, on_rise
+
+    def _sides(self, model: Model) -> dict[int, heat_flow.Side]:
+        """The heat-out traces' sides by column (`gfem._engine.heat_flow.side`).
+
+        Raises:
+            RegionNotFoundError: A named region does not exist.
+            ValueError: A side does not fit (see `gfem.heat_flow`).
+        """
+        out = {}
+        for k, trace in enumerate(self.spec.traces.values()):
+            if isinstance(trace, _HeatTrace):
+                who = f"Trace.{trace._name}"  # noqa: SLF001
+                out[k] = heat_flow.side(self, model, trace._side, who=who)  # noqa: SLF001
+        return out
+
+    def _heat_rows(self, model: Model) -> list[_HeatRow]:
+        """The heat-out traces' weights on ``model`` (`_HeatRow`)."""
+        thickness = self._mesh.section_thickness
+        return [
+            _HeatRow(
+                index=k,
+                balance=heat_flow.balance(self, model, side),
+                stored=heat_flow.stored(self, model, side),
+                divisor=1.0 if thickness is None else float(thickness),
+            )
+            for k, side in self._sides(model).items()
+        ]
 
     # --- the forward ----------------------------------------------------------
 
@@ -1297,13 +1559,20 @@ class TransientThermalRule(ThermalRule):
             offset = on_t @ t0
             traces = np.empty((steps + 1, len(rows)))
             traces[0] = rows @ u + offset
+            heat = _HeatRecorder(
+                self._heat_rows(model), stepper, dt, t0, u, density, face
+            )
+            heat.record(traces[0], u, 0.0)
             rises = np.empty((len(kept), len(t0)))
             slot = {int(n): k for k, n in enumerate(kept)}
             if 0 in slot:
                 rises[slot[0]] = u
             for n in range(steps):
-                u, _ = stepper.step(u, scales[n] * source)
+                start = u
+                u, stage = stepper.step(u, scales[n] * source)
                 traces[n + 1] = rows @ u + offset
+                heat.step(start, stage, u, dt * scales[n])
+                heat.record(traces[n + 1], u, (n + 1) * dt)
                 if n + 1 in slot:
                     rises[slot[n + 1]] = u
                 if layout != "none" and (n + 1) % stride == 0 and n + 1 < steps:
@@ -1385,12 +1654,15 @@ class TransientThermalRule(ThermalRule):
         states, the conductivity and heat-capacity pairs of every step are
         contracted as the sweep goes (`Integrated`). The cotangents on T0
         (the source-free output, the traces' temperature part and a
-        uniform start's ``-ubar_0``) add the T0 pair. ``wanted`` holds the
-        wanted input kinds.
+        uniform start's ``-ubar_0``) add the T0 pair. A heat-out trace reads
+        the states, the stages, T0, the densities and the scales directly,
+        and k and rho c_p through its explicit pairs (`_HeatAdjoint`).
+        ``wanted`` holds the wanted input kinds.
         """
         spec = self.spec
         loads = self._loads()
         wanted = wanted or frozenset()
+        self._explicit = {}
         properties = {k[2] for k in wanted if k[0] == "material"}
         trace_kinds = {k for k in wanted if k[0] == "problem"} - SOURCE_KINDS
         steps = spec.steps
@@ -1408,7 +1680,7 @@ class TransientThermalRule(ThermalRule):
 
         def direct(n: int) -> np.ndarray:
             """dJ/du_n read directly (traces and kept fields)."""
-            out = rows.T @ ct_tr[n]
+            out = rows.T @ ct_tr[n] + heat.direct(n, rows.shape[1])
             if ct_kept is not None and n in slot:
                 out = out + np.asarray(ct_kept[slot[n]], dtype=float)
             return out
@@ -1430,6 +1702,9 @@ class TransientThermalRule(ThermalRule):
             stepper = self._stepper(model, built, space, dt, handle=handle)
             if handle is None:
                 entry.handle = KeptHandle(stepper.handle)
+            heat = _HeatAdjoint(self._heat_rows(model), ct_tr, stepper, dt, scales)
+            density = np.asarray(loads.density)
+            face_density = None if face is None else np.asarray(face)
             terms = self.terms(model, nodes=False) if properties else []
             pair_terms = [
                 t for t in terms if any(p in t.derivatives for p in properties)
@@ -1465,7 +1740,7 @@ class TransientThermalRule(ThermalRule):
                     g = (2.0 - GAMMA) * GAMMA
                     c1, c0 = 1.0 / g, (1.0 - GAMMA) ** 2 / g
                     mu2 = adjoint(ubar)
-                    mu1 = adjoint(m * c1 * (c @ mu2))
+                    mu1 = adjoint(m * c1 * (c @ mu2) + heat.stage(n, len(ubar)))
                     back = (
                         2.0 * m * (c @ mu1)
                         - stepper.handle.apply(mu1)
@@ -1527,8 +1802,10 @@ class TransientThermalRule(ThermalRule):
                     if n == steps - 1:
                         summed += np.outer(nxt, ct_tr[steps])
                     summed += np.outer(u, ct_tr[n])
+                if properties and heat.rows:
+                    heat.accumulate(n, u, stage, nxt)
                 load += scales[n] * d
-                per_step[n] = source @ d
+                per_step[n] = source @ d + heat.scale(n, density, face_density)
                 ubar = np.where(free, back, 0.0) + direct(n)
             if batch:
                 flush()
@@ -1542,7 +1819,7 @@ class TransientThermalRule(ThermalRule):
                 pairs.append(Integrated(integrals))
             if needs_t0:
                 t0 = entry.fields["source_free"]
-                ct0 = on_t.T @ ct_tr.sum(axis=0)
+                ct0 = on_t.T @ ct_tr.sum(axis=0) + heat.source_free(space.ndof)
                 if "source_free" in cotangents:
                     ct0 = ct0 + np.asarray(cotangents["source_free"], dtype=float)
                 if spec.initial_temperature is not None:
@@ -1558,8 +1835,18 @@ class TransientThermalRule(ThermalRule):
                     self._explicit = self._trace_gradients(
                         loads, summed, ct_tr.sum(axis=0), t0
                     )
+            if properties and heat.rows:
+                t0 = entry.fields["source_free"]
+                pairs += heat.pairs(self, model, t0, properties)
             if wanted & LOAD_KINDS:
                 pairs.append(LoadField(space, load, order, domain, length_power=2))
+                if heat.rows:
+                    # the heat traces read the densities directly: added to
+                    # the load pass's values (`gfem._adjoint.solve_vjp`)
+                    volume, on_faces = heat.densities()
+                    self._explicit[LOAD_KIND] = volume
+                    if FACE_LOAD_KIND in wanted:
+                        self._explicit[FACE_LOAD_KIND] = on_faces
         explicit = getattr(self, "_explicit", {})
         if ("problem", ".scales") in wanted:
             which = np.searchsorted(starts, np.arange(steps), side="right") - 1
@@ -1670,10 +1957,29 @@ def _capacity(
 def _check_trace(mesh: Mesh, regions: tuple[str, ...], name: str, trace: Trace) -> None:
     """Raise for a mean trace over an unknown region or one outside the domain.
 
+    And for a heat-out trace on the other mesh kind: the twin names it.
+
     Raises:
         RegionNotFoundError: The region is not in the mesh.
-        ValueError: It is a surface, or holds no element of the domain.
+        ValueError: It is a surface, or holds no element of the domain; a
+            heat-out trace on the wrong mesh kind.
     """
+    if isinstance(trace, _HeatTrace):
+        section = mesh.section_thickness is not None
+        if trace._per_length and not section:  # noqa: SLF001
+            raise ValueError(
+                f"TransientThermal trace {name!r}: Trace.heat_out_per_length records "
+                "a cross-section's heat in J/m, but this mesh is 3D: use "
+                "gfem.Trace.heat_out (J)."
+            )
+        if section and not trace._per_length:  # noqa: SLF001
+            raise ValueError(
+                f"TransientThermal trace {name!r}: Trace.heat_out records a 3D "
+                "result's heat in J, but this mesh is a cross-section, whose slab "
+                "thickness is a numerical choice: use "
+                "gfem.Trace.heat_out_per_length (J/m)."
+            )
+        return
     if not isinstance(trace, _FieldTrace):
         return
     for region in trace._regions:  # noqa: SLF001

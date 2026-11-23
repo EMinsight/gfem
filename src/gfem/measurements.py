@@ -1117,7 +1117,7 @@ def heat_flow(
     Raises:
         TypeError: ``result`` is not a `gfem.SteadyThermalResult` (a
             transient result records its heat with a heat-out trace,
-            ``gfem.Trace.heat_out``), ``model`` is not a `gfem.Model`, or
+            `gfem.Trace.heat_out`), ``model`` is not a `gfem.Model`, or
             ``side`` is neither names nor a callable.
         RegionNotFoundError: A named region does not exist.
         ValueError: The result was solved on a cross-section mesh (use

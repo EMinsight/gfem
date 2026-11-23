@@ -817,8 +817,9 @@ class Trace:
     thermo-optic weights) is fixed when it is built, and its weights on the
     solve's degrees of freedom are private, built at solve time.
 
-    Build one with `Trace.point` (the temperature at a point, K) or
-    `Trace.mean` (the exact mean temperature over volume regions, K);
+    Build one with `Trace.point` (the temperature at a point, K),
+    `Trace.mean` (the exact mean temperature over volume regions, K) or
+    `Trace.heat_out` (the heat that has left a side since t = 0, J);
     `gfem.ThermoOpticShift.trace` gives the thermo-optic phase per length
     of a section, a functional of the rise (rad/m).
 
@@ -896,6 +897,118 @@ class Trace:
                 f"sequence of names, got {region!r}."
             ) from None
         return _FieldTrace(_regions=regions)
+
+    @staticmethod
+    def heat_out(side: Any) -> Trace:
+        r"""The heat that has left ``side`` since t = 0, in J.
+
+        The transient counterpart of `gfem.heat_flow`, with the same
+        ``side`` vocabulary: volume regions, a predicate on the element
+        centroids, or surface names. At every grid time :math:`t_n` it
+        records
+
+        .. math::
+
+            Q(t_n) = -\psi^T \left[ C (u_n - u_0) + K \int_0^{t_n} T\, dt
+                - \int_0^{t_n} F\, dt \right],
+
+        the residual of the discrete heat equation with its capacity term,
+        tested with the side's vertex hat functions. The time integral of
+        the temperature uses the stepping scheme's own quadrature on its
+        stages, so the balance is exact for the stepped temperature: the
+        heat out of every boundary surface plus the heat stored equals the
+        source energy to round-off, under every time scheme. ``Q(0) = 0``.
+
+        ``np.diff(Q) / dt`` is the exact average flow over each step, in W,
+        and tends to the steady `gfem.heat_flow` once the temperature has
+        settled. `gfem.rise_time` and `gfem.time_constant` measure a
+        temperature, not a cumulative heat: take ``np.diff`` first.
+
+        Differentiable with respect to the thermal conductivity, the mass
+        density and the specific heat, the heat sources' amounts and the
+        waveform's scales. A cross-section result records
+        `Trace.heat_out_per_length` instead.
+
+        Args:
+            side: The volume region name(s) or predicate
+                ``inside(centroids) -> bool``, or the surface name(s), as
+                for `gfem.heat_flow` (checked when the problem is solved).
+
+        Raises:
+            TypeError: ``side`` is neither names nor a callable.
+        """
+        return _HeatTrace(_side=_heat_side(side, "Trace.heat_out"))
+
+    @staticmethod
+    def heat_out_per_length(side: Any) -> Trace:
+        """The heat that has left ``side`` per unit length of a cross-section, J/m.
+
+        `Trace.heat_out` on a cross-section mesh
+        (`gfem.Mesh.from_gmsh_cross_section`),
+        divided by the slab thickness. A 3D result records `Trace.heat_out`
+        instead.
+
+        Args:
+            side: As for `Trace.heat_out`.
+
+        Raises:
+            TypeError: ``side`` is neither names nor a callable.
+        """
+        side = _heat_side(side, "Trace.heat_out_per_length")
+        return _HeatTrace(_side=side, _per_length=True, unit="J/m")
+
+
+def _heat_side(side: Any, who: str) -> Any:
+    """``side`` as a tuple of names or a predicate.
+
+    Raises:
+        TypeError: Neither names nor a callable.
+    """
+    if isinstance(side, str):
+        return (side,)
+    if callable(side):
+        return side
+    if isinstance(side, Sequence) and side and all(isinstance(s, str) for s in side):
+        return tuple(dict.fromkeys(side))
+    raise TypeError(
+        f"{who}'s side must be a region or surface name, a sequence of names or a "
+        f"predicate on element centroids, got {side!r}."
+    )
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class _HeatTrace(Trace):
+    """The heat out of a side since t = 0 (`Trace.heat_out`).
+
+    The solve builds its weights from the model (`gfem._engine.thermal`);
+    it has no value on a single temperature.
+    """
+
+    #: The side: names or a centroid predicate.
+    _side: Any = ()
+    #: Per length of a cross-section (J/m) rather than 3D (J).
+    _per_length: bool = False
+    unit: str = "J"
+
+    @property
+    def _name(self) -> str:
+        return "heat_out_per_length" if self._per_length else "heat_out"
+
+    def _sample(self, temperature: Field | None, rise: Field) -> jax.Array:
+        del temperature, rise
+        raise TypeError(
+            f"{self!r} is a heat balance over the time steps, recorded by the "
+            "solve: it has no value on a single temperature."
+        )
+
+    def __repr__(self) -> str:
+        side = self._side
+        if isinstance(side, tuple) and len(side) == 1:
+            side = side[0]
+        return f"Trace.{self._name}({side!r})"
+
+
+register_fields(_HeatTrace, ())
 
 
 @dataclasses.dataclass(frozen=True, eq=False)

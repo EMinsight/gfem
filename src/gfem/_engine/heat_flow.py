@@ -66,7 +66,7 @@ if TYPE_CHECKING:
     from gfem.mesh import Mesh
     from gfem.model import Model
 
-__all__ = ["Balance", "Side", "balance", "side"]
+__all__ = ["Balance", "Side", "balance", "capacity_pair", "side", "stored"]
 
 #: A side as `gfem.heat_flow` takes it: names, or a centroid predicate.
 SideSpec = tuple[str, ...] | Callable[[np.ndarray], np.ndarray]
@@ -422,6 +422,44 @@ def balance(rule: ThermalRule, model: Model, weights: Side) -> Balance:
         face_source=face_source,
         constant=scale * float(flux),
     )
+
+
+def stored(rule: ThermalRule, model: Model, weights: Side) -> np.ndarray:
+    r"""The side's heat capacity per DOF, J/K: :math:`s\, C_E \psi`.
+
+    The heat stored in the side since t = 0 is ``stored @ (u_n - u_0)``, so
+    a transient heat out is the balance's flow less it (the capacity term
+    of the residual, on the same elements and with the same weight).
+    """
+    space, built = rule._space(model)  # noqa: SLF001
+    form = ngs.BilinearForm(space, symmetric=True)
+    form += rule._capacity_term(model, built, space, where=weights.elements)  # noqa: SLF001
+    form.Assemble()
+    return built.scale * _apply(form, weights.inner)
+
+
+def capacity_pair(
+    rule: ThermalRule, model: Model, weights: Side, du: np.ndarray
+) -> Integrated:
+    """The explicit pair of ``-stored @ du`` per tetrahedron, for the material pass.
+
+    ``d/dc_e (-stored @ du) = -s int_e psi du`` for the capacity coefficient
+    ``c = rho c_p scale ** 2`` (`gfem._engine.thermal.TransientThermalRule.terms`)
+    on the side's elements.
+    """
+    space, built = rule._space(model)  # noqa: SLF001
+    pair = FieldPair(
+        space=space,
+        left=weights.inner[:, None],
+        right=np.asarray(du, dtype=float)[:, None],
+        weights={"capacity": 1.0},
+        order=rule.options.order,
+        domain=rule._domain(model, built),  # noqa: SLF001
+    )
+    values = element_integrals(model, [pair], rule.terms(model, nodes=False))
+    per = np.asarray(values.get("capacity", np.zeros(len(weights.elements))))
+    per = np.where(weights.elements, per, 0.0)
+    return Integrated({"capacity": -built.scale * per})
 
 
 def _apply(form: ngs.BilinearForm, x: np.ndarray) -> np.ndarray:
