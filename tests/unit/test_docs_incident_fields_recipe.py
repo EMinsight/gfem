@@ -60,9 +60,6 @@ LIMITS = {
     "Beams not too tight": (
         "test_a_beam_too_tight_at_one_frequency_is_refused_before_factorization",
     ),
-    "One process per solve": (
-        "test_frequency_workers_do_not_take_incident_fields_yet",
-    ),
     "Material gradients": (
         "test_node_coordinates_are_not_differentiable_with_an_incident_field",
         "test_a_design_touching_the_layer_is_not_differentiable",

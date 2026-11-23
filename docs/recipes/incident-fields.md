@@ -245,8 +245,6 @@ it found and the remedy.
 - **Beams not too tight**: a beam with $k w_0 < 0.2$ (a waist under about
   $\lambda/30$) at a solved frequency cannot be normalized to 1 W and is
   refused.
-- **One process per solve**: frequency workers do not take incident fields
-  yet.
 - **Material gradients**: gradients flow to the scatterer's material fields;
   the node coordinates, and a design region touching the truncation, are not
   differentiable with an incident field.
