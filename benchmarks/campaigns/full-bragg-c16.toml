@@ -1,0 +1,20 @@
+# Campaign series: bragg at core budget 16 on a standard node,
+# the whole layout grid, 3 repeats, no palace:pmg (its observation cell is
+# full-bragg-pmg-c16). gfem petsc-mumps and bddc are planned once as refused.
+schema = 1
+cases = ["bragg"]
+solvers = ["gfem:direct", "gfem:petsc-mumps", "gfem:bddc", "palace:mumps"]
+layouts = ["best"]
+core_budget = 16
+repeats = 3
+node_class = "standard"
+anchor_tolerance = 1e-8
+
+[jobs]
+group = "case"
+
+[wall_cap_s]
+bragg = 120
+
+[stacks.wheels.versions]
+palace = "0.19.0"

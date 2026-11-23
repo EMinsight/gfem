@@ -273,7 +273,11 @@ class Adapter(Protocol):
 
 
 def srun_argv(layout: Layout, mpi: str) -> tuple[str, ...]:
-    """The one srun line of every suite launch."""
+    """The one srun line of every suite launch.
+
+    ``--mem=0`` gives the step the whole node's memory: a core budget limits cores
+    only.
+    """
     return (
         "srun",
         "--exact",
@@ -281,6 +285,7 @@ def srun_argv(layout: Layout, mpi: str) -> tuple[str, ...]:
         str(layout.ranks),
         "-c",
         str(layout.threads),
+        "--mem=0",
         "--cpu-bind=cores",
         "--distribution=block:block",
         "--hint=nomultithread",
