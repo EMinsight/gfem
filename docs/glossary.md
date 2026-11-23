@@ -799,6 +799,26 @@ Emitted power
   The time-averaged power a {term}`point dipole` gives the field
   (`DrivenResult.emitted_power`): what it radiates plus what nearby lossy
   materials absorb.
+
+Bulk power
+  The {term}`emitted power` of the same {term}`point dipole` in the unbounded,
+  lossless material at its position: the closed form the {term}`Purcell
+  factor` divides by.
+
+Purcell factor
+  The {term}`emitted power` of a {term}`point dipole` over its {term}`bulk
+  power` (`gfem.purcell_factor`): how much the structure around it speeds up its
+  emission.
+
+Beta factor
+  The share of a {term}`point dipole`'s {term}`emitted power` that goes into one
+  guided mode: the squared modulus of its {term}`port wave` at that mode's port,
+  over the emitted power.
+
+Radiative efficiency
+  The share of a {term}`point dipole`'s {term}`emitted power` that leaves the
+  model (through ports, a {term}`perfectly matched layer` or absorbing faces)
+  rather than being absorbed by lossy materials.
 ```
 
 ## Thermal

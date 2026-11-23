@@ -43,3 +43,7 @@ orphan: true
 - {doc}`distributed-solve`
 - {doc}`frequency-sweep`
 - {doc}`gsim`
+
+## Free space
+
+- {doc}`point-dipoles`

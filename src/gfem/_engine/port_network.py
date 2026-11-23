@@ -173,7 +173,10 @@ def split_cotangent(
     columns undefined and adds nothing.
 
     Args:
-        ct: ``(n_ports, width)``, the cotangent on S (de-embedded).
+        ct: ``(n_ports, width)``, the cotangent on S (de-embedded), its
+            columns the excited ports'; a driven block's source columns may
+            follow (the cotangent on their port waves, de-embedded on the
+            row only).
         d: ``(n_ports,)``, the de-embedding at this frequency: ``ct`` is
             scaled by ``d_i d_{columns[j]}``.
         columns: The excited ports' indices.
@@ -182,7 +185,10 @@ def split_cotangent(
             each; turns reciprocity on.
     """
     columns = list(columns)
-    ct = np.asarray(ct) * d[:, None] * d[columns][None, :]
+    # a source column after the excited ports' is de-embedded on its row only
+    scale = np.ones(np.shape(ct)[1], complex)
+    scale[: len(columns)] = d[columns]
+    ct = np.asarray(ct) * d[:, None] * scale[None, :]
     shape = (functional.shape[0], ct.shape[1])
     free = np.zeros(shape, complex)
     loads = np.zeros(shape, complex)

@@ -343,6 +343,50 @@ EXPECTED |= {
     for kind in [("nodes",)] + [("material", "slab", p) for p in ALL_PROPERTIES]
 }
 
+# Point dipoles in the air of the layer's line (beside its wave port, every
+# column kept): an electric dipole of real moment, and a magnetic one. The
+# emitted power, the dipole's port waves and both columns' kept coefficients
+# differentiate like S in the slab's electromagnetic properties and, for the
+# electric dipole, in the node coordinates (its load moves with its element);
+# a magnetic dipole's load has no node derivative, so every output raises in
+# the nodes. The port mode, z_ref and the fields' omega are constants, and
+# the thermal properties exact zeros.
+_DIPOLE_DEPENDENT = (
+    "s.values",
+    "port_waves",
+    "emitted_power.d",
+    *(f"e_fields.{k}.coefficients" for k in (0, 1)),
+)
+for _problem, _nodes in (
+    ("driven_dipole", GRADIENT),
+    ("driven_magnetic_dipole", RAISES),
+):
+    EXPECTED |= {
+        (_problem, out, kind): (
+            (
+                _nodes
+                if _nodes == RAISES
+                else GRADIENT
+                if out in _DIPOLE_DEPENDENT or out.endswith("mesh.nodes")
+                else ZERO
+            )
+            if kind == ("nodes",)
+            else GRADIENT
+            if out in _DIPOLE_DEPENDENT and kind[2] in EM_PROPERTIES
+            else ZERO
+        )
+        for out in (
+            *_DIPOLE_DEPENDENT,
+            "s.z_ref",
+            *(f"port_modes.p1.{leaf}" for leaf in WAVE_PORT_MODE_OUTPUTS),
+            *(
+                f"e_fields.{k}.{leaf}"
+                for k in (0, 1)
+                for leaf in ("mesh.nodes", "omega")
+            ),
+        )
+        for kind in [("nodes",)] + [("material", "slab", p) for p in ALL_PROPERTIES]
+    }
 # A plane wave on a dielectric cube in an air box wrapped in a layer, no port:
 # the kept field differentiates in the cube's electromagnetic properties (the
 # load reads the background, never the cube); S is empty. The node
@@ -1101,6 +1145,22 @@ def planewave_case(tmp_path_factory):
     return model, gfem.Driven(frequency=pml_cases.F0, sources=wave, keep_fields=True)
 
 
+#: In the line's air, off the faces of its grid (um).
+DIPOLE_POSITION = np.array([0.07, 0.13, 0.3]) * 1e-6
+
+
+def _dipole_cases(model):
+    electric = gfem.ElectricDipole("d", position=DIPOLE_POSITION, moment=(0, 1e-28, 0))
+    magnetic = gfem.MagneticDipole("d", position=DIPOLE_POSITION, moment=(1e-20, 0, 0))
+    return {
+        name: (model, gfem.Driven(pml_cases.F0, keep_fields=True, sources=dipole))
+        for name, dipole in (
+            ("driven_dipole", electric),
+            ("driven_magnetic_dipole", magnetic),
+        )
+    }
+
+
 @pytest.fixture(scope="module")
 def eigen_pml_case(tmp_path_factory):
     # the leaky guide, weakly lossy, its core a material field (a gentle ramp,
@@ -1513,6 +1573,7 @@ def cases(model, driven_model, eigen_model, wave_cases, request):
             request.getfixturevalue("pml_model"),
             gfem.Driven(frequency=pml_cases.F0),
         ),
+        **_dipole_cases(request.getfixturevalue("pml_model")),
         "eigenmode_pml": request.getfixturevalue("eigen_pml_case"),
         "driven_planewave": request.getfixturevalue("planewave_case"),
         **request.getfixturevalue("sheet_cases"),

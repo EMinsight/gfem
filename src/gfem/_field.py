@@ -100,6 +100,10 @@ class Field:
     #: A kept field of an incident-field column: what rebuilds its incident
     #: part (`gfem._incident.IncidentPart`); ``None`` for any other field.
     _incident: IncidentPart | None = None
+    #: The point dipoles whose load solved this field, ``(name, position in
+    #: m)`` each: a reader of the discrete equations' residual
+    #: (`gfem.power_flow`) must keep its element layer off them.
+    _point_sources: tuple[tuple[str, tuple[float, float, float]], ...] = ()
 
     def __post_init__(self) -> None:
         """Check the descriptor against the mesh."""
@@ -387,6 +391,8 @@ class ReducedFields(Sequence[Field]):
     support: tuple[str, ...]
     _excluded: tuple[tuple[int, int], ...] = ()
     _reference_frequency: float | None = None
+    #: Per field, the point dipoles whose load solved it (`Field`).
+    _point_sources: tuple[tuple[tuple[str, tuple[float, float, float]], ...], ...] = ()
 
     def __post_init__(self) -> None:
         """Hold the arrays as JAX arrays with matching shapes."""
@@ -431,6 +437,7 @@ class ReducedFields(Sequence[Field]):
             _excluded=self._excluded,
             _reduced=True,
             _reference_frequency=self._reference_frequency,
+            _point_sources=self._point_sources[k] if self._point_sources else (),
         )
 
     def __iter__(self) -> Iterator[Field]:

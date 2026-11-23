@@ -59,7 +59,7 @@ def test_a_design_guess_is_kept_for_a_bddc_sweep_on_one_process_only(monkeypatch
     )
     guess = _builder().design_guess(system)
     assert guess.disc is disc
-    assert guess.key == ("design guess", ("p1",), None, None)
+    assert guess.key == ("design guess", ("p1",), 0, None, None)
     assert guess.match == ("space", "free", None, 1e-8)
     inert = [
         _builder(linear=SimpleNamespace(kind="direct", tolerance=1e-8)),

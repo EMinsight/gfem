@@ -1085,8 +1085,7 @@ def _check_model_sources(problem: Any, model: Any) -> None:
     Raises:
         ValueError: A source is named like a port of the model, or an
             incident field has no background stack.
-        NotImplementedError: The model has a periodic pair, or a source is
-            a dipole (not solved yet).
+        NotImplementedError: The model has a periodic pair.
     """
     if not isinstance(problem, Driven) or not problem.sources:
         return
@@ -1110,11 +1109,6 @@ def _check_model_sources(problem: Any, model: Any) -> None:
                 "stack, but the model has none: give Model(background=...), the "
                 "medium the field solves (a gfem.Material when homogeneous)."
             )
-    if any(isinstance(source, DIPOLES) for source in problem.sources):
-        raise NotImplementedError(
-            "This gfem declares Driven(sources=...) but cannot solve source "
-            "columns yet; solve the ports alone."
-        )
 
 
 def _polarization(value: Any, owner: str) -> None:
