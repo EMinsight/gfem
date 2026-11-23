@@ -94,6 +94,7 @@ verification
 
 api/index
 conventions
+modes-and-ports
 glossary
 ```
 

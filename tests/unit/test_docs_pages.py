@@ -127,7 +127,12 @@ def test_a_file_name_is_not_a_gfem_name():
 
 def test_the_pages_are_found():
     names = {_id(page) for page in PAGES}
-    assert {"get-started.md", "capabilities.md", "verification.md"} <= names
+    assert {
+        "get-started.md",
+        "modes-and-ports.md",
+        "capabilities.md",
+        "verification.md",
+    } <= names
     assert {f"recipes/{name}.md" for name in RECIPES} <= names
 
 
@@ -158,6 +163,11 @@ def test_the_recipes_page_follows_the_site_tree():
         listed = re.findall(r"\{doc\}`([^`]+)`", dp.section(page, heading))
         tree = dp.toctree_entries(index, caption=heading)
         assert [f"recipes/{name}" for name in listed] == tree, heading
+
+
+def test_the_modes_and_ports_page_is_in_the_site_tree():
+    tree = dp.toctree_entries((dp.DOCS / "index.md").read_text(encoding="utf-8"))
+    assert "modes-and-ports" in tree
 
 
 def test_get_started_links_every_tutorial():
@@ -229,6 +239,12 @@ USER_TERMS = (
     "Physical region",
     "PML mode",
     "Clearance",
+    "Port mode",
+    "Bound mode",
+    "Leaky mode",
+    "Resonant mode",
+    "Quasi-normal mode",
+    "Excited port",
 )
 
 
