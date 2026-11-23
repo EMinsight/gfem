@@ -258,3 +258,41 @@ def test_power_flow_refuses_a_side_in_the_layer_of_an_incident_column(lossy):
         gfem.power_flow(total, ("scat", "pml"), model=model)
     with pytest.raises(ValueError, match=r"PML layer region 'pml'"):
         gfem.power_flow(total, lambda c: c[:, 0] > 0.9e-6, model=model)
+
+
+def _port_walls(c):
+    """A wave port patch on the x = 0 wall, the x walls, the y walls."""
+    if abs(c[0]) < 1e-9 and 0.25 < c[1] < 0.75 and 0.25 < c[2] < 0.75:
+        return "feed"
+    if abs(c[0]) < 1e-9 or abs(c[0] - 1) < 1e-9:
+        return "xwall"
+    return ""
+
+
+def _away_from_the_port(points, frequency):
+    """Along +z, E along x, zero up to x = 0.4 um: none on the port face."""
+    k = 2 * np.pi * frequency / pc.C0
+    x = points[:, 0] * 1e6
+    window = np.where(x > 0.3, np.sin(np.clip(x - 0.3, 0, 0.1) * 5 * np.pi) ** 2, 0)
+    return (np.exp(-1j * k * points[:, 2]) * window)[:, None] * np.array([1, 0, 0])
+
+
+def test_a_side_reaching_a_wave_port_is_refused(tmp_path):
+    # the load's rows on a wave port's face hold the port's terms
+    path = pc.box(tmp_path / "p.msh", ("-z", "+z"), cells=4, surface=_port_walls)
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh(path),
+        materials={"air": AIR, "pml": AIR},
+        boundaries=[gfem.PEC("xwall")],
+        ports=[gfem.WavePort("o1", "feed")],
+        pml=gfem.PML("pml"),
+        background=AIR,
+    )
+    wave = gfem.IncidentField("f", _away_from_the_port)
+    result = _solve(model, wave, excite=())
+    total = result.e_field(F, "f")
+    near_the_port = lambda c: (c[:, 0] < 0.5e-6) & (c[:, 2] > 0) & (c[:, 2] < 1e-6)  # noqa: E731
+    with pytest.raises(ValueError, match=r"reaches wave port 'o1''s surface 'feed'"):
+        gfem.power_flow(total, near_the_port, model=model)
+    with pytest.raises(ValueError, match=r"reaches wave port 'o1''s surface 'feed'"):
+        gfem.cross_sections(result, "f", model=model, intensity=1.0)

@@ -32,6 +32,7 @@ LIMITS = {
         "test_a_scatterer_in_the_truncation_layer_is_refused",
     ),
     "Lossless backgrounds": ("test_a_lossy_background_is_not_measured",),
+    "Wave ports outside the side": ("test_a_side_reaching_a_wave_port_is_refused",),
     "Power flow of an incident column": (
         "test_power_flow_refuses_the_incident_part",
         "test_power_flow_refuses_a_side_in_the_layer_of_an_incident_column",

@@ -278,6 +278,7 @@ def test_cross_sections_read_no_scatterer_material(cube):
 
 def test_corrected_power_flow_by_the_absorber_permittivity(cube):
     model = cube
+
     def objective(eps):
         moved, result = _solve(model, eps)
         total = result.e_field(F, "tm")

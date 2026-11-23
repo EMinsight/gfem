@@ -201,6 +201,10 @@ its intensity and the frequency are static.
   {py:obj}`gfem.power_flow`.
 - **Lossless backgrounds**: in a lossy background the absorption would hold
   the background's own loss of the incident field, so it is refused.
+- **Wave ports outside the side**: the incident load next to a wave port
+  holds the port's terms, so a side (or the region inside the truncation
+  layer) whose elements reach a wave port's face is refused; keep the port at
+  least one element outside it, or read the scattered field.
 - **Power flow of an incident column**: {py:obj}`gfem.power_flow` refuses the
   incident part, which balances no load, and a side holding layer elements,
   where the kept field is the scattered one.
