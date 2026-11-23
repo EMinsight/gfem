@@ -1011,6 +1011,7 @@ def wave_guide(
     height: float = WR90[1],
     lumped: float | None = None,
     moving: float | None = None,
+    left_port: bool = False,
     nx: int = 6,
     ny: int = 2,
     nz_per_mm: float = 0.5,
@@ -1020,8 +1021,9 @@ def wave_guide(
     ``lumped``: the plane (mm) of a layer interface that holds surface
     ``"lumped"``, a strip across the guide's height over its two middle
     cells in x; ``moving``: the plane of a layer interface named
-    ``"moving"`` (for `gfem.shape.boundary_morph`). The other surfaces are
-    ``"walls"``.
+    ``"moving"`` (for `gfem.shape.boundary_morph`); ``left_port``: the
+    plane z = 0 is surface ``"portl"`` instead of a short. The other
+    surfaces are ``"walls"``.
     """
     a = WR90[0]
     tops = np.cumsum([t for _, _, t in layers])
@@ -1043,6 +1045,8 @@ def wave_guide(
     def surface(c):
         if abs(c[2] - length) < 1e-9:
             return "port"
+        if left_port and abs(c[2]) < 1e-9:
+            return "portl"
         if lumped is not None and abs(c[2] - lumped) < 1e-9:
             return "lumped" if abs(c[0] - a / 2) < cell else ""
         if moving is not None and abs(c[2] - moving) < 1e-9:
