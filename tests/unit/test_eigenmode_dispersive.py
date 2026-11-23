@@ -169,8 +169,8 @@ def operators(monkeypatch):
     seen = []
     build = eigen_rule.EigenmodeRule.operator
 
-    def spy(self, op, sigma):
-        eop = build(self, op, sigma)
+    def spy(self, op, sigma, **kwargs):
+        eop = build(self, op, sigma, **kwargs)
         seen.append(eop)
         return eop
 
