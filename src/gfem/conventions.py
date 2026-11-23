@@ -466,9 +466,9 @@ the normal from above is :math:`\theta = \pi - 30°`).
   wall, it must stay at most :math:`10^{-3}` of its peak over the physical
   region: where a scatterer (an element whose region's material differs
   from the background stack at its height, a material field always, or a
-  sheet, conductor or lumped face) meets the layer or an absorbing face, on a wave port face, and as
-  :math:`|n\times E|` on an exterior PEC wall or :math:`\eta|n\times H|`
-  on an exterior PMC wall (named, or by default).
+  sheet, conductor or lumped face) meets the layer or an absorbing face, on
+  a wave port face, and as :math:`|n\times E|` on an exterior PEC wall or
+  :math:`\eta|n\times H|` on an exterior PMC wall (named, or by default).
 - Port waves: in a source column every port is terminated in its reference
   impedance, and ``DrivenResult.port_waves`` is the outgoing pseudo-wave
   :math:`b` at each port, in √W as a column of S: on a real ``z_ref``,
