@@ -22,6 +22,7 @@ from gfem._materials import (  # noqa: E402
     PermittivityLaw,
 )
 from gfem.errors import (  # noqa: E402
+    AntiBoundRootWarning,
     DegenerateModeError,
     DeviceMemoryWarning,
     DeviceUnavailableError,
@@ -140,6 +141,7 @@ __all__ = [
     "PMC",
     "PML",
     "Absorbing",
+    "AntiBoundRootWarning",
     "Conductor",
     "Convection",
     "DCConduction",

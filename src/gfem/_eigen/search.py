@@ -3,11 +3,12 @@
 `ModeSearch.find` runs the seed solves at the target on an injected eigen
 solver (`EigenSolver`: ARPACK or SLEPc, chosen by the eigenmode rule), each
 attempt asking for twice as many pairs as the last; refines the seeds
-nearest the target (`gfem._eigen.refine`), drops static, mirror and
-longitudinal pairs, refines far seeds again at their own Ritz value and
-twins of a degenerate pair the seed solve missed; checks that no nearly
-converged pair is skipped; polishes the isolated modes
-(`gfem._eigen.adjoint.polish`); and snaps a lossless problem's ``k`` real.
+nearest the target (`gfem._eigen.refine`), drops static, mirror,
+longitudinal and below-cutoff port pairs (`ModeSearch.below_cutoff`),
+refines far seeds again at their own Ritz value and twins of a degenerate
+pair the seed solve missed; checks that no nearly converged pair is
+skipped; polishes the isolated modes (`gfem._eigen.adjoint.polish`); and
+snaps a lossless problem's ``k`` real.
 It raises `EigenmodeConvergenceError` with the reasons, and returns the
 modes, the guard mode and the gap set as `FoundModes`.
 """
@@ -118,12 +119,15 @@ class FoundModes:
         reach: The modes' mode-field reach (`ModeReach`): their cluster
             labels at ``SolverOptions.cluster_rtol``, the failed polishes
             and which modes are isolated, on the snapped ``k``.
+        anti_bound: The ``k`` of the converged roots dropped below a wave
+            port mode's cutoff (`ModeSearch.below_cutoff`), each once.
     """
 
     modes: list[Refined]
     guard: Refined | None
     gaps: GapSet
     reach: ModeReach
+    anti_bound: tuple[complex, ...] = ()
 
     @property
     def ks(self) -> list[complex]:
@@ -162,6 +166,11 @@ class ModeSearch:
             over every rank (`gfem._engine.eigen.layer_energy`): the
             selection drops a mode of a perfectly matched layer
             (`_in_layer`). ``None`` without a layer.
+        below_cutoff: Whether a requested wave port mode is below its
+            cutoff at a real wavenumber per file unit: the selection drops
+            a converged root there that is real (an anti-bound state, its
+            field growing into the port's guide) or grows in time (its
+            mirror), `_anti_bound`. ``None`` without wave ports.
     """
 
     n_modes: int
@@ -175,6 +184,7 @@ class ModeSearch:
     refine: Callable[..., Refined] = refine
     polish: Callable[..., Refined] = polish
     layer_energy: Callable[[np.ndarray], np.ndarray] | None = None
+    below_cutoff: Callable[[float], bool] | None = None
 
     def find(
         self,
@@ -228,6 +238,8 @@ class ModeSearch:
         # the k of the pairs the attempt's selection dropped as modes of the
         # layer
         dropped: list[complex] = []
+        # the roots dropped below a port mode's cutoff, over every attempt
+        anti_bound: list[complex] = []
         for _ in range(_ATTEMPTS):
             if eop.shift != sigma:
                 # a retry is a seed solve: at the target, on a
@@ -241,7 +253,13 @@ class ModeSearch:
                 bound = err
                 k, vectors = err.k, err.vectors
             modes, failed, found, pool, ritz = self._select(
-                eop, k, vectors, sigma, guard=guard, dropped=dropped
+                eop,
+                k,
+                vectors,
+                sigma,
+                guard=guard,
+                dropped=dropped,
+                anti_bound=anti_bound,
             )
             if len(modes) == n_modes or failed or bound is not None:
                 break
@@ -274,7 +292,7 @@ class ModeSearch:
         reach = ModeReach.of(
             [m.k for m in modes], guard_k, gaps, unpolished, self.cluster_rtol
         )
-        return FoundModes(modes, found, gaps, reach)
+        return FoundModes(modes, found, gaps, reach, tuple(anti_bound))
 
     def _polish(
         self,
@@ -316,6 +334,7 @@ class ModeSearch:
         *,
         guard: bool = False,
         dropped: list[complex],
+        anti_bound: list[complex],
     ) -> tuple[list[Refined], list[Refined], Refined | None, np.ndarray, np.ndarray]:
         """Refine the seeds nearest ``sigma`` until ``n_modes`` distinct ones.
 
@@ -341,7 +360,9 @@ class ModeSearch:
         mode, or the nearest mode cut off when there is one. It is
         best-effort: none is found when no remaining seed converges to a
         mode. A seed or converged pair of a perfectly matched layer
-        (`_in_layer`) is dropped, its ``k`` recorded in ``dropped``.
+        (`_in_layer`) is dropped, its ``k`` recorded in ``dropped``; a
+        converged root below a wave port mode's cutoff (`_anti_bound`) is
+        dropped, its ``k`` recorded in ``anti_bound``.
 
         Returns:
             The accepted modes, nearest ``sigma`` first (at most
@@ -394,6 +415,7 @@ class ModeSearch:
                 and not self._longitudinal(op, twin)
                 and not _in_span(twin, accepted, window, layout=layout)
                 and not self._in_layer(twin.k, twin.x, dropped)
+                and not self._anti_bound(twin, anti_bound)
             ):
                 return twin
             return None
@@ -428,6 +450,7 @@ class ModeSearch:
                     )
                     or self._longitudinal(op, mode)
                     or (mode.converged and self._in_layer(mode.k, mode.x, dropped))
+                    or self._anti_bound(mode, anti_bound)
                 )
             ):
                 # a frozen seed rougher than TRUSTED, refined on a shift nearer
@@ -440,6 +463,7 @@ class ModeSearch:
                     and mode.k.real > _STATIC * sigma
                     and not self._longitudinal(op, mode)
                     and not self._in_layer(mode.k, mode.x, dropped)
+                    and not self._anti_bound(mode, anti_bound)
                 ):
                     kept = distinct(mode)
                     if kept is not None:
@@ -452,6 +476,7 @@ class ModeSearch:
                 mode.k.real <= _STATIC * sigma
                 or self._longitudinal(op, mode)
                 or (mode.converged and self._in_layer(mode.k, mode.x, dropped))
+                or self._anti_bound(mode, anti_bound)
             ):
                 continue
             if not mode.converged:
@@ -491,6 +516,27 @@ class ModeSearch:
         if not self.laws or not mode.converged:
             return False
         return op.curl_ratio(mode.k, mode.x) <= _LONGITUDINAL
+
+    def _anti_bound(self, mode: Refined, anti_bound: list[complex]) -> bool:
+        """Whether ``mode`` is a converged root below a wave port mode's cutoff.
+
+        On the outgoing branch, below a requested port mode's cutoff at ``Re
+        k`` (`below_cutoff`), a real root (to the duplicate window) is an
+        anti-bound state and one with ``Im k < 0`` its mirror, growing in
+        time; neither is a resonance. A root there that decays in time is
+        one, and is kept. Its ``k`` joins ``anti_bound`` unless one there is
+        within 1e-3. Never without wave ports.
+        """
+        if self.below_cutoff is None or not mode.converged:
+            return False
+        k = mode.k
+        if abs(k.imag) > self._window() * abs(k) and k.imag > 0:
+            return False
+        if not self.below_cutoff(k.real):
+            return False
+        if not any(_close(k, other, 1e-3) for other in anti_bound):
+            anti_bound.append(complex(k))
+        return True
 
     def _in_layer(self, k: complex, x: np.ndarray, dropped: list[complex]) -> bool:
         """Whether the pair ``(k, x)`` is a mode of the layer.
