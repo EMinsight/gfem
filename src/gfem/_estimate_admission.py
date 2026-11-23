@@ -18,6 +18,7 @@ from typing import Any
 import numpy as np
 
 from gfem import _mpi, _pml
+from gfem._boundaries import first_wave_port
 from gfem._checks import is_staging, is_traced
 from gfem._domain import physics_of
 from gfem._dual_supply import _adjoint_ports, _excited
@@ -30,7 +31,6 @@ from gfem.model import (
     Impedance,
     LumpedPort,
     Model,
-    WavePort,
     surfaces_of,
 )
 from gfem.options import SolverOptions
@@ -643,7 +643,7 @@ def _check_wave_port_mode(model: Model, what: str) -> None:
     No estimate of an eigenfrequency carrying a port term (``omega``, ``q``
     or an objective of the mode) is verified; ``what`` names the estimator.
     """
-    port = next((p for p in model.ports if isinstance(p, WavePort)), None)
+    port = first_wave_port(model.ports)
     if port is not None:
         raise MeshRefinementUnsupportedError(
             "lossy eigenmode",

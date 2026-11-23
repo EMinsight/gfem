@@ -825,6 +825,11 @@ def wave_port_surfaces(ports: Iterable[Port]) -> dict[str, tuple[WavePort, ...]]
     return {surface: tuple(group) for surface, group in surfaces.items()}
 
 
+def first_wave_port(ports: Iterable[Port]) -> WavePort | None:
+    """The first wave port among ``ports`` in model order, ``None`` without one."""
+    return next((p for p in ports if isinstance(p, WavePort)), None)
+
+
 def lead_port(group: Sequence[WavePort]) -> WavePort:
     """The wave port with the smallest ``mode`` on a surface.
 

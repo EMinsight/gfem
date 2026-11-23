@@ -339,13 +339,13 @@ def _refuse_eigenmode(model: Any, problem: Any, options: Any) -> None:
 
     Bloch before periodic, since a wave vector needs a pair.
     """
-    from gfem.model import WavePort
+    from gfem._boundaries import first_wave_port
 
     if problem.wave_vector is not None:
         refuse_feature("bloch")
     if len(model._periodic) > 1:  # noqa: SLF001
         refuse_feature("periodic")
-    wave = next((p for p in model.ports if isinstance(p, WavePort)), None)
+    wave = first_wave_port(model.ports)
     if wave is not None:
         message = _REFUSALS["eigenmode_wave_port"]
         raise DistributedUnsupportedError(
