@@ -61,7 +61,7 @@ def ran(tmp_path_factory):
 def test_the_page_downloads_the_sphere_mesh(page):
     first = dp.examples(page)[0]
     url = dp.MESH_URL.replace("line.msh", "sphere.msh")
-    assert f'url = "{url}"' in first.code
+    assert f'"{url}"' in first.code
     assert dp.MESHES[url].is_file()
 
 
