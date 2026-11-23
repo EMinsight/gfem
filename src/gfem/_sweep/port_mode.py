@@ -641,6 +641,10 @@ class _Greedy:
 
     # --- exact solves -----------------------------------------------------------
 
+    def candidates_at(self, j: int) -> _Candidates:
+        """The exact solve's candidates at grid index ``j``, in rank order."""
+        return self._solve(j)
+
     def _solve(self, j: int) -> _Candidates:
         space, mode = self.space, max(self.modes)
         a, b = space.pencil.at(self.k0[j])
@@ -1089,6 +1093,17 @@ class _Reduced:
                 norm = np.linalg.norm(w)
                 if norm > _NEW_DIRECTION * scale:
                     self.v = np.column_stack([self.v, w / norm])
+        self._project()
+
+    @classmethod
+    def on(cls, space: ModeSpace, v: np.ndarray) -> _Reduced:
+        """The model on a sweep's fixed basis ``v`` (real, orthonormal columns)."""
+        out = cls(space)
+        out.v = np.asarray(v, float)
+        out._project()
+        return out
+
+    def _project(self) -> None:
         products = [m @ self.v for _, _, m in self._pieces]
         self._r = np.linalg.qr(np.concatenate(products, axis=1), mode="r")
         self._red = [self.v.T @ p for p in products]
@@ -1100,6 +1115,21 @@ class _Reduced:
     def lift(self, y: np.ndarray) -> np.ndarray:
         return self.v @ y
 
+    def matrices(self, theta: Sequence[complex]) -> tuple[np.ndarray, np.ndarray]:
+        """The reduced ``A`` and ``B`` with the scalars ``theta`` of the pencil's slots.
+
+        With the slots' k0-derivatives, ``dA/dk0`` and ``dB/dk0``.
+        """
+        n = self.size
+        ar = np.zeros((n, n), complex)
+        br = np.zeros((n, n), complex)
+        for (is_b, k, _), red in zip(self._pieces, self._red, strict=True):
+            if is_b:
+                br += theta[k] * red
+            else:
+                ar += theta[k] * red
+        return ar, br
+
     def solve(
         self, k0: float, k_max: float, refs: list[np.ndarray]
     ) -> list[tuple[complex, np.ndarray, float]]:
@@ -1110,13 +1140,7 @@ class _Reduced:
         """
         theta = self.space.pencil.theta(k0)
         n = self.size
-        ar = np.zeros((n, n), complex)
-        br = np.zeros((n, n), complex)
-        for (is_b, k, _), red in zip(self._pieces, self._red, strict=True):
-            if is_b:
-                br += theta[k] * red
-            else:
-                ar += theta[k] * red
+        ar, br = self.matrices(theta)
         lam, vecs = scipy.linalg.eig(ar, br)
         beta = np.sqrt(-lam + 0j)
         ok = np.isfinite(lam) & (beta.real <= k_max * (1 + 1e-6))
@@ -1157,6 +1181,16 @@ class _Reduced:
                 ax += block
         den = np.linalg.norm(ax) + abs(lam) * np.linalg.norm(bx)
         return float(np.linalg.norm(ax - lam * bx) / den) if den > 0 else math.inf
+
+
+def propagating_modes(space: ModeSpace, frequency: float, mode: int) -> int:
+    """How many of the ``mode`` lowest-ranked modes propagate at ``frequency``.
+
+    One exact solve, with the sweep's candidate rules: at least ``mode`` means
+    mode ``mode`` in rank order is above its cutoff.
+    """
+    sweep = _Greedy(space, np.array([float(frequency)]), [mode], 1.0, [])
+    return min(len(sweep.candidates_at(0).lam), mode)
 
 
 def _propagates(beta: np.ndarray, k_max: float | np.ndarray) -> np.ndarray:

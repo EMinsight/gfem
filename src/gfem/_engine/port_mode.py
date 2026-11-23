@@ -42,9 +42,9 @@ import scipy.sparse as sp
 
 from gfem._boundaries import Conductor
 from gfem._engine import quadrature
-from gfem._engine.dispersion import susceptibility
+from gfem._engine.dispersion import d_susceptibility, susceptibility
 from gfem._engine.stretch import stretch_factors
-from gfem._engine.terms import surface_impedance
+from gfem._engine.terms import surface_impedance, surface_impedance_slope
 from gfem._linalg.base import free_mask
 from gfem._port_section import PortSection
 
@@ -64,15 +64,43 @@ class Pencil:
         b: Likewise for ``B``.
         extra: The further scalars of k0 (one per conductor edge group, then
             one per law and one per law with absorbing edges).
+        slopes: The k0-derivative of each of ``extra``, analytic in a
+            complex k0, or ``None`` for a scalar that is not analytic (an
+            absorbing edge beside a law, which reads Re eps); empty when the
+            problem gives none (a line port's).
     """
 
     a: tuple[sp.csr_matrix, ...]
     b: tuple[sp.csr_matrix, ...]
     extra: tuple[Callable[[float], complex], ...] = ()
+    slopes: tuple[Callable[[complex], complex] | None, ...] = ()
 
     def theta(self, k0: float) -> tuple[complex, ...]:
         """The scalar of each matrix at wavenumber ``k0`` (per local unit)."""
         return (1.0, -(k0**2), 1j * k0, *(f(k0) for f in self.extra))
+
+    def d_theta(self, k0: complex) -> tuple[complex, ...]:
+        """The k0-derivative of each scalar of `theta`, at a complex ``k0``.
+
+        Raises:
+            NotImplementedError: A scalar is not analytic in k0 (an absorbing
+                edge beside a permittivity law), or has no slope.
+        """
+        if len(self.slopes) != len(self.extra):
+            raise NotImplementedError(
+                "This port mode problem gives no frequency slope of its "
+                "material scalars, so it has no value at a complex frequency."
+            )
+        if any(f is None for f in self.slopes):
+            raise NotImplementedError(
+                "An absorbing edge beside a permittivity law in a wave port's "
+                "cross-section takes the real part of the law's permittivity, "
+                "which is not analytic in the frequency, so the port term has no "
+                "value at a complex frequency (an eigenmode). Move the absorbing "
+                "edge off the law's region, or give that region a constant "
+                "permittivity."
+            )
+        return (0.0, -2 * k0, 1j, *(f(k0) for f in self.slopes if f is not None))
 
     def at(self, k0: float) -> tuple[sp.csr_matrix, sp.csr_matrix]:
         """``A`` and ``B`` at wavenumber ``k0`` (per local length unit)."""
@@ -105,6 +133,22 @@ def law_theta(law: Any, scale: float) -> Callable[[float], complex]:
         return -(k0**2) * susceptibility(law, omega_of(k0, scale))
 
     return theta
+
+
+def law_slope(law: Any, scale: float) -> Callable[[complex], complex]:
+    r"""The k0-derivative of `law_theta`, :math:`-2k_0\chi - k_0^2\chi'(\omega)\,c/s`.
+
+    ``s`` is ``scale``, so :math:`d\omega/dk_0 = c/s`.
+    """
+    rate = scipy.constants.c / scale
+
+    def slope(k0: complex) -> complex:
+        omega = k0 * rate
+        return -2 * k0 * susceptibility(law, omega) - k0**2 * rate * d_susceptibility(
+            law, omega
+        )
+
+    return slope
 
 
 def law_absorbing_theta(
@@ -199,7 +243,7 @@ class PortModeSpace:
             [c["eps_nn"] * en * vn * dx],
             [sigma_scale * c["sigma_nn"] * en * vn * dx, abc_n],
         ]
-        extra = []
+        extra, slopes = [], []
         fill = _edge_fill(self.mesh, self.section)
         for g, (item, factor) in enumerate(self.section.impedance_terms):
             ds = ngs.ds(
@@ -211,6 +255,7 @@ class PortModeSpace:
                 forms_a.append([edge_t])
                 forms_b.append([edge_n])
                 extra.append(self._conductor_theta(item, factor))
+                slopes.append(self._conductor_slope(item, factor))
                 continue
             for slot, weight in self._impedance_weights(item):
                 forms_a[slot].append(weight * edge_t)
@@ -222,6 +267,7 @@ class PortModeSpace:
             forms_a.append([inside * et * vt * dx])
             forms_b.append([inside * en * vn * dx])
             extra.append(law_theta(law, self.section.scale))
+            slopes.append(law_slope(law, self.section.scale))
             if absorbing_law is not None and (absorbing_law == g).any():
                 ds = ngs.ds(
                     f"law{g}", intrules={ngs.SEGM: ngs.IntegrationRule(ngs.SEGM, q)}
@@ -231,9 +277,10 @@ class PortModeSpace:
                 rows = np.asarray(index) == g
                 mu = 1 / float(self.section.nu_nn[rows][0].real)
                 extra.append(law_absorbing_theta(law, mu, self.section.scale))
+                slopes.append(None)  # reads Re eps: not analytic
         a = tuple(self._matrix(f) for f in forms_a)
         b = tuple(self._matrix(f) for f in forms_b)
-        return Pencil(a=a, b=b, extra=tuple(extra))
+        return Pencil(a=a, b=b, extra=tuple(extra), slopes=tuple(slopes))
 
     def _conductor_theta(
         self, item: Conductor, factor: float
@@ -247,6 +294,25 @@ class PortModeSpace:
             return 1j * k0 * Z0 / surface_impedance(sigma, h, omega_of(k0, scale))
 
         return theta
+
+    def _conductor_slope(
+        self, item: Conductor, factor: float
+    ) -> Callable[[complex], complex]:
+        r"""The k0-derivative of `_conductor_theta`, :math:`\theta (1 - s) / k_0`.
+
+        :math:`s = (\omega / Z_s)\,dZ_s/d\omega`
+        (`gfem._engine.terms.surface_impedance_slope`).
+        """
+        scale = self.section.scale
+        h = None if item.thickness is None else factor * item.thickness
+        sigma = item.conductivity
+
+        def slope(k0: complex) -> complex:
+            omega = k0 * scipy.constants.c / scale
+            z = surface_impedance(sigma, h, omega)
+            return 1j * Z0 / z * (1 - surface_impedance_slope(sigma, h, omega))
+
+        return slope
 
     def _impedance_weights(self, item) -> list[tuple[int, float]]:
         """(pencil slot, weight) of an `Impedance` edge's R, L and C."""

@@ -59,7 +59,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import ngsolve as ngs
@@ -92,6 +92,7 @@ __all__ = [
     "SweptSurface",
     "WavePortCoupling",
     "deembedding",
+    "face_vectors",
     "line_robin_pieces",
     "port_mode_sweeps",
     "trace_dofs",
@@ -444,15 +445,7 @@ def wave_port_couplings(
         lead = lead_port(group)
         section = modes.section
         r, reaction = columns["r"], columns["reaction"]
-        idx3, idx2 = trace_dofs(model, section, modes, built, space)
-        free = free_mask(space.FreeDofs(), space.ndof)
-        idx3, idx2 = idx3[free[idx3]], idx2[free[idx3]]
-        # never behind a test on len(idx3): the exchange is collective
-        writers = np.zeros(space.ndof)
-        writers[idx3] = 1.0
-        writers = np.real(layout.exchange(writers))
-        vectors = np.zeros((space.ndof, r.shape[1]), r.dtype)
-        vectors[idx3] = r[idx2] / writers[idx3, None]
+        vectors = face_vectors(model, modes, built, space, layout)(r)
         scale = section.scale
         phis = [_phi(sweep, scale) for sweep in sweeps]
         dual, r_kk = _dual(reaction, [s.coords for s in sweeps], phis)
@@ -501,6 +494,44 @@ def wave_port_couplings(
         )
         out.append(PortSurfaceCoupling(piece, vectors, reaction, tuple(ports)))
     return out
+
+
+def face_vectors(
+    model: Model,
+    modes: ModeSpace,
+    built: EngineMesh,
+    space: ngs.FESpace,
+    layout: DofLayout = ONE_PROCESS,
+) -> Callable[[np.ndarray], np.ndarray]:
+    """How a surface's 2D columns become its 3D ``vectors``.
+
+    Collective under ranks (once, here); the returned map is local.
+
+    Args:
+        model: The model.
+        modes: The surface's discrete port mode problem.
+        built: The model's engine mesh.
+        space: The 3D driven space.
+        layout: How ``space`` lies across ranks.
+
+    Returns:
+        The map from ``r`` ``(n_free_2d, 2 m)`` (`port_columns`) to ``vectors``
+        ``(ndof, 2 m)``, zero on the 3D space's fixed DOFs.
+    """
+    idx3, idx2 = trace_dofs(model, modes.section, modes, built, space)
+    free = free_mask(space.FreeDofs(), space.ndof)
+    idx3, idx2 = idx3[free[idx3]], idx2[free[idx3]]
+    # never behind a test on len(idx3): the exchange is collective
+    writers = np.zeros(space.ndof)
+    writers[idx3] = 1.0
+    writers = np.real(layout.exchange(writers))
+
+    def lift(r: np.ndarray) -> np.ndarray:
+        vectors = np.zeros((space.ndof, r.shape[1]), r.dtype)
+        vectors[idx3] = r[idx2] / writers[idx3, None]
+        return vectors
+
+    return lift
 
 
 def line_robin_pieces(
