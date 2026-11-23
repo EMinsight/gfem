@@ -966,62 +966,18 @@ def dissipated_power(field: Field, *, model: Model) -> dict[str, jax.Array]:
             coordinates or the field's ``omega`` are differentiated, or the
             field is one of an adaptive sweep (`gfem.ReducedFields`).
     """
-    from gfem._field import Field
-    from gfem.model import Model
-
-    refuse_entry(getattr(field, "mesh", None), "dissipated_power")
-    if not isinstance(field, Field):
-        raise TypeError(
-            f"dissipated_power needs a gfem.Field, got {type(field).__name__}."
-        )
-    if field._communicator is not None:  # noqa: SLF001
-        _mpi.refuse_feature("dissipated_power")
-    if not isinstance(model, Model):
-        raise TypeError(
-            f"dissipated_power needs model= a gfem.Model, got {type(model).__name__}."
-        )
-    if _objective.recording() is not None:
-        raise MeshRefinementUnsupportedError(
-            "dissipated_power",
-            "The objective reads gfem.dissipated_power, whose error is not "
-            "estimated in this version: refine on the S-parameters or on "
-            "gfem.power_flow instead.",
-        )
-    from gfem._engine.dispersion import refuse_blends
-
-    refuse_blends(model, "gfem.dissipated_power")
-    _check_time_harmonic(
-        field, "dissipated_power", static="solve a gfem.Driven problem"
-    )
-    if jnp.iscomplexobj(field.omega):
-        raise ValueError(
-            "dissipated_power needs a driven field with a real omega: an "
-            "eigenmode has no drive, so its amplitude and its heat are "
-            "undefined; solve a driven problem at the mode's frequency."
-        )
-    if not field.is_complex:
-        raise ValueError(
-            "dissipated_power needs a complex phasor field, got real "
-            "coefficients: solve a gfem.Driven problem."
-        )
     from gfem._engine.heat import sheet_surfaces
+    from gfem._engine.power_flow import _check_support
     from gfem._heat import loss_matrices
+    from gfem._pml import physical_regions
+
+    check_heat_field(field, model, "dissipated_power")
 
     sheets = sheet_surfaces(model)
     mesh = model.mesh
-    for name in sheets:
-        if name in mesh.volumes:
-            raise ValueError(
-                f"{name!r} names both a volume region and a sheet surface, so "
-                "dissipated_power would give two values under one key: rename "
-                "one of them in the mesh."
-            )
     matrices = loss_matrices([field], model)
     tets = matrices["tetrahedra_re"][:, 0, 0]
     faces = matrices["triangles_re"][:, 0, 0]
-    from gfem._engine.power_flow import _check_support
-    from gfem._pml import physical_regions
-
     support = _check_support(field, model)
     out = {}
     for region in physical_regions(mesh.volumes, model.pml):
@@ -1032,6 +988,65 @@ def dissipated_power(field: Field, *, model: Model) -> dict[str, jax.Array]:
     for name in sheets:
         out[name] = jnp.sum(faces[mesh.elements(name)])
     return out
+
+
+def check_heat_field(field: Any, model: Any, who: str) -> None:
+    """Raise unless ``field`` is a driven field whose loss ``model`` can turn into heat.
+
+    The refusals of `dissipated_power`, shared by every caller of the loss
+    matrices (`gfem._heat.loss_matrices`). ``who`` is the public entry's name:
+    its 2D refusal (`gfem._dim2`), its key among the distributed refusals and
+    the refinement recorder's feature. Complex ``mu_r`` is refused by the
+    kernel, which reads the element values.
+
+    Raises:
+        TypeError: ``field`` is not a `gfem.Field`, or ``model`` is not a
+            `gfem.Model`.
+        ValueError: Not a driven electric field, or a name that is both a
+            volume region and a sheet surface.
+        NotImplementedError: A 2D model, or a law blend.
+        gfem.MeshRefinementUnsupportedError: Under the refinement recorder.
+        gfem.DistributedUnsupportedError: A field across ranks.
+    """
+    from gfem._engine.dispersion import refuse_blends
+    from gfem._engine.heat import sheet_surfaces
+    from gfem._field import Field
+    from gfem.model import Model
+
+    refuse_entry(getattr(field, "mesh", None), who)
+    if not isinstance(field, Field):
+        raise TypeError(f"{who} needs a gfem.Field, got {type(field).__name__}.")
+    if field._communicator is not None:  # noqa: SLF001
+        _mpi.refuse_feature(who)
+    if not isinstance(model, Model):
+        raise TypeError(f"{who} needs model= a gfem.Model, got {type(model).__name__}.")
+    if _objective.recording() is not None:
+        raise MeshRefinementUnsupportedError(
+            who,
+            f"The objective reads gfem.{who}, whose error is not estimated in "
+            "this version: refine on the S-parameters or on gfem.power_flow "
+            "instead.",
+        )
+    refuse_blends(model, f"gfem.{who}")
+    _check_time_harmonic(field, who, static="solve a gfem.Driven problem")
+    if jnp.iscomplexobj(field.omega):
+        raise ValueError(
+            f"{who} needs a driven field with a real omega: an eigenmode has no "
+            "drive, so its amplitude and its heat are undefined; solve a driven "
+            "problem at the mode's frequency."
+        )
+    if not field.is_complex:
+        raise ValueError(
+            f"{who} needs a complex phasor field, got real coefficients: solve a "
+            "gfem.Driven problem."
+        )
+    for name in sheet_surfaces(model):
+        if name in model.mesh.volumes:
+            raise ValueError(
+                f"{name!r} names both a volume region and a sheet surface, so "
+                f"{who} would give two values under one key: rename one of "
+                "them in the mesh."
+            )
 
 
 # --- region mean -----------------------------------------------------------------
