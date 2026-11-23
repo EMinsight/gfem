@@ -285,6 +285,12 @@ def test_anything_but_one_terminals_potential_raises(model, electrostatic, pick)
         _shift(model, pick(electrostatic))
 
 
+def test_a_field_that_is_no_potential_names_what_is_taken(model, potential):
+    temperature = dataclasses.replace(potential, quantity="T", unit="K")
+    with pytest.raises(TypeError, match=r"a potential in volts \(quantity 'V' on h1"):
+        _shift(model, temperature)
+
+
 def test_a_model_that_is_no_model_raises(potential):
     with pytest.raises(TypeError, match=r"electro_optic_shift needs a gfem\.Model"):
         _shift("model", potential)
