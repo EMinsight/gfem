@@ -904,20 +904,8 @@ class DrivenRule:
             for p in model.ports
             if isinstance(p, (WavePort, FloquetPort))
         )
-        #: Per wave port, the volume regions with an element on its face:
-        #: the port mode reads their materials.
-        self.port_regions = _port_regions(model)
-        #: Per wave port, the wave ports of its surface (several on a shared
-        #: port surface).
-        self.port_groups = {
-            p.name: group
-            for group in wave_port_surfaces(model.ports).values()
-            for p in group
-        }
-        #: Per sheet field or `Impedance` (index into ``model.boundaries``),
-        #: the wave ports whose face shares an edge with its surface: the port
-        #: mode reads it there.
-        self.sheet_ports = _sheet_ports(model)
+        #: What the wave ports' modes read, which the design must stay off.
+        self.port_design = PortDesign.of(model)
         #: Why the node coordinates cannot be differentiated, or None.
         self.nodes_unsupported = terms.absorbing_shape_unsupported(model)
         # The fields live on the mesh as given (traced or not).
@@ -1522,57 +1510,13 @@ class DrivenRule:
                 of a region that touches a wave port face, or the fill of a
                 sheet or a lumped value of an `Impedance` beside one.
         """
-        if is_lumped(kind) and kind[0] == "boundary":
-            ports = self.sheet_ports.get(kind[1], ())
-            if ports:
-                raise PortGeometryError(
-                    f"{self._port_label(ports[0])}: the Impedance model.boundaries"
-                    f"[{kind[1]}] shares an edge with the port face, so gfem cannot "
-                    f"differentiate with respect to its {kind[2]}: the port mode "
-                    "reads the sheet there and is a constant of the solve. Keep the "
-                    "design away from wave port faces (split the surface so the "
-                    "part touching the port is a boundary of its own), or wrap the "
-                    "value in jax.lax.stop_gradient."
-                )
-            return None
-        if is_sheet(kind):
-            ports = self.sheet_ports.get(kind[1], ())
-            if ports:
-                raise PortGeometryError(
-                    f"{self._port_label(ports[0])}: the sheet field of model.boundaries"
-                    f"[{kind[1]}] shares an edge with the port face, so gfem cannot "
-                    "differentiate with respect to its fill: the port mode reads "
-                    "the sheet there and is a constant of the solve. Keep the "
-                    "design away from wave port faces (split the sheet so the part "
-                    "touching the port is a boundary of its own without fill), or "
-                    "wrap the fill in jax.lax.stop_gradient."
-                )
-            return None
-        if kind == ("nodes",):
-            return self.nodes_unsupported
         if kind[0] == "law":
             reason = self._law_unsupported()
             if reason is not None:
                 return reason
-        elif kind[0] != "material":
-            return None
-        region = kind[1]
-        touched = [p for p, regions in self.port_regions.items() if region in regions]
-        if touched:
-            leaf = (
-                f"the permittivity law of model.materials[{region!r}]"
-                if kind[0] == "law"
-                else f"model.materials[{region!r}].{kind[2]}"
-            )
-            raise PortGeometryError(
-                f"{self._port_label(touched[0])}: region {region!r} has elements "
-                f"on the port face, so gfem cannot differentiate with respect to "
-                f"{leaf}: the port mode reads that "
-                "material and is a constant of the solve. Keep the design away "
-                "from wave port faces (give the elements beside the port a "
-                "region of their own with a constant gfem.Material), or wrap "
-                "the value in jax.lax.stop_gradient."
-            )
+        self.port_design.check(kind)
+        if kind == ("nodes",):
+            return self.nodes_unsupported
         return None
 
     def _law_unsupported(self) -> str | None:
@@ -1589,10 +1533,6 @@ class DrivenRule:
                 "verified under a Bloch wave vector in this version"
             )
         return None
-
-    def _port_label(self, port: str) -> str:
-        """``WavePort 'p1'``, or a shared port surface's ports and surface."""
-        return wave_port_label(self.port_groups[port])
 
     def nondifferentiable_output(self, name: str) -> str:
         """The error message for a cotangent on output ``name``."""
@@ -2586,6 +2526,99 @@ class _Kept:
         self.system.free(return_plans=return_plans)
         del self.system, self.ports
         self._freed = True
+
+
+@dataclasses.dataclass(frozen=True)
+class PortDesign:
+    """What the wave ports' modes read, so a gradient must hold it.
+
+    A wave port's mode is a constant of the solve: a gradient with respect
+    to an input its mode reads would miss the mode's own derivative. The
+    driven and eigenmode rules refuse those inputs with one `check`, so
+    their messages cannot drift.
+    """
+
+    #: Per wave port, the volume regions with an element on its face: the
+    #: port mode reads their materials.
+    regions: dict[str, tuple[str, ...]]
+    #: Per wave port, the wave ports of its surface (several on a shared port
+    #: surface).
+    groups: dict[str, Sequence[WavePort]]
+    #: Per sheet field or `Impedance` (index into ``model.boundaries``), the
+    #: wave ports whose face shares an edge with its surface: the port mode
+    #: reads it there.
+    sheets: dict[int, tuple[str, ...]]
+
+    @classmethod
+    def of(cls, model: Model, *, sheets: bool = True) -> PortDesign:
+        """The port design of ``model``; without ``sheets``, no sheet map."""
+        return cls(
+            regions=_port_regions(model),
+            groups={
+                p.name: group
+                for group in wave_port_surfaces(model.ports).values()
+                for p in group
+            },
+            sheets=_sheet_ports(model) if sheets else {},
+        )
+
+    def check(self, kind: tuple) -> None:
+        """Raise when input ``kind`` is one a wave port's mode reads.
+
+        Raises:
+            PortGeometryError: ``kind`` is the material, or a law parameter,
+                of a region that touches a wave port face, or the fill of a
+                sheet or a lumped value of an `Impedance` beside one.
+        """
+        if is_lumped(kind) and kind[0] == "boundary":
+            ports = self.sheets.get(kind[1], ())
+            if ports:
+                raise PortGeometryError(
+                    f"{self._label(ports[0])}: the Impedance model.boundaries"
+                    f"[{kind[1]}] shares an edge with the port face, so gfem cannot "
+                    f"differentiate with respect to its {kind[2]}: the port mode "
+                    "reads the sheet there and is a constant of the solve. Keep the "
+                    "design away from wave port faces (split the surface so the "
+                    "part touching the port is a boundary of its own), or wrap the "
+                    "value in jax.lax.stop_gradient."
+                )
+            return
+        if is_sheet(kind):
+            ports = self.sheets.get(kind[1], ())
+            if ports:
+                raise PortGeometryError(
+                    f"{self._label(ports[0])}: the sheet field of model.boundaries"
+                    f"[{kind[1]}] shares an edge with the port face, so gfem cannot "
+                    "differentiate with respect to its fill: the port mode reads "
+                    "the sheet there and is a constant of the solve. Keep the "
+                    "design away from wave port faces (split the sheet so the part "
+                    "touching the port is a boundary of its own without fill), or "
+                    "wrap the fill in jax.lax.stop_gradient."
+                )
+            return
+        if kind[0] not in ("material", "law"):
+            return
+        region = kind[1]
+        touched = [p for p, regions in self.regions.items() if region in regions]
+        if touched:
+            leaf = (
+                f"the permittivity law of model.materials[{region!r}]"
+                if kind[0] == "law"
+                else f"model.materials[{region!r}].{kind[2]}"
+            )
+            raise PortGeometryError(
+                f"{self._label(touched[0])}: region {region!r} has elements "
+                f"on the port face, so gfem cannot differentiate with respect to "
+                f"{leaf}: the port mode reads that "
+                "material and is a constant of the solve. Keep the design away "
+                "from wave port faces (give the elements beside the port a "
+                "region of their own with a constant gfem.Material), or wrap "
+                "the value in jax.lax.stop_gradient."
+            )
+
+    def _label(self, port: str) -> str:
+        """``WavePort 'p1'``, or a shared port surface's ports and surface."""
+        return wave_port_label(self.groups[port])
 
 
 def _sheet_ports(model: Model) -> dict[int, tuple[str, ...]]:

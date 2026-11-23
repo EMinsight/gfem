@@ -69,7 +69,7 @@ import scipy.constants as const
 
 from gfem import _mpi, _timing
 from gfem._adjoint import adjoint_tolerance
-from gfem._boundaries import PEC, PMC, Absorbing, WavePort, wave_port_surfaces
+from gfem._boundaries import PEC, PMC, Absorbing, WavePort
 from gfem._domain import h1_unknowns
 from gfem._engine import dispersion, points, quadrature, terms
 from gfem._engine.cache import default_retain_memory, discretization
@@ -83,9 +83,9 @@ from gfem._engine.domain import boundary_region, h1_space, space_key
 from gfem._engine.driven import (
     DrivenOperator,
     DrivenRule,
+    PortDesign,
     _check_low_frequency,
     _check_skipped_port_modes,
-    _port_regions,
 )
 from gfem._engine.driven_sweep import SweepSplit
 from gfem._engine.driven_system import DrivenSystemBuilder
@@ -194,13 +194,7 @@ class Driven2DRule(DrivenRule):
         self.offsets = tuple(
             (p.name, p.offset) for p in model.ports if isinstance(p, WavePort)
         )
-        self.port_regions = _port_regions(model)
-        self.port_groups = {
-            p.name: group
-            for group in wave_port_surfaces(model.ports).values()
-            for p in group
-        }
-        self.sheet_ports = {}
+        self.port_design = PortDesign.of(model, sheets=False)
         self.nodes_unsupported = _NO_GRADIENTS
         self._mesh = model.mesh
         self._excluded = model._domain.excluded  # noqa: SLF001
