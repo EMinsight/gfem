@@ -169,6 +169,7 @@ ROWS = {
     "electromagnetic_heating": Row(
         "Electromagnetic heating",
         "temperature from a driven result's loss",
+        recipe="recipes/electromagnetic-heating",
         front=False,
     ),
     # thermal and DC conduction: Capabilities page only

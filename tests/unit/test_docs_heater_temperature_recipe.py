@@ -86,3 +86,14 @@ def test_a_warmer_ambient_moves_the_temperature_not_the_rise(ran):
     (joule,) = _printed(ran, "The temperature at a drive")[-3:-2]
     assert rise == pytest.approx(joule, abs=1e-3)
     assert 0 < warmer_mk < 1.0
+
+
+def test_the_heat_leaves_through_the_sinks_and_crosses_the_cut(ran):
+    (sink, up), (*_, balance), (*_, down) = _lines(ran, "Where the heat goes")
+    (power,) = _printed(ran, "The temperature at a drive")[-6:-5]
+    # read from the discrete balance: the sinks close to the solver's residual
+    assert balance < 1e-9
+    assert sink + up == pytest.approx(power, rel=1e-5)
+    assert 0 < up < 1e-4 * power  # the air takes a few 1e-5 of the heat
+    # no heat is made below the cut, so the sink's heat crosses it
+    assert down == pytest.approx(sink, rel=1e-9)

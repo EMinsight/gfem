@@ -1,8 +1,8 @@
 # Measure fields after the solve
 
 Get a resonator's surface-loss Q, field values at points or their mean over
-a region, a line's characteristic impedance or the power through a surface
-from a solved result. A result already carries every quantity that needs no extra input.
+a region, a line's characteristic impedance, the power through a surface or
+the power each region dissipates from a solved result. A result already carries every quantity that needs no extra input.
 Anything that needs more input (a probe point, a thin interface layer, a
 voltage path) is a measurement: a function you call on the result, also on a
 result reloaded with {py:obj}`gfem.load_result`.
@@ -141,7 +141,9 @@ outside the transformation, since port modes are constants of the solve.
 
 `gfem.power_flow(field, side, model=model)` is the net time-averaged power, in
 W, that a driven field carries out of `side`: a volume region, several, or a
-predicate on the element centroids (m). How much of the power launched at
+predicate on the element centroids (m). Its thermal twin,
+{py:obj}`gfem.heat_flow`, reads the heat leaving a side of a steady
+temperature in the same way ({doc}`heater-temperature`). How much of the power launched at
 port 1 crosses a plane, leaves through the top of the stack, or leaves the
 design region:
 
@@ -224,6 +226,38 @@ face quadrature does not remove it. `gfem.power_flow` is exact for the solved
 field.
 :::
 
+## Power dissipated per region
+
+`gfem.dissipated_power(field, model=model)` is the time-averaged power a
+driven field dissipates in each volume region and on each
+{py:obj}`gfem.Conductor` or {py:obj}`gfem.Impedance` surface, in W, by name
+({term}`dissipated power`): the loss tangent, the conductivity, a complex
+permittivity or a permittivity law in a region, and the sheet loss of a
+metal surface.
+
+```python
+r = gfem.solve(model, gfem.Driven(frequency=f, keep_fields=True))
+lost = gfem.dissipated_power(r.e_field(f, excite="p1"), model=model)
+total = sum(lost.values())  # W lost inside the model, for 1 W incident at p1
+```
+
+- **Per 1 W incident.** A driven field carries 1 W incident at its excited
+  port, so each value is a fraction of the incident power. A region's value
+  is minus `power_flow` out of it when no sheet lies on its surface.
+- **What S does not account for.** With real reference impedances on every
+  port, each on a uniform stretch of line, and nothing radiating, the values
+  sum to $1 - \sum_j |S_{j1}|^2$. A wave port on a lossy line has a complex
+  reference: its field is per unit $|a|^2$, which is not exactly 1 W
+  incident, and the sum does not match S; compare with `power_flow` into
+  the lossy regions instead.
+- **Not heat, so not listed.** A {term}`perfectly matched layer`, an
+  absorbing face, a port and a lumped port's resistance get no key.
+- **Differentiable** through the field and directly through the lossy
+  materials, sheets' fills and an `Impedance`'s resistance; an adaptive
+  sweep's field raises under `jax.grad`.
+- The loss of a drive turns into a heat source with
+  {py:obj}`gfem.electromagnetic_heating` ({doc}`electromagnetic-heating`).
+
 ## Electric energy per region
 
 `gfem.electric_energy(field, model=model)` is the time-averaged electric energy,
@@ -241,7 +275,7 @@ p_sub = 2 * (2 * np.pi * f) * tan_delta * w["substrate"]
 - **Loss per region.** In a region with one loss tangent, dielectric loss
   absorbs `2 * omega * tan_delta * w[region]`. For a region with nothing else
   that absorbs, it is the number `-gfem.power_flow(e, region, model=model)`
-  gives.
+  gives, and `gfem.dissipated_power` gives it for every region at once.
 - **Time-averaged, on a peak phasor.** Hence the 1/4. A mode of an eigenmode
   result is normalized to its total energy, twice the time average of the
   electric part: `2 * w[region]` of `modes.e_field(k)` is
@@ -305,7 +339,8 @@ How gfem itself is checked: {doc}`../verification`.
 ## Next
 
 {py:obj}`gfem.interface_participation`, {py:obj}`gfem.characteristic_impedance`,
-{py:obj}`gfem.power_flow`, {py:obj}`gfem.electric_energy`, {py:obj}`gfem.region_mean`,
+{py:obj}`gfem.power_flow`, {py:obj}`gfem.dissipated_power`, {py:obj}`gfem.electric_energy`, {py:obj}`gfem.region_mean`,
 {py:obj}`gfem.Field`, {doc}`shared-port-surface`, {doc}`mesh-refinement`,
-{doc}`s-parameter-gradient`, {doc}`eigenmode-gradient`, {doc}`loss-budget`.
+{doc}`s-parameter-gradient`, {doc}`eigenmode-gradient`, {doc}`loss-budget`,
+{doc}`electromagnetic-heating`.
 

@@ -48,8 +48,10 @@ v0.1.
   Djordjevic-Sarkar terms, metals included
   ({doc}`recipes/dispersive-materials`).
 - **Measurements**: {py:obj}`gfem.characteristic_impedance`,
-  {py:obj}`gfem.interface_participation`, {py:obj}`gfem.power_flow` and
-  {py:obj}`gfem.electric_energy` ({doc}`recipes/measurements`).
+  {py:obj}`gfem.interface_participation`, {py:obj}`gfem.power_flow`,
+  {py:obj}`gfem.dissipated_power` (a driven field's loss per region and
+  metal surface) and {py:obj}`gfem.electric_energy`
+  ({doc}`recipes/measurements`).
 - **Quantum metrics**: {py:obj}`gfem.quantum.dressed_modes` (the dressed
   frequencies, Lamb shifts, anharmonicities and dispersive shifts of one
   junction on the solved modes) and `EigenmodeResult.sheet_participation`
@@ -68,8 +70,15 @@ v0.1.
   an electrical `conductivity` and a `thermo_optic_coefficient`, and
   `excluded=` leaves regions out of one physics at a time
   ({doc}`recipes/heater-temperature`).
-- **Heat and phase**: {py:obj}`gfem.joule_heating` and
-  {py:meth}`gfem.HeatSource.uniform` (heat sources),
+- **Heat and phase**: {py:obj}`gfem.joule_heating`,
+  {py:obj}`gfem.electromagnetic_heating` (the heat of a driven result's
+  loss, in volumes and on metal sheets, for one port or several fed
+  coherently; {doc}`recipes/electromagnetic-heating`) and
+  {py:meth}`gfem.HeatSource.uniform` (heat sources);
+  {py:obj}`gfem.heat_flow` and {py:obj}`gfem.heat_flow_per_length` (the heat
+  leaving a steady temperature through surfaces or a set of elements) and
+  {py:meth}`gfem.Trace.heat_out` (the heat that has left since the start of a
+  transient run);
   {py:obj}`gfem.thermo_optic_shift` (a guided mode's phase per length under
   a rise, on a cross-section) and {py:obj}`gfem.route_phase` (the phase
   along routes through a 3D rise) ({doc}`recipes/thermo-optic-phase`);
@@ -125,11 +134,14 @@ How large a model each solver has finished, and in what time:
   {py:obj}`gfem.NonDifferentiableError` (or the error named) instead of
   returning a wrong value.
 
-The thermal rows differentiate the temperature, the traces, the conductance
-and the phase with respect to per-element thermal and electrical
-conductivity, the thermo-optic coefficient, a transient's mass density and
-specific heat, the heat sources and the drive
-({doc}`recipes/thermal-gradient`).
+The thermal rows differentiate the temperature, the traces, the heat flow,
+the conductance and the phase with respect to per-element thermal and
+electrical conductivity, the thermo-optic coefficient, a transient's mass
+density and specific heat, the heat sources and the drive
+({doc}`recipes/thermal-gradient`). The heat rows differentiate the
+dissipated power and the temperature it heats with respect to the driven
+solve's materials, sheets and drive
+({doc}`recipes/electromagnetic-heating`).
 
 How each mark is checked: {doc}`verification`.
 
@@ -231,15 +243,19 @@ returning a wrong value:
   measured device.
 - **Thermal problems**: linear heat conduction with constant, isotropic
   properties: no temperature-dependent conductivity, no radiation, no
-  thermal contact resistance, and the heat does not change the current. A
+  thermal contact resistance, and the heat does not change the current or
+  the electromagnetic loss. Electromagnetic heat comes from electric and
+  sheet loss only: no magnetic loss, no metal-dielectric blend with a
+  permittivity law, no eigenmode, port mode or 2D model. A
   transient runs on a uniform time grid with sources switched at grid
   times. A cross-section is a slice of an infinitely long device. The
   thermo-optic shift and the route phase are first order in the rise, with
   the mode held constant, and refuse a lossy optical section. Mesh
   refinement and error estimates do not run on thermal problems, and the
   rise time and time constant have no gradient. Details:
-  {doc}`recipes/heater-temperature`, {doc}`recipes/thermo-optic-phase`,
-  {doc}`recipes/thermal-step-response`, {doc}`recipes/thermal-gradient`.
+  {doc}`recipes/heater-temperature`, {doc}`recipes/electromagnetic-heating`,
+  {doc}`recipes/thermo-optic-phase`, {doc}`recipes/thermal-step-response`,
+  {doc}`recipes/thermal-gradient`.
 
 ## Platforms
 

@@ -70,3 +70,17 @@ def test_backward_euler_lags_tr_bdf2(ran):
     (tau_euler,) = _printed(ran, "The time scheme")
     tau = _lines(ran, "Rise time and time constant")[0][0]
     assert tau < tau_euler < 1.1 * tau
+
+
+def test_the_heat_out_tends_to_the_steady_flow_and_closes_the_energy(ran):
+    (put_in, out), (flow,), (held,) = (
+        n[-2:] if i == 0 else n[-1:]
+        for i, n in enumerate(_lines(ran, "The heat that has left"))
+    )
+    assert put_in == pytest.approx(70.0 * 80e-6 * 1e3)  # mJ/m, 70 W/m for 80 us
+    assert out < put_in  # some heat left through the top, or is still stored
+    assert out == pytest.approx(put_in, rel=1e-3)
+    # held nine time constants: near the steady flow, still below it
+    assert flow < held
+    assert flow == pytest.approx(held, rel=3e-3)
+    assert held == pytest.approx(70.0, rel=1e-4)  # the air takes a few 1e-5

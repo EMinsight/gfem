@@ -50,3 +50,19 @@ def test_the_page_lists_what_raises():
     section = dp._prose(dp.section(page, "What raises"))
     for name in ("gfem.NonDifferentiableError", "gfem.rise_time", "gfem.time_constant"):
         assert name in section, name
+
+
+def test_the_heat_flow_gradient_meets_its_scaling_and_a_sourceful_side_is_flat(ran):
+    (example,) = [
+        e for e in ran if e.section == "The heat through a surface as an objective"
+    ]
+    (up,), (scaled, fd), (out,), (largest,) = (
+        dp.numbers(line)[-2:] if i == 1 else dp.numbers(line)[-1:]
+        for i, line in enumerate(example.printed.splitlines())
+    )
+    assert scaled == pytest.approx(fd, rel=1e-5)
+    # scaling every k by a factor divides the rise, and the top's flow, by it
+    # nearly: the top's own convection does not scale
+    assert scaled == pytest.approx(-up, rel=1e-3)
+    assert out == pytest.approx(70.0, rel=1e-9)  # the heater gives off its heat
+    assert largest == 0.0  # exactly: no sink in the heater

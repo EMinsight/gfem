@@ -33,9 +33,9 @@ def test_the_thermal_block_flags_the_density_rename_as_the_code_does():
     import gfem
 
     notes = (DOCS / "project" / "release-notes.md").read_text(encoding="utf-8")
-    unreleased = notes.split("\n## ")[1]
-    assert "\nThermal:\n" in unreleased
-    block = " ".join(unreleased.split("\nThermal:\n")[1].split("\n\n")[0].split())
+    (release,) = (s for s in notes.split("\n## ") if s.startswith("0.1.0 "))
+    assert "\nThermal:\n" in release
+    block = " ".join(release.split("\nThermal:\n")[1].split("\n\n")[0].split())
     assert block.startswith("- **Behaviour change: `density` is now `mass_density`.**")
     for said in ("`DeprecationWarning`", "`AttributeError`", "Job files"):
         assert said in block, said
@@ -47,3 +47,35 @@ def test_the_thermal_block_flags_the_density_rename_as_the_code_does():
     assert material.mass_density == 2203.0
     with pytest.raises(AttributeError, match="mass_density"):
         _ = material.density
+
+
+def test_the_unreleased_thermal_block_flags_the_joule_heating_type_error():
+    import pytest
+
+    import gfem
+
+    notes = (DOCS / "project" / "release-notes.md").read_text(encoding="utf-8")
+    (unreleased,) = (s for s in notes.split("\n## ") if s.startswith("Unreleased\n"))
+    block = " ".join(unreleased.split("\nThermal:\n")[1].split())
+    flag = (
+        "**Behaviour change: `joule_heating` of a driven result raises `TypeError`.**"
+    )
+    assert flag in block
+    for said in ("`NotImplementedError`", "`gfem.electromagnetic_heating`"):
+        assert said in block.split(flag)[1], said
+    # what the block says the call does
+    line = DOCS / "tutorials" / "data" / "line.msh"
+    mesh = gfem.Mesh.from_gmsh(line, length_unit="mm")
+    model = gfem.Model(
+        mesh,
+        materials={"feed": gfem.Material(), "design": gfem.Material(eps_r=10.0)},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z"),
+        ],
+    )
+    problem = gfem.Driven(frequency=5e9, excite="p1", keep_fields=True)
+    driven = gfem.solve(model, problem)
+    with pytest.raises(TypeError, match="electromagnetic_heating"):
+        gfem.joule_heating(driven, power=1e-3)

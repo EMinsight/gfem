@@ -812,7 +812,45 @@ Conductance matrix
 Joule heating
   The heat a current dissipates in a conductor; {py:obj}`gfem.joule_heating`
   turns a DC conduction result and a drive (voltage, current or power) into a
-  heat source with no new solve.
+  heat source with no new solve. For a driven result's loss, see
+  {term}`electromagnetic heating`.
+
+Dissipated power
+  The time-averaged electromagnetic power turned into heat inside the model:
+  the loss of its materials and of its {py:obj}`gfem.Conductor` and
+  {py:obj}`gfem.Impedance` sheets ({py:obj}`gfem.dissipated_power`). Power
+  that leaves through ports, absorbing boundaries or a perfectly matched
+  layer, and power a port's load takes, is not part of it.
+
+Electromagnetic heating
+  The heat source a driven result's kept fields at one frequency give under
+  a drive, the incident power of each port and their relative phases: the
+  {term}`dissipated power` of the superposed field
+  ({py:obj}`gfem.electromagnetic_heating`), with no new solve.
+
+Coherent drive
+  Several ports fed at once at one frequency with fixed relative phases, so
+  their fields add and the heat depends on the phases. Drives that are not
+  coherent, other tones or unrelated sources, are separate heat sources that
+  add.
+
+Sheet heat
+  The part of an electromagnetic heat source that a conductor or impedance
+  sheet dissipates, given per face in W/m² and entering the thermal problem
+  at that face, where the face's thermal boundary decides where it goes.
+
+Heat flow
+  The net heat per unit time leaving a set of elements, or the
+  {term}`thermal domain` through named surfaces, positive out, in W (W/m on
+  a cross-section; {py:obj}`gfem.heat_flow`). Read from the discrete heat
+  balance of the solved temperature, so the flows through every boundary
+  surface add up to the source power.
+
+Heat out
+  The heat that has left a side or a surface since the start of a transient
+  run, in J (J/m on a cross-section; {py:meth}`gfem.Trace.heat_out`),
+  including the heat the elements store in its balance. Its step difference
+  over dt is the mean {term}`heat flow` over the step.
 
 Heater terminal
   A surface where a DC conduction solve holds a potential: a pad, a contact

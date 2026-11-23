@@ -158,15 +158,72 @@ For any other objective, check against finite differences: perturb one
 input, or a random direction of many, by a small step both ways and compare
 the difference quotient with the gradient's projection.
 
+## The heat through a surface as an objective
+
+{py:obj}`gfem.heat_flow_per_length` ({py:obj}`gfem.heat_flow` on a 3D mesh)
+is differentiable too. The {term}`heat flow` up through the top, under a
+fixed 70 W/m in the heater, as a function of every element's thermal
+conductivity, and the heat out of the heater itself:
+
+```python
+heater_heat = gfem.HeatSource.uniform("heater", power_per_length=70.0)  # W/m
+
+
+def flow(k, side):
+    """The heat leaving ``side``, W/m, for the conductivities ``k``."""
+    materials = {r: gfem.MaterialField(thermal_conductivity=k[r]) for r in k}
+    thermal = gfem.Model(section, materials=materials, boundaries=boundaries)
+    steady = gfem.solve(thermal, gfem.SteadyThermal(heater_heat))
+    return gfem.heat_flow_per_length(steady, side, model=thermal)
+
+
+up, d_up = jax.value_and_grad(flow)(k0, "top")
+out, d_out = jax.value_and_grad(flow)(k0, "heater")
+scaled = sum(float(jnp.sum(k0[r] * d_up[r])) for r in k0)
+step = 1e-3  # a relative change of every conductivity
+fd = flow({r: k * (1 + step) for r, k in k0.items()}, "top")
+fd = (fd - flow({r: k * (1 - step) for r, k in k0.items()}, "top")) / (2 * step)
+print(f"up through the top: {float(up):.6e} W/m")
+print(f"sum k d(up)/dk: {scaled:.6e} W/m, central difference {float(fd):.6e} W/m")
+print(f"out of the heater: {float(out):.4f} W/m")
+print(f"largest |d(out)/dk|: {max(float(jnp.max(jnp.abs(d_out[r]))) for r in k0)}")
+```
+
+```text
+up through the top: 2.211500e-03 W/m
+sum k d(up)/dk: -2.211421e-03 W/m, central difference -2.211423e-03 W/m
+out of the heater: 70.0000 W/m
+largest |d(out)/dk|: 0.0
+```
+
+- The flow up is the top's convection over the rise there, and scaling
+  every conductivity by a factor divides the rise nearly by it: the
+  gradient times the conductivities is nearly minus the flow, as the
+  central difference of that scaling confirms.
+- A side with no heat sink in it, no fixed-temperature node and no
+  convection face, such as the heater, gives off exactly the heat it makes,
+  whatever the conductivities: its gradient with respect to them is exactly
+  zero. The heat's own amount, or the drive of `joule_heating`, still
+  differentiates.
+- The flow is read from the discrete heat balance, so it is exact for the
+  solved temperature, and its gradient is the gradient of that number
+  ({doc}`heater-temperature`, "Where the heat goes").
+- In a transient run, the {term}`heat out` trace
+  ({py:meth}`gfem.Trace.heat_out`) differentiates with respect to the same
+  inputs, and the mass density and specific heat besides.
+
 ## What differentiates
 
 - **Inputs**: per-element `thermal_conductivity`, `conductivity` (through
   the DC solve), `thermo_optic_coefficient`, and, in a transient solve,
   `mass_density` and `specific_heat`; the amount of a
   {py:meth}`gfem.HeatSource.uniform`; the drive of `joule_heating`
-  (voltage, current or power); the scales of a transient's waveform.
-- **Outputs**: the temperature, rise, heat and power of a steady solve; the
-  traces and kept fields of a transient one; the conductance, dissipation
+  (voltage, current or power); the scales of a transient's waveform. Through
+  {py:obj}`gfem.electromagnetic_heating`, the driven solve's materials,
+  sheets and drive ({doc}`electromagnetic-heating`, "Gradients").
+- **Outputs**: the temperature, rise, heat and power of a steady solve, and
+  its heat flow; the traces (heat out included) and kept fields of a
+  transient one; the conductance, dissipation
   and potentials of a DC solve; the shift's `delta_n_eff` and
   `phase_per_length`; a route's phase.
 - A steady solve's gradient with respect to `mass_density` and
@@ -205,6 +262,8 @@ Rather than return a wrong value, these raise:
 
 - {doc}`heater-temperature`, {doc}`thermo-optic-phase` and
   {doc}`thermal-step-response`: the solves this chain is made of.
+- {doc}`electromagnetic-heating`: the gradient of a temperature heated by
+  an electromagnetic loss, through the driven solve.
 - {doc}`s-parameter-gradient`: the same pattern for an electromagnetic
   objective, with a design loop.
 - {doc}`../capabilities`: every gradient gfem computes, and what it refuses.
