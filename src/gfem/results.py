@@ -1516,8 +1516,10 @@ class DrivenResult:
                 f"No source {source!r}; the sources are "
                 f"{', '.join(map(repr, self.sources))}."
             )
-        assert self.port_waves is not None  # noqa: S101
-        return self.port_waves[:, ports.index(port), list(self.sources).index(source)]
+        waves = self.port_waves
+        if waves is None:
+            raise KeyError("This result holds no port waves.")
+        return waves[:, ports.index(port), list(self.sources).index(source)]
 
     @property
     def frequency(self) -> np.ndarray:
