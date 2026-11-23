@@ -800,6 +800,34 @@ Emitted power
   (`DrivenResult.emitted_power`): what it radiates plus what nearby lossy
   materials absorb.
 
+Cross sections
+  The powers a {term}`scatterer` removes from an {term}`incident field`
+  (extinction), absorbs (absorption) and sends out in the
+  {term}`scattered field` (scattering), each divided by the
+  {term}`incident intensity`, in m² (`gfem.cross_sections`); extinction is
+  absorption plus scattering.
+
+Incident intensity
+  The power per unit area that {term}`cross sections` are divided by: a plane
+  wave's $|E_0|^2/(2\eta)$, a Gaussian beam's {term}`focal intensity`, or the
+  value given for an incident field from a function.
+
+Focal intensity
+  $I_0 = |E(r_f)|^2/(2\eta)$ at the focus $r_f$ of a Gaussian beam carrying
+  1 W, with $\eta$ the wave impedance of the background
+  (`gfem.GaussianBeam.focal_intensity`).
+
+Incident contact
+  The largest {term}`incident field` where a {term}`scatterer` meets a
+  {term}`perfectly matched layer` or an absorbing face, or on a wave port face,
+  relative to its peak in the model: it must stay below $10^{-3}$, since the
+  incident field is dropped there.
+
+Truncation layer
+  The physical elements that touch a {term}`perfectly matched layer` or an
+  absorbing face: where `gfem.cross_sections` reads its power balance, so it
+  must hold only the {term}`background stack`.
+
 Bulk power
   The {term}`emitted power` of the same {term}`point dipole` in the unbounded,
   lossless material at its position: the closed form the {term}`Purcell

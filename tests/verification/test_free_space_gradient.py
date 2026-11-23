@@ -15,7 +15,12 @@ slab, at order 2. Each gradient matches a fourth-order central difference to
   extension moves the dipole's element (the point load's transport term);
 - the emitted power on an adaptive sweep, by the slab's permittivity, at a
   sample (the frozen basis's gradient is the full solve's there), for a
-  real and a circular moment.
+  real and a circular moment;
+- the cross sections of a lossy cube under plane waves and under a
+  Gaussian beam, and the corrected power flow of its total field, by the
+  cube's permittivity. Both read background elements, the load and the
+  incident interpolant only, so the design reaches them through the solved
+  field alone, which a frozen-field check asserts.
 """
 
 import jax
@@ -187,3 +192,124 @@ def test_emitted_power_on_an_adaptive_sweep_by_a_morph(line):
     t = jnp.zeros(morph.n_params)
     directions = unit_directions(np.random.default_rng(4), t.shape, 2)
     assert_gradient_matches(power, t, directions, step=NODE_STEP)
+
+
+# --- cross sections and the corrected power flow -------------------------------
+
+AIR = gfem.Material()
+F = pc.F0 / 2
+TE = gfem.PlaneWave("te", theta=0.4, phi=0.3, polarization="TE")
+TM = gfem.PlaneWave("tm", theta=0.4, phi=0.3, polarization="TM")
+#: The cube's permittivity: the design is its real part.
+EPS, LOSS = 3.0, 0.6j
+
+
+def _volume(c):
+    if ((c > 0.25) & (c < 0.75)).all():
+        return "scat"
+    return "air" if ((c > 0) & (c < 1)).all() else "pml"
+
+
+@pytest.fixture(scope="module")
+def cube(tmp_path_factory):
+    path = pc.box(
+        tmp_path_factory.mktemp("xsec") / "box.msh",
+        ("-x", "+x", "-y", "+y", "-z", "+z"),
+        cells=4,
+        volume=_volume,
+    )
+    mesh = gfem.Mesh.from_gmsh(path)
+    n = len(mesh.elements("scat"))
+    return gfem.Model(
+        mesh,
+        materials={
+            "air": AIR,
+            "pml": AIR,
+            "scat": gfem.MaterialField(eps_r=np.full(n, EPS - LOSS)),
+        },
+        pml=gfem.PML("pml"),
+        background=AIR,
+    )
+
+
+def _design(model, eps):
+    return model.with_material("scat", gfem.MaterialField(eps_r=eps - LOSS))
+
+
+def _solve(model, eps):
+    moved = _design(model, eps)
+    problem = gfem.Driven(F, sources=(TE, TM), keep_fields=True)
+    return moved, gfem.solve(moved, problem, options=OPTIONS)
+
+
+def _cross_sections(model, result):
+    te = gfem.cross_sections(result, "te", model=model)
+    tm = gfem.cross_sections(result, "tm", model=model)
+    scale = 1e12  # m² to um²
+    return scale * (te.scattering[0] + 0.7 * te.absorption[0] + 0.4 * tm.extinction[0])
+
+
+def _start(model):
+    return jnp.full(len(model.mesh.elements("scat")), EPS)
+
+
+def test_cross_sections_by_the_scatterer_permittivity(cube):
+    model = cube
+
+    def objective(eps):
+        return _cross_sections(*_solve(model, eps))
+
+    eps = _start(model)
+    directions = unit_directions(np.random.default_rng(5), eps.shape, 2)
+    assert_gradient_matches(objective, eps, directions, step=1e-2)
+
+
+def test_cross_sections_read_no_scatterer_material(cube):
+    model = cube
+    _, result = _solve(model, _start(model))
+    frozen = jax.lax.stop_gradient(result)
+
+    def objective(eps):
+        return _cross_sections(_design(model, eps), frozen)
+
+    gradient = jax.grad(objective)(_start(model))
+    assert np.all(np.asarray(gradient) == 0)
+
+
+#: A beam focused on the cube, tighter than the box.
+BEAM = gfem.GaussianBeam(
+    "beam",
+    waist=0.8e-6,
+    focus=(0.5e-6, 0.5e-6, 0.5e-6),
+    theta=0.4,
+    phi=0.3,
+    polarization="RCP",
+)
+
+
+def test_a_cross_section_under_a_gaussian_beam_by_the_scatterer_permittivity(cube):
+    model = cube
+
+    def objective(eps):
+        moved = _design(model, eps)
+        problem = gfem.Driven(F, sources=BEAM, keep_fields=True)
+        result = gfem.solve(moved, problem, options=OPTIONS)
+        xs = gfem.cross_sections(result, "beam", model=moved)
+        return 1e12 * (xs.extinction[0] + 0.5 * xs.absorption[0])
+
+    eps = _start(model)
+    directions = unit_directions(np.random.default_rng(8), eps.shape, 2)
+    assert_gradient_matches(objective, eps, directions, step=1e-2)
+
+
+def test_corrected_power_flow_by_the_absorber_permittivity(cube):
+    model = cube
+
+    def objective(eps):
+        moved, result = _solve(model, eps)
+        total = result.e_field(F, "tm")
+        return -1e15 * gfem.power_flow(total, "scat", model=moved)
+
+    eps = _start(model)
+    directions = unit_directions(np.random.default_rng(7), eps.shape, 2)
+    assert_gradient_matches(objective, eps, directions, step=1e-2)

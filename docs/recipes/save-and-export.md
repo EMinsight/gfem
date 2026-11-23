@@ -301,8 +301,9 @@ hit 4c0b6f1e9d27a8530f62c1d9b4e7a03f5c8d21e6b9f0a47c3d5e8b1f2a6c904e
 - Some calls solve and store nothing, even with `cache=`: a solve under
   `jax.grad`, `jax.jit` or `jax.vmap` (gradients), a solve that raises (a
   sweep that stopped), and one with an input the cache cannot file, such
-  as a subclass of a gfem class ({py:obj}`gfem.SolveCacheWarning` names
-  it). {py:obj}`gfem.refine_mesh` never uses a cache.
+  as a subclass of a gfem class or a {py:obj}`gfem.IncidentField`, whose
+  function is code, not data ({py:obj}`gfem.SolveCacheWarning` names it;
+  {py:obj}`gfem.PlaneWave` and {py:obj}`gfem.GaussianBeam` are filed). {py:obj}`gfem.refine_mesh` never uses a cache.
 - The directory is created when it does not exist. A directory that exists
   and is not a solve cache is refused before solving.
 - Once the entries pass 10 GiB in total, the least recently used ones are

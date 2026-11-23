@@ -800,6 +800,8 @@ def entry_check(
         "the options": _text_digest(repr(options)),
         "the ports": _text_digest(repr(model.ports)),
         "the boundaries": _text_digest(repr(model.boundaries)),
+        # the incident columns' loads read it on every rank
+        "the background": _text_digest(repr(getattr(model, "background", None))),
         "the mesh's size": f"{model.mesh.tetrahedra.shape} {model.mesh.nodes.shape}",
     }
     items |= {

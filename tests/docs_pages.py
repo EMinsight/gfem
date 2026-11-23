@@ -38,6 +38,7 @@ MESHES = {
     ),
     MESH_URL.replace("line.msh", "pml_line.msh"): MESH.with_name("pml_line.msh"),
     MESH_URL.replace("line.msh", "antenna_box.msh"): MESH.with_name("antenna_box.msh"),
+    MESH_URL.replace("line.msh", "sphere.msh"): MESH.with_name("sphere.msh"),
 }
 
 _FENCE = re.compile(

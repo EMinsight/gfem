@@ -103,6 +103,11 @@ if __name__ == "__main__":
 - Each frequency is still a full solve, so S agrees with a one-worker run to
   the solver tolerance.
 - Gradients work as usual. The adjoint solves run in the main process.
+- Sources work too (`Driven(sources=...)`). The function of a
+  {py:obj}`gfem.IncidentField` must load in a worker: define it at module
+  level in a script or an importable module. A lambda, or a function
+  defined in a notebook or at the interactive prompt, raises `ValueError`
+  before any worker starts; use `frequency_workers=1` there.
 - Wave ports work too. The main process solves their port modes once over the
   whole grid before the workers start, so S and the reference impedances are
   those of a one-worker run, and a {py:obj}`gfem.PortModeError` is raised

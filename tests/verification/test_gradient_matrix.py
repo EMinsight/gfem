@@ -81,6 +81,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import periodic_cases as pc
+import pml_cases
 import pytest
 import thermal_cases as tc
 from anisotropy import TILTED
@@ -549,8 +550,32 @@ def _thermal_cells() -> list[Cell]:
     return cells
 
 
+def _source_cells() -> list[Cell]:
+    """The source columns' cells: a plane wave's kept field and dipoles' power.
+
+    On the direct solver and the uniform sweep: the load of a source column
+    is the only new path, and it is the same for every solver. The node
+    coordinates of a plane wave or a magnetic dipole raise (`OUT_OF_SCOPE`).
+    """
+    return [
+        *(
+            Cell("driven_planewave", name, "direct", "uniform")
+            for name in ("eps_r", "conductivity", "fill")
+        ),
+        *(
+            Cell("driven_dipole", name, "direct", "uniform")
+            for name in ("eps_r", "conductivity", "fill", "nodes")
+        ),
+        *(
+            Cell("driven_magnetic_dipole", name, "direct", "uniform")
+            for name in ("eps_r", "conductivity", "fill")
+        ),
+    ]
+
+
 CELLS = [
     *_cells(),
+    *_source_cells(),
     *_driven_periodic_cells(),
     *_driven_floquet_cells(),
     *_eigen_periodic_cells(),
@@ -762,10 +787,71 @@ class Designs:
         return tc.section(self._dir("chain_slab") / "slab.msh", rects, 0.3, edges)
 
     @functools.cached_property
+    def planewave_box(self):
+        return planewave_box(self._dir("planewave"))
+
+    @functools.cached_property
+    def dipole_line(self):
+        return dipole_line(self._dir("dipole"))
+
+    @functools.cached_property
     def law_shape_line(self):
         # the shape line's magnetic cover as a Lorentz medium (mu_r kept)
         line = shape_line(self._dir("law_shape_line"))
         return line.with_material("cover", gfem.Material(eps_r=COVER_LAW, mu_r=1.3))
+
+
+def _cube(c):
+    if ((c > 0.25) & (c < 0.75)).all():
+        return "scat"
+    return "air" if ((c > 0) & (c < 1)).all() else "pml"
+
+
+def _cube_sheet(c):
+    """The cube scatterer's +x face: an interior sheet."""
+    inside = 0.25 < c[1] < 0.75 and 0.25 < c[2] < 0.75
+    return "sheet" if abs(c[0] - 0.75) < 1e-9 and inside else ""
+
+
+def _sheet(mesh, surface, fill=None):
+    """A conducting sheet on ``surface``, of per-face ``fill``."""
+    n = len(mesh.elements(surface))
+    fill = np.linspace(0.2, 0.9, n) if fill is None else fill
+    return gfem.Conductor(surface, 100.0, 1e-6, fill=gfem.SheetField(fill=fill))
+
+
+def planewave_box(directory):
+    """A cube scatterer with a sheet in an air box in a layer, no port (um)."""
+    path = pml_cases.box(
+        directory / "box.msh",
+        pml_cases.SIDES,
+        thickness=0.25,
+        cells=4,
+        volume=_cube,
+        surface=_cube_sheet,
+    )
+    mesh = gfem.Mesh.from_gmsh(path)
+    air = gfem.Material()
+    return gfem.Model(
+        mesh,
+        materials={"air": air, "pml": air, "scat": air},
+        boundaries=[_sheet(mesh, "sheet")],
+        pml=gfem.PML("pml"),
+        background=air,
+    )
+
+
+def dipole_line(directory):
+    """The layer's TEM line with a design slab and a wave port (um)."""
+    mesh = gfem.Mesh.from_gmsh(pml_cases.slab_line(directory / "line.msh"))
+    air = gfem.Material()
+    return gfem.Model(
+        mesh,
+        materials={"air": air, "pml": air, "slab": air},
+        boundaries=[gfem.PEC("pec"), _sheet(mesh, "front")],
+        ports=[gfem.WavePort("p1", "port")],
+        pml=gfem.PML("pml"),
+    )
 
 
 @pytest.fixture(scope="module")
@@ -1091,6 +1177,111 @@ def _driven_nodes(d: Designs, cell: Cell, options, seed: int, *, line=None) -> C
         taylor=2e-4,
         taylor_ratio=2.0,
         taylor_at=jnp.full(morph.n_params, 1e-5),
+    )
+
+
+#: The plane wave of the source cells, and the dipoles beside the line's port
+#: (in its air, off the faces of its grid), with the powers that make their
+#: objectives O(1).
+SOURCE_WAVE = gfem.PlaneWave("w", theta=0.4, phi=0.3, polarization="TM")
+DIPOLE_POSITION = np.array([0.07, 0.13, 0.44]) * 1e-6
+SOURCE_DIPOLES = {
+    "driven_dipole": (
+        gfem.ElectricDipole("d", position=DIPOLE_POSITION, moment=(0, 1e-28, 3e-29)),
+        1e-11,
+    ),
+    "driven_magnetic_dipole": (
+        gfem.MagneticDipole("d", position=DIPOLE_POSITION, moment=(1e-20, 0, 0)),
+        1e-12,
+    ),
+}
+#: The source cells' conductivities, S/m: a loss tangent of about 0.1 at the
+#: 1 um wavelength.
+SOURCE_SIGMA = (1e3, 3e3)
+
+
+def _source_design(model, region, seed):
+    n = len(model.mesh.elements(region))
+    rng = np.random.default_rng(31 + seed)
+    sheet = model.boundaries[-1].surface
+    values = {
+        "eps_r": jnp.asarray(rng.uniform(2.0, 3.0, n)),
+        "conductivity": jnp.asarray(rng.uniform(*SOURCE_SIGMA, n)),
+        "fill": jnp.asarray(rng.uniform(0.2, 0.9, len(model.mesh.elements(sheet)))),
+    }
+    return values, rng
+
+
+def _source_case(cell, objective, values, rng) -> Case:
+    name = cell.input
+    taylor = {"eps_r": 1e-1, "conductivity": 1e2, "fill": 5e-2}[name]
+    step = {"eps_r": STEPS["eps_r"], "conductivity": 1.0, "fill": 5e-3}[name]
+    return Case(objective, values[name], rng, step=step, taylor=taylor)
+
+
+def _with_source_design(model, region, values, name, p):
+    """``model`` with its region's material fields and its sheet's fill."""
+    design = {**values, name: p}
+    fill = design.pop("fill")
+    sheet = model.boundaries[-1]
+    model = model.replace(
+        boundaries=[*model.boundaries[:-1], _sheet(model.mesh, sheet.surface, fill)]
+    )
+    return model.with_material(region, gfem.MaterialField(**design))
+
+
+def _planewave_material(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """|E|^2 over a plane wave's kept field, in the scatterer's property or fill."""
+    model = d.planewave_box
+    values, rng = _source_design(model, "scat", seed)
+    problem = gfem.Driven(pml_cases.F0, sources=SOURCE_WAVE, keep_fields=True)
+
+    def objective(p):
+        moved = _with_source_design(model, "scat", values, cell.input, p)
+        result = gfem.solve(moved, problem, options=options)
+        coefficients = result.e_field(pml_cases.F0).coefficients
+        return jnp.sum(jnp.abs(coefficients) ** 2) / coefficients.shape[0]
+
+    return _source_case(cell, objective, values, rng)
+
+
+def _dipole_problem(cell):
+    dipole, scale = SOURCE_DIPOLES[cell.problem]
+    return gfem.Driven(pml_cases.F0, excite=(), sources=dipole), scale
+
+
+def _dipole_material(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """A dipole's emitted power in the slab's property or its sheet's fill."""
+    model = d.dipole_line
+    values, rng = _source_design(model, "slab", seed)
+    problem, scale = _dipole_problem(cell)
+
+    def objective(p):
+        moved = _with_source_design(model, "slab", values, cell.input, p)
+        result = gfem.solve(moved, problem, options=options)
+        return result.emitted_power["d"][0] / scale
+
+    return _source_case(cell, objective, values, rng)
+
+
+def _dipole_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """An electric dipole's power as the slab's face, and the dipole's element, move."""
+    values, _ = _source_design(d.dipole_line, "slab", seed)
+    model = _with_source_design(d.dipole_line, "slab", values, "fill", values["fill"])
+    morph = boundary_morph(model, "front", grows="slab")
+    problem, scale = _dipole_problem(cell)
+
+    def objective(t):
+        result = gfem.solve(model.replace(mesh=morph(t)), problem, options=options)
+        return result.emitted_power["d"][0] / scale
+
+    return Case(
+        objective,
+        jnp.zeros(morph.n_params),
+        np.random.default_rng(seed),
+        step=1e-9,
+        taylor=3e-8,
+        taylor_at=jnp.full(morph.n_params, 1e-10),
     )
 
 
@@ -2547,6 +2738,16 @@ BUILDERS = {
     ("eigenmode", "law"): _eigen_law,
     ("driven", "blend"): _driven_blend,
     ("electrostatic", "law"): _electrostatic_law,
+    **{
+        ("driven_planewave", name): _planewave_material
+        for name in ("eps_r", "conductivity", "fill")
+    },
+    **{
+        (problem, name): _dipole_material
+        for problem in SOURCE_DIPOLES
+        for name in ("eps_r", "conductivity", "fill")
+    },
+    ("driven_dipole", "nodes"): _dipole_nodes,
 }
 #: Builders of the existing inputs beside a law, by (problem, input, variant).
 VARIANT_BUILDERS = {

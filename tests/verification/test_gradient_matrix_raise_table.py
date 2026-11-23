@@ -346,11 +346,14 @@ EXPECTED |= {
 # Point dipoles in the air of the layer's line (beside its wave port, every
 # column kept): an electric dipole of real moment, and a magnetic one. The
 # emitted power, the dipole's port waves and both columns' kept coefficients
-# differentiate like S in the slab's electromagnetic properties and, for the
+# differentiate like S in the slab's electromagnetic properties and the fill
+# of a conducting sheet on its front face and, for the
 # electric dipole, in the node coordinates (its load moves with its element);
 # a magnetic dipole's load has no node derivative, so every output raises in
 # the nodes. The port mode, z_ref and the fields' omega are constants, and
 # the thermal properties exact zeros.
+#: The fill of the conducting sheet on the slab's front face.
+DIPOLE_FILL = ("boundary", 1, "fill", "fill")
 _DIPOLE_DEPENDENT = (
     "s.values",
     "port_waves",
@@ -372,7 +375,8 @@ for _problem, _nodes in (
             )
             if kind == ("nodes",)
             else GRADIENT
-            if out in _DIPOLE_DEPENDENT and kind[2] in EM_PROPERTIES
+            if out in _DIPOLE_DEPENDENT
+            and (kind == DIPOLE_FILL or kind[2] in EM_PROPERTIES)
             else ZERO
         )
         for out in (
@@ -385,18 +389,25 @@ for _problem, _nodes in (
                 for leaf in ("mesh.nodes", "omega")
             ),
         )
-        for kind in [("nodes",)] + [("material", "slab", p) for p in ALL_PROPERTIES]
+        for kind in [
+            ("nodes",),
+            *(("material", "slab", p) for p in ALL_PROPERTIES),
+            DIPOLE_FILL,
+        ]
     }
 # A plane wave on a dielectric cube in an air box wrapped in a layer, no port:
-# the kept field differentiates in the cube's electromagnetic properties (the
-# load reads the background, never the cube); S is empty. The node
-# coordinates raise: the load is the wave's interpolant on the mesh.
+# the kept field differentiates in the cube's electromagnetic properties and
+# the fill of a conducting sheet on its +x face (the load reads the background,
+# never the cube or its sheet); S is empty. The node coordinates raise: the
+# load is the wave's interpolant on the mesh.
+PLANEWAVE_FILL = ("boundary", 0, "fill", "fill")
 EXPECTED |= {
     ("driven_planewave", out, kind): (
         RAISES
         if kind == ("nodes",)
         else GRADIENT
-        if out == "e_fields.0.coefficients" and kind[2] in EM_PROPERTIES
+        if out == "e_fields.0.coefficients"
+        and (kind == PLANEWAVE_FILL or kind[2] in EM_PROPERTIES)
         else ZERO
     )
     for out in (
@@ -404,7 +415,11 @@ EXPECTED |= {
         "s.z_ref",
         *(f"e_fields.0.{leaf}" for leaf in ("coefficients", "mesh.nodes", "omega")),
     )
-    for kind in [("nodes",)] + [("material", "scat", p) for p in ALL_PROPERTIES]
+    for kind in [
+        ("nodes",),
+        *(("material", "scat", p) for p in ALL_PROPERTIES),
+        PLANEWAVE_FILL,
+    ]
 }
 
 # Floquet ports (F1's slab between Floquet ports on both faces, the design
@@ -1120,6 +1135,18 @@ def _cube(c):
     return "air" if ((c > 0) & (c < 1)).all() else "pml"
 
 
+def _cube_sheet(c):
+    """The cube scatterer's +x face: an interior sheet."""
+    inside = 0.25 < c[1] < 0.75 and 0.25 < c[2] < 0.75
+    return "sheet" if abs(c[0] - 0.75) < 1e-9 and inside else ""
+
+
+def _source_sheet(mesh, surface):
+    """A conducting sheet of per-face fill: the source rows' fill input."""
+    fill = gfem.SheetField(fill=np.linspace(0.2, 0.9, len(mesh.elements(surface))))
+    return gfem.Conductor(surface, 100.0, 1e-6, fill=fill)
+
+
 @pytest.fixture(scope="module")
 def planewave_case(tmp_path_factory):
     sides = ("-x", "+x", "-y", "+y", "-z", "+z")
@@ -1129,6 +1156,7 @@ def planewave_case(tmp_path_factory):
         thickness=0.25,
         cells=4,
         volume=_cube,
+        surface=_cube_sheet,
     )
     mesh = gfem.Mesh.from_gmsh(path)
     model = gfem.Model(
@@ -1138,6 +1166,7 @@ def planewave_case(tmp_path_factory):
             "pml": gfem.Material(),
             "scat": _field(mesh, "scat"),
         },
+        boundaries=[_source_sheet(mesh, "sheet")],
         pml=gfem.PML("pml"),
         background=gfem.Material(),
     )
@@ -1147,6 +1176,13 @@ def planewave_case(tmp_path_factory):
 
 #: In the line's air, off the faces of its grid (um).
 DIPOLE_POSITION = np.array([0.07, 0.13, 0.3]) * 1e-6
+
+
+@pytest.fixture(scope="module")
+def dipole_model(pml_model):
+    # the layer's line with a conducting sheet on the slab's front face
+    sheet = _source_sheet(pml_model.mesh, "front")
+    return pml_model.replace(boundaries=[*pml_model.boundaries, sheet])
 
 
 def _dipole_cases(model):
@@ -1573,7 +1609,7 @@ def cases(model, driven_model, eigen_model, wave_cases, request):
             request.getfixturevalue("pml_model"),
             gfem.Driven(frequency=pml_cases.F0),
         ),
-        **_dipole_cases(request.getfixturevalue("pml_model")),
+        **_dipole_cases(request.getfixturevalue("dipole_model")),
         "eigenmode_pml": request.getfixturevalue("eigen_pml_case"),
         "driven_planewave": request.getfixturevalue("planewave_case"),
         **request.getfixturevalue("sheet_cases"),
@@ -2040,6 +2076,52 @@ def _out_power_flow_of_a_material_in_its_layer(request):
         return gfem.power_flow(field, "dielectric", model=m)
 
     jax.make_jaxpr(jax.grad(objective))(eps)
+
+
+def _cut_off_wave(points, frequency):
+    """A wave along +z, zero from x = 0.7 um on: none where the slab meets the layer."""
+    k = 2 * np.pi * frequency / pml_cases.C0
+    x = points[:, 0] * 1e6
+    window = np.where(x < 0.7, np.cos(np.clip(x - 0.6, 0, 0.1) * 5 * np.pi) ** 2, 0)
+    return (np.exp(-1j * k * points[:, 2]) * window)[:, None] * np.array([0, 1, 0])
+
+
+def _out_cross_sections_of_a_design_in_the_truncation_layer(request):
+    # a slab at the cube's +x end touches the layer: the cross sections read
+    # its elements, so its material cannot be differentiated there
+    def volume(c):
+        if c[0] > 0.75 and ((c > 0) & (c < 1)).all():
+            return "slab"
+        return "air" if ((c > 0) & (c < 1)).all() else "pml"
+
+    path = pml_cases.box(
+        request.getfixturevalue("tmp_path") / "slab.msh",
+        ("-x", "+x", "-y", "+y", "-z", "+z"),
+        thickness=0.25,
+        cells=4,
+        volume=volume,
+    )
+    mesh = gfem.Mesh.from_gmsh(path)
+    model = gfem.Model(
+        mesh,
+        materials={
+            "air": gfem.Material(),
+            "pml": gfem.Material(),
+            "slab": _field(mesh, "slab"),
+        },
+        pml=gfem.PML("pml"),
+        background=gfem.Material(),
+    )
+    wave = gfem.IncidentField("w", _cut_off_wave)
+    problem = gfem.Driven(frequency=pml_cases.F0, sources=wave, keep_fields=True)
+    result = gfem.solve(model, problem, options=gfem.SolverOptions(order=1))
+
+    def objective(e):
+        m = model.with_material("slab", gfem.MaterialField(eps_r=e))
+        xs = gfem.cross_sections(result, "w", model=m, intensity=1.0)
+        return xs.scattering[0]
+
+    jax.make_jaxpr(jax.grad(objective))(model.materials["slab"].eps_r)
 
 
 def _out_power_flow_in_the_node_coordinates(request):
@@ -2785,6 +2867,12 @@ OUT_OF_SCOPE = [
         _out_electric_energy_of_a_traced_field,
         gfem.NonDifferentiableError,
         r"gfem\.electric_energy is not differentiable",
+    ),
+    (
+        "cross_sections x design in the truncation layer",
+        _out_cross_sections_of_a_design_in_the_truncation_layer,
+        gfem.NonDifferentiableError,
+        r"cross_sections with respect to the material of region 'slab'.*truncation",
     ),
     (
         "power_flow x material in its layer",
