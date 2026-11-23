@@ -435,3 +435,17 @@ def test_a_result_of_an_incident_function_cannot_be_written(meshes, tmp_path):
     )
     with pytest.raises(TypeError, match="IncidentField 'f'"):
         job.run(tmp_path / "out")
+
+
+def test_an_incident_field_on_a_wave_port_face_is_refused(meshes):
+    model = _walled(
+        meshes["walls"],
+        boundaries=[gfem.PEC("xwall")],
+        ports=[gfem.WavePort("o1", "xfeed")],
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"reaches wave port surface 'xfeed': \|E_inc\| on the port face is "
+        r"1\.0e\+00 of its peak.*drive the port and use the far field",
+    ):
+        _solve(model, NORMAL_TM, excite=())

@@ -12,11 +12,12 @@ is
 
 with :math:`\Pi` the moment interpolant (`gfem._engine.moments`),
 :math:`\chi` the mask of the DOFs of the elements outside the layer, and
-:math:`A_\mathrm{bg}` the operator of the **background model**: the model
-with every scatterer region's material replaced by the background's, its
-interior sheets (`gfem.Conductor`, `gfem.Impedance`) and lumped ports left
-out, and the same truncation (layer, `gfem.Absorbing` faces) and wave port
-terms. The difference :math:`D = A - A_\mathrm{bg}` is then the scatterer:
+:math:`A_\mathrm{bg}` the **background operator**: the operator of the
+model with every scatterer region's material replaced by the background's,
+its interior sheets (`gfem.Conductor`, `gfem.Impedance`) and lumped ports
+left out, and the same truncation (layer, `gfem.Absorbing` faces) and wave
+port terms (`background_model`). The scatterer difference
+:math:`D = A - A_\mathrm{bg}` is then the scatterer:
 the regions whose material is not the background's, chosen per region
 (a `gfem.MaterialField`, a permittivity law or an anisotropic material is
 always one, whatever its values), and the interior sheet and lumped terms.
@@ -139,7 +140,7 @@ def scatterer_regions(model: Model, background: Background) -> tuple[str, ...]:
 
 
 def background_model(model: Model, background: Background) -> Model:
-    """The model of the background operator (see the module docstring)."""
+    """The model whose operator is the background operator (module docstring)."""
     layer = _incident.background_material(background)
     scatterers = set(scatterer_regions(model, background))
     materials = {
