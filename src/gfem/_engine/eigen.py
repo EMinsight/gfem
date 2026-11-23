@@ -91,11 +91,16 @@ _REGULARIZATION = 1e-10
 #: The seed freezes a wave port surface's terms at their value alone when
 #: ``εμ sigma^2 < _NEAR_CUTOFF k_c^2`` for one of its requested modes. Near
 #: cutoff the first-order freeze's slope ``γ₀' = i εμ k / sqrt(εμ k^2 -
-#: k_c^2)`` is large: on a guide with a root at 0.98 of cutoff (target 1.02
-#: of cutoff) it gave a cluster of spurious seeds above the target and cost
-#: 623 refinement steps against 85 for the value alone. Away from cutoff the
-#: value alone gives rougher seeds (39 steps against 16 on a Q 5.5 guide).
-_NEAR_CUTOFF = 2.0
+#: k_c^2)`` is large and puts a cluster of spurious seeds above the target.
+#: Refinement steps, value alone against first order, at order 3 with the
+#: ratio ``εμ sigma^2 / k_c^2`` (WR-90 TE10 ports; a shared TE10 + TE20
+#: surface for 1.172 and 1.343; two ports for 2.312), an observation:
+#: 1.044: 85 against 489 (a root at 0.977 of cutoff) and 88 against 394;
+#: 1.107: 28 against 47; 1.140: 28 against 17; 1.172: 21 against 12;
+#: 1.206: 32 against 29; 1.239: 35 against 30; 1.343: 15 against 14;
+#: 2.312: 23 against 8; 3.167: 39 against 16. The value alone pays below
+#: 1.11 and first order from 1.14 on; the threshold sits between them.
+_NEAR_CUTOFF = 1.125
 
 
 @dataclasses.dataclass(frozen=True)

@@ -899,24 +899,6 @@ def test_a_mode_above_the_low_frequency_floor_does_not_warn(mesh):
 # --- unsupported terms and failures ----------------------------------------------
 
 
-def test_shared_port_surface_raises_naming_the_surface_and_its_ports(mesh):
-    # a lumped port stands in for one mode only and cannot share a surface, so
-    # the message drops that advice and points to a driven sweep
-    model = gfem.Model(
-        mesh,
-        materials={"dielectric": gfem.Material(eps_r=EPS)},
-        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
-        ports=[gfem.WavePort("o1", "port1"), gfem.WavePort("o2", "port1", mode=2)],
-    )
-    with pytest.raises(NotImplementedError) as raised:
-        gfem.solve(model, gfem.Eigenmode(target=8e9))
-    message = str(raised.value)
-    assert "shared port surface 'port1'" in message
-    assert "'o1', 'o2'" in message
-    assert "gfem.Driven" in message
-    assert "LumpedPort" not in message
-
-
 def test_port_geometry_error_beside_a_wave_port_face_matches_the_driven_rule(
     mesh, monkeypatch
 ):

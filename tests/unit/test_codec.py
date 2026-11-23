@@ -93,3 +93,17 @@ def test_lumped_values_round_trip_as_plain_numbers():
     assert arrays == {}
     assert doc[0]["inductance"] == 2e-9
     assert back == (port, sheet)
+
+
+def test_an_eigenmode_result_keeps_its_wave_port_s_coupling_q_in_model_order():
+    import gfem.job  # registers the gfem classes
+
+    result = gfem.EigenmodeResult(
+        omega=jnp.array([1e10 + 1e6j, 2e10 + 3e6j]),
+        error=jnp.array([1e-12, 2e-12]),
+        q_port={"wave": jnp.array([4e3, math.inf]), "lumped": jnp.array([5e3, 6e3])},
+    )
+    _, _, back = _round_trip(result)
+    assert list(back.q_port) == ["wave", "lumped"]
+    for name, values in result.q_port.items():
+        np.testing.assert_array_equal(back.q_port[name], values)

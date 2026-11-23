@@ -1124,13 +1124,14 @@ class Eigenmode:
     can come back in place of a nearer one: ask for more modes and compare two
     targets. A target or a mode in a law region's unresolved band, where its
     wavelength is shorter than two of its longest edges, raises ValueError. A
-    lone `WavePort` lets its requested mode leave without reflection, so a
-    mode's Q includes its radiation through the port; a root below that
+    `WavePort`, on its own surface or one shared with other wave ports, lets
+    its requested mode leave without reflection, so a mode's Q includes its
+    radiation through the port; a root below that
     mode's cutoff which does not decay in time is dropped with
     `gfem.AntiBoundRootWarning`, and a ``target`` below the cutoff raises
-    `gfem.PortModeError` naming the cutoff. A shared port surface, a wave
-    port with ``wave_vector``, and a wave port face in a `gfem.PML` raise
-    NotImplementedError: use a `gfem.Driven` sweep. With ``wave_vector``, it raises
+    `gfem.PortModeError` naming the cutoff. A wave port with ``wave_vector``,
+    or with its face in a `gfem.PML`, raises NotImplementedError: use a
+    `gfem.Driven` sweep. With ``wave_vector``, it raises
     ValueError on a model without a `gfem.Periodic` pair, for a k with a
     component outside the span of the pairs' translations, and with any
     ``linear_solver`` but ``"direct"``; and NotImplementedError on a GPU

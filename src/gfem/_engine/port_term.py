@@ -186,6 +186,9 @@ class PortTermValue:
         d_c: :math:`dC/dk`, likewise.
         error: The largest backward error of the reduced pairs.
         version: The basis this value stands on (`PortTerm.version`).
+        y: ``(m, n)`` each port's mode as reduced pencil coordinates
+            :math:`y`, whose field coordinates are :math:`(y/\gamma, y)`.
+        d_y: :math:`dy/dk`, with :math:`y^\mathsf{T} y' = 0`.
     """
 
     k: complex
@@ -196,6 +199,8 @@ class PortTermValue:
     d_c: np.ndarray
     error: float
     version: int
+    y: np.ndarray
+    d_y: np.ndarray
 
     @property
     def gamma0(self) -> complex:
@@ -268,7 +273,8 @@ class PortTerm:
     def _columns(self) -> None:
         """``vectors`` and the face reactions of the current basis."""
         modes = self.modes
-        w = modes.reduce(self._reduced.v).w
+        self._reduction = modes.reduce(self._reduced.v)
+        w = self._reduction.w
         basis = np.zeros((modes.space.ndof, w.shape[1]))
         basis[modes.free] = w
         columns = modes.port_columns(basis)
@@ -387,6 +393,8 @@ class PortTerm:
             d_c=d_c,
             error=max(eta for _, _, eta in pairs),
             version=self.version,
+            y=np.stack(ys, axis=1),
+            d_y=np.stack(dys, axis=1),
         )
 
     def _correction(self, ys, dys, gammas, d_gammas) -> tuple[np.ndarray, np.ndarray]:
@@ -420,6 +428,52 @@ class PortTerm:
         c = p @ d @ p.T
         d_c = dp @ d @ p.T + p @ dd @ p.T + p @ d @ dp.T
         return c, d_c
+
+    # --- the outgoing power ---------------------------------------------------
+
+    def outgoing_power(
+        self,
+        k: complex,
+        x: np.ndarray,
+        pair: Callable[[np.ndarray, np.ndarray], np.ndarray] = lambda a, b: a.T @ b,
+    ) -> np.ndarray:
+        r"""``(n,)`` the time-averaged power each port's mode carries out, W.
+
+        For the 3D field ``x`` (volts per file unit, on the eigen operator's
+        space) at the complex wavenumber ``k``: :math:`P_p = |a_p|^2\,
+        \mathrm{Re}\,P_{\text{mode},p}`, with :math:`a_p` the field's
+        biorthogonal modal amplitude on port :math:`p`'s mode (the driven S
+        functional's, :math:`a = R^{-1}\Phi^\mathsf{T} U^\mathsf{T} x`, in
+        SI field units) and :math:`P_{\text{mode},p} = \tfrac12\int (e_p
+        \times h_p^*)\cdot n\,dA` the mode's own complex power at
+        :math:`\omega = k c / s`. The cross terms between the modes of a
+        shared surface are dropped: they vanish on a lossless section.
+        Positive for a wave leaving the domain.
+
+        Args:
+            k: The wavenumber, per file unit.
+            x: The field, a state column.
+            pair: The layout's pairing of load columns and a state
+                (``load.T @ state`` on one process).
+        """
+        value = self.at(k)
+        y, gamma = value.y, value.gamma
+        # the field coordinates (y / gamma, y): n x H is (y, y) on the columns
+        t = y / gamma
+        phi = np.concatenate([y, y])
+        amplitude = np.linalg.solve(
+            phi.T @ (self._reaction @ t), phi.T @ pair(self.vectors, x)
+        )
+        scale = self.modes.section.scale
+        omega = k * scipy.constants.c / scale
+        power = np.array(
+            [
+                self._reduction.power(self._reduction.coords(y[:, p], g), g, omega)
+                for p, g in enumerate(gamma)
+            ]
+        )
+        # the field is scale times the SI one
+        return np.abs(amplitude / scale) ** 2 * power.real
 
     # --- the driven piece -------------------------------------------------------
 
