@@ -23,6 +23,7 @@ orphan: true
 ## Solving
 
 - {doc}`solve-a-device`
+- {doc}`watch-a-solve`
 - {doc}`prepare-a-mesh`
 - {doc}`2d-models`
 - {doc}`save-and-export`

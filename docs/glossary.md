@@ -903,3 +903,20 @@ Rank copies
   Independent complete solves, one per launched process, each on its own single-rank
   communicator, asked for by name.
 ```
+
+## Logs
+
+```{glossary}
+Log display
+  What `gfem.log.enable` turns on: one line per gfem log record on stderr
+  (clock, level, the logger's short name, the rank under MPI, then the
+  record's message), with a {term}`progress row` for each long loop where
+  the console can draw it. Off by default, and off again after
+  `gfem.log.disable`.
+
+Progress row
+  One line of the {term}`log display` that follows a running loop (a uniform,
+  adaptive or port mode sweep, a mode search, a mesh refinement) or a phase
+  running outside any loop, and disappears when it ends. It is never a log
+  record and is never written to a file.
+```
