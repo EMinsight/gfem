@@ -35,6 +35,14 @@ import threading
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol, Self
 
+#: The rows' labels, one per kind of loop.
+UNIFORM_SWEEP = "uniform sweep"
+UNIFORM_SWEEP_ADJOINT = "uniform sweep (adjoint)"
+ADAPTIVE_SWEEP = "adaptive sweep"
+PORT_MODE_SWEEP = "port mode sweep"
+MODE_SEARCH = "mode search"
+MESH_REFINEMENT = "mesh refinement"
+
 #: The live display, or ``None`` while progress is off.
 _LIVE: Live | None = None
 
@@ -123,10 +131,12 @@ def start(console: Any) -> None:
 def forward_to(queue: Any) -> None:
     """Send this frequency worker's advances to the parent through ``queue``.
 
-    A worker pool's initializer: a worker runs one counted loop, its block of
-    the uniform sweep, and each ``advance`` of it puts ``(n, fields)`` on
-    ``queue`` for the parent to advance its own row. Phases stay in the worker:
-    the parent's row shows the parent's, and a phase per worker would flicker.
+    A worker pool's initializer: a worker solves its block of the uniform
+    sweep, and each ``advance`` of its uniform sweep row puts ``(n, fields)``
+    on ``queue`` for the parent to advance its own. Other rows a worker opens
+    are not forwarded, since the parent's row counts frequencies. Phases stay
+    in the worker: the parent's row shows the parent's, and a phase per worker
+    would flicker.
     """
     global _LIVE  # noqa: PLW0603 - the one switch every loop reads
     _LIVE = Live(_QueueBoard(queue))
@@ -259,19 +269,21 @@ class _Phase:
 
 
 class _QueueBoard:
-    """A frequency worker's board: advances go to the parent, nothing is drawn.
+    """A frequency worker's board: its uniform sweep row's advances go to the parent.
 
-    The arguments it ignores are those of `Board`.
+    Nothing is drawn; a row's key says whether it is forwarded. The arguments it ignores are
+    those of `Board`.
     """
 
     def __init__(self, queue: Any) -> None:
         self.queue = queue
 
     def open(self, label: str, total: int | None, depth: int, *, spinner: bool) -> Any:  # noqa: ARG002
-        return None
+        return label == UNIFORM_SWEEP
 
-    def advance(self, key: Any, n: int, fields: Mapping[str, Any]) -> None:  # noqa: ARG002
-        self.queue.put((n, dict(fields)))
+    def advance(self, key: Any, n: int, fields: Mapping[str, Any]) -> None:
+        if key:
+            self.queue.put((n, dict(fields)))
 
     def update(
         self,

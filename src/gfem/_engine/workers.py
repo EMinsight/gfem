@@ -120,36 +120,40 @@ def run(
     pool_options: dict[str, Any] = {}
     if forwarded is not None:
         pool_options = {"initializer": _progress.forward_to, "initargs": (forwarded,)}
-    with contextlib.ExitStack() as stack:
-        futures = []
-        # a pool starts its process on the first submit
-        with _worker_environment(threads):
-            for i, args in enumerate(arguments):
-                pool = stack.enter_context(
-                    ProcessPoolExecutor(
-                        max_workers=1, mp_context=context, **pool_options
+    try:
+        with contextlib.ExitStack() as stack:
+            futures = []
+            # a pool starts its process on the first submit
+            with _worker_environment(threads):
+                for i, args in enumerate(arguments):
+                    pool = stack.enter_context(
+                        ProcessPoolExecutor(
+                            max_workers=1, mp_context=context, **pool_options
+                        )
                     )
-                )
-                kwargs = keywords[i] if keywords is not None else {}
-                futures.append(pool.submit(function, *args, **kwargs))
+                    kwargs = keywords[i] if keywords is not None else {}
+                    futures.append(pool.submit(function, *args, **kwargs))
+            if forwarded is not None:
+                _advance_until_done(futures, forwarded, row)
+            out = []
+            for future, label in zip(futures, labels, strict=True):
+                try:
+                    out.append(future.result())
+                except BrokenProcessPool as err:
+                    raise RuntimeError(
+                        f"The frequency worker solving {label} stopped without a "
+                        "result: it was killed, most likely for lack of memory (each "
+                        "worker holds one solve). Use fewer "
+                        "SolverOptions.frequency_workers, or frequency_workers=1."
+                    ) from err
         if forwarded is not None:
-            _advance_until_done(futures, forwarded, row)
-        out = []
-        for future, label in zip(futures, labels, strict=True):
-            try:
-                out.append(future.result())
-            except BrokenProcessPool as err:
-                raise RuntimeError(
-                    f"The frequency worker solving {label} stopped without a "
-                    "result: it was killed, most likely for lack of memory (each "
-                    "worker holds one solve). Use fewer "
-                    "SolverOptions.frequency_workers, or frequency_workers=1."
-                ) from err
-    if forwarded is not None:
-        # a worker's feeder thread flushes its last advances as it exits, which
-        # the pools' shutdown above waited for
-        _drain(forwarded, row)
-        forwarded.close()
+            # a worker's feeder thread flushes its last advances as it exits,
+            # which the pools' shutdown above waited for
+            _drain(forwarded, row)
+    finally:
+        # on every path: a block's error leaves no queue feeder behind
+        if forwarded is not None:
+            forwarded.close()
     return out
 
 

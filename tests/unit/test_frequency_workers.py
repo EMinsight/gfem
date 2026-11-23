@@ -433,6 +433,21 @@ def test_a_worker_forwards_its_rows_advances_and_not_its_phases(monkeypatch):
     ]
 
 
+def test_a_worker_forwards_only_its_uniform_sweep_rows_advances(monkeypatch):
+    # the parent advances its uniform sweep row by what it gets: a row of
+    # another loop run in the worker would count units of another kind
+    monkeypatch.setattr(_progress, "_LIVE", None)
+    forwarded = queue.Queue()
+    _progress.forward_to(forwarded)
+    with _progress.task("mode search") as other:
+        other.advance(attempt=1)
+        with _progress.task("uniform sweep", total=1) as row:
+            row.advance(frequency=3e9)
+        other.advance(attempt=2)
+    assert forwarded.get_nowait() == (1, {"frequency": 3e9})
+    assert forwarded.empty()
+
+
 def test_two_workers_advance_the_parents_row_once_per_frequency(line, monkeypatch):
     problem = gfem.Driven(FREQUENCIES)
     # off: no queue is made and the pools start without an initializer
@@ -473,12 +488,24 @@ def test_with_progress_the_first_blocks_error_is_raised(monkeypatch):
         ("import time; time.sleep(1); raise ValueError('first')",),
         ("raise KeyError('second')",),
     ]
+    # the queue the workers forward through is closed even so
+    context = multiprocessing.get_context("spawn")
+    made = []
+    make_queue = context.Queue
+
+    def spy_queue(*args, **kwargs):
+        made.append(make_queue(*args, **kwargs))
+        return made[-1]
+
+    monkeypatch.setattr(context, "Queue", spy_queue)
     with (
         _progress.task("uniform sweep", total=2) as row,
         pytest.raises(ValueError, match="first"),
     ):
         workers.run(exec, arguments, ["block 0", "block 1"], threads=1, row=row)
     assert board.summary() == [("uniform sweep", 2, 0, True)]
+    (forwarded,) = made
+    assert forwarded._closed
 
 
 def test_worker_threads_split_the_cores_this_process_may_use(monkeypatch):
