@@ -12,7 +12,7 @@ import jax as _jax
 _jax.config.update("jax_enable_x64", True)
 
 # Submodules are imported after the switch, so no gfem array is ever float32.
-from gfem import conventions, design, quantum, shape  # noqa: E402
+from gfem import conventions, design, log, quantum, shape  # noqa: E402
 from gfem._cuda import cuda_available  # noqa: E402
 from gfem._materials import (  # noqa: E402
     Debye,
@@ -234,6 +234,7 @@ __all__ = [
     "interface_participation",
     "joule_heating",
     "load_result",
+    "log",
     "power_flow",
     "quantum",
     "refine_mesh",
