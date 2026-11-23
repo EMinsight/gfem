@@ -162,7 +162,7 @@ from gfem.errors import (
     ThinLayerWarning,
     UnrequestedOrderWarning,
 )
-from gfem.mesh import _at_imported_nodes, _shortest_edges
+from gfem.mesh import Mesh, _at_imported_nodes, _shortest_edges
 from gfem.model import Model
 from gfem.options import SolverOptions
 from gfem.problems import Driven
@@ -511,29 +511,43 @@ def driven_operator(
         topology=model.mesh._topology,  # noqa: SLF001
         space_key=solve_key,
         latent=latent,
-        cells=None
-        if comm is not None
-        else functools.partial(solve_cells, model, built),
+        cells=None if comm is not None else _solve_cells(model, built),
     )
 
 
-def solve_cells(model: Model, built: EngineMesh) -> Cells:
-    """The tetrahedra of ``model``'s electromagnetic domain, in NGSolve's order.
+def _solve_cells(model: Model, built: EngineMesh) -> Callable[[], Cells]:
+    """Builds the tetrahedra of ``model``'s electromagnetic domain (`solve_cells`).
 
-    Each with its NGSolve volume element, and marked when it lies in a region
-    of the model's perfectly matched layer.
+    It holds the mesh and the masks, not the model.
     """
     mesh = model.mesh
+    active = model._domain_of("em").active  # noqa: SLF001
+    layer = () if model.pml is None else model.pml.regions
+    tags = tuple(mesh.region(name).tag for name in layer)
+    return functools.partial(solve_cells, mesh, built, active, tags)
+
+
+def solve_cells(
+    mesh: Mesh, built: EngineMesh, active: np.ndarray, pml_tags: tuple[int, ...]
+) -> Cells:
+    """The tetrahedra of a solve domain, in NGSolve's order.
+
+    Args:
+        mesh: The model's mesh, from which ``built`` was built.
+        built: The engine mesh.
+        active: Per tetrahedron of ``mesh``, whether it is in the domain.
+        pml_tags: The volume tags of the perfectly matched layer's regions;
+            its tetrahedra are marked.
+    """
     order = built.cell_order
-    active = model._domain_of("em").active[order]  # noqa: SLF001
+    inside = active[order]
     pml = None
-    if model.pml is not None:
-        tags = [mesh.region(name).tag for name in model.pml.regions]
-        pml = np.isin(mesh.tetrahedron_tags[order][active], tags)
+    if pml_tags:
+        pml = np.isin(mesh.tetrahedron_tags[order][inside], pml_tags)
     return Cells(
         np.asarray(mesh.nodes),
-        mesh.tetrahedra[order][active],
-        np.flatnonzero(active),
+        mesh.tetrahedra[order][inside],
+        np.flatnonzero(inside),
         pml,
     )
 

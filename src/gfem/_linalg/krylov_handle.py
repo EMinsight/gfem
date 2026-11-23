@@ -1,7 +1,8 @@
 """A Krylov solve on a held preconditioner, kept across a sweep.
 
-`KrylovHandle` is what the ``bddc_gmres`` handle (`gfem._linalg.bddc`) does
-apart from building its preconditioner: the Krylov method, the warm start,
+`KrylovHandle` is what the ``bddc_gmres`` and ``pmg_gmres`` handles
+(`gfem._linalg.bddc`, `gfem._linalg.pmg`) do apart from building their
+preconditioner: the Krylov method, the warm start,
 the preconditioner reuse across a sweep's frequencies and its iteration-count
 rules. A subclass builds and holds one preconditioner (`KrylovHandle._set_up`).
 
