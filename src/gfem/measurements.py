@@ -21,6 +21,9 @@ result reloaded with `gfem.load_result`.
   solved field (an electric field's, or a potential's).
 - `purcell_factor`: a point dipole's emitted power over its power in the
   unbounded material at its position.
+- `far_field`: the far-field amplitude of a port, dipole or incident-field
+  column on a grid of directions, with the IEEE 145 radiation outputs
+  (`FarField`).
 
 Measurements run on the CPU and work under `jax.jit` and `jax.vmap`; under
 `jax.grad` they differentiate with respect to the field coefficients (so
@@ -51,6 +54,7 @@ from gfem import _mpi, _objective, _probe
 from gfem._adjoint.measure import measure
 from gfem._checks import check_fixed, is_traced
 from gfem._dim2 import entry_refusal, refuse_entry
+from gfem._far_field import FarField, far_field
 from gfem._materials import Material, _is_law, field_principal_values
 from gfem._purcell import purcell_factor
 from gfem._pytree import register_fields
@@ -66,11 +70,13 @@ if TYPE_CHECKING:
 __all__ = [
     "INTERFACE_KINDS",
     "CrossSections",
+    "FarField",
     "InterfaceParticipation",
     "characteristic_impedance",
     "cross_sections",
     "electric_energy",
     "element_mean",
+    "far_field",
     "interface_participation",
     "power_flow",
     "purcell_factor",

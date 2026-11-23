@@ -506,6 +506,41 @@ phasors, the same at every frequency. An antenna current moment :math:`Il`
 - Purcell factor: :math:`F = P / P_0`. In a non-magnetic medium the partial
   local density of states along :math:`p` is :math:`\rho_p = \rho_0 F`, with
   :math:`\rho_0 = \omega^2 n / (\pi^2 c^3)`.
+
+Far fields
+----------
+`gfem.far_field` reads the field radiated into the exterior medium, the
+model's background (one constant, isotropic, lossless `gfem.Material`), of
+wavenumber :math:`k = n\omega/c` and wave impedance :math:`\eta =
+\eta_0\sqrt{\mu_r/\varepsilon_r}`.
+
+- Far-field amplitude: under :math:`e^{+i\omega t}` an outgoing wave is
+  :math:`e^{-ikr}/r`, and
+
+  .. math::
+
+      F(\hat r) = \lim_{r\to\infty} r\,e^{+ikr} E(r\hat r),
+
+  in V, with :math:`r` measured from the model origin, the phase reference.
+  :math:`\hat r` is given by the same angles as an incident field's
+  :math:`\hat k`, and :math:`F = F_\theta\hat\theta + F_\phi\hat\phi`
+  in that basis. For an incident-field column it is the scattered field's.
+- Circular components: :math:`F_R = (F_\theta + iF_\phi)/\sqrt2` and
+  :math:`F_L = (F_\theta - iF_\phi)/\sqrt2`, the field's components along
+  ``"RCP"`` and ``"LCP"`` (IEEE handedness); axial ratio
+  :math:`(|F_R| + |F_L|)/\big||F_R| - |F_L|\big|`, 1 for circular and
+  infinite for linear polarization.
+- Radiation intensity :math:`U = |F|^2/(2\eta)` in W/sr (peak phasors);
+  radiated power :math:`P_\mathrm{rad}`, the power flowing out through the
+  far-field layer. The IEEE 145 ratios: directivity :math:`D = 4\pi
+  U/P_\mathrm{rad}`, gain :math:`G = 4\pi U/P_\mathrm{acc}`, realized gain
+  :math:`G_r = 4\pi U/P_\mathrm{inc}`, radiation efficiency
+  :math:`P_\mathrm{rad}/P_\mathrm{acc}`. For a port column
+  :math:`P_\mathrm{inc}` is `INCIDENT_POWER` and :math:`P_\mathrm{acc} = 1 -
+  |S_{ii}|^2`, so :math:`G_r = 4\pi U`; for a point dipole both are its
+  emitted power.
+- Bistatic radar cross section of a `gfem.PlaneWave` column, in m²:
+  :math:`\sigma(\hat r) = 4\pi|F(\hat r)|^2/|E_0|^2`.
 """
 
 from __future__ import annotations

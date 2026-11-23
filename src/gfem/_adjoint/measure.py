@@ -22,6 +22,9 @@ A kernel provides ``output_specs`` (name -> ``jax.ShapeDtypeStruct``),
 or the reason the input cannot be differentiated), ``forward(values)`` and
 ``backward(values, cotangents, wanted)`` (gradients of the ``wanted``
 inputs, by name), all on NumPy values, and ``describe(name)`` for errors.
+A kernel whose input is differentiable for some outputs only may add
+``check_backward(wanted, live)``, which raises at trace time, from the
+inputs to differentiate and the outputs with a cotangent.
 
 A kernel may name a ``comm``, the communicator of a field it reads; it is then a
 collective host call, and ``pieces`` names its inputs that are a rank's own.
@@ -116,6 +119,9 @@ def measure_vjp(kernel: Any, inputs: Mapping[str, Any]) -> dict[str, jax.Array]:
             if not isinstance(ct, SymbolicZero)
         ]
         grads: list[Any] = [jnp.zeros_like(v) for v in values]
+        check = getattr(kernel, "check_backward", None)
+        if check is not None and live and wanted:
+            check(tuple(names[i] for i in wanted), tuple(n for n, _ in live))
         if live and wanted:
             computed = jax.pure_callback(
                 functools.partial(

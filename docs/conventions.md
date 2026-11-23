@@ -555,6 +555,24 @@ power of the same dipole in the bulk material at $\mathbf{r}_0$. The module's
 "Point dipoles" section gives that bulk power and the local density of
 states.
 
+## Far fields
+
+{py:obj}`gfem.far_field` gives the {term}`far-field amplitude <Far-field amplitude>`
+$\mathbf{F}(\hat{\mathbf{r}}) = \lim_{r\to\infty} r\,e^{+ikr}\mathbf{E}(r\hat{\mathbf{r}})$
+in V: under `TIME_DEPENDENCE` an outgoing wave is $e^{-ikr}/r$, and the
+phase is referred to the model origin. $k$ and $\eta$ are those of the
+{term}`exterior medium <Exterior medium>`, the model's background. The
+direction $\hat{\mathbf{r}}$ takes the angles of an incident field's
+$\hat{\mathbf{k}}$, and `e_theta`, `e_phi` are the components along
+$\hat{\boldsymbol{\theta}}$ and $\hat{\boldsymbol{\phi}}$; `e_right` and
+`e_left`, $(F_\theta \pm iF_\phi)/\sqrt{2}$, those along RCP and LCP. The
+radiation intensity is $U = |\mathbf{F}|^2/(2\eta)$ in W/sr (`PHASOR`), and
+the directivity, gain and realized gain divide $4\pi U$ by the radiated,
+accepted and incident power (IEEE 145): a port column is fed
+`INCIDENT_POWER`, so its realized gain is $4\pi U$. A plane wave's bistatic
+radar cross section is $4\pi|\mathbf{F}|^2/|E_0|^2$, of its scattered
+field. The module's "Far fields" section has the formulas.
+
 ## Next
 
 - {py:obj}`gfem.conventions`: every convention in full, with the formulas
