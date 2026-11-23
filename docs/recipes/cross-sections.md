@@ -204,6 +204,14 @@ none of which depends on the design. A design region with an element in the
 truncation layer raises {py:obj}`gfem.NonDifferentiableError`; the source,
 its intensity and the frequency are static.
 
+## Across ranks
+
+On a result of a {term}`distributed solve`, {py:obj}`gfem.cross_sections`
+and {py:obj}`gfem.power_flow` are collective calls: call them on every rank,
+and every rank gets the same numbers, one process's to round-off
+({doc}`distributed-solve`). A large scattering problem can stay on its
+ranks for its cross sections; no second run on one process is needed.
+
 ## Limits
 
 - **Incident-field columns only**: a port column has no cross sections.

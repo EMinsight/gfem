@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import ngsolve as ngs
 import numpy as np
@@ -42,6 +42,7 @@ from gfem._boundaries import FloquetPort, surfaces_of
 from gfem._engine import probe
 from gfem._engine.driven import DrivenOperator, driven_operator
 from gfem._engine.mesh import inverse_order
+from gfem._linalg.layout import ONE_PROCESS, DofLayout
 from gfem._periodic import tie_classes
 from gfem._pml import Stretch
 from gfem.mesh import _TET_EDGES, Mesh, _same_topology
@@ -57,6 +58,8 @@ __all__ = [
     "check_field",
     "check_nodes",
     "check_size",
+    "dofs",
+    "local_coefficients",
     "power_flow",
     "surface",
     "surface_of",
@@ -102,10 +105,16 @@ class Flux:
 
     ``P = Im[conj(D e) . M e] / c0`` with ``D = diag(mask)``, ``M`` the sum
     of the non-port pieces at ω and ``c0 = 2 ω mu0 scale``.
+
+    Under ranks ``e`` is a rank's piece of the state, ``M e`` its part of a
+    load (its own elements' terms) and the mask agreed on every holder of a
+    DOF, so the product is the layout's pairing, reduced and broadcast: the
+    same number on every rank. The pullback is then a rank's part of a load.
     """
 
     op: DrivenOperator
     mask: np.ndarray
+    layout: DofLayout = ONE_PROCESS
 
     def _apply(self, x: np.ndarray, omega: float) -> np.ndarray:
         """``M x`` at ``omega``, ``x`` of shape ``(ndof,)`` or ``(ndof, m)``."""
@@ -121,7 +130,8 @@ class Flux:
     def power(self, e: np.ndarray, omega: float) -> float:
         """The power leaving the side, W."""
         w = np.where(self.mask, e, 0.0)
-        return float(np.imag(np.vdot(w, self._apply(e, omega)))) / self._scale(omega)
+        paired = self.layout.pair(self._apply(e, omega), np.conj(w))
+        return float(np.imag(paired)) / self._scale(omega)
 
     def pullback(self, e: np.ndarray, omega: float) -> np.ndarray:
         """JAX's gradient of `power` in ``e``: ``dP/dx - i dP/dy = 2 conj(H e)``.
@@ -152,10 +162,21 @@ def power_flow(
     """
     check_nodes(field, model)
     where = surface(field, side, model)
-    flux = build(field.order, model, where, stretch=_pml.field_stretch(model, field))
-    e = np.asarray(field.coefficients)
+    comm = field._communicator  # noqa: SLF001
+    stretch = _pml.field_stretch(model, field)
+    flux = build(field.order, model, where, stretch=stretch, comm=comm)
+    e = local_coefficients(np.asarray(field.coefficients), flux.op, comm)
     check_size(e, flux.op, field.order)
     return flux.power(e, float(np.asarray(field.omega).real))
+
+
+def local_coefficients(e: np.ndarray, op: DrivenOperator, comm: Any) -> np.ndarray:
+    """A field's coefficients on ``op``'s space: under ranks, its piece unpadded.
+
+    A rank's piece is padded to one width on every rank; its first
+    ``op.space.ndof`` entries are this rank's DOFs.
+    """
+    return e if comm is None else e[: op.space.ndof]
 
 
 def surface(
@@ -241,12 +262,18 @@ def _check_point_sources(field: Field, layer: np.ndarray) -> None:
 
 
 def build(
-    order: int, model: Model, where: Surface, *, stretch: Stretch | None = None
+    order: int,
+    model: Model,
+    where: Surface,
+    *,
+    stretch: Stretch | None = None,
+    comm: Any = None,
 ) -> Flux:
     """The `Flux` of a surface on ``model`` at its node positions.
 
     ``stretch`` is the field's perfectly matched layer stretch
-    (`gfem._pml.field_stretch`).
+    (`gfem._pml.field_stretch`); ``comm`` the communicator of a field across
+    ranks (collective).
     """
     op = driven_operator(
         model,
@@ -254,9 +281,11 @@ def build(
         elements=where.layer,
         faces=where.faces,
         paired=False,
+        comm=comm,
         stretch=stretch,
     )
-    return Flux(op=op, mask=_dofs(op, where.tie, where.rim, where.rim | where.layer))
+    mask = dofs(op, where.tie, where.rim, where.rim | where.layer)
+    return Flux(op=op, mask=mask, layout=op.layout or ONE_PROCESS)
 
 
 def check_size(e: np.ndarray, op: DrivenOperator, order: int) -> None:
@@ -383,7 +412,7 @@ def _outside_faces(
     return owned & touching.any(axis=1)
 
 
-def _dofs(
+def dofs(
     op: DrivenOperator, tie: np.ndarray, elements: np.ndarray, near: np.ndarray
 ) -> np.ndarray:
     """The DOFs of the cells, edges and faces of the given gfem tetrahedra.
@@ -392,6 +421,10 @@ def _dofs(
     (same `tie_classes` key), looked up on the ``near`` tetrahedra, which
     hold every image the operator reaches. Without pairs the images are
     the edges and faces themselves.
+
+    Under ranks each rank marks the DOFs of the tetrahedra it holds, and a
+    DOF shared with a rank that holds such a tetrahedron is marked too (one
+    neighbour exchange, collective): the holders of a DOF agree.
     """
     space, ngmesh = op.space, op.built.mesh
     ngs_index = inverse_order(op.built.cell_order, len(elements))
@@ -405,13 +438,19 @@ def _dofs(
         return tuple(sorted(int(tie[v.nr]) for v in ngmesh[node].vertices))
 
     keys = set()
-    for t in ngs_index[np.flatnonzero(elements)]:
+
+    def held(mask: np.ndarray) -> np.ndarray:
+        """The NGSolve numbers of the masked tetrahedra this rank holds."""
+        local = ngs_index[np.flatnonzero(mask)]
+        return local[local >= 0]
+
+    for t in held(elements):
         element = ngmesh[ngs.ElementId(ngs.VOL, int(t))]
         keys.update(key(n) for n in (*element.edges, *element.faces))
         mark(ngs.NodeId(ngs.CELL, int(t)))
-    for t in ngs_index[np.flatnonzero(near)]:
+    for t in held(near):
         element = ngmesh[ngs.ElementId(ngs.VOL, int(t))]
         for n in (*element.edges, *element.faces):
             if key(n) in keys:
                 mark(n)
-    return out
+    return out if op.layout is None else op.layout.held_by_any(out)

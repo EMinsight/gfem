@@ -179,11 +179,17 @@ def _scatterer_feed(c: np.ndarray) -> str:
     return "feed" if on else ""
 
 
-def scatterer_box(path: str | Path, *, cells: int = 4) -> Path:
-    """A dielectric cube "scat" in the middle of `dipole_box`, its +x face "feed"."""
+def scatterer_box(path: str | Path, *, cells: int = 4, thickness: float = 0.5) -> Path:
+    """A dielectric cube "scat" in the middle of `dipole_box`, its +x face "feed".
+
+    With ``cells=8`` a shell of air elements, untouched by the layer, holds
+    the cube: the truncation layer is background (``thickness`` as in
+    `dipole_box`).
+    """
     return pc.box(
         path,
         sides=pc.SIDES,
+        thickness=thickness,
         cells=cells,
         volume=_scatterer_volume,
         surface=_scatterer_feed,
