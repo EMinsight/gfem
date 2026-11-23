@@ -22,9 +22,28 @@ from pathlib import Path
 import jax
 import numpy as np
 import pytest
-import structured_meshes as sm
 from finite_differences import assert_gradient_matches, unit_directions
-from wave_port_cases import nearest_error, ported_guide, ported_model
+from wave_port_cases import (
+    ANTI_BOUND_A3,
+    C0,
+    CASE_A,
+    CASE_A3,
+    CASE_A4,
+    CASE_B3,
+    ROOT_A,
+    ROOT_A3,
+    ROOT_A4,
+    ROOT_B3,
+    ROOT_C10,
+    ROOT_C20,
+    SHARE_B3,
+    SHARED_PORTS,
+    TWO_PORTS,
+    ghz,
+    nearest_error,
+    ported_guide,
+    ported_model,
+)
 
 import gfem
 from gfem._eigen import rule as eigen_rule
@@ -36,70 +55,22 @@ from gfem._engine.port_term import PortTerm
 from gfem.errors import AntiBoundRootWarning
 
 DATA = Path(__file__).parent / "data"
-C0 = 299792458.0
-A_MM, B_MM = 22.86, 10.16
 ORDER_3 = gfem.SolverOptions(order=3, linear_solver="direct")
-
-# (name, eps_r, thickness mm) from the short to the port
-CASE_A = (("dielectric", 4.0, 10.0), ("air", 1.0, 5.0))
-CASE_A3 = (("dielectric", 4.0, 30.0), ("air", 1.0, 5.0))
-# exact roots, GHz (outgoing branch of the port everywhere)
-ROOT_A = 11.665906948910 + 1.062461078093j
-ROOT_A3 = 7.033666935873 + 0.147969608374j
-ANTI_BOUND_A3 = 4.619035589541
-
-
-def shorted_guide(path, layers, *, nx=6, nz_per_mm=0.5, ny=2):
-    """WR-90 with ``layers`` from a short at z = 0 to the port at the far end."""
-    tops = np.cumsum([t for _, _, t in layers])
-    zs = [np.zeros(1)]
-    for (_, _, t), z1 in zip(layers, tops, strict=True):
-        n = max(1, round(t * nz_per_mm))
-        zs.append(z1 - t + np.linspace(0, t, n + 1)[1:])
-    edges = (
-        np.linspace(0, A_MM, nx + 1),
-        np.linspace(0, B_MM, ny + 1),
-        np.concatenate(zs),
-    )
-    length = tops[-1]
-
-    def volume(c):
-        return layers[int(np.searchsorted(tops, c[2]))][0]
-
-    def surface(c):
-        if abs(c[2] - length) < 1e-9:
-            return "port"
-        if any(abs(c[2] - z) < 1e-9 for z in tops[:-1]):
-            return ""
-        return "walls"
-
-    sm.write_msh22(path, sm.structured(edges, volume, surface))
-    return gfem.Mesh.from_gmsh(path, length_unit="mm")
-
-
-def guide_model(mesh, layers):
-    return gfem.Model(
-        mesh,
-        materials={name: gfem.Material(eps_r=eps) for name, eps, _ in layers},
-        boundaries=[gfem.PEC("walls")],
-        ports=[gfem.WavePort("p1", "port")],
-    )
-
-
-def ghz(omega):
-    return np.asarray(omega) / (2 * math.pi) / 1e9
+LONE_PORT = (gfem.WavePort("p1", "port"),)
 
 
 @pytest.fixture(scope="module")
 def case_a(tmp_path_factory):
-    mesh = shorted_guide(tmp_path_factory.mktemp("a") / "a.msh", CASE_A)
-    return guide_model(mesh, CASE_A)
+    mesh = ported_guide(tmp_path_factory.mktemp("a") / "a.msh", CASE_A, left_port=False)
+    return ported_model(mesh, CASE_A, LONE_PORT)
 
 
 @pytest.fixture(scope="module")
 def case_a3(tmp_path_factory):
-    mesh = shorted_guide(tmp_path_factory.mktemp("a3") / "a3.msh", CASE_A3)
-    return guide_model(mesh, CASE_A3)
+    mesh = ported_guide(
+        tmp_path_factory.mktemp("a3") / "a3.msh", CASE_A3, left_port=False
+    )
+    return ported_model(mesh, CASE_A3, LONE_PORT)
 
 
 # --- the solve ------------------------------------------------------------------
@@ -213,30 +184,17 @@ def test_shift_holds_the_low_rank_term_across_a_reshift(hybrid):
 
 # --- several ports and shared surfaces ------------------------------------------
 
-CASE_B3 = (
-    ("air_l", 1.0, 3.0),
-    ("window_1", 10.0, 2.4),
-    ("air_1", 1.0, 20.0),
-    ("window_2", 10.0, 2.4),
-    ("air_2", 1.0, 9.9),
-    ("window_3", 10.0, 2.4),
-    ("air", 1.0, 3.0),
-)
+# relative error at order 3 on these meshes: B3 6.9e-6, C 3.4e-5, N 3.9e-7
+
+# N's exact root, GHz, on the outgoing branch: Re f at 0.977 of the TE10
+# cutoff (6.557 GHz)
 CASE_N = (("dielectric", 4.0, 6.0), ("air", 1.0, 5.0))
-# exact roots, GHz: B3 between two TE10 ports; C's TE20 family, on a guide
-# 5 mm high whose one port surface carries TE10 and TE20; N on the outgoing
-# branch, Re f at 0.977 of the TE10 cutoff (6.557 GHz)
-# (relative error at order 3 on these meshes: B3 6.9e-6, C 3.4e-5, N 3.9e-7)
-ROOT_B3 = 9.974259423230 + 0.096704835502j
-ROOT_C20 = 15.216633733515 + 0.207573093830j
 ROOT_N = 6.403885446223 + 0.564967925392j
 
 
 def test_two_port_surfaces_resonance_matches_the_exact_root(tmp_path):
     mesh = ported_guide(tmp_path / "b3.msh", CASE_B3, left_port=True)
-    model = ported_model(
-        mesh, CASE_B3, [gfem.WavePort("left", "portl"), gfem.WavePort("right", "port")]
-    )
+    model = ported_model(mesh, CASE_B3, TWO_PORTS)
     result = gfem.solve(
         model, gfem.Eigenmode(target=9.97e9, n_modes=3), options=ORDER_3
     )
@@ -249,11 +207,7 @@ def test_shared_port_surface_resonance_matches_the_exact_root(tmp_path):
     # the TE20 family needs the surface's modal correction: its propagation
     # constant is not the lead (TE10) mode's of the Robin term
     mesh = ported_guide(tmp_path / "c.msh", CASE_A3, left_port=False, b_mm=5.0)
-    model = ported_model(
-        mesh,
-        CASE_A3,
-        [gfem.WavePort("te10", "port"), gfem.WavePort("te20", "port", mode=2)],
-    )
+    model = ported_model(mesh, CASE_A3, SHARED_PORTS)
     result = gfem.solve(
         model, gfem.Eigenmode(target=15.2e9, n_modes=3), options=ORDER_3
     )
@@ -266,7 +220,7 @@ def test_decaying_root_below_cutoff_is_kept_and_its_mirror_dropped(tmp_path):
     # a low-Q root with Re f below the port's cutoff decays in time: it is a
     # resonance; its mirror (Im f < 0) grows in time and never comes back
     mesh = ported_guide(tmp_path / "n.msh", CASE_N, left_port=False)
-    model = ported_model(mesh, CASE_N, [gfem.WavePort("p1", "port")])
+    model = ported_model(mesh, CASE_N, LONE_PORT)
     with warnings.catch_warnings():
         warnings.simplefilter("error", AntiBoundRootWarning)
         result = gfem.solve(
@@ -281,16 +235,6 @@ def test_decaying_root_below_cutoff_is_kept_and_its_mirror_dropped(tmp_path):
 
 # --- the coupling Q -------------------------------------------------------------
 
-# two eps_r = 10 windows: a partial reflector, Q 869
-CASE_A4 = (
-    ("air", 1.0, 20.0),
-    ("window", 10.0, 2.4),
-    ("air", 1.0, 9.9),
-    ("window", 10.0, 2.4),
-    ("air", 1.0, 3.0),
-)
-ROOT_A4 = 9.968822933448 + 0.005732947875j
-
 
 def coupling_sum_error(result, j):
     """``|sum 1/q_p - 1/Q| Q`` of mode ``j``, ``Q = result.q``."""
@@ -302,9 +246,9 @@ def coupling_sum_error(result, j):
 def test_a_wave_port_s_coupling_q_sums_to_the_mode_s_q_at_high_q(tmp_path):
     # the outgoing power is the mode's loss, so 1/q_port is 1/Q up to the
     # O(1/Q^2) of the electric energy against the stored energy
-    mesh = shorted_guide(tmp_path / "a4.msh", CASE_A4)
+    mesh = ported_guide(tmp_path / "a4.msh", CASE_A4, left_port=False)
     result = gfem.solve(
-        guide_model(mesh, CASE_A4),
+        ported_model(mesh, CASE_A4, LONE_PORT),
         gfem.Eigenmode(target=9.97e9, n_modes=1),
         options=ORDER_3,
     )
@@ -324,7 +268,6 @@ def test_a_wave_port_s_coupling_q_is_within_a_percent_of_q_at_q_5(case_a):
 # port, air 5, eps_r = 10 4, air 5, port (mm): each port carries half the power
 CASE_B = (("air", 1.0, 5.0), ("window", 10.0, 4.0), ("air", 1.0, 5.0))
 ROOT_B = 11.884342073581 + 2.083440824738j
-TWO_PORTS = [gfem.WavePort("left", "portl"), gfem.WavePort("right", "port")]
 
 
 def test_the_two_ports_of_a_mirrored_guide_share_its_coupling_q_equally(tmp_path):
@@ -342,11 +285,6 @@ def test_the_two_ports_of_a_mirrored_guide_share_its_coupling_q_equally(tmp_path
     assert abs(q1 - q2) <= 1e-8 * q1  # 8e-15
 
 
-# the ports' shares of B3's outgoing power at the port planes, exact: in the
-# high-Q limit q_p = Q / share
-SHARE_B3 = {"left": 0.943972, "right": 0.056028}
-
-
 def test_two_ports_split_the_coupling_q_as_their_shares_of_the_power(tmp_path):
     mesh = ported_guide(tmp_path / "b3.msh", CASE_B3, left_port=True)
     result = gfem.solve(
@@ -357,23 +295,15 @@ def test_two_ports_split_the_coupling_q_as_their_shares_of_the_power(tmp_path):
     error, j = nearest_error(result, ROOT_B3)
     assert error <= 1e-4
     q = float(result.q[j])
+    # B3's exact power shares: in the high-Q limit q_p = Q / share
     for name, share in SHARE_B3.items():
         # 1.0e-4 (left) and 3.5e-4 (right) at order 3
         assert float(result.q_port[name][j]) == pytest.approx(q / share, rel=2e-3)
 
 
-# C's TE10 family, on the guide 5 mm high whose port surface requests TE10
-# and TE20
-ROOT_C10 = 14.123326299100 + 0.380179415083j
-
-
 def test_each_port_of_a_shared_surface_reports_its_own_mode_s_coupling_q(tmp_path):
     mesh = ported_guide(tmp_path / "c.msh", CASE_A3, left_port=False, b_mm=5.0)
-    model = ported_model(
-        mesh,
-        CASE_A3,
-        [gfem.WavePort("te10", "port"), gfem.WavePort("te20", "port", mode=2)],
-    )
+    model = ported_model(mesh, CASE_A3, SHARED_PORTS)
     result = gfem.solve(
         model, gfem.Eigenmode(target=14.6e9, n_modes=4), options=ORDER_3
     )
@@ -405,7 +335,7 @@ GRADIENT_OPTIONS = gfem.SolverOptions(
 def test_a_wave_port_s_coupling_q_gradient_matches_a_central_difference(tmp_path):
     # the load reads the port mode's amplitude and power at the mode's
     # complex k through the reduced model's derivatives
-    mesh = shorted_guide(tmp_path / "a.msh", CASE_A, nx=4)
+    mesh = ported_guide(tmp_path / "a.msh", CASE_A, left_port=False, nx=4)
 
     problem = gfem.Eigenmode(target=11.67e9, n_modes=3)
     eps = jax.numpy.full(len(mesh.elements("dielectric")), 4.0)
@@ -427,7 +357,9 @@ def test_a_wave_port_s_coupling_q_gradient_matches_a_central_difference(tmp_path
 
 @pytest.fixture
 def lone_a(tmp_path_factory):
-    mesh = shorted_guide(tmp_path_factory.mktemp("a4x") / "a.msh", CASE_A, nx=4)
+    mesh = ported_guide(
+        tmp_path_factory.mktemp("a4x") / "a.msh", CASE_A, left_port=False, nx=4
+    )
     eps = jax.numpy.full(len(mesh.elements("dielectric")), 4.0)
     return mesh, eps
 

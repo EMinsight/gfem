@@ -14,55 +14,18 @@ import numpy as np
 import pml_cases
 import pytest
 import structured_meshes as sm
+from wave_port_cases import CASE_A, ROOT_A, ghz, ported_guide, ported_model
 
 import gfem
 from gfem import _mpi
 
-C0 = 299792458.0
-A_MM, B_MM = 22.86, 10.16
-# a dielectric layer at the short, air at the port (TE10 cutoff 6.557 GHz)
-CASE_A = (("dielectric", 4.0, 10.0), ("air", 1.0, 5.0))
-ROOT_A = 11.665906948910 + 1.062461078093j  # GHz, the exact root
 ORDER_2 = gfem.SolverOptions(order=2, linear_solver="direct")
-
-
-def shorted_guide(path, layers, *, nx=6, nz_per_mm=0.5, ny=2):
-    """WR-90 with ``layers`` from a short at z = 0 to the port at the far end."""
-    tops = np.cumsum([t for _, _, t in layers])
-    zs = [np.zeros(1)]
-    for (_, _, t), z1 in zip(layers, tops, strict=True):
-        n = max(1, round(t * nz_per_mm))
-        zs.append(z1 - t + np.linspace(0, t, n + 1)[1:])
-    edges = (
-        np.linspace(0, A_MM, nx + 1),
-        np.linspace(0, B_MM, ny + 1),
-        np.concatenate(zs),
-    )
-    length = tops[-1]
-
-    def volume(c):
-        return layers[int(np.searchsorted(tops, c[2]))][0]
-
-    def surface(c):
-        if abs(c[2] - length) < 1e-9:
-            return "port"
-        if any(abs(c[2] - z) < 1e-9 for z in tops[:-1]):
-            return ""
-        return "walls"
-
-    sm.write_msh22(path, sm.structured(edges, volume, surface))
-    return gfem.Mesh.from_gmsh(path, length_unit="mm")
 
 
 @pytest.fixture(scope="module")
 def case_a(tmp_path_factory):
-    mesh = shorted_guide(tmp_path_factory.mktemp("a") / "a.msh", CASE_A)
-    return gfem.Model(
-        mesh,
-        materials={name: gfem.Material(eps_r=eps) for name, eps, _ in CASE_A},
-        boundaries=[gfem.PEC("walls")],
-        ports=[gfem.WavePort("p1", "port")],
-    )
+    mesh = ported_guide(tmp_path_factory.mktemp("a") / "a.msh", CASE_A, left_port=False)
+    return ported_model(mesh, CASE_A, [gfem.WavePort("p1", "port")])
 
 
 # --- refusals -------------------------------------------------------------------
@@ -183,7 +146,7 @@ def test_an_absorbing_edge_beside_a_law_is_refused_before_the_port(tmp_path):
         terms=[gfem.Lorentz(delta_eps=0.2, resonance_frequency=40e9, damping=1e9)],
     )
     layers = (("guide", 1.0, 15.0),)
-    mesh = shorted_guide(tmp_path / "law.msh", layers)
+    mesh = ported_guide(tmp_path / "law.msh", layers, left_port=False)
     model = gfem.Model(
         mesh,
         materials={"guide": gfem.Material(eps_r=law)},
@@ -210,5 +173,5 @@ def test_one_field_estimator_refinement_cycle_completes(case_a):
     assert len(refined.cycles) == 2
     first, last = refined.cycles
     assert last.tetrahedra > first.tetrahedra
-    f = np.asarray(refined.result.omega) / (2 * math.pi) / 1e9
+    f = ghz(refined.result.omega)
     assert np.min(np.abs(f - ROOT_A)) / abs(ROOT_A) < 1e-2
