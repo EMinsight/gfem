@@ -16,8 +16,9 @@ process:
   partition;
 - the Purcell factor's gradient by the cube's permittivity is one process's;
 - on a finer box, whose truncation layer is background, the cross sections of
-  the plane wave and `gfem.power_flow` (the corrected one of the wave's total
-  field, the plain one of the port's field) are one process's to `GATE`;
+  the plane wave, `gfem.power_flow` (the corrected one of the wave's total
+  field, the plain one of the port's field) and the far fields of both
+  columns (amplitudes and radiated power) are one process's to `GATE`;
 - ranks given different backgrounds stop at the entry check, naming it.
 """
 
@@ -250,8 +251,13 @@ def _inner(centroids):
     return ((centroids > 0.125e-6) & (centroids < 0.875e-6)).all(axis=1)
 
 
+#: Far-field directions, rad: a few off the axes.
+THETA = np.array([0.3, 1.2, 2.5])
+PHI = np.array([0.1, 2.0, 4.0])
+
+
 def _balance(path):
-    """The cross sections and the power out of `_inner`, on this process."""
+    """The cross sections, the power out of `_inner` and the far fields."""
     model = fs.scatterer_model(path)
     problem = gfem.Driven(GRID, sources=WAVE, keep_fields=True)
     result = gfem.solve(model, problem, options=_options())
@@ -266,6 +272,11 @@ def _balance(path):
             field = result.e_field(f, label)
             power = gfem.power_flow(field, _inner, model=model)
             out[f"power_flow {label} {k}"] = np.asarray(power)
+    for label in ("w", "p1"):
+        ff = gfem.far_field(result, label, THETA, PHI, model=model)
+        out[f"far_field {label} e_theta"] = np.asarray(ff.e_theta)
+        out[f"far_field {label} e_phi"] = np.asarray(ff.e_phi)
+        out[f"far_field {label} radiated power"] = np.asarray(ff.radiated_power)
     return out
 
 
@@ -276,7 +287,7 @@ def fine_box(tmp_path):
 
 
 @needs_stack
-def test_cross_sections_and_power_flow_across_ranks_are_one_process_s(fine_box):
+def test_balance_and_far_field_across_ranks_are_one_process_s(fine_box):
     got, *_ = on_ranks(_balance, fine_box, ranks=RANKS, limit=600)
     one = _balance(fine_box)
     assert np.abs(one["absorption"]).min() > 0
