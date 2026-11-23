@@ -14,28 +14,14 @@ The Krylov method follows the operator: conjugate gradients for a Hermitian
 GMRES (`gfem._linalg.gmres`), which orthogonalizes its Krylov basis by CGS2
 on gfem's threads.
 
-Across a sweep the handle keeps its preconditioner (`BddcHandle.refactorize`)
-once a solve on it measured a reference iteration count, solves on the reused
-preconditioner to a tolerance `REUSED_TOLERANCE` times tighter, caps every
-warm solve there from that count, and sets it up again when GMRES iterations
-grow past one setup's worth. A GMRES solve without an initial guess on a
-preconditioner reused across a sweep's frequencies (an adjoint solve of a
-multi-frequency backward) runs that warm path from a zero guess;
-after a refactorization at no stated frequency (an eigen reshift) it sets
-BDDC up at the new operator first. A handle prepared without
-reuse sets BDDC up at each `BddcHandle.refactorize`.
-
-`BddcHandle.last_action` and `last_reason` say what the last step did and
-why (`gfem._linalg.report`): ``factorized`` (set up: ``first``,
-``rebuild rule``, or ``cold solve`` for a CG solve, or a GMRES solve after
-an eigen reshift, on a reused preconditioner), ``reused``, or ``reused,
-capped, refactorized`` (``capped``: a warm column set BDDC up inside the
-solve).
+Across a sweep the handle keeps its preconditioner, and sets it up again by
+the iteration-count rules of `gfem._linalg.krylov_handle`, which also says
+what `BddcHandle.last_action` and `last_reason` report.
 
 Under ranks (an operator with a layout) BDDC's coarse problem is factored by MUMPS
 across ranks when the MPI PETSc stack is installed (`gfem._linalg.coarse`), otherwise
 on rank 0 by the same rule; GMRES runs on owned entries (`gfem._linalg.gmres`), CG
-is gfem's on agreed products (`gfem._linalg.cg`), and every decision above
+is gfem's on agreed products (`gfem._linalg.cg`), and every reuse decision
 reads an agreed value: the iterations, the residuals and the norms of
 `gfem._linalg.layout`. Each rank's BLAS runs at its threads in a setup and at
 one thread in a solve, whose coarse apply gains nothing from them.
@@ -43,37 +29,23 @@ one thread in a solve, whose coarse apply gains nothing from them.
 
 from __future__ import annotations
 
-import math
-
 import ngsolve as ngs
-import numpy as np
 
 from gfem import _mpi, _petsc, _timing
 from gfem._linalg import Operator, Symmetry, coarse
 from gfem._linalg.base import (
-    NgsHandle,
     equals_its_transpose,
     host_bytes,
     local_matrix,
     same_free_dofs,
 )
-from gfem._linalg.cg import Cg
 from gfem._linalg.direct import GENERAL_INVERSE, INVERSE
-from gfem._linalg.gmres import Gmres
+from gfem._linalg.krylov_handle import (
+    KrylovHandle,
+    _slack,  # noqa: F401  (the per-column slack of BDDC's reuse, read here by name)
+)
 from gfem._linalg.pardiso import pardiso_inverse
-from gfem.errors import LinearSolverConvergenceError
 
-#: Krylov iterations a BDDC setup is worth, summed over the right-hand sides
-#: of a solve: on the driven references (order 2) one setup took as long as
-#: about 30 GMRES iterations of one right-hand side.
-SETUP_ITERATIONS = 30
-#: Factor on the tolerance of a solve on a reused preconditioner. GMRES stops
-#: at ``tolerance * |P b|``, and a preconditioner set up at another frequency
-#: measures the error less well: on the driven references (r8_abc1, r4_abc1,
-#: r8_wp; 1e-6) reused solves ended 10-20x less accurate in S than fresh ones
-#: (up to 1.1e-5 against 3e-7 to 6e-7). One more decade gave fresh accuracy
-#: for about 10 more iterations per column.
-REUSED_TOLERANCE = 0.1
 #: Threads from which a setup serving many columns factors its coarse problem
 #: with sparse Cholesky: at 16 threads PARDISO's one-column solve broke even
 #: with sparse Cholesky's after 154-365 applies of one factorization on the
@@ -176,43 +148,21 @@ def _coarse_on_mumps(comm, *, is_complex: bool) -> bool:
     return _mpi.agree_all(comm, flag=_petsc.mpi_stack_usable())
 
 
-def _slack(columns: int) -> int:
-    """Extra iterations per column a reused preconditioner may cost: ``Δ``."""
-    return max(1, round(SETUP_ITERATIONS / columns))
-
-
-def _reused_reference(n_ref: int, measured: float, tolerance: float) -> int:
-    """``n_ref``, measured at ``measured``, scaled to a reused solve's tolerance.
-
-    GMRES gains about the same digits per iteration, so ``n_ref`` iterations
-    to ``measured`` are ``n_ref * log(REUSED_TOLERANCE * tolerance) /
-    log(measured)`` to the tighter tolerance of a reused solve at
-    ``tolerance``.
-    """
-    if not 0 < measured < 1:
-        return n_ref
-    scale = math.log(REUSED_TOLERANCE * tolerance) / math.log(measured)
-    return math.ceil(n_ref * max(scale, 1.0))
-
-
-class BddcHandle(NgsHandle):
+class BddcHandle(KrylovHandle):
     """One BDDC preconditioner, reused by a Krylov solve per right-hand side.
 
     BDDC reads the fixed DOFs from the space: the operator's free DOFs must
     be the space's ``FreeDofs()`` (build the space with ``dirichlet=``).
 
-    `refactorize` swaps in another operator and keeps the preconditioner
-    (preconditioner reuse across a sweep) when a solve on it measured a
-    reference iteration count, setting it up again when reusing it costs
-    more than a setup: a `gfem._linalg.Refactorable` handle. With
-    ``reuse=False`` it sets BDDC up at every refactorization. Every setup
-    chooses its coarse factorization (`_coarse_inverse`) from the columns
-    one setup is expected to serve: ``width * solves`` with reuse, ``width``
-    without it; a `refactorize` may state its own ``solves``, which later
-    setups count until another `refactorize` states one.
+    The Krylov solve, its warm start and the preconditioner reuse across a
+    sweep are `gfem._linalg.krylov_handle.KrylovHandle`'s; this handle
+    registers BDDC on the form before assembly, which sets it up. Every setup
+    chooses its coarse factorization (`_coarse_inverse`) from the columns one
+    setup is expected to serve.
     """
 
     kind = "bddc_gmres"
+    preconditioner_name = "BDDC"
 
     def __init__(
         self,
@@ -231,63 +181,26 @@ class BddcHandle(NgsHandle):
         right-hand-side columns per solve and ``solves`` solve calls are
         expected; they choose the coarse factorization only.
         """
-        form = operator.form
-        space = form.space
-        if operator.layout is not None:
-            self.layout = operator.layout
-        same = same_free_dofs(operator.freedofs, space.FreeDofs())
+        self._coarse = None
+        super().__init__(
+            operator,
+            symmetry,
+            tolerance=tolerance,
+            maxiter=maxiter,
+            reuse=reuse,
+            width=width,
+            solves=solves,
+        )
+
+    def _check_operator(self, operator: Operator) -> None:
+        """Refuse free DOFs other than the space's: BDDC reads the space's."""
+        same = same_free_dofs(operator.freedofs, operator.form.space.FreeDofs())
         if not _mpi.agree_all(self.layout.comm, flag=same):
             raise ValueError(
                 "BDDC fixes the Dirichlet DOFs of the space, so the operator's free "
                 "DOFs must be the space's FreeDofs(); build the space with "
                 "dirichlet= on the fixed boundaries."
             )
-        self._width = width
-        self.reuse = reuse
-        self._expected_columns = self._columns_per_setup(solves)
-        self.symmetry = symmetry
-        self._coarse = None
-        preconditioner = self._set_up(form)
-        is_complex = bool(space.is_complex)
-        super().__init__(form.mat, operator.freedofs, symmetry, is_complex=is_complex)
-        self.tolerance = tolerance
-        self.maxiter = maxiter
-        self._hold(form, preconditioner)
-        #: What the last step did, and why (see the module docstring).
-        self.last_action: str | None = "factorized"
-        self.last_reason: str | None = "first"
-
-    def expect_solves(self, solves: int) -> None:
-        """Restate the solve calls the next setups serve, as `refactorize` does.
-
-        For the coarse factorization only; the held preconditioner stays.
-        """
-        with self._lock:
-            self._expected_columns = self._columns_per_setup(solves)
-
-    @property
-    def reference_iterations(self) -> int | None:
-        """``n_ref`` of the held preconditioner (see `refactorize`), or ``None``."""
-        return self._reference_iterations
-
-    def assume_reference(self, iterations: int) -> None:
-        """Take ``iterations`` as ``n_ref`` of a fresh preconditioner not yet measured.
-
-        For a solve from the previous design's solution: it takes
-        fewer iterations than a cold solve, and would set ``n_ref`` so low
-        that the next frequencies' reused solves cap and set BDDC up again.
-        The ``n_ref`` the previous design measured stands in.
-        """
-        with self._lock:
-            if not self._reused and self._reference_iterations is None:
-                self._reference_iterations = int(iterations)
-
-    def _columns_per_setup(self, solves: int) -> int:
-        """The columns one setup serves when ``solves`` solve calls are expected.
-
-        Without reuse every refactorization sets BDDC up for one solve.
-        """
-        return self._width * (solves if self.reuse else 1)
 
     def _set_up(self, form: ngs.BilinearForm) -> ngs.Preconditioner:
         """`_set_up` on ``form``, every BLAS at this rank's threads under ranks."""
@@ -299,381 +212,9 @@ class BddcHandle(NgsHandle):
             self._coarse = coarse.finish(comm, columns=self._expected_columns)
         return preconditioner
 
-    def _hold(self, form: ngs.BilinearForm, preconditioner) -> None:
-        """Solve ``form``'s matrix on a preconditioner just set up from it."""
-        self._form = form
-        self._preconditioner = preconditioner
-        self._matrix = form.mat
-        self._solver = self._krylov(form.mat, preconditioner)
-        self._reused = False
-        #: Whether the reuse came from a refactorization at a sweep's frequency.
-        self._swept = False
-        self._reference_iterations: int | None = None
-        self._rebuild = False
-
-    def _build(self, form: ngs.BilinearForm) -> None:
-        """Set BDDC up again on ``form`` (assembled again), and hold it."""
-        with _timing.phase("setup") as span:
-            # release the old setup first
-            self._solver = self._preconditioner = self._matrix = self._form = None
-            self._free_coarse()
-            self._hold(form, self._set_up(form))
-            if span.enabled:
-                span.set(solver=self.kind, action="factorized", nbytes=self.nbytes)
-
-    def _held(self) -> tuple[ngs.BaseMatrix, ngs.Preconditioner, ngs.BilinearForm]:
-        """The matrix, its preconditioner and its form.
-
-        Raises:
-            RuntimeError: The handle was freed.
-        """
-        matrix, pre, form = self._matrix, self._preconditioner, self._form
-        if self._solver is None or matrix is None or pre is None or form is None:
-            raise RuntimeError("This solver handle was freed.")
-        return matrix, pre, form
-
-    def _krylov(
-        self,
-        matrix: ngs.BaseMatrix,
-        pre: ngs.Preconditioner,
-        *,
-        maxiter: int | None = None,
-        reference: float | None = None,
-    ):
-        """The Krylov solver of ``matrix`` on the preconditioner ``pre``.
-
-        ``maxiter`` defaults to the handle's; ``reference`` is as for
-        `_gmres`.
-        """
-        maxiter = self.maxiter if maxiter is None else maxiter
-        if self.symmetry != "hermitian":
-            return self._gmres(matrix, pre, maxiter=maxiter, reference=reference)
-        if reference is None:
-            stop = {"tol": self.tolerance}
-        else:
-            stop = {"atol": self.tolerance * reference}
-        if self.layout.comm is not None:
-            # products agreed across ranks
-            return Cg(
-                matrix,
-                pre.mat,
-                maxiter=maxiter,
-                conjugate=self._complex,
-                layout=self.layout,
-                **stop,
-            )
-        return ngs.solvers.CGSolver(
-            matrix, pre.mat, maxiter=maxiter, conjugate=self._complex, **stop
-        )
-
-    def _gmres(
-        self,
-        matrix: ngs.BaseMatrix,
-        pre: ngs.Preconditioner,
-        *,
-        maxiter: int,
-        reference: float | None = None,
-        tolerance: float | None = None,
-    ):
-        """GMRES of ``matrix`` on ``pre``, to ``tolerance`` times ``reference``.
-
-        ``reference=None`` stops relative to the first residual instead;
-        ``tolerance`` defaults to the handle's.
-        """
-        tolerance = self.tolerance if tolerance is None else tolerance
-        if reference is None:
-            return Gmres(
-                matrix, pre.mat, tol=tolerance, maxiter=maxiter, layout=self.layout
-            )
-        return Gmres(
-            matrix,
-            pre.mat,
-            atol=tolerance * reference,
-            maxiter=maxiter,
-            layout=self.layout,
-        )
-
-    def refactorize(
-        self,
-        operator: Operator,
-        *,
-        solves: int | None = None,
-        frequency: float | None = None,  # noqa: ARG002
-        sweep: bool = False,
-    ) -> None:
-        """Assemble ``operator`` and solve it on the held preconditioner.
-
-        Preconditioner reuse (see `gfem._linalg.Refactorable`): only the
-        matrix is assembled, and the Krylov solver is rebuilt on it; the
-        preconditioner is reused. ``n_ref`` is the most iterations per column
-        of the first solve on a fresh preconditioner (cold or warm, at the
-        prepared tolerance), or, after a capped column set BDDC up inside a
-        solve, of the iterations spent after that setup; a solve on a reused
-        preconditioner never changes it. BDDC is set up again here instead
-        when the handle does not reuse, when ``n_ref`` is unset, or when a
-        warm solve on the reused preconditioner, at the prepared tolerance,
-        went past ``n_ref + Δ`` iterations per column (``n_ref`` scaled to
-        the reused solve's tighter tolerance, `_reused_reference`), with
-        ``Δ`` `SETUP_ITERATIONS` shared by the solve's columns. So every warm
-        solve on a reused preconditioner is capped (see `_warm`). A GMRES
-        solve without an initial guess on a reused preconditioner runs that
-        warm path from zero when this refactorization is a frequency
-        ``sweep``'s; otherwise (an eigen reshift,
-        far from the operator the preconditioner was set up at) and
-        for a CG solve, it sets BDDC up again first. The rule counts
-        iterations, never times, so runs repeat exactly.
-
-        ``solves`` restates the solve calls the next setups are expected to
-        serve (``prepare``'s ``solves``), for the coarse factorization only;
-        ``None`` keeps the count. A setup may come later than this call,
-        inside a solve (a capped column, or a cold solve). ``sweep`` tells
-        whether a cold GMRES solve may reuse the preconditioner;
-        ``frequency`` is ignored (only the direct solver reads it).
-        """
-        form = operator.form
-        with self._lock:
-            _, pre, _ = self._held()
-            if solves is not None:
-                self._expected_columns = self._columns_per_setup(solves)
-            if self._rebuild or not self.reuse or self._reference_iterations is None:
-                reason = "rebuild rule" if self.reuse and self._rebuild else "first"
-                self._build(form)
-                self.last_action, self.last_reason = "factorized", reason
-                return
-            with _timing.phase("assemble"):
-                form.Assemble()
-            self._form = form
-            self._matrix = form.mat
-            self._solver = self._krylov(form.mat, pre)
-            self._reused = True
-            self._swept = sweep
-            self.last_action, self.last_reason = "reused", None
-
-    def _converged(
-        self, solver, reference: float | None, tolerance: float | None = None
-    ) -> bool:
-        """Whether ``solver``'s last residual estimate is at the tolerance.
-
-        ``reference`` is the residual the tolerance is relative to; ``None``
-        is the first residual of the iteration. ``tolerance`` defaults to the
-        handle's. A stop at ``maxiter`` or before it (a breakdown) above the
-        tolerance is not converged.
-        """
-        residuals = solver.residuals
-        if not residuals:
-            return True
-        start = residuals[0] if reference is None else reference
-        tolerance = self.tolerance if tolerance is None else tolerance
-        return residuals[-1] <= tolerance * start
-
-    def _finish(
-        self,
-        solver,
-        b: ngs.BaseVector,
-        x: ngs.BaseVector,
-        reference: float | None = None,
-        iterations: int = 0,
-    ) -> int:
-        """Finish a column's solve: restart it if needed, count, raise.
-
-        ``solver`` solved ``b`` into ``x``; a restart updates ``x`` in place.
-        A Krylov solve that stops before its ``maxiter`` above the tolerance
-        (CG's silent exit, or any solver's) restarts once from ``x``, with
-        the iterations left, to ``tolerance`` times the same start. (gfem's
-        GMRES returns the right iterate on a lucky breakdown, so it meets the
-        tolerance there.) ``reference`` is as for `_converged`;
-        ``iterations`` were spent on the column before ``solver`` (a capped
-        solve on a reused preconditioner). Returns the column's iterations,
-        these included.
-        """
-        spent = iterations + int(solver.iterations)
-        residuals = solver.residuals
-        if not residuals:
-            return spent
-        start = residuals[0] if reference is None else reference
-        early = int(solver.iterations) < solver.maxiter
-        if early and not self._converged(solver, start):
-            matrix, pre, _ = self._held()
-            left = solver.maxiter - solver.iterations
-            solver = self._krylov(matrix, pre, maxiter=left, reference=start)
-            solver.Solve(rhs=b, sol=x, initialize=False)
-            spent += int(solver.iterations)
-            early = int(solver.iterations) < solver.maxiter
-        if self._converged(solver, start):
-            return spent
-        name = "CG" if self.symmetry == "hermitian" else "GMRES"
-        reached = f"{solver.residuals[-1] / start:.3e}"
-        if early:
-            what = (
-                f": it stopped short of the tolerance after {spent} iterations, "
-                f"restart included (reached {reached})"
-            )
-        else:
-            what = f" in {self.maxiter} iterations (reached {reached})"
-        raise LinearSolverConvergenceError(
-            f"BDDC + {name} did not converge to the relative tolerance "
-            f"{self.tolerance:g}{what}. Use linear_solver='direct', or a looser "
-            "tolerance."
-        )
-
-    def _inverse_map(
-        self, B: np.ndarray, tolerance: float | None, x0: np.ndarray | None = None
-    ) -> tuple[np.ndarray, tuple[int, ...]]:
-        _, _, form = self._held()
-        with self._lock, self.layout.blas_threads(1):  # reentrant: _map, _warm
-            if self._reused and (
-                self.symmetry == "hermitian" or (x0 is None and not self._swept)
-            ):
-                # CG has no warm path, and an eigen reshift's shift-invert
-                # solves run on a preconditioner set up at the new shift
-                self._build(form)
-                self.last_action, self.last_reason = "factorized", "cold solve"
-            elif self._reused and x0 is None:
-                # GMRES on the reused preconditioner from zero
-                x0 = np.zeros(B.shape, dtype=np.complex128 if self._complex else float)
-            solver = self._solver
-            prepared = self.tolerance
-            # only a solve at the prepared tolerance measures n_ref
-            measure = tolerance is None or tolerance == prepared
-            if tolerance is not None:
-                # NGSolve's Krylov solvers read .tol on every Solve
-                solver.tol = self.tolerance = tolerance
-            try:
-                if x0 is not None and self.symmetry != "hermitian":
-                    return self._warm(B, x0, measure=measure, prepared=prepared)
-                counts: list[int] = []
-                out = self._map(
-                    lambda _: solver,
-                    B,
-                    after=lambda *column: counts.append(self._finish(*column)),
-                )
-                # a cold solve runs on a fresh preconditioner
-                self._set_reference(counts, measure=measure)
-                return out, tuple(counts)
-            finally:
-                solver.tol = self.tolerance = prepared
-
-    def _set_reference(self, iterations: list[int], *, measure: bool) -> None:
-        """Set ``n_ref`` to the most ``iterations`` of a column, when unset.
-
-        ``iterations`` ran on a fresh preconditioner, one entry per column.
-        Only a solve at the prepared tolerance (``measure``) sets ``n_ref``.
-        """
-        if measure and iterations and self._reference_iterations is None:
-            self._reference_iterations = max(iterations)
-
-    def _drop_a_bad_guess(self, matrix, pre, b, x, r) -> float:
-        """``|P b|``, after zeroing ``x`` if its residual exceeds that (worse than 0).
-
-        ``r`` is scratch space.
-        """
-        layout = self.layout
-        r.data = pre.mat * b
-        reference = layout.state_norm(r)
-        r.data = b - matrix * x
-        b_res = r.CreateVector()
-        b_res.data = pre.mat * r
-        if layout.state_norm(b_res) >= reference:
-            x[:] = 0
-            layout.mark_state(x)
-        return reference
-
-    def _warm(
-        self, B: np.ndarray, x0: np.ndarray, *, measure: bool, prepared: float
-    ) -> tuple[np.ndarray, tuple[int, ...]]:
-        """GMRES from the initial guess ``x0``, to ``tolerance * |P b|``.
-
-        The stopping residual is relative to the preconditioned right-hand
-        side, not to the first residual, so a good guess saves iterations.
-        A guess whose residual exceeds ``|P b|`` (worse than zero) is
-        dropped.
-
-        On a reused preconditioner (see `refactorize`) the tolerance is
-        `REUSED_TOLERANCE` times tighter, since a preconditioner set up at
-        another matrix measures the error less well, and ``n_ref`` (measured
-        at the ``prepared`` tolerance) is scaled to it (`_reused_reference`).
-        Each column there stops at
-        ``min(maxiter, n_ref + 2Δ)`` iterations; a column that stops there
-        unconverged sets BDDC up again at this matrix and goes on from where
-        it stopped. A breakdown above the tolerance on the reused
-        preconditioner (a stop before the cap) sets BDDC up again the same
-        way: that is the warm path's recovery, and only a breakdown on the
-        fresh preconditioner meets the restart rule of `_finish`. Only a
-        solve with ``measure`` true (at the prepared tolerance) counts: the
-        iterations spent on a fresh preconditioner set ``n_ref`` when it is
-        unset, and those spent on the reused one decide the rebuild rule,
-        when every column stayed on it. Returns the solution and each
-        column's iterations.
-        """
-        cols, flat = self._columns(B)
-        guesses, _ = self._columns(x0)
-        matrix, _, _ = self._held()
-        out = np.zeros(cols.shape, dtype=np.complex128 if self._complex else float)
-        # a load, a state, and what the first preconditioned residual overwrites
-        b, x, r = (
-            matrix.CreateColVector(),
-            matrix.CreateRowVector(),
-            matrix.CreateColVector(),
-        )
-        layout = self.layout
-        slack = _slack(cols.shape[1])
-        stale: list[int] = []  # per column, on the reused preconditioner
-        fresh: list[int] = []  # per column, after a setup at this matrix
-        counts: list[int] = []  # per column, both of these
-        with self._lock:
-            # refactorize reuses a preconditioner only with n_ref set, and a
-            # reused one solves to a tighter tolerance, in more iterations
-            tight = REUSED_TOLERANCE * self.tolerance
-            n_ref = _reused_reference(
-                self._reference_iterations or 0, prepared, self.tolerance
-            )
-            for j in range(cols.shape[1]):
-                matrix, pre, form = self._held()
-                on_reused = self._reused
-                cap = self.maxiter
-                tolerance = self.tolerance
-                if on_reused:
-                    cap = min(cap, n_ref + 2 * slack)
-                    tolerance = tight
-                b.FV().NumPy()[:] = cols[:, j]
-                layout.mark_load(b)
-                x.FV().NumPy()[:] = guesses[:, j]
-                layout.mark_state(x)
-                reference = self._drop_a_bad_guess(matrix, pre, b, x, r)
-                solver = self._gmres(
-                    matrix, pre, maxiter=cap, reference=reference, tolerance=tolerance
-                )
-                solver.Solve(rhs=b, sol=x, initialize=False)
-                spent = 0
-                if on_reused and not self._converged(solver, reference, tolerance):
-                    # set up at this matrix, and go on from the partial iterate
-                    spent = int(solver.iterations)
-                    self._build(form)
-                    self.last_action = "reused, capped, refactorized"
-                    self.last_reason = "capped"
-                    matrix, pre, _ = self._held()
-                    r.data = pre.mat * b
-                    reference = layout.state_norm(r)
-                    solver = self._gmres(
-                        matrix, pre, maxiter=self.maxiter, reference=reference
-                    )
-                    solver.Solve(rhs=b, sol=x, initialize=False)
-                    on_reused = False
-                total = self._finish(solver, b, x, reference, spent)
-                (stale if on_reused else fresh).append(total - spent)
-                counts.append(total)
-                out[:, j] = x.FV().NumPy()
-            # n_ref only from a fresh preconditioner; the rebuild rule, by
-            # iteration count, only when the whole solve stayed reused; both
-            # only at the prepared tolerance
-            self._set_reference(fresh, measure=measure)
-            if measure and self._reused and max(stale) > n_ref + slack:
-                self._rebuild = True
-        return (out[:, 0] if flat else out), tuple(counts)
-
     @property
     def nbytes(self) -> int:
-        """Host memory of the matrix and the preconditioner, in bytes."""
+        """Host memory of the matrix, the preconditioner and the coarse factors."""
         # read once, without the lock: a concurrent free gives 0 or the old count
         held, pre, coarse = self._matrix, self._preconditioner, self._coarse
         if self._solver is None or held is None or pre is None:
@@ -682,14 +223,8 @@ class BddcHandle(NgsHandle):
         factors = 0 if coarse is None else coarse.nbytes
         return host_bytes(matrix) + host_bytes(pre.mat) + factors
 
-    def _free_coarse(self) -> None:
+    def _drop_setup(self) -> None:
         """Give a coarse factorization back to its pool, every rank together."""
         if self._coarse is not None:
             self._coarse.free()
             self._coarse = None
-
-    def _release(self) -> None:
-        """Drop the preconditioner and the form; under the lock."""
-        self._preconditioner = None
-        self._form = None
-        self._free_coarse()
