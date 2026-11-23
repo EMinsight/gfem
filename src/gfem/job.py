@@ -957,7 +957,6 @@ for _cls in (
     LumpedPort,
     WavePort,
     FloquetPort,
-    ElectrostaticResult,
     DiffractionOrderResult,
     NetworkParameters,
     SweepInfo,
@@ -991,6 +990,11 @@ _codec.register(
 )
 _codec.register(
     DrivenResult, to_args=_unset_omitted(DrivenResult, h_fields=(), polarization=None)
+)
+# a cross-section's slab thickness only when set, so a 3D result is written as
+# before
+_codec.register(
+    ElectrostaticResult, to_args=_unset_omitted(ElectrostaticResult, _thickness=None)
 )
 _codec.register(
     PortSection,
