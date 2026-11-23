@@ -20,6 +20,12 @@ take Palace's attributes.
   sample, both excitations, against Palace's per-sample linear solve.
   gfem's order 2 differs from Palace's on these tight boxes, by design:
   the difference is printed, never asserted.
+- p-multigrid on a silicon strip (no Palace baseline): the SOI strip
+  straight through boxes 2 and 4 cladding wavelengths wide, wave ports.
+  ``pmg_gmres`` keeps its iterations flat in electrical size (BDDC needs
+  69 and 117 there) and meets direct at 2 wavelengths; at 4, where direct
+  would crowd a reference shard's memory, S is checked for reciprocity
+  and passivity instead.
 """
 
 import json
@@ -28,8 +34,10 @@ import os
 import time
 from pathlib import Path
 
+import bend3d_mesh as bm
 import numpy as np
 import pytest
+import structured_meshes as sm
 from isolated import isolated, peak_rss_gib
 
 import gfem
@@ -135,23 +143,27 @@ def _db(s):
 
 
 @pytest.mark.parametrize(
-    ("name", "ndof", "max_iterations"),
+    ("name", "ndof", "kind", "max_iterations"),
     [
         # Palace and the solver spike: 48-49 (r8) and 43-45 (r4) GMRES
         # iterations at this tolerance; allowed +10 %
-        ("r8_abc1", 162_640, 53),
-        ("r4_abc1", 338_338, 49),
+        ("r8_abc1", 162_640, "bddc_gmres", 53),
+        ("r4_abc1", 338_338, "bddc_gmres", 49),
+        # the p-multigrid: 9-10 (r8) and 8 (r4) measured; allowed +2, since
+        # +10 % of so few is one iteration, within thread-count noise
+        ("r8_abc1", 162_640, "pmg_gmres", 12),
+        ("r4_abc1", 338_338, "pmg_gmres", 10),
     ],
 )
-def test_driven_parity_s_matches_palace(reference, name, ndof, max_iterations):
+def test_driven_parity_s_matches_palace(reference, name, ndof, kind, max_iterations):
     case = reference / name
     model = _model(case)
     frequency, palace = _palace(case)
     frequency, palace = frequency[list(ROWS)], palace[list(ROWS)]
-    options = gfem.SolverOptions(threads=THREADS, linear_solver="bddc_gmres")
+    options = gfem.SolverOptions(threads=THREADS, linear_solver=kind)
     problem = gfem.Driven(frequency=frequency)
     rule = DrivenRule(model, problem, options)
-    assert rule.linear.kind == "bddc_gmres"
+    assert rule.linear.kind == kind
     assert rule.operator(model).space.ndof == ndof
     start = time.perf_counter()
     outputs, _ = rule.forward(model, keep=False)
@@ -159,13 +171,14 @@ def test_driven_parity_s_matches_palace(reference, name, ndof, max_iterations):
     s = outputs["s"]
     diff = np.abs(s - palace).max()
     print(  # noqa: T201
-        f"{name}: max |dS| {diff:.3g}, GMRES iterations {outputs['iterations']}, "
+        f"{name} {kind}: max |dS| {diff:.3g}, GMRES iterations "
+        f"{outputs['iterations']}, "
         f"{wall:.1f} s for {len(frequency)} frequencies, peak RSS "
         f"{peak_rss_gib():.2f} GiB, load {os.getloadavg()}"
     )
     assert diff <= TOLERANCE, (diff, outputs["iterations"])
-    # BDDC's iterations against Palace's on a fresh setup: the first frequency
-    # (later ones run on a reused preconditioner, capped then set up again)
+    # iterations on a fresh setup: the first frequency (later ones run on a
+    # reused preconditioner, capped then set up again)
     assert max(outputs["iterations"][0]) <= max_iterations, outputs
     # reciprocal to the GMRES tolerance
     np.testing.assert_allclose(s, np.swapaxes(s, 1, 2), atol=1e-6)
@@ -517,3 +530,109 @@ def test_wave_port_low_frequency_backward_errors(reference):
                 f"{np.linalg.norm(r) / scale:.2e}; port mode backward error "
                 f"(exact solves) {port}"
             )
+
+
+# --- p-multigrid on a silicon strip ------------------------------------------------
+
+#: The strip at 1.55 um: a 0.5 x 0.22 um Si core in SiO2 (Sellmeier at 1.55 um).
+SOI_FREQUENCY = 299_792_458.0 / 1.55e-6
+SOI_CORE = gfem.Material(eps_r=3.4757**2)
+SOI_CLADDING = gfem.Material(eps_r=1.444024**2)
+#: The cladding wavelength (um), the unit of the box width.
+SOI_WAVELENGTH = 1.55 / 1.444024
+SOI_H = 0.1
+#: DOF at order 2 by box width (cladding wavelengths).
+SOI_NDOF = {2: 201_950, 4: 746_774}
+#: GMRES iterations per excited port, measured 9 at both widths; allowed +2.
+SOI_MAX_ITERATIONS = 11
+
+
+def _soi_straight(path: Path, wavelengths: float) -> gfem.Model:
+    r"""The SOI strip straight along x through a box ``wavelengths`` wide.
+
+    The mirror half model ``z >= 0`` (a PMC on "mirror") of the box
+    $[-B, B]^2 \times [0, 1.11]$ um, $2B$ the given number of cladding
+    wavelengths; structured, in-plane cells of 0.1 um, the z grid of the 3D
+    bend's meshes; second-order absorbing outer faces and a TE0 wave port
+    on each end face (PEC window edges).
+    """
+    box = round(wavelengths * SOI_WAVELENGTH / 2, 3)
+    lines = {bm.CORE_W / 2, box}
+    x = bm.axis({-box, 0.0, box}, SOI_H)
+    y = bm.axis({-v for v in lines} | lines, SOI_H)
+    z = bm.z_edges(SOI_H, half=True)
+    eps = 1e-9
+
+    def volume(c):
+        inside = abs(c[2]) < bm.CORE_T / 2 and abs(c[1]) < bm.CORE_W / 2
+        return "core" if inside else "cladding"
+
+    def surface(c):
+        if abs(c[2]) < eps:
+            return "mirror"
+        if abs(c[0] + box) < eps:
+            return "port1"
+        if abs(c[0] - box) < eps:
+            return "port2"
+        if abs(abs(c[1]) - box) < eps or abs(abs(c[2]) - bm.Z_TOP) < eps:
+            return "outer"
+        return ""
+
+    # built on z <= 0 and reflected, as the bend's half model is
+    grid = sm.structured(
+        (x, y, -z[::-1]), volume, surface, lambda p: p * [1.0, 1.0, -1.0]
+    )
+    mesh = gfem.Mesh.from_gmsh(sm.write_msh22(path, grid), length_unit="um")
+    return gfem.Model(
+        mesh,
+        materials={"cladding": SOI_CLADDING, "core": SOI_CORE},
+        boundaries=[gfem.Absorbing("outer", order=2), gfem.PMC("mirror")],
+        ports=[
+            gfem.WavePort("p1", "port1", pec_edges=("outer",)),
+            gfem.WavePort("p2", "port2", pec_edges=("outer",)),
+        ],
+    )
+
+
+def _soi_forward(model: gfem.Model, kind: str, ndof: int) -> dict:
+    options = gfem.SolverOptions(threads=THREADS, linear_solver=kind)
+    rule = DrivenRule(model, gfem.Driven(frequency=SOI_FREQUENCY), options)
+    assert rule.linear.kind == kind
+    assert rule.operator(model).space.ndof == ndof
+    start = time.perf_counter()
+    outputs, _ = rule.forward(model, keep=False)
+    print(  # noqa: T201
+        f"SOI {kind}: GMRES {outputs['iterations']}, "
+        f"{time.perf_counter() - start:.1f} s, peak RSS {peak_rss_gib():.2f} GiB, "
+        f"load {os.getloadavg()}"
+    )
+    return outputs
+
+
+@pytest.fixture(scope="module")
+def soi_2(tmp_path_factory):
+    """``pmg_gmres`` and direct outputs on the strip at 2 wavelengths."""
+    model = _soi_straight(tmp_path_factory.mktemp("soi") / "soi2.msh", 2)
+    ndof = SOI_NDOF[2]
+    return _soi_forward(model, "pmg_gmres", ndof), _soi_forward(model, "direct", ndof)
+
+
+def test_pmg_matches_direct_on_soi_at_2_wavelengths(soi_2):
+    pmg, direct = soi_2
+    diff = np.abs(pmg["s"] - direct["s"]).max()
+    print(f"SOI 2: max |dS| pmg_gmres vs direct {diff:.3g}")  # noqa: T201
+    assert max(pmg["iterations"][0]) <= SOI_MAX_ITERATIONS, pmg["iterations"]
+    assert diff <= TOLERANCE
+
+
+def test_pmg_iterations_stay_flat_on_soi_at_4_wavelengths(soi_2, tmp_path):
+    model = _soi_straight(tmp_path / "soi4.msh", 4)
+    outputs = _soi_forward(model, "pmg_gmres", SOI_NDOF[4])
+    iterations = max(outputs["iterations"][0])
+    at_2 = max(soi_2[0]["iterations"][0])
+    assert iterations <= SOI_MAX_ITERATIONS, outputs["iterations"]
+    assert iterations <= at_2 + 2, (iterations, at_2)
+    s = outputs["s"][0]
+    # reciprocal to the GMRES tolerance, and passive: no excitation gains power
+    np.testing.assert_allclose(s, s.T, atol=1e-6)
+    assert np.linalg.norm(s, 2) <= 1 + 1e-6, np.linalg.svd(s, compute_uv=False)
