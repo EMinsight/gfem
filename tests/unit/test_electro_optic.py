@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 import scipy.constants
 import thermal_cases as tc
+from finite_differences import assert_gradient_matches, unit_directions
 from strip2d import write_strip
 
 import gfem
@@ -107,6 +108,14 @@ def _shift(model, potential, **kw):
 def mesh(tmp_path_factory):
     path = tmp_path_factory.mktemp("electro_optic") / "lchannel.msh"
     return tc.section(path, RECTS, MAXH, PLATES)
+
+
+@pytest.fixture(scope="module")
+def coarse(tmp_path_factory):
+    """The same section, coarse: the gradient checks solve the mode many times."""
+    path = tmp_path_factory.mktemp("electro_optic") / "coarse.msh"
+    rects = [(*r[:5], None if r[5] is None else 0.4) for r in RECTS]
+    return tc.section(path, rects, 1.2, PLATES)
 
 
 @pytest.fixture(scope="module")
@@ -242,6 +251,47 @@ def test_the_shift_is_linear_in_the_tensor_and_the_drive(model, potential):
     np.testing.assert_allclose(jnp.sum(c * dc), value, rtol=1e-12)
 
 
+def test_the_tensor_gradient_matches_finite_differences(coarse):
+    model = _optical(coarse, _crystal(X_CUT, LN_OPTICAL))
+    potential = _potential(coarse)
+
+    def shift(r):
+        crystal = gfem.MaterialField(
+            eps_r=jnp.asarray(LN_OPTICAL), axes=X_CUT, electro_optic_tensor=r
+        )
+        optical = model.replace(materials={**model.materials, "core": crystal})
+        return _shift(optical, potential).delta_n_eff_per_volt
+
+    r = jnp.asarray(R_LN)
+    directions = unit_directions(np.random.default_rng(0), r.shape, 2)
+    assert_gradient_matches(shift, r, directions, step=1e-11)
+
+
+def test_the_static_permittivity_gradient_matches_finite_differences(coarse):
+    # the crystal's three principal values on its axes and the oxide's value
+    # of the electrostatic model reach the shift through the potential only
+    model = _optical(coarse, _crystal(X_CUT, LN_OPTICAL))
+    problem = gfem.Electrostatic(terminals={"t": ["top"]}, ground=["bottom"])
+    options = gfem.SolverOptions(order=2, linear_solver="direct")
+
+    def shift(p):
+        crystal = gfem.MaterialField(eps_r=p[:3], axes=X_CUT)
+        static = gfem.Model(
+            coarse,
+            materials={
+                "core": crystal,
+                "foot": crystal,
+                "clad": gfem.MaterialField(eps_r=p[3]),
+            },
+        )
+        es = gfem.solve(static, problem, options=options)
+        return _shift(model, es.potential["t"]).delta_n_eff_per_volt
+
+    p = jnp.asarray((*LN_STATIC, 3.9))
+    directions = unit_directions(np.random.default_rng(1), p.shape, 2)
+    assert_gradient_matches(shift, p, directions, step=1e-1)
+
+
 # --- refusals --------------------------------------------------------------------
 
 
@@ -333,12 +383,33 @@ def test_a_sequence_of_frequencies_or_an_unknown_port_raises(model, potential):
         gfem.electro_optic_shift(model, potential, port="q", frequency=FREQUENCY)
 
 
-def test_the_optical_permittivity_raises_under_grad(mesh, potential):
-    def shift(eps):
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("eps_r", LN_OPTICAL),
+        ("tan_delta", (0.0, 0.0, 0.0)),
+        ("mu_r", (1.0, 1.0, 1.0)),
+        ("conductivity", (0.0, 0.0, 0.0)),
+    ],
+)
+def test_an_optical_material_input_raises_under_grad(mesh, potential, name, value):
+    # the mode is held constant: its derivative would be missing
+    def shift(x):
+        given = {"eps_r": jnp.asarray(LN_OPTICAL), name: x}
         crystal = gfem.MaterialField(
-            eps_r=eps, axes=X_CUT, electro_optic_tensor=jnp.asarray(R_LN)
+            **given, axes=X_CUT, electro_optic_tensor=jnp.asarray(R_LN)
         )
         return _shift(_optical(mesh, crystal), potential).delta_n_eff_per_volt
 
     with pytest.raises(gfem.NonDifferentiableError, match="electro-optic shift"):
-        jax.grad(shift)(jnp.asarray(LN_OPTICAL))
+        jax.grad(shift)(jnp.asarray(value))
+
+
+def test_the_optical_node_coordinates_raise_under_grad(model, potential):
+    # they move the mode and the points the static field is read at
+    def shift(nodes):
+        moved = Mesh(nodes, model.mesh._topology)
+        return _shift(model.replace(mesh=moved), potential).delta_n_eff_per_volt
+
+    with pytest.raises(gfem.NonDifferentiableError, match="node coordinates"):
+        jax.grad(shift)(jnp.asarray(model.mesh.nodes))
