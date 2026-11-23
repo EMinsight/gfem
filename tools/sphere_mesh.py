@@ -29,7 +29,7 @@ THICKNESS = 0.35
 INNER = 0.42
 #: The global and the sphere's maximal edge lengths, um.
 MAXH = 0.4
-SPHERE_MAXH = 0.15
+SPHERE_MAXH = 0.2
 
 
 def write(

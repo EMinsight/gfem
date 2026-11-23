@@ -15,15 +15,16 @@ lossless: :math:`\varepsilon = 4` halves the wavelength inside), so the
 gates run at order 3.
 
 Measured errors against Mie at :math:`a_\mathrm{vol}` (extinction,
-absorption, scattering), plane wave at 30 degrees, order 3:
+absorption, scattering), plane wave at 30 degrees, order 3, on the mirrored
+mesh (`sphere_mesh.write`):
 
-- `MAXH`, sphere at `SPHERE_MAXH` (about 50k DOF): lossy
-  :math:`\varepsilon = 4 - i` +0.48 / -1.27 / +1.53 %, lossless
-  :math:`\varepsilon = 4` -0.56 %, PEC +1.42 %. Gates `TOLERANCE` and
-  `PEC_TOLERANCE`.
-- Sphere refined to `REFINED_MAXH` (:math:`\lambda_\mathrm{in}/6`, about
-  80k DOF): lossy +0.38 / +0.23 / +0.46 %, lossless +0.22 %, the exterior
-  mesh and layer floor. Gate `REFINED_TOLERANCE`.
+- `MAXH`, sphere at `SPHERE_MAXH` (about 2000 tetrahedra): lossy
+  :math:`\varepsilon = 4 - i` TE +0.07 / -0.08 / +0.16 %, TM -0.22 / -0.43 /
+  -0.10 %; lossless :math:`\varepsilon = 4` -0.25 % (TE), -0.56 % (TM); PEC
+  +1.99 % (TE), +1.44 % (TM). Gates `TOLERANCE` and `PEC_TOLERANCE`. The half
+  model with its mirror wall equals the whole to :math:`10^{-13}`.
+- Sphere refined to `REFINED_MAXH` (:math:`\lambda_\mathrm{in}/6`): gate
+  `REFINED_TOLERANCE`.
 """
 
 from __future__ import annotations
@@ -129,7 +130,7 @@ def mie(eps: complex | None, x: float) -> tuple[float, float, float]:
     conducting sphere: :math:`a_n = \psi_n'(x)/\xi_n'(x)`,
     :math:`b_n = \psi_n(x)/\xi_n(x)`.
     """
-    n = np.arange(1, int(math.ceil(x + 4 * x ** (1 / 3) + 2)) + 6)
+    n = np.arange(1, math.ceil(x + 4 * x ** (1 / 3) + 2) + 6)
 
     def psi(z: complex) -> np.ndarray:
         return z * spherical_jn(n, z)

@@ -1989,7 +1989,11 @@ def _out_cross_sections_of_a_design_in_the_truncation_layer(request):
     mesh = gfem.Mesh.from_gmsh(path)
     model = gfem.Model(
         mesh,
-        materials={"air": gfem.Material(), "pml": gfem.Material(), "slab": _field(mesh, "slab")},
+        materials={
+            "air": gfem.Material(),
+            "pml": gfem.Material(),
+            "slab": _field(mesh, "slab"),
+        },
         pml=gfem.PML("pml"),
         background=gfem.Material(),
     )

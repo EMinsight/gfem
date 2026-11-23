@@ -1026,7 +1026,7 @@ def cross_sections(
         NonDifferentiableError: While `jax.grad` traces it: a material design
             with an element in the truncation layer, or the node coordinates.
     """
-    from gfem._sources import INCIDENT, IncidentField
+    from gfem._sources import INCIDENT
     from gfem.model import Model
     from gfem.results import DrivenResult
 

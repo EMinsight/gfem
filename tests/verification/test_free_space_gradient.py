@@ -71,9 +71,7 @@ def _cross_sections(model, result):
     te = gfem.cross_sections(result, "te", model=model)
     tm = gfem.cross_sections(result, "tm", model=model)
     scale = 1e12  # m² to um²
-    return scale * (
-        te.scattering[0] + 0.7 * te.absorption[0] + 0.4 * tm.extinction[0]
-    )
+    return scale * (te.scattering[0] + 0.7 * te.absorption[0] + 0.4 * tm.extinction[0])
 
 
 def _start(model):

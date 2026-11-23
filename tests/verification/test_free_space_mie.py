@@ -29,7 +29,9 @@ def _values(xs):
 
 @pytest.fixture(scope="module")
 def mesh(tmp_path_factory):
-    return fsc.sphere(tmp_path_factory.mktemp("mie") / "sphere.msh")
+    # the half model's mesh and its mirror image: a symmetric field is the
+    # half model's
+    return fsc.sphere(tmp_path_factory.mktemp("mie") / "sphere.msh", mirrored=True)
 
 
 @pytest.fixture(scope="module")
@@ -64,11 +66,12 @@ def test_a_conducting_sphere_matches_mie(mesh):
 
 @pytest.mark.parametrize(("name", "wall"), [("te", "PEC"), ("tm", "PMC")])
 def test_a_half_model_reports_half_the_cross_sections(tmp_path, lossy, name, wall):
-    # the plane y = 0 holds E normal (TE) or H normal (TM): a mirror wall
+    # the plane y = 0 holds E normal (TE) or H normal (TM): a mirror wall; the
+    # whole mesh is this half and its image, so the two agree to round-off
     half, _ = fsc.sphere(tmp_path / "half.msh", half=True)
     source = next(s for s in fsc.SOURCES if s.name == name)
     xs = _cross_sections(fsc.model(half, fsc.LOSSY, mirror=wall), (source,))
-    np.testing.assert_allclose(2 * _values(xs[name]), _values(lossy[name]), rtol=2e-2)
+    np.testing.assert_allclose(2 * _values(xs[name]), _values(lossy[name]), rtol=1e-10)
 
 
 @pytest.mark.reference

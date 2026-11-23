@@ -6,8 +6,6 @@ mesh at order 2. The checks are identities of the discrete power balance,
 which hold on any mesh, and the measurements' refusals.
 """
 
-import math
-
 import numpy as np
 import pml_cases as pc
 import pytest
@@ -168,8 +166,8 @@ def _windowed(points, frequency):
     return (np.exp(-1j * k * points[:, 2]) * window)[:, None] * np.array([0, 1, 0])
 
 
-def test_an_incident_field_is_normalized_by_its_given_intensity(lossy, meshes):
-    model, result = lossy
+def test_an_incident_field_is_normalized_by_its_given_intensity(lossy):
+    model, _ = lossy
     wave = gfem.IncidentField("f", _plane_te)
     other = _solve(model, wave)
     i0 = 1.0 / (2 * ETA0)
