@@ -24,6 +24,8 @@ result reloaded with `gfem.load_result`.
 - `far_field`: the far-field amplitude of a port, dipole or incident-field
   column on a grid of directions, with the IEEE 145 radiation outputs
   (`FarField`).
+- `beam_coupling`: the amplitude a field couples into an incoming beam
+  (a fiber), by reciprocity the S-parameter between the beam and a port.
 
 Measurements run on the CPU and work under `jax.jit` and `jax.vmap`; under
 `jax.grad` they differentiate with respect to the field coefficients (so
@@ -52,6 +54,7 @@ import scipy.constants as const
 
 from gfem import _mpi, _objective, _probe
 from gfem._adjoint.measure import measure
+from gfem._beam_coupling import beam_coupling
 from gfem._checks import check_fixed, is_traced
 from gfem._dim2 import entry_refusal, refuse_entry
 from gfem._far_field import FarField, far_field
@@ -72,6 +75,7 @@ __all__ = [
     "CrossSections",
     "FarField",
     "InterfaceParticipation",
+    "beam_coupling",
     "characteristic_impedance",
     "cross_sections",
     "electric_energy",

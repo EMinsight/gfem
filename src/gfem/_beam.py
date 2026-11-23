@@ -60,6 +60,7 @@ series in :math:`X^2`.
 from __future__ import annotations
 
 import math
+from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -75,6 +76,7 @@ if TYPE_CHECKING:
 __all__ = [
     "check_background",
     "check_waist",
+    "field_and_curl",
     "focal_field",
     "impedance",
     "values",
@@ -188,12 +190,16 @@ def focal_field(
     return _amplitude(k, eta, source.waist)[1]
 
 
-def _scaled(x2: np.ndarray, a: float) -> tuple[np.ndarray, ...]:
-    r""":math:`e^{-a} j_l(X)/X^l`, :math:`l = 0, 1, 2`, entire in :math:`X^2`."""
-    small = np.abs(x2) < _SERIES
-    big = np.where(small, 1.0, x2)  # the closed forms away from the ring
-    x = np.sqrt(big)
-    plus, minus = np.exp(1j * x - a), np.exp(-1j * x - a)
+def _scaled(x2: Any, a: float, xp: ModuleType = np) -> tuple[Any, ...]:
+    r""":math:`e^{-a} j_l(X)/X^l`, :math:`l = 0, 1, 2`, entire in :math:`X^2`.
+
+    ``xp`` is the array module (NumPy, or `jax.numpy` to differentiate in
+    the points).
+    """
+    small = xp.abs(x2) < _SERIES
+    big = xp.where(small, 1.0, x2)  # the closed forms away from the ring
+    x = xp.sqrt(big)
+    plus, minus = xp.exp(1j * x - a), xp.exp(-1j * x - a)
     sin, cos = (plus - minus) / 2j, (plus + minus) / 2
     closed = (
         sin / x,
@@ -202,23 +208,23 @@ def _scaled(x2: np.ndarray, a: float) -> tuple[np.ndarray, ...]:
     )
     scale = math.exp(-a)
     return tuple(
-        np.where(small, scale * np.polyval(coefficients[::-1], x2), value)
+        xp.where(small, scale * xp.polyval(xp.asarray(coefficients[::-1]), x2), value)
         for coefficients, value in zip(_COEFFICIENTS, closed, strict=True)
     )
 
 
-def _frame_field(points: np.ndarray, k: float, waist: float) -> np.ndarray:
+def _frame_field(points: Any, k: float, waist: float, xp: ModuleType = np) -> Any:
     r"""The beam along :math:`+z`, along :math:`\hat x`, focused at the origin.
 
     With :math:`C = 1`.
     """
-    x, y, z = points.T
+    x, y, z = points[:, 0], points[:, 1], points[:, 2]
     b = k * waist**2 / 2
     zc = z + 1j * b
-    g0, g1, g2 = _scaled(k**2 * (x * x + y * y + zc * zc), k * b)
+    g0, g1, g2 = _scaled(k**2 * (x * x + y * y + zc * zc), k * b, xp)
     d1 = -(k**2) / 2 * g1
     d2 = k**4 / 4 * g2
-    return np.stack(
+    return xp.stack(
         [
             k**2 * g0 + 2 * d1 + 4 * x * x * d2 + 2j * k * zc * d1,
             4 * x * y * d2,
@@ -226,6 +232,35 @@ def _frame_field(points: np.ndarray, k: float, waist: float) -> np.ndarray:
         ],
         axis=1,
     )
+
+
+def _polarized(
+    local: Any,
+    k: float,
+    waist: float,
+    jones_pair: tuple[complex, complex],
+    xp: ModuleType,
+) -> Any:
+    """The beam of Jones pair ``(a_TM, a_TE)`` in its frame, :math:`C = 1`."""
+    a_tm, a_te = jones_pair
+    field = 0
+    if a_tm:
+        field = field + a_tm * _frame_field(local, k, waist, xp)
+    if a_te:
+        # the TE beam is the TM one turned by 90 degrees about the axis
+        turned = _frame_field(
+            xp.stack([local[:, 1], -local[:, 0], local[:, 2]], axis=1), k, waist, xp
+        )
+        field = field + a_te * xp.stack(
+            [-turned[:, 1], turned[:, 0], turned[:, 2]], axis=1
+        )
+    return field
+
+
+def _frame(source: GaussianBeam) -> np.ndarray:
+    """Columns: the beam frame's x (TM), y (TE) and axis in model coordinates."""
+    k_hat, theta_hat, phi_hat = propagation_basis(source.theta, source.phi)
+    return np.stack([theta_hat, phi_hat, k_hat], axis=1)
 
 
 def values(
@@ -240,18 +275,40 @@ def values(
     check_waist(source, background, frequency)
     k, eta = _medium(source, background, frequency)
     c, _ = _amplitude(k, eta, source.waist)
-    k_hat, theta_hat, phi_hat = propagation_basis(source.theta, source.phi)
-    # columns: the beam frame's x (TM), y (TE) and axis in model coordinates
-    frame = np.stack([theta_hat, phi_hat, k_hat], axis=1)
+    frame = _frame(source)
     local = (np.asarray(points, float).reshape(-1, 3) - np.array(source.focus)) @ frame
-    a_tm, a_te = jones(source.polarization)
-    field = np.zeros((len(local), 3), complex)
-    if a_tm:
-        field += a_tm * _frame_field(local, k, source.waist)
-    if a_te:
-        # the TE beam is the TM one turned by 90 degrees about the axis
-        turned = _frame_field(
-            np.stack([local[:, 1], -local[:, 0], local[:, 2]], axis=1), k, source.waist
-        )
-        field += a_te * np.stack([-turned[:, 1], turned[:, 0], turned[:, 2]], axis=1)
+    a_tm, a_te = (complex(a) for a in jones(source.polarization))
+    field = _polarized(local, k, source.waist, (a_tm, a_te), np)
     return c * field @ frame.T
+
+
+def field_and_curl(
+    source: GaussianBeam,
+    background: Background,
+    points: Any,
+    frequency: float,
+    xp: ModuleType = np,
+) -> tuple[Any, Any]:
+    r"""The beam's :math:`E` (V/m) and :math:`\nabla\times E` (V/m²) at ``points``.
+
+    The curl in closed form: the beam is a Huygens source, so its magnetic
+    field is the beam of the other polarization over :math:`\eta`,
+    :math:`\eta H = a_\mathrm{TM} E_\mathrm{TE} - a_\mathrm{TE}
+    E_\mathrm{TM}`, and :math:`\nabla\times E = -i\omega\mu H`. With
+    ``xp`` = `jax.numpy` both are differentiable in ``points``.
+
+    Raises:
+        NotImplementedError: As `check_background`.
+        ValueError: As `check_waist`.
+    """
+    check_waist(source, background, frequency)
+    k, eta = _medium(source, background, frequency)
+    c, _ = _amplitude(k, eta, source.waist)
+    frame = _frame(source)
+    local = (points - xp.asarray(source.focus)) @ frame
+    a_tm, a_te = (complex(a) for a in jones(source.polarization))
+    e = _polarized(local, k, source.waist, (a_tm, a_te), xp)
+    h = _polarized(local, k, source.waist, (-a_te, a_tm), xp) / eta
+    mu = float(np.real(complex(np.asarray(background.layers[0].mu_r)))) * const.mu_0
+    omega = 2 * math.pi * frequency
+    return c * e @ frame.T, -1j * omega * mu * c * h @ frame.T
