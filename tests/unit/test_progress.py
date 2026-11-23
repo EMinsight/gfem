@@ -395,7 +395,12 @@ def test_a_2d_sweep_has_the_uniform_sweep_s_row(board):
     )
     problem = gfem.Driven((4e9, 5e9), excite="p1", polarization="Hz")
     gfem.solve(model, problem, options=DIRECT)
-    assert loops(board) == [("uniform sweep", 2, 2, True)]
+    # each wave port's modes come first, from a port mode sweep of their own
+    assert loops(board) == [
+        ("port mode sweep", 2, 2, True),
+        ("port mode sweep", 2, 2, True),
+        ("uniform sweep", 2, 2, True),
+    ]
 
 
 class _Child:
@@ -480,3 +485,141 @@ def test_a_sweep_draws_its_row_among_intact_log_lines(line, capsys, monkeypatch)
         re.MULTILINE,
     )
     assert solver == ["21", "22", "23"]
+
+
+# ---------------------------------------------------------------- the other loops
+
+
+def test_an_adaptive_sweep_advances_its_row_once_per_sample(line, board):
+    gfem.release_memory()
+    grid = np.linspace(20e9, 24e9, 9)
+    result = gfem.solve(line, gfem.Driven(grid, sweep="adaptive"), options=DIRECT)
+    samples = np.asarray(result.sweep.sampled_frequencies)
+    (row,) = [r for r in loops(board) if r[0] == "adaptive sweep"]
+    # the number of samples is not known in advance
+    assert row == ("adaptive sweep", None, len(samples), True)
+    advances = [e[3] for e in board.events if e[:2] == ("advance", "adaptive sweep")]
+    np.testing.assert_allclose([a["frequency"] for a in advances], samples)
+    # the endpoints are not measured: no error to show
+    assert [a["error"] for a in advances[:2]] == [None, None]
+    assert all(a["error"] >= 0 for a in advances[2:])
+    tolerance = gfem.SolverOptions().adaptive_tolerance
+    assert all(a["tolerance"] == tolerance for a in advances)
+
+
+def test_a_port_mode_sweep_sets_its_row_to_the_frequencies_passed(board):
+    mesh = gfem.Mesh.from_gmsh(
+        pathlib.Path(__file__).parent / "data" / "slab_waveguide.msh",
+        length_unit="mm",
+    )
+    model = gfem.Model(
+        mesh,
+        materials={"slab": gfem.Material(eps_r=4.0), "air": gfem.Material()},
+        boundaries=[gfem.PEC("walls")],
+        ports=[gfem.WavePort("p1", "port1")],
+    )
+    grid = np.linspace(16e9, 20e9, 8)
+    gfem.solve(model, gfem.PortMode("p1", grid))
+    assert loops(board) == [("port mode sweep", 8, 8, True)]
+    updates = [e for e in board.events if e[:2] == ("update", "port mode sweep")]
+    # one update per round, each counting the frequencies that pass
+    assert all(0 <= e[2] <= 8 for e in updates)
+    assert updates[-1][2] == 8
+    solves = [e[3]["exact_solves"] for e in updates]
+    assert solves == sorted(solves)
+    assert solves[0] >= 2
+
+
+@pytest.fixture(scope="module")
+def open_line(tmp_path_factory):
+    from eigen_cases import line as eigen_line
+    from eigen_cases import line_mesh
+
+    return eigen_line(line_mesh(tmp_path_factory.mktemp("open"), (10, 1, 1)))
+
+
+def _notes(board, name):
+    """The values of field ``name`` the mode search's row was given, in order."""
+    return [
+        e[3][name]
+        for e in board.events
+        if e[:2] == ("update", "mode search") and name in e[3]
+    ]
+
+
+def _search(model, **options):
+    from eigen_cases import F1
+
+    problem = gfem.Eigenmode(target=1.6 * F1, n_modes=1)
+    gfem.solve(model, problem, options=gfem.SolverOptions(order=1, **options))
+
+
+def test_a_mode_search_notes_its_seed_solves_and_mode_refinements(open_line, board):
+    gfem.release_memory()
+    _search(open_line)
+    # stage notes only: the search has no count
+    assert loops(board) == [("mode search", None, 0, True)]
+    assert _notes(board, "seed_solve") == ["1/3"]
+    refinements = _notes(board, "mode_refinement")
+    assert refinements[0].startswith("1/")
+    assert all(re.fullmatch(r"\d+/\d+", r) for r in refinements)
+
+
+@pytest.mark.slepc
+def test_a_slepc_seed_solve_notes_its_converged_pairs(open_line, board):
+    gfem.release_memory()
+    _search(open_line, eigen_solver="slepc")
+    assert loops(board) == [("mode search", None, 0, True)]
+    pairs = _notes(board, "slepc")
+    assert pairs
+    done, wanted = map(int, pairs[-1].split("/"))
+    assert done >= wanted
+
+
+@pytest.fixture(scope="module")
+def coax(tmp_path_factory):
+    import refinement_cases as rc
+
+    return rc.coax_model(tmp_path_factory.mktemp("coax"), 2), rc.COAX_PROBLEM
+
+
+def test_a_mesh_refinement_advances_its_row_once_per_cycle(coax, board):
+    model, problem = coax
+    options = gfem.SolverOptions(order=2, linear_solver="direct")
+    with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
+        ref = gfem.refine_mesh(
+            model, problem, options=options, max_cycles=2, tolerance=1e-3
+        )
+    # opened before the first mesh is solved: its phases show in the row
+    assert board.events[0] == ("open", "mesh refinement", None, 0, False)
+    assert loops(board) == [("mesh refinement", None, 3, True)]
+    advances = [e[3] for e in board.events if e[:2] == ("advance", "mesh refinement")]
+    assert advances == [
+        {
+            "cycle": i,
+            "tetrahedra": c.tetrahedra,
+            "estimate": c.estimate,
+            "tolerance": 1e-3,
+        }
+        for i, c in enumerate(ref.cycles)
+    ]
+
+
+def test_a_mesh_refinement_nests_a_uniform_sweep_per_mesh(line, board):
+    gfem.release_memory()
+    options = gfem.SolverOptions(order=2, linear_solver="direct")
+    with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
+        gfem.refine_mesh(
+            line, gfem.Driven(F[:2]), options=options, max_cycles=1, tolerance=1e-4
+        )
+    opened = [e[1:4] for e in board.events if e[0] == "open" and not e[4]]
+    assert opened == [
+        ("mesh refinement", None, 0),
+        ("uniform sweep", 2, 1),
+        ("uniform sweep", 2, 1),
+    ]
+    assert loops(board) == [
+        ("mesh refinement", None, 2, True),
+        ("uniform sweep", 2, 2, True),
+        ("uniform sweep", 2, 2, True),
+    ]

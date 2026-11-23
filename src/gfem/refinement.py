@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from gfem import _progress
 from gfem._dim2 import refuse_entry
 from gfem._dual_supply import (
     DualNeed,
@@ -76,6 +77,9 @@ __all__ = [
 #: One INFO record per refinement cycle, once its outcome is settled (see
 #: `_log_cycle`). Silent by default: Python's root level is WARNING.
 LOGGER = logging.getLogger("gfem.mesh_refinement")
+
+#: The mesh refinement's progress row: one unit per refinement cycle settled.
+REFINEMENT_ROW = "mesh refinement"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -892,97 +896,104 @@ def _loop(
     tri_parents = np.arange(len(model.mesh.triangles))
     duals = RiddenDuals(estimators, model, problem)
     tracks = _Tracks(estimators)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", MeshQualityWarning)  # `refine_mesh` warned
-        result, adjoints, gauge = _deferred_solve(
-            model,
-            problem,
-            options=options,
-            comm=comm,
-            adjoint_loads=duals.loads(tracks),
-        )
-    current = model
-    cycles: list[RefinementCycle] = []
-    failure: Exception | None = None
-    while True:
-        cache = _recovery_cache()  # this mesh's, dropped before the next solve
-        estimates, modes = _estimates(
-            current,
-            result,
-            estimators,
-            tracks,
-            options,
-            duals=duals.supply(adjoints),
-            cache=cache,
-            first=not cycles,
-        )
-        admit_first_estimates(
-            problem,
-            result,
-            (estimators, estimates, tolerances),
-            modes,
-            options,
-            first=not cycles,
-        )
-        duals.add(estimates)
-        above = [
-            i
-            for i, (estimate, tolerance) in enumerate(
-                zip(estimates, tolerances, strict=True)
-            )
-            if not estimate.value <= tolerance  # a NaN is above
-        ]
-        cycle = RefinementCycle(
-            tetrahedra=len(current.mesh.tetrahedra),
-            dofs=_dofs(result),
-            estimate=_shaped([e.value for e in estimates], joint),
-            value=_shaped(
-                [
-                    _quantity(result, e, _followed(modes, e), estimate)
-                    for e, estimate in zip(estimators, estimates, strict=True)
-                ],
-                joint,
-            ),
-            marked=0,
-            modes=types.MappingProxyType(modes),
-        )
-        cycles.append(cycle)
-        stop = _settled(estimates, above) or (
-            "max_cycles" if len(cycles) > max_cycles else None
-        )
-        if stop is not None:
-            _log_cycle(len(cycles) - 1, cycle, tolerances, joint, stop)
-            break
-        marked = _dorfler(_marking(estimates, tolerances, above), error_fraction)
-        cycles[-1] = dataclasses.replace(cycle, marked=int(marked.sum()))
-        fine, refinement = bisect(current.mesh, marked)
-        if max_tetrahedra is not None and len(fine.tetrahedra) > max_tetrahedra:
-            stop = "max_tetrahedra"
-        # settled: the record precedes the refined mesh's solve records
-        _log_cycle(len(cycles) - 1, cycles[-1], tolerances, joint, stop)
-        if stop is not None:
-            break
-        tracks.bound(current, result, estimates, threads=options.threads, cache=cache)
-        refined = transfer_design(current, fine, refinement)
-        try:
-            refined_result, refined_adjoints, refined_gauge = _deferred_solve(
-                refined,
+    # opened before the first mesh is solved, whose phases show in it; the
+    # number of refinement cycles is not known in advance
+    with _progress.task(REFINEMENT_ROW) as row:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", MeshQualityWarning)  # `refine_mesh` warned
+            result, adjoints, gauge = _deferred_solve(
+                model,
                 problem,
                 options=options,
                 comm=comm,
                 adjoint_loads=duals.loads(tracks),
             )
-        except (LinearSolverConvergenceError, EigenmodeConvergenceError) as err:
-            stop, failure = "solve failed", err
-            break
-        current, result, adjoints, gauge = (
-            refined,
-            refined_result,
-            refined_adjoints,
-            refined_gauge,
-        )
-        tet_parents = tet_parents[refinement.tetrahedron_parents]
-        tri_parents = tri_parents[refinement.triangle_parents]
+        current = model
+        cycles: list[RefinementCycle] = []
+        failure: Exception | None = None
+        while True:
+            cache = _recovery_cache()  # this mesh's, dropped before the next solve
+            estimates, modes = _estimates(
+                current,
+                result,
+                estimators,
+                tracks,
+                options,
+                duals=duals.supply(adjoints),
+                cache=cache,
+                first=not cycles,
+            )
+            admit_first_estimates(
+                problem,
+                result,
+                (estimators, estimates, tolerances),
+                modes,
+                options,
+                first=not cycles,
+            )
+            duals.add(estimates)
+            above = [
+                i
+                for i, (estimate, tolerance) in enumerate(
+                    zip(estimates, tolerances, strict=True)
+                )
+                if not estimate.value <= tolerance  # a NaN is above
+            ]
+            cycle = RefinementCycle(
+                tetrahedra=len(current.mesh.tetrahedra),
+                dofs=_dofs(result),
+                estimate=_shaped([e.value for e in estimates], joint),
+                value=_shaped(
+                    [
+                        _quantity(result, e, _followed(modes, e), estimate)
+                        for e, estimate in zip(estimators, estimates, strict=True)
+                    ],
+                    joint,
+                ),
+                marked=0,
+                modes=types.MappingProxyType(modes),
+            )
+            cycles.append(cycle)
+            stop = _settled(estimates, above) or (
+                "max_cycles" if len(cycles) > max_cycles else None
+            )
+            if stop is not None:
+                _cycle_settled(len(cycles) - 1, cycle, tolerances, joint, stop, row=row)
+                break
+            marked = _dorfler(_marking(estimates, tolerances, above), error_fraction)
+            cycles[-1] = dataclasses.replace(cycle, marked=int(marked.sum()))
+            fine, refinement = bisect(current.mesh, marked)
+            if max_tetrahedra is not None and len(fine.tetrahedra) > max_tetrahedra:
+                stop = "max_tetrahedra"
+            # settled: the record precedes the refined mesh's solve records
+            _cycle_settled(
+                len(cycles) - 1, cycles[-1], tolerances, joint, stop, row=row
+            )
+            if stop is not None:
+                break
+            tracks.bound(
+                current, result, estimates, threads=options.threads, cache=cache
+            )
+            refined = transfer_design(current, fine, refinement)
+            try:
+                refined_result, refined_adjoints, refined_gauge = _deferred_solve(
+                    refined,
+                    problem,
+                    options=options,
+                    comm=comm,
+                    adjoint_loads=duals.loads(tracks),
+                )
+            except (LinearSolverConvergenceError, EigenmodeConvergenceError) as err:
+                stop, failure = "solve failed", err
+                break
+            current, result, adjoints, gauge = (
+                refined,
+                refined_result,
+                refined_adjoints,
+                refined_gauge,
+            )
+            tet_parents = tet_parents[refinement.tetrahedron_parents]
+            tri_parents = tri_parents[refinement.triangle_parents]
     if isinstance(problem, Driven):
         driven.check_low_frequency(current, problem.frequency, gauge, stacklevel=3)
     if above:
@@ -1005,6 +1016,25 @@ def _loop(
         triangle_parents=readonly(tri_parents),
         _input_mesh=model.mesh,
     )
+
+
+def _cycle_settled(
+    index: int,
+    cycle: RefinementCycle,
+    tolerances: tuple[float, ...],
+    joint: bool,
+    stop: str | None,
+    *,
+    row: Any,
+) -> None:
+    """Refinement cycle ``index``'s outcome is settled: advance ``row``, log it."""
+    row.advance(
+        cycle=index,
+        tetrahedra=cycle.tetrahedra,
+        estimate=cycle.estimate,
+        tolerance=_shaped(list(tolerances), joint),
+    )
+    _log_cycle(index, cycle, tolerances, joint, stop)
 
 
 def _log_cycle(

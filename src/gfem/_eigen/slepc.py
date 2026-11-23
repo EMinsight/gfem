@@ -30,10 +30,10 @@ from typing import Any, cast
 
 import numpy as np
 
-from gfem import _mpi, _petsc
+from gfem import _mpi, _petsc, _progress
 from gfem._eigen import seed as _seed
 from gfem._eigen.operator import EigenOperator
-from gfem._eigen.seed import SeedBoundReached, SeedOperator, seed_operator
+from gfem._eigen.seed import MODE_ROW, SeedBoundReached, SeedOperator, seed_operator
 from gfem.options import PetscOptions, PetscValue, split_petsc_options
 
 __all__ = ["shift_invert"]
@@ -173,11 +173,15 @@ class _Plan:
         return vector
 
 
-def _stopping_test(shell: _Shell):
-    """SLEPc's basic stopping test, which also ends a solve whose shell failed."""
+def _stopping_test(shell: _Shell, row: Any):
+    """SLEPc's basic stopping test, which also ends a solve whose shell failed.
+
+    Each check notes the converged pairs on the mode search's progress ``row``.
+    """
     reason = _petsc.require_slepc().EPS.ConvergedReason
 
     def test(eps, its: int, max_it: int, nconv: int, nev: int):  # noqa: ARG001
+        row.note(slepc=f"{nconv}/{nev}")
         if shell.error is not None:
             return reason.CONVERGED_USER
         if nconv >= nev:
@@ -338,8 +342,9 @@ def shift_invert(
     # LOCK is held across the whole solve, not only around the options: the
     # shell's `mult` runs gfem's linear solves (PETSc calls, which take the
     # reentrant LOCK again) on this same thread, and PETSc must never be
-    # called from another thread while SLEPc is inside it
-    with _petsc.LOCK:
+    # called from another thread while SLEPc is inside it. The row is the
+    # mode search's, joined: the seed solve notes its converged pairs there
+    with _progress.task(MODE_ROW) as row, _petsc.LOCK:
         created: list = []  # destroyed in reverse in the finally
         failed = True
         try:
@@ -354,7 +359,7 @@ def shift_invert(
             mat.setUp()
             prefix = _petsc.next_prefix()
             _configure(eps, mat, prefix, nev=nev, ncv=ncv, tol=tol)
-            eps.setStoppingTest(_stopping_test(shell))
+            eps.setStoppingTest(_stopping_test(shell, row))
             # SLEPc reads its viewer options (eps_view, eps_error_*, ...) at
             # the end of the solve: the options stay in the database across it
             with _petsc.scoped_options(prefix, pairs):
