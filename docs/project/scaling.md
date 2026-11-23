@@ -7,6 +7,9 @@ cluster. These are observations from two sets of runs, each of one gfem version;
 each table says which. They are not limits or promises for your model. Every
 number in this summary comes from the tables below.
 
+For gfem and another solver on the same meshes, on one node from 8 to 112 cores,
+see {doc}`benchmarks`.
+
 - **Largest model.** `linear_solver="bddc_gmres"` solved 108,570,046 DOF on 4 to 32
   nodes. Its fastest {py:obj}`gfem.solve` was 423 s, on 8 nodes, in the earlier
   version ([table](scaling-strong-108m)); 291 s on 32 nodes in the later one
@@ -201,6 +204,12 @@ earlier gfem version. The advice in {ref}`distributed-layout` rests on them.
 | 1 | `bddc_gmres`, without PETSc | 28 x 4 | 145 |
 
 At 28 x 4 on 4 nodes a rank holds about 92 k DOF. S did not depend on the layout.
+
+The one-node rows come from an earlier gfem and a prototype script, and time the
+whole run. A later measurement on one node, with the benchmark suite and gfem
+`771da66`, timed the work after startup and found 28 x 4 fastest for
+`bddc_gmres`: 60.5 s against 154 s for one process of 112 threads
+({ref}`bench-r10m`).
 Layouts were compared up to 4 nodes and 10,248,856 DOF; past that the advice is an
 extrapolation.
 

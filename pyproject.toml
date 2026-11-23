@@ -1,6 +1,6 @@
 [project]
 name = "gfem"
-version = "0.1.0"
+version = "0.2.0"
 description = "Differentiable finite-element electromagnetics for RF, microwave, mm-wave and superconducting quantum devices."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -21,12 +21,14 @@ classifiers = [
   "Typing :: Typed",
 ]
 # Upper bound only where gfem touches internals (NGSolve). JAX gets a floor
-# only: a cap would collide with optax / equinox in users' environments.
+# only: a cap would collide with optax / equinox in users' environments. The
+# floor is the oldest JAX the unit tier passes on (CI's lowest job), low
+# enough to share an environment with packages capping JAX below 0.10.
 dependencies = [
-  "jax>=0.12",
+  "jax>=0.8.3",
   "meshio>=5.3.5",
   "ngsolve>=6.2.2608,<6.3",
-  "numpy>=2.0",
+  "numpy>=2.2",
   "scipy>=1.15",
 ]
 

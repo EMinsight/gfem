@@ -14,7 +14,7 @@ gfem needs Python >= {{ python }} on Linux x86_64 (glibc >= 2.28), macOS arm64 o
 Windows x86_64. The plain install solves on the CPU.
 
 gfem is {{ status }}, and its API may change before 1.0. To keep a project
-working, pin a release (`pip install "gfem==0.1.0"`); the
+working, pin a release (`pip install "gfem==0.2.0"`); the
 {doc}`project/release-notes` list the releases.
 
 ## A first solve
@@ -154,7 +154,10 @@ program, because every gfem solve needs it.
   {doc}`3D heater <tutorials/heater3d>` tutorial heats a whole waveguide spiral
   in 3D and shows how its phase is shared between the passes, and
   {doc}`recipes/electromagnetic-heating` adds heat from a driven solve's
-  electromagnetic loss.
+  electromagnetic loss. The
+  {doc}`modulator <tutorials/modulator>` tutorial computes the voltage a
+  lithium niobate push-pull modulator needs for a $\pi$ phase shift, and
+  co-designs its electrode gap and ridge width.
 - {doc}`recipes/solve-a-device` takes this line further: a band of
   frequencies, real metals, its resonances and their Q, its capacitance.
 - {doc}`recipes/prepare-a-mesh` builds the mesh of your own device in gmsh.

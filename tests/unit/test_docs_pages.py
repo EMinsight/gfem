@@ -251,6 +251,12 @@ USER_TERMS = (
     "Resonant mode",
     "Quasi-normal mode",
     "Excited port",
+    "Electro-optic tensor",
+    "Electro-optic shift",
+    "Push-pull",
+    "Voltage-length product",
+    "Electro-optic overlap factor",
+    "Electrode clearance",
 )
 
 

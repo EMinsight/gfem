@@ -84,6 +84,12 @@ v0.1.
   along routes through a 3D rise) ({doc}`recipes/thermo-optic-phase`);
   {py:obj}`gfem.rise_time` and {py:obj}`gfem.time_constant` of a step
   response ({doc}`recipes/thermal-step-response`); {py:obj}`gfem.element_mean`.
+- **Electro-optic shift**: {py:obj}`gfem.electro_optic_shift` (a guided
+  mode's index and phase per volt from an electrostatic potential, on a
+  cross-section, through any 6 × 3 electro-optic tensor; $V_\pi L$ per arm
+  and push-pull) and `ElectrostaticResult.capacitance_per_length`. Materials
+  take an `electro_optic_tensor` on explicit `axes`
+  ({doc}`recipes/electro-optic-phase`).
 
 ## Solvers
 
@@ -142,6 +148,13 @@ density and specific heat, the heat sources and the drive
 dissipated power and the temperature it heats with respect to the driven
 solve's materials, sheets and drive
 ({doc}`recipes/electromagnetic-heating`).
+
+The electro-optic shift differentiates with respect to its tensor, the
+static permittivity of every element, the drive and the electrostatic
+mesh's nodes (an electrode gap through a shape morph), each checked against
+finite differences; with respect to the optical model's permittivity or
+nodes it raises, because the mode is held constant
+({doc}`recipes/electro-optic-gradient`).
 
 How each mark is checked: {doc}`verification`.
 
@@ -256,6 +269,12 @@ returning a wrong value:
   {doc}`recipes/heater-temperature`, {doc}`recipes/electromagnetic-heating`,
   {doc}`recipes/thermo-optic-phase`, {doc}`recipes/thermal-step-response`,
   {doc}`recipes/thermal-gradient`.
+- **Electro-optic shift**: a cross-section at DC, first order in the static
+  field with the mode held constant. It refuses a lossy optical section, a 2D
+  model and a potential split across ranks. The optical model does not see
+  the electrodes, so their absorption is absent. No gradient goes through the
+  mode: the ridge's shape or width takes a difference over remeshes. Details:
+  {doc}`recipes/electro-optic-phase`, {doc}`recipes/electro-optic-gradient`.
 
 ## Platforms
 

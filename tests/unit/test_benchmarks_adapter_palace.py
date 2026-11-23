@@ -233,7 +233,7 @@ def test_argv_is_the_srun_line_around_palace_real(stack18, tmp_path):
     (command,) = launch.commands
     real = str(next(Path(stack18.code_env["palace"]).rglob("palace-real")))
     assert command.argv == (
-        "srun", "--exact", "-n", "4", "-c", "1", "--cpu-bind=cores",
+        "srun", "--exact", "-n", "4", "-c", "1", "--mem=0", "--cpu-bind=cores",
         "--distribution=block:block", "--hint=nomultithread", "--ear=off",
         "--mpi=pmi2", real, str(tmp_path / "config.json"),
     )  # fmt: skip

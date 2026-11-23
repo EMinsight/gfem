@@ -518,6 +518,49 @@ Tests: [closed forms](https://github.com/benvial/gfem/blob/main/tests/verificati
 [transient](https://github.com/benvial/gfem/blob/main/tests/unit/test_transient_thermal.py),
 [gradient matrix](https://github.com/benvial/gfem/blob/main/tests/verification/test_gradient_matrix.py).
 
+## Electro-optics
+
+The electro-optic shift is checked against closed forms, against modes
+re-solved on the perturbed permittivity, and against itself on rotated and
+remeshed sections. Each check runs on every change to gfem.
+
+- **The electro-optic shift.** A lithium niobate film between two electrodes,
+  closed by electric side walls, gives the slab's closed-form shift, for an
+  x-cut film through $r_{33}$ and for a film whose field reaches $r_{22}$
+  alone. The first order agrees with a mode re-solved on the perturbed
+  permittivity at $\pm 10$ V: on a ridge, for the diagonal part of the change,
+  and on an L-shaped core that breaks every mirror symmetry, for $r_{51}$
+  alone, the off-diagonal part. An x-cut section and the same section turned
+  by 90° into z-cut, crystal axes and electrodes with it, give the same
+  shift; $r_{22}$ adds nothing where the mode and the field leave it nothing
+  to act on. The shift is linear in the tensor and in the drive, a uniform
+  static field is read exactly, and a tensor of the same value on every
+  diagonal entry gives the thermo-optic shift of the matching coefficient.
+- **Across meshes.** The static field is read at fixed points of the optical
+  model, wherever they fall in the static mesh: an optical model on a
+  second mesh of the same section gives the same shift to
+  $5.5 	imes 10^{-4}$.
+- **Capacitance per length.** Parallel plates on a section give
+  $\varepsilon_0 \varepsilon_r H / d$ per metre, whatever the slab's thickness.
+- **Gradients.** The gradients with respect to the tensor and to the static
+  permittivity match fourth-order central differences, and so does the
+  gradient with respect to the static mesh's nodes: alone, through an
+  electrode gap moved by a shape morph with the optical model on the same
+  mesh, and through an optical window on its own mesh, the ridge held. The
+  optical model's permittivity and nodes raise.
+
+Three comparisons are observations, not checks, and live on the pages. The
+modulator of Wang et al. (2018): gfem's push-pull $V_\pi L$ is 1.61 V·cm
+against the measured 1.8 V·cm, at assumed values of the dimensions the paper
+withholds ({doc}`tutorials/modulator`). An optical window and the whole
+section with the electrodes excluded give shifts within a few percent, and
+an order-1 electrostatic solve biases the shift by about 1 %
+({doc}`recipes/electro-optic-phase`).
+
+Tests: [unit checks](https://github.com/benvial/gfem/blob/main/tests/unit/test_electro_optic.py),
+[closed forms and re-solves](https://github.com/benvial/gfem/blob/main/tests/verification/test_electro_optic.py),
+[node gradients](https://github.com/benvial/gfem/blob/main/tests/verification/test_electro_optic_gradient.py).
+
 (verification-mesh-refinement)=
 ## Mesh refinement error estimates
 

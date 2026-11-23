@@ -537,7 +537,8 @@ Static permittivity
   The zero-frequency value of a {term}`permittivity law`: $\varepsilon_\infty$ plus the
   strengths of its Lorentz, Debye and Djordjevic-Sarkar terms. A Drude term
   has none, because a Drude metal conducts at zero frequency. The
-  electrostatic problem reads it.
+  electrostatic problem reads it. For an electro-optic crystal it
+  differs from the optical `eps_r` and goes in a separate electrostatic model.
 
 Energy permittivity
   The weight $\mathrm{Re}[\varepsilon + (\omega/2)\, d\varepsilon/d\omega]$ of $|E|^2$ in a mode's energy at its frequency,
@@ -873,9 +874,11 @@ Thermal crosstalk
 
 Optical window
   A model of the optical neighbourhood of one waveguide core, on which a
-  thermo-optic shift or a route phase solves the mode: the thermal model with
-  the other regions excluded from electromagnetic solves, or a mesh of its
-  own.
+  thermo-optic or {term}`electro-optic shift`, or a route phase, solves the
+  mode: the static (thermal or electrostatic) model with the other regions
+  excluded from electromagnetic solves, or a mesh of its own in the same
+  coordinates. For an electro-optic shift it reaches the electrodes' inner
+  edges.
 
 Route
   The reference line of a waveguide core in a 3D model, a polyline in metres,
@@ -927,6 +930,49 @@ Per-length quantity
 Mass density
   A material's mass per volume, in kg/m³ (`mass_density`), read by transient
   thermal problems.
+```
+
+## Electro-optics
+
+```{glossary}
+Electro-optic tensor
+  The tensor $r$ of a crystal's linear (Pockels) electro-optic effect,
+  $\Delta(1/n^2)_{ij} = \sum_k r_{ijk} E_k$, given contracted as a 6 × 3 array
+  $r_{Ik}$ in m/V (`electro_optic_tensor`): rows $xx, yy, zz, yz, xz, xy$,
+  columns $x, y, z$, in the frame of the material's right-handed `axes`. A
+  static field $E_\mathrm{s}$ changes the permittivity by
+  $\Delta\varepsilon_r = -\varepsilon_r (r \cdot E_\mathrm{s}) \varepsilon_r$.
+
+Electro-optic shift
+  The change of a guided mode's effective index, and of its phase per length,
+  caused by a static field through the crystals'
+  {term}`electro-optic tensors <electro-optic tensor>`, to first order in the
+  field and per volt on one terminal ({py:obj}`gfem.electro_optic_shift`).
+
+Push-pull
+  A modulator drive in which one electrode pattern puts opposite static
+  fields across two arms, so their
+  {term}`electro-optic shifts <electro-optic shift>` have opposite signs and
+  the arms' phase difference is the difference of the two.
+
+Voltage-length product
+  $V_\pi L = \lambda / (2\,|\partial n_\mathrm{eff}/\partial V|)$, the drive
+  times the electrode length that turns the phase by $\pi$: per arm, or for a
+  {term}`push-pull` pair from the difference of the two arms' shifts.
+
+Electro-optic overlap factor
+  $\Gamma$, the ratio of an {term}`electro-optic shift` to the bulk shift
+  $\tfrac12 n^3 r V / g$ of a uniform field across an electrode gap $g$: the
+  share of the ideal shift the field and the mode deliver together. Derived
+  from the shift, never an input.
+
+Electrode clearance
+  The lateral distance from a waveguide's edge to the nearest electrode's
+  inner edge, $(g - w)/2$ for a ridge of width $w$ centred in a gap $g$. Its
+  lower bound comes from the mode's decay outside the ridge,
+  $\ln(1/\delta) / (2\kappa)$ with $\kappa = k_0 \sqrt{n_\mathrm{eff}^2 -
+  n_\mathrm{slab}^2}$, so that the mode's intensity at the metal is $\delta$
+  of its value at the ridge's edge.
 ```
 
 ## Distributed runs

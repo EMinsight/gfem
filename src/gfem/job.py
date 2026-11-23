@@ -63,6 +63,7 @@ from gfem._materials import (
     PermittivityLaw,
     PixelGeometry,
 )
+from gfem._optical_shift import _Sampling
 from gfem._pml import PML
 from gfem._port_section import PortSection
 from gfem._pytree import register_fields
@@ -108,7 +109,7 @@ from gfem.results import (
 )
 from gfem.solve import _solve, _solve_cache, solve
 from gfem.thermal import HeatSource, _FieldTrace
-from gfem.thermo_optic import _RouteSampler, _RouteTrace, _Sampling, _ShiftTrace
+from gfem.thermo_optic import _RouteSampler, _RouteTrace, _ShiftTrace
 
 __all__ = ["Job", "load_result"]
 
@@ -857,7 +858,12 @@ def _unset_omitted(cls: Any, **defaults: Any) -> _codec.ToArgs:
         for name, default in defaults.items():
             # a field sequence equals no default: only an empty one is left out
             value = args[name]
-            unset = not len(value) if isinstance(default, tuple) else value == default
+            if default is None:  # an array field is unset only when None
+                unset = value is None
+            elif isinstance(default, tuple):
+                unset = not len(value)
+            else:
+                unset = value == default
             if unset:
                 del args[name]
         return args
@@ -920,6 +926,9 @@ def _renamed_density_from_args(cls: type) -> _codec.FromArgs:
 for _cls in (Material, MaterialField):
     _codec.register(
         _cls,
+        # no electro-optic tensor: written as an older gfem wrote it, so the
+        # file and its solve key are unchanged
+        to_args=_unset_omitted(_cls, electro_optic_tensor=None),
         from_args=_renamed_density_from_args(_cls),
         # "density": the mass density as gfem 0.1 wrote it (a read alias)
         names=[f.name for f in dataclasses.fields(_cls) if f.init] + ["density"],
@@ -948,7 +957,6 @@ for _cls in (
     LumpedPort,
     WavePort,
     FloquetPort,
-    ElectrostaticResult,
     DiffractionOrderResult,
     NetworkParameters,
     SweepInfo,
@@ -982,6 +990,11 @@ _codec.register(
 )
 _codec.register(
     DrivenResult, to_args=_unset_omitted(DrivenResult, h_fields=(), polarization=None)
+)
+# a cross-section's slab thickness only when set, so a 3D result is written as
+# before
+_codec.register(
+    ElectrostaticResult, to_args=_unset_omitted(ElectrostaticResult, _thickness=None)
 )
 _codec.register(
     PortSection,

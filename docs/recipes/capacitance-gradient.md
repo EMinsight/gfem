@@ -41,7 +41,9 @@ value, grad = jax.value_and_grad(coupling)(jnp.full(n, 3.9))  # grad: (n,), fF
 - `grad[i]` is the change of the mutual capacitance, in fF, per unit change of
   the relative permittivity of oxide element `i`.
 - `result.mutual` and `result.inverse` differentiate like
-  `result.capacitance`.
+  `result.capacitance`, and so does `result.capacitance_per_length`, the
+  matrix per metre of a cross-section read with
+  {py:meth}`gfem.Mesh.from_gmsh_cross_section`.
 - The region energies `result.energy` differentiate too, with respect to
   the permittivity and the node coordinates. A gradient through them costs
   one adjoint solve for all terminals together, on both linear solvers.

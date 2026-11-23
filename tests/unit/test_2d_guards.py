@@ -243,6 +243,12 @@ ENTRIES = {
         ),
         r"electromagnetic_heating.*from_gmsh_cross_section.*incident_power_per",
     ),
+    "electro_optic_shift": (
+        lambda model: gfem.electro_optic_shift(
+            model, field_on(model.mesh), port="p", frequency=F
+        ),
+        rf"electro_optic_shift.*{SLAB}",
+    ),
     "interface_participation": (
         lambda model: gfem.interface_participation(
             gfem.EigenmodeResult(
