@@ -13,14 +13,17 @@ is
 with :math:`\Pi` the moment interpolant (`gfem._engine.moments`),
 :math:`\chi` the mask of the DOFs of the elements outside the layer, and
 :math:`A_\mathrm{bg}` the **background operator**: the operator of the
-model with every scatterer region's material replaced by the background's,
-its interior sheets (`gfem.Conductor`, `gfem.Impedance`) and lumped ports
+model with every scatterer element's material replaced by the background
+stack's layer at its height, its interior sheets (`gfem.Conductor`, `gfem.Impedance`) and lumped ports
 left out, and the same truncation (layer, `gfem.Absorbing` faces) and wave
 port terms (`background_model`). The scatterer difference
 :math:`D = A - A_\mathrm{bg}` is then the scatterer:
-the regions whose material is not the background's, chosen per region
-(a `gfem.MaterialField`, a permittivity law or an anisotropic material is
-always one, whatever its values), and the interior sheet and lumped terms.
+the elements whose region's material is not the stack's layer at their
+height (`stack_layers`: no element crosses a stack plane, each takes the
+layer at its centroid), compared by region and layer, never by a value
+that could move with a design (a `gfem.MaterialField`, a permittivity law
+or an anisotropic material is always one, whatever its values), and the
+interior sheet and lumped terms.
 :math:`b` reads no scatterer material, so it does not depend on a material
 design. A `gfem.PEC` surface fixes the total field: a perfect conductor in
 the scatterer needs no lift.
