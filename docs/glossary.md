@@ -770,7 +770,13 @@ Total field
 Background stack
   The planar layers normal to z, each a constant isotropic material, whose
   exact solution is the {term}`incident field` (`Model(background=...)`,
-  `gfem.Background`); a homogeneous background is a one-layer stack.
+  `gfem.Background`), optionally ending below on a PEC ground plane; a
+  homogeneous background is a one-layer stack.
+
+Incidence layer
+  The layer of the {term}`background stack` a plane wave comes from: the
+  bottom one for $\theta < \pi/2$, the top one for $\theta > \pi/2$. It
+  must be lossless; the wave's amplitude and phase are given there.
 
 Scatterer
   Where the model differs from the {term}`background stack` at the same

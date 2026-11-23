@@ -145,6 +145,37 @@ A result holding an {py:obj}`gfem.IncidentField` cannot be written to a
 file, since its function is code; define the function in a module (not in
 `__main__`) so that frequency workers can load it.
 
+## Put the scatterer on a substrate
+
+A {py:obj}`gfem.Background` of several layers is a planar stack along $z$,
+bottom to top, separated by the planes `interfaces` (m); `ground=` ends it
+below on a perfect conductor. gfem solves the stack for each plane wave,
+frequency and polarization, so the incident field already holds the
+substrate's reflection and transmission, and the {term}`scatterer` is only
+what differs from the stack:
+
+```python
+glass, air = gfem.Material(eps_r=2.25), gfem.Material()
+film = gfem.Material(eps_r=4.0, tan_delta=0.01)
+stack = gfem.Background([glass, film, air], interfaces=[0.0, 0.12e-6])
+```
+
+Mesh the stack's planes: no tetrahedron may cross one, and each element
+belongs to the background when its region's material is the stack's layer
+at its height, so pass the same {py:obj}`gfem.Material` to `materials` and
+to the stack. Split the {term}`perfectly matched layer`'s regions at the
+planes too, each carrying the stack's material at its height: a layer
+region that does not is a scatterer reaching the layer, refused under a
+plane wave.
+
+`theta < pi/2` comes up from the bottom layer, `theta > pi/2` down from the
+top one; that {term}`incidence layer` must be lossless, the others may be lossy.
+$E_0$ and its phase are those of the incident wave in its own layer, at the
+model origin. From the substrate past the critical angle the light reaches
+the air side as an evanescent field, with no special setting. With
+`ground=z`, the model ends on a {py:obj}`gfem.PEC` face on that plane and
+the wave comes from above.
+
 ## Choose the truncation
 
 The incident field must leave the model without meeting what absorbs or
@@ -177,9 +208,15 @@ it found and the remedy.
   crosses is refused.
 - **Ports outside the incident field**: a wave port face it reaches is
   refused.
-- **Homogeneous, lossless backgrounds**: plane waves and functions in one
-  lossless material; Gaussian beams, layered stacks and lossy backgrounds
-  for plane waves are refused in this version.
+- **Lossless incidence**: a plane wave comes from a lossless material, or a
+  lossless incidence layer of a stack; Gaussian beams are refused in this
+  version, and on a stack of several layers they stay refused: feed the
+  beam from its homogeneous side, or give its field in the stack as an
+  {py:obj}`gfem.IncidentField`.
+- **Stacks matched to the mesh**: a stack plane may not cut a tetrahedron,
+  a plane wave may not graze the planes or come up from below a ground
+  plane, a ground plane needs a PEC face on it and no element below it, and
+  a layer region off the stack is a scatterer reaching the layer.
 - **One process per solve**: frequency workers do not take incident fields
   yet.
 - **Material gradients**: gradients flow to the scatterer's material fields;

@@ -993,8 +993,14 @@ def cross_sections(
     power over the source's intensity :math:`I`:
 
     - `gfem.PlaneWave`: :math:`|E_0|^2 / (2\eta)`, :math:`\eta` the wave
-      impedance of the background;
+      impedance of the layer it comes from;
     - `gfem.IncidentField`: ``intensity=``, required.
+
+    On a layered background (`gfem.Background`) the extinction is the
+    power the scatterer removes from the stack's own field, the incident
+    wave with its reflected and transmitted waves, not from the incident
+    wave alone; the scattered power is what the scattered field carries to
+    the truncation, into every layer. Every layer must be lossless.
 
     A model reduced by :math:`n` mirror planes (walls the incident field
     satisfies) reports the meshed part, :math:`2^{-n}` of the full model's
@@ -1025,7 +1031,8 @@ def cross_sections(
             and finite; a scatterer region, sheet, lumped port or perfect
             conductor reaches the truncation layer; the truncation layer
             reaches a wave port; the model has no background.
-        NotImplementedError: A lossy background.
+        NotImplementedError: A lossy background, or a lossy layer of a
+            layered one.
         gfem.DistributedUnsupportedError: The fields are pieces across ranks.
         NonDifferentiableError: While `jax.grad` traces it: a material design
             with an element in the truncation layer, or the node coordinates.
