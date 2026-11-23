@@ -28,6 +28,9 @@ Every record carries ``phase``, ``seconds`` (wall time on this rank),
 runs no collective for these records: a handler sums them and gathers them
 across ranks. A phase nested in the same phase is part of the outer one.
 
+Each outermost phase is also shown on the log display's progress rows
+(`gfem._progress.phase`), whether or not its record is logged.
+
 Frequency workers time their blocks in their own processes; the parent logs
 their records (`gfem._linalg.report.replay`). The workers run side by side,
 so their seconds can add up to more than the parent's wall time.
@@ -43,6 +46,8 @@ import re
 import time
 from collections.abc import Callable, Generator
 from typing import Any
+
+from gfem import _progress
 
 LOGGER = logging.getLogger("gfem.timing")
 
@@ -118,7 +123,9 @@ def phase(name: str, **attrs: Any) -> Generator[Span]:
     token = _OPEN.set((*outer, span))
     start = time.perf_counter()
     try:
-        yield span
+        # the progress rows show the phase, logged or not
+        with _progress.phase(name):
+            yield span
     finally:
         seconds = time.perf_counter() - start
         _OPEN.reset(token)
