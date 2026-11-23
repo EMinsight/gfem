@@ -12,7 +12,8 @@ gives its path and skips the test when it is unset, and a test taking a
 
 Tests marked ``petsc`` or ``slepc`` need gfem's PETSc or SLEPc solver: they
 are skipped, with the user-facing reason, where `gfem._petsc` cannot use it.
-Tests in tests/mpi are skipped where mpi4py or the launcher is missing.
+Tests in tests/mpi are skipped where mpi4py or the launcher is missing, and one
+fails if it starts PETSc in pytest's process.
 
 A test that sets NGSolve's thread count, or enters its own `ngs.TaskManager()`, uses
 the `ngsolve_threads` fixture, which then sets the count `threads=None` would use.
@@ -26,6 +27,7 @@ jobs share a tier; tests are dealt one by one, so a long file spreads over them.
 """
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -157,6 +159,26 @@ def _bitwise_threads(request, monkeypatch):
 
     if not pardiso_available():
         monkeypatch.setenv("NGS_NUM_THREADS", "1")
+
+
+@pytest.fixture(autouse=True)
+def _launched_tests_leave_petsc_unstarted(request):
+    """Fail a tests/mpi test that starts PETSc in pytest's process.
+
+    On the MPI stack, starting PETSc makes this process an MPI singleton: later
+    launches inherit its MPI state and abort in ``MPI_Init``, and its finalize can
+    hang at exit. Importing ``petsc4py.PETSc`` initialises PETSc.
+    """
+    if request.node.get_closest_marker("mpi") is None:
+        yield
+        return
+    started = "petsc4py.PETSc" in sys.modules
+    yield
+    if not started and "petsc4py.PETSc" in sys.modules:
+        pytest.fail(
+            "started PETSc in pytest's process: run what needs it on the ranks",
+            pytrace=False,
+        )
 
 
 @pytest.fixture

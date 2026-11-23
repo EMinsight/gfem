@@ -214,6 +214,12 @@ def test_the_driven_gamma_is_the_2d_port_modes(ladder):
 #: Bounds on the finest mesh: 1 GHz, 10 GHz (measured 1.4e-5, 2.7e-4).
 S_BOUND = np.array([3e-5, 5e-4])
 
+#: Bound on :math:`|S_{12} - S_{21}|`: round-off of the direct solve, largest at
+#: 1 GHz where the system is worst conditioned, and growing as the mesh refines
+#: (measured 4e-9 to 1.2e-7 on the finest mesh, depending on the machine and on
+#: gmsh's mesh). A transposed or conjugated S would miss it by orders of magnitude.
+RECIPROCITY_BOUND = 1e-6
+
 
 def test_the_lossy_line_is_matched_to_its_own_mode(ladder):
     """S11 vanishes up to discretisation, far below ``alpha / beta``.
@@ -237,7 +243,7 @@ def test_the_lossy_line_is_matched_to_its_own_mode(ladder):
     assert (s11 <= S_BOUND).all()
     assert (s22 <= S_BOUND).all()
     assert (s11 < 0.01 * ratio).all()
-    assert (np.abs(s[:, 0, 1] - s[:, 1, 0]) <= 1e-7).all()
+    assert (np.abs(s[:, 0, 1] - s[:, 1, 0]) <= RECIPROCITY_BOUND).all()
 
 
 def test_s21_is_exp_minus_gamma_l_in_magnitude_and_phase(ladder):
