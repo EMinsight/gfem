@@ -113,7 +113,10 @@ class _Shared:
     counts: np.ndarray
 
     def __call__(self, coefficients: np.ndarray) -> np.ndarray:
-        summed = self.layout.exchange(coefficients)
+        # a field's space is real: its exchange takes one part at a time
+        summed = self.layout.exchange(coefficients.real)
+        if np.iscomplexobj(coefficients):
+            summed = summed + 1j * self.layout.exchange(coefficients.imag)
         return np.where(self.counts > 0, summed / np.maximum(self.counts, 1), 0)
 
     @classmethod

@@ -3000,7 +3000,8 @@ def _power_adjoint(  # noqa: PLR0917 - one frequency's columns, in place
     power = sources.power_loads(omega, ct)
     rhs = sources.rhs(omega)
     for k in range(power.shape[1]):
-        if not power[:, k].any():
+        # a dipole's load is on the rank holding its element: decide together
+        if not _mpi.agree_any(layout.comm, flag=bool(power[:, k].any())):
             continue
         j = width + k
         scale = parallel_scale(power[:, k], rhs[:, k], layout)
