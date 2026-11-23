@@ -1,6 +1,7 @@
 """The command-line runner: python -m gfem run job.json --out DIR."""
 
 import json
+import logging
 import subprocess
 import sys
 
@@ -184,6 +185,60 @@ def test_a_sweep_that_stops_exits_1_and_says_where_the_partial_result_is(
     )
     assert gfem.load_result(out / "partial.json").s.frequency == f[:2]
     assert not (out / "result.json").exists()
+
+
+def test_log_shows_gfem_s_log_lines_on_stderr_for_the_run(model, tmp_path, capsys):
+    job = _job(model, tmp_path)
+    argv = [
+        "run",
+        str(job),
+        "--out",
+        str(tmp_path / "r"),
+        "--cache",
+        str(tmp_path / "c"),
+    ]
+    assert main([*argv, "--log", "info"]) == 0
+    lines = capsys.readouterr().err.splitlines()
+    assert any(" INFO  cache  miss " in line for line in lines), lines
+    assert logging.getHandlerByName("gfem.log") is None
+    assert logging.getLogger("gfem").propagate
+
+
+def test_without_log_the_run_writes_nothing_to_stderr(model, tmp_path, capsys):
+    job = _job(model, tmp_path)
+    argv = [
+        "run",
+        str(job),
+        "--out",
+        str(tmp_path / "r"),
+        "--cache",
+        str(tmp_path / "c"),
+    ]
+    assert main(argv) == 0
+    assert capsys.readouterr().err == ""
+    assert logging.getHandlerByName("gfem.log") is None
+
+
+def test_log_leaves_no_handler_when_the_run_fails(model, tmp_path, capsys):
+    job = _job(model, tmp_path)
+    (tmp_path / "stack.msh").write_text("changed")
+    assert main(["run", str(job), "--out", str(tmp_path / "r"), "--log", "DEBUG"]) == 1
+    assert "sha256" in capsys.readouterr().err
+    assert logging.getHandlerByName("gfem.log") is None
+    assert logging.getLogger("gfem").propagate
+
+
+def test_an_unknown_log_level_is_a_usage_error(model, tmp_path, capsys):
+    job = _job(model, tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        main(["run", str(job), "--out", str(tmp_path / "r"), "--log", "bogus"])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "usage" in err
+    assert "--log" in err
+    assert "BOGUS" in err
+    assert logging.getHandlerByName("gfem.log") is None
+    assert not (tmp_path / "r").exists()
 
 
 def test_a_broken_job_exits_1(model, tmp_path, capsys):
