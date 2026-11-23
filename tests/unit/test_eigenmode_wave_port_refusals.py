@@ -93,7 +93,7 @@ def test_refine_mesh_refuses_a_quantity_estimate_naming_the_port(case_a, estimat
             tolerance=1e-2,
             options=ORDER_2,
         )
-    assert raised.value.feature == "lossy eigenmode"
+    assert raised.value.feature == "wave port eigenmode"
     message = str(raised.value)
     assert "WavePort 'p1'" in message
     assert "gfem.FieldEstimator()" in message

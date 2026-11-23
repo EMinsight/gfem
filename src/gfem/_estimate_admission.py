@@ -646,7 +646,7 @@ def _check_wave_port_mode(model: Model, what: str) -> None:
     port = first_wave_port(model.ports)
     if port is not None:
         raise MeshRefinementUnsupportedError(
-            "lossy eigenmode",
+            "wave port eigenmode",
             f"{what} has no verified estimate for a mode with WavePort "
             f"{port.name!r}: its port term is not in the error identity. Use "
             "gfem.FieldEstimator().",

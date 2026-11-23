@@ -209,7 +209,7 @@ class QuantityEstimator:
     eigenmode"``), a second-order absorbing boundary, a complex ``mu_r`` or
     loss inside an anisotropic material (``"lossy eigenmode"``). Every
     quantity of a mode of a model with a `gfem.WavePort` (``omega``, ``q`` and
-    objectives) raises it before any solve (``"lossy eigenmode"``): refine
+    objectives) raises it before any solve (``"wave port eigenmode"``): refine
     such a mode with `FieldEstimator`. An S entry
     ``(to, from)`` whose port ``to`` is not excited, or is a wave port with a
     lossy mode not parallel to its excitation, needs that port's adjoint
