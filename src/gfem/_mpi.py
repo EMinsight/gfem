@@ -178,6 +178,11 @@ _REFUSALS = {
         "Job.run(out=) and call it on one process on the field load_result "
         f"gives, {_COPIES}."
     ),
+    "electromagnetic_heating": (
+        "gfem.electromagnetic_heating has no distributed path: write the result "
+        "with Job.run(out=) and call it on one process on the result load_result "
+        f"gives, {_COPIES}."
+    ),
     "electric_energy": (
         "gfem.electric_energy has no distributed path: write the result with "
         "Job.run(out=) and call it on one process on the field load_result "

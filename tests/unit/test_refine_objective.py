@@ -203,6 +203,13 @@ def _energy(result, model):
     ]
 
 
+def _heated(result, model):
+    heat = gfem.electromagnetic_heating(
+        result, model=model, frequency=STEP_F[0], incident_power={"p1": 1.0}
+    )
+    return jnp.sum(heat._density_on(model.mesh))
+
+
 def _dissipated(result, model):
     return gfem.dissipated_power(result.e_field(STEP_F[0], "p1"), model=model)[
         "dielectric"
@@ -222,6 +229,7 @@ def _dissipated(result, model):
         (_port_side, "power through a port"),
         (_energy, "electric_energy"),
         (_dissipated, "dissipated_power"),
+        (_heated, "electromagnetic_heating"),
     ],
 )
 def test_an_objective_reading_what_has_no_estimate_raises(

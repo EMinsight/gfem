@@ -452,6 +452,10 @@ RAISES_LABELS = {
         "The dissipated power per region and sheet (`dissipated_power`), with "
         "respect to the field's frequency (a fixed input of the driven solve)"
     ),
+    "electromagnetic_heating x frequency": (
+        "The heat of a driven result (`electromagnetic_heating`), with respect "
+        "to its frequency (a fixed input of the driven solve)"
+    ),
     "driven x wave_vector": (
         "Driven S-parameters, with respect to the Bloch wave vector"
     ),
@@ -985,6 +989,7 @@ REFUSAL_LABELS = {
     "element_mean": "`element_mean`",
     "electric_energy": "`electric_energy`",
     "dissipated_power": "`dissipated_power`",
+    "electromagnetic_heating": "`electromagnetic_heating`",
     "error_estimate": "`error_estimate` of a result solved across ranks",
     "mesh_refinement": "`refine_mesh`",
     "mode_field_gradient": (
