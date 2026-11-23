@@ -6,8 +6,12 @@ kernel on the pair :math:`(-\lambda, u_\mathrm{total})` is the whole
 gradient. A dielectric cube (a `gfem.MaterialField`) in an air box wrapped in
 a perfectly matched layer, with a lumped port on its +x face, at order 2; the
 objective reads a plane wave's port wave, its total field at a point, and
-its scattered part, against fourth-order differences to :math:`10^{-6}`.
+its scattered part, against fourth-order differences to :math:`10^{-6}`; so
+do a point value and a region mean of the scattered part alone, and the S
+and port wave of a Drude cube by its law parameters over a uniform sweep.
 """
+
+import dataclasses
 
 import jax.numpy as jnp
 import numpy as np
@@ -79,3 +83,49 @@ def test_a_plane_wave_objective_by_the_scatterer_permittivity(model):
     eps = jnp.asarray(model.materials["scat"].eps_r)
     directions = unit_directions(np.random.default_rng(3), eps.shape, 2)
     assert_gradient_matches(_objective(model), eps, directions, step=1e-2)
+
+
+def test_point_value_and_region_mean_of_the_scattered_part(model):
+    problem = gfem.Driven(F, excite=(), sources=WAVE, keep_fields=True)
+
+    def objective(eps):
+        moved = model.with_material("scat", gfem.MaterialField(eps_r=eps))
+        result = gfem.solve(moved, problem, options=OPTIONS)
+        scattered = result.e_field(F, part="scattered")
+        point = jnp.sum(jnp.abs(scattered.at(PROBE)) ** 2)
+        mean = jnp.sum(jnp.abs(gfem.region_mean(scattered, "scat")) ** 2)
+        return point + mean
+
+    eps = jnp.asarray(model.materials["scat"].eps_r)
+    directions = unit_directions(np.random.default_rng(4), eps.shape, 2)
+    assert_gradient_matches(objective, eps, directions, step=1e-2)
+
+
+#: A metal-like cube at F: eps = 1 - 4 / (1 - 0.1i) near -3.
+DRUDE = gfem.Drude(plasma_frequency=2 * F, damping=0.1 * F)
+
+
+def _drude(t):
+    term = dataclasses.replace(
+        DRUDE,
+        plasma_frequency=DRUDE.plasma_frequency * (1 + t[0]),
+        damping=DRUDE.damping * (1 + t[1]),
+    )
+    return gfem.Material(eps_r=gfem.PermittivityLaw(eps_inf=1.0, terms=[term]))
+
+
+def test_a_drude_scatterer_by_its_law_parameters_over_a_uniform_sweep(model):
+    grid = (F, 1.05 * F)
+    problem = gfem.Driven(grid, sources=WAVE, keep_fields=[grid[1]])
+
+    def objective(t):
+        moved = model.with_material("scat", _drude(t))
+        result = gfem.solve(moved, problem, options=OPTIONS)
+        waves = jnp.sum(jnp.abs(result.port_wave("p1", "w")) ** 2)
+        s = jnp.sum(jnp.abs(result.s.values) ** 2)
+        scattered = result.e_field(grid[1], "w", part="scattered")
+        return waves + s + jnp.sum(jnp.abs(scattered.at(PROBE)) ** 2)
+
+    t = jnp.zeros(2)
+    directions = unit_directions(np.random.default_rng(5), t.shape, 2)
+    assert_gradient_matches(objective, t, directions, step=1e-3)

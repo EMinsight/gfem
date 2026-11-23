@@ -69,6 +69,7 @@ from gfem._engine.fields import face_keys
 from gfem._engine.moments import moment_interpolant
 from gfem._incident import Incident, IncidentPart, layered
 from gfem._linalg.base import free_mask
+from gfem._linalg.layout import ONE_PROCESS
 from gfem._materials import Material, MaterialField
 from gfem._sources import GaussianBeam
 from gfem._transfer_matrix import layer_index, number
@@ -712,18 +713,28 @@ class IncidentColumns:
         *,
         order: int,
         stretch: Stretch | None,
+        comm: Any = None,
     ) -> None:
-        """Prepare the loads (`check_contact` has run on the model)."""
+        """Prepare the loads (`check_contact` has run on the model).
+
+        Under ``comm`` each rank builds its own rows: the interpolant is a
+        state every holder of a DOF agrees on, and the background operator
+        applied to it gives this rank's part of the load, which the solve
+        sums over ranks.
+        """
         from gfem._engine.driven import driven_operator
 
         background = model.background
         assert background is not None  # noqa: S101 - checked at the rule
         self.sources = tuple(sources)
         self.background = background
-        self.interpolant = moment_interpolant(model, order, elements=_physical(model))
+        self.interpolant = moment_interpolant(
+            model, order, elements=_physical(model), comm=comm
+        )
         op = system.operator
+        self.layout = ONE_PROCESS if op.layout is None else op.layout
         bg = driven_operator(
-            background_model(model, background), order, stretch=stretch
+            background_model(model, background), order, stretch=stretch, comm=comm
         )
         if bg.space is not op.space:  # pragma: no cover - same key by construction
             raise RuntimeError("The background operator is not on the solve space.")
@@ -754,7 +765,7 @@ class IncidentColumns:
         if self.system.surfaces:
             term = self.system.corrections(omega)
             right = term.left if term.right is None else term.right
-            b += term.left @ (term.coefficients @ (right.T @ w))
+            b += term.left @ (term.coefficients @ self.layout.pair(right, w))
         b[~self.free] = 0
         return b
 
@@ -766,20 +777,25 @@ def incident_columns(
     *,
     order: int,
     stretch: Stretch | None,
+    comm: Any = None,
 ) -> Callable[[float], np.ndarray]:
     """The loads of ``sources`` as a function of ω (see `IncidentColumns`)."""
-    return IncidentColumns(model, system, sources, order=order, stretch=stretch)
+    return IncidentColumns(
+        model, system, sources, order=order, stretch=stretch, comm=comm
+    )
 
 
 def incident_coefficients(field: Field, part: IncidentPart) -> np.ndarray:
     r""":math:`\chi\Pi w` on ``field``'s space and rows, engine coefficients.
 
     The moment interpolant of ``part``'s source at the field's frequency,
-    on the elements of the field's support outside the layer.
+    on the elements of the field's support outside the layer. Under ranks,
+    this rank's piece, padded like the field's (collective).
     """
     from gfem._engine.moments import field_interpolant
 
     mesh = field.mesh
+    comm = field._communicator  # noqa: SLF001
     elements = ~_elements_of(mesh, part.layers)
     interpolant = field_interpolant(
         mesh,
@@ -787,8 +803,14 @@ def incident_coefficients(field: Field, part: IncidentPart) -> np.ndarray:
         field._excluded,  # noqa: SLF001
         field.order,
         elements=elements,
+        comm=comm,
     )
     f = float(np.real(np.asarray(field.omega))) / (2 * math.pi)
-    return interpolant(
+    values = interpolant(
         _incident.values(part.source, part.background, interpolant.points, f)
     )
+    if comm is None:
+        return values
+    out = np.zeros(np.shape(field.coefficients)[0], complex)
+    out[: len(values)] = values
+    return out

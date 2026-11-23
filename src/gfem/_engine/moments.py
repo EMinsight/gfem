@@ -27,7 +27,10 @@ covariantly, batched over the class's elements.
 Each edge and face takes its points from its own vertices, in the order of
 their gfem node numbers, so every element (and every rank) holding a shared
 entity reads the same points and computes the same coefficients: the operator
-of a distributed mesh is rank-local and needs no exchange.
+of a distributed mesh is rank-local and needs no exchange. An element set
+smaller than the domain is the one exception: an entity on the set's edge
+that is also a partition face is computed by the rank holding the chosen
+element only, so its holders agree through one neighbour exchange.
 """
 
 from __future__ import annotations
@@ -83,10 +86,47 @@ class MomentInterpolant:
     points: np.ndarray
     matrix: sp.csr_array
     setup_time: float
+    shared: _Shared | None = None
 
     def __call__(self, values: np.ndarray) -> np.ndarray:
         """The coefficients of the field of ``values`` (``(n, 3)``, V/m) at `points`."""
-        return self.matrix @ np.asarray(values).reshape(-1)
+        out = self.matrix @ np.asarray(values).reshape(-1)
+        return out if self.shared is None else self.shared(out)
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class _Shared:
+    """Agreement of a masked interpolant's shared DOFs across ranks.
+
+    An element set's edge of a shared entity may lie on one rank only: a
+    face between a chosen element on one rank and an element left out on
+    another. The second rank holds the DOF but computes nothing there, so
+    each shared DOF takes the value of the ranks that computed it (they
+    agree to round-off): one neighbour exchange per call.
+
+    Attributes:
+        layout: The space's layout across ranks.
+        counts: Per local DOF, how many of its holders computed it.
+    """
+
+    layout: Any
+    counts: np.ndarray
+
+    def __call__(self, coefficients: np.ndarray) -> np.ndarray:
+        # a field's space is real: its exchange takes one part at a time
+        summed = self.layout.exchange(coefficients.real)
+        if np.iscomplexobj(coefficients):
+            summed = summed + 1j * self.layout.exchange(coefficients.imag)
+        return np.where(self.counts > 0, summed / np.maximum(self.counts, 1), 0)
+
+    @classmethod
+    def of(cls, space: ngs.FESpace, comm: Any, matrix: sp.csr_array) -> _Shared:
+        from gfem._linalg.layout import RankLayout
+
+        layout = RankLayout(space, comm)
+        computed = (np.diff(matrix.indptr) > 0).astype(float)
+        counts = np.real(layout.exchange(computed))
+        return cls(layout, counts)
 
 
 def moment_interpolant(
@@ -128,7 +168,28 @@ def moment_interpolant(
     domains = _active_domains(model, built)
     return disc.space(
         (*key, "moment interpolant", mask_key),
-        lambda: _build(space, built, order, domains, elements),
+        lambda: _shared(
+            _build(space, built, order, domains, elements), space, comm, elements
+        ),
+    )
+
+
+def _shared(
+    interpolant: MomentInterpolant,
+    space: ngs.FESpace,
+    comm: Any,
+    elements: np.ndarray | None,
+) -> MomentInterpolant:
+    """``interpolant`` agreeing on shared DOFs across ranks (`_Shared`).
+
+    Under ranks only: an element set's shared DOFs may be computed on some of
+    their holders; one process, or every element of the domain (each holder
+    computes its entities), needs no exchange and returns ``interpolant``.
+    """
+    if comm is None or elements is None:
+        return interpolant
+    return dataclasses.replace(
+        interpolant, shared=_Shared.of(space, comm, interpolant.matrix)
     )
 
 
@@ -139,15 +200,17 @@ def field_interpolant(
     order: int,
     *,
     elements: np.ndarray | None = None,
+    comm: Any = None,
 ) -> MomentInterpolant:
     """The `MomentInterpolant` of a field's H(curl) space, from its layout alone.
 
     The space of a `gfem.Field` on ``support`` minus ``excluded``
     (`gfem._engine.fields.fe_space`): the numbering of a driven solve's
     space on the same domain, so a kept field and its incident part share
-    their rows. ``elements`` as for `moment_interpolant`. One process only.
+    their rows. ``elements`` and ``comm`` as for `moment_interpolant`: under
+    ranks, this rank's rows of the field's piece.
     """
-    built, space, _ = fe_space(mesh, support, excluded, "hcurl", order)
+    built, space, _ = fe_space(mesh, support, excluded, "hcurl", order, comm=comm)
     names = mesh._region_names()  # noqa: SLF001
     wanted, out = set(support), set(excluded)
     domains = np.array(
@@ -159,11 +222,13 @@ def field_interpolant(
     else:
         mask = np.asarray(elements, bool)
         mask_key = (len(mask), hashlib.sha256(np.packbits(mask).tobytes()).hexdigest())
-    disc = discretization(mesh, (), None)
+    disc = discretization(mesh, (), comm)
     key = (("field", tuple(support), tuple(excluded)), "hcurl", order)
     return disc.space(
         (*key, "moment interpolant", mask_key),
-        lambda: _build(space, built, order, domains, elements),
+        lambda: _shared(
+            _build(space, built, order, domains, elements), space, comm, elements
+        ),
     )
 
 
@@ -559,6 +624,9 @@ def _build(
 ) -> MomentInterpolant:
     """Build the `MomentInterpolant` of ``space`` (first-kind Nédélec, ``order``)."""
     start = time.perf_counter()
+    if built.mesh.ngmesh.ne == 0:
+        # a rank of a distributed mesh holding no element (NGSolve's rank 0)
+        return _Assembly().finish(space.ndof, built.scale, start)
     layout = _Layout(order)
     els = _elements(space, built, layout, domains, elements)
     held = {"edge": _first_holders(els.dofs[:, [layout.edge(k)[0] for k in range(6)]])}
