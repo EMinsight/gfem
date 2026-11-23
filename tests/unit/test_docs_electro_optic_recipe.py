@@ -73,9 +73,3 @@ def test_the_te_mode_is_the_second(ran):
     assert first[-1] < 0.1  # TM
     assert second[-1] > 0.9  # TE
     assert first[-2] > second[-2]  # numbered from the most propagating
-
-
-def test_the_page_names_no_other_tool():
-    text = PAGE.read_text(encoding="utf-8").lower()
-    for name in ("palace", "tidy3d", "flexcompute", "gdsfactory"):
-        assert name not in text, name

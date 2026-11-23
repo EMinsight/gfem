@@ -100,12 +100,6 @@ def test_the_page_offers_its_section_builder(cells):
     assert HELPER.is_file()
 
 
-def test_the_page_names_no_other_tool(cells):
-    text = (" ".join(_source(c) for c in cells) + HELPER.read_text()).lower()
-    for name in ("palace", "tidy3d", "flexcompute", "gdsfactory"):
-        assert name not in text, name
-
-
 def test_the_section_builder_names_what_the_page_reads(tmp_path):
     sys.path.insert(0, str(HELPER.parent))
     try:

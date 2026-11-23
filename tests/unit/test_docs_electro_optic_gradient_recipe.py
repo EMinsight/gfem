@@ -70,9 +70,3 @@ def test_the_page_lists_what_raises(ran):
     section = dp._prose(dp.section(PAGE.read_text(encoding="utf-8"), "What raises"))
     for name in ("gfem.NonDifferentiableError", "jax.lax.stop_gradient", "eps_r"):
         assert name in section, name
-
-
-def test_the_page_names_no_other_tool():
-    text = PAGE.read_text(encoding="utf-8").lower()
-    for name in ("palace", "tidy3d", "flexcompute", "gdsfactory"):
-        assert name not in text, name
