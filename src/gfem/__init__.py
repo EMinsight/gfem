@@ -62,6 +62,7 @@ from gfem.measurements import (  # noqa: E402
     element_mean,
     interface_participation,
     power_flow,
+    purcell_factor,
     region_mean,
 )
 from gfem.mesh import Mesh, Region  # noqa: E402
@@ -247,6 +248,7 @@ __all__ = [
     "joule_heating",
     "load_result",
     "power_flow",
+    "purcell_factor",
     "quantum",
     "refine_mesh",
     "region_mean",

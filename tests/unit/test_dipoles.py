@@ -280,3 +280,71 @@ def test_a_port_free_dipole_solves_on_the_adaptive_sweep(box):
         fsc.bulk_power(2 * np.pi * f, np.array([0, 0, 1e-30])) for f in band
     ]
     np.testing.assert_allclose(ratio, 1.0, atol=0.08)
+
+
+# --- the Purcell factor -------------------------------------------------------------
+
+
+def test_the_purcell_factor_divides_by_the_bulk_power_in_the_local_material(split):
+    # in "right" (eps_r = 4): P0 grows with n = 2, so the factor stays near 1
+    model = _split_model(split, gfem.Material(eps_r=4.0))
+    p = np.array([0.0, 0.0, 1e-30])
+    dipole = gfem.ElectricDipole("d", position=np.array(RIGHT) * fsc.UM, moment=p)
+    result = _solve(model, dipole)
+    factor = gfem.purcell_factor(result, "d", model=model)
+    bulk = fsc.bulk_power(fsc.OMEGA0, p, eps_r=4.0)
+    np.testing.assert_allclose(factor, result.emitted_power["d"] / bulk, rtol=1e-8)
+    assert factor.shape == (1,)
+
+
+def test_the_magnetic_purcell_factor_reads_eps_r(split):
+    model = _split_model(split, gfem.Material(eps_r=4.0))
+    m = np.array([0.0, 1e-22, 0.0])
+    dipole = gfem.MagneticDipole("m", position=np.array(RIGHT) * fsc.UM, moment=m)
+    result = _solve(model, dipole)
+    bulk = fsc.bulk_power(fsc.OMEGA0, m, magnetic=True, eps_r=4.0)
+    np.testing.assert_allclose(
+        gfem.purcell_factor(result, "m", model=model),
+        result.emitted_power["m"] / bulk,
+        rtol=1e-8,
+    )
+
+
+def test_the_purcell_factor_of_a_real_law_reads_its_value_at_each_frequency(split):
+    law = gfem.PermittivityLaw(
+        eps_inf=2.0,
+        terms=[gfem.Lorentz(delta_eps=1.0, resonance_frequency=3 * fsc.F0, damping=0)],
+    )
+    model = _split_model(split, gfem.Material(eps_r=law))
+    p = np.array([0.0, 0.0, 1e-30])
+    dipole = gfem.ElectricDipole("d", position=np.array(RIGHT) * fsc.UM, moment=p)
+    result = _solve(model, dipole)
+    eps = float(np.real(law(fsc.F0)))
+    bulk = fsc.bulk_power(fsc.OMEGA0, p, eps_r=eps)
+    np.testing.assert_allclose(
+        gfem.purcell_factor(result, "d", model=model),
+        result.emitted_power["d"] / bulk,
+        rtol=1e-8,
+    )
+
+
+def test_the_purcell_factor_needs_a_dipole(line):
+    result = _line_solve(line, sources=LINE_DIPOLE)
+    with pytest.raises(KeyError, match="'p1' is not a point dipole of the result"):
+        gfem.purcell_factor(result, "p1", model=line)
+    with pytest.raises(KeyError, match="'x' is not a point dipole"):
+        gfem.purcell_factor(result, "x", model=line)
+
+
+def test_the_purcell_factor_refuses_an_incident_field(line):
+    wave = gfem.PlaneWave("x", theta=0.0, polarization="TM")
+    s = gfem.NetworkParameters(
+        values=np.zeros((1, 1, 0), complex),
+        z_ref=np.full((1, 1), 50.0),
+        frequency=(fsc.F0,),
+        ports=("p1",),
+        excited=(),
+    )
+    result = gfem.DrivenResult(s, sources={"x": wave})
+    with pytest.raises(ValueError, match="'x' is a PlaneWave column"):
+        gfem.purcell_factor(result, "x", model=line)

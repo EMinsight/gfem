@@ -16,7 +16,8 @@ from pathlib import Path
 import numpy as np
 import pml_cases as pc
 
-#: Speed of light and vacuum permeability, SI.
+#: Speed of light and vacuum permeability, SI (CODATA 2018: gfem's may be a
+#: later value, 1e-9 apart).
 C0 = 299792458.0
 MU0 = 1.25663706212e-6
 #: The vacuum wavelength (um) and its frequency (Hz).

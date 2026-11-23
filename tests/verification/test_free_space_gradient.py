@@ -6,7 +6,7 @@ a lossy design slab in its air and a point dipole between the port and the
 slab, at order 2. Each gradient matches a fourth-order central difference to
 :math:`10^{-6}` relative (`finite_differences`):
 
-- the emitted power by the slab's permittivity, for a real moment (the
+- the Purcell factor by the slab's permittivity, for a real moment (the
   dipole's own solution is its adjoint: no adjoint solve) and for a circular
   one (one adjoint column);
 - the beta factor :math:`|b|^2 / P` of the wave port, through the dipole's
@@ -91,17 +91,25 @@ def adjoint_columns(monkeypatch):
     return seen
 
 
+def _purcell(model, dipole):
+    problem = gfem.Driven(pc.F0, excite=(), sources=dipole)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    return gfem.purcell_factor(result, "d", model=model)[0]
+
+
 @pytest.mark.parametrize(
     ("dipole", "solves"), [(REAL, 0), (CIRCULAR, 1)], ids=["real", "circular"]
 )
-def test_emitted_power_by_the_slab_permittivity(line, adjoint_columns, dipole, solves):
+def test_the_purcell_factor_by_the_slab_permittivity(
+    line, adjoint_columns, dipole, solves
+):
     eps = jnp.asarray(line.materials["slab"].eps_r)
-    grad = jax.grad(lambda e: _power(_with_slab(line, e), dipole)[0])(eps)
-    # the real moment's adjoint is its own solution
+    grad = jax.grad(lambda e: _purcell(_with_slab(line, e), dipole))(eps)
+    # the real moment's adjoint is its own solution: no adjoint solve
     assert len(adjoint_columns) == solves
     directions = unit_directions(np.random.default_rng(0), eps.shape, 2)
     assert_gradient_matches(
-        lambda e: _power(_with_slab(line, e), dipole)[0],
+        lambda e: _purcell(_with_slab(line, e), dipole),
         eps,
         directions,
         step=EPS_STEP,
