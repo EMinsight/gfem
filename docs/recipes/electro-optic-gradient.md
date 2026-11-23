@@ -36,7 +36,9 @@ import numpy as np
 import gfem
 from gfem.shape import boundary_morph
 
-url = "https://raw.githubusercontent.com/benvial/gfem/main/docs/tutorials/tfln_section.py"
+url = (
+    "https://raw.githubusercontent.com/benvial/gfem/main/docs/tutorials/tfln_section.py"
+)
 urllib.request.urlretrieve(url, "tfln_section.py")
 from tfln_section import tfln_section  # noqa: E402
 
@@ -96,7 +98,11 @@ def phase(r, eps_ln, eps_ox, eps_air, volts):
     static = static_model(section.static, eps_ln, eps_ox, eps_air)
     potential = gfem.solve(static, drive, options=options).potential["signal"]
     shift = gfem.electro_optic_shift(
-        window_model(section.window_a, r), potential, port="arm", frequency=frequency, mode=2
+        window_model(section.window_a, r),
+        potential,
+        port="arm",
+        frequency=frequency,
+        mode=2,
     )
     return shift.phase_per_length_per_volt * volts * length
 
@@ -201,8 +207,12 @@ def walls(x0):
 
 
 hold = ["ridge_a_s", "ridge_b_s"]
-signal = boundary_morph(static, "signal_s", where=walls(section.signal_edge), fixed=hold)
-ground = boundary_morph(static, "ground_s", where=walls(section.ground_edge), fixed=hold)
+signal = boundary_morph(
+    static, "signal_s", where=walls(section.signal_edge), fixed=hold
+)
+ground = boundary_morph(
+    static, "ground_s", where=walls(section.ground_edge), fixed=hold
+)
 
 
 def closed_by(s):
@@ -223,7 +233,9 @@ s0, d_s = jax.value_and_grad(closed_by)(0.0)
 print(f"d ln|dn/dV| / d gap: {-float(d_s / s0) * um:+.4f} per um")
 for step in (1e-9, 2e-9):  # m
     fd = (closed_by(step) - closed_by(-step)) / (2 * step)
-    print(f"against a difference at {step / 1e-9:.0f} nm: {abs(float(fd / d_s) - 1):.1e}")
+    print(
+        f"against a difference at {step / 1e-9:.0f} nm: {abs(float(fd / d_s) - 1):.1e}"
+    )
 ```
 
 ```text
@@ -291,7 +303,9 @@ def with_optical_eps(eps_z):
         axes=axes,
         electro_optic_tensor=tensor_3m(*inputs[0]),
     )
-    optical = window.replace(materials={**window.materials, "slab": crystal, "ridge": crystal})
+    optical = window.replace(
+        materials={**window.materials, "slab": crystal, "ridge": crystal}
+    )
     potential = gfem.solve(static, drive, options=options).potential["signal"]
     return gfem.electro_optic_shift(
         optical, potential, port="arm", frequency=frequency, mode=2

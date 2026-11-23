@@ -494,7 +494,9 @@ along the crystal's $+z$ and lowers the index, so the delay is negative and
 the argument turns forward:
 
 ```python
-url = "https://raw.githubusercontent.com/benvial/gfem/main/docs/tutorials/tfln_section.py"
+url = (
+    "https://raw.githubusercontent.com/benvial/gfem/main/docs/tutorials/tfln_section.py"
+)
 urllib.request.urlretrieve(url, "tfln_section.py")
 from tfln_section import tfln_section  # noqa: E402
 

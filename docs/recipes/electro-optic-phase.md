@@ -40,7 +40,9 @@ import numpy as np
 
 import gfem
 
-url = "https://raw.githubusercontent.com/benvial/gfem/main/docs/tutorials/tfln_section.py"
+url = (
+    "https://raw.githubusercontent.com/benvial/gfem/main/docs/tutorials/tfln_section.py"
+)
 urllib.request.urlretrieve(url, "tfln_section.py")
 from tfln_section import tfln_section  # noqa: E402
 
@@ -102,7 +104,12 @@ es = gfem.solve(
 
 def window(mesh):
     """One ridge's optical window, its mode on the end face "front"."""
-    materials = {"cladding": oxide, "box": oxide, "slab": ln_optical, "ridge": ln_optical}
+    materials = {
+        "cladding": oxide,
+        "box": oxide,
+        "slab": ln_optical,
+        "ridge": ln_optical,
+    }
     return gfem.Model(mesh, materials=materials, ports=[gfem.WavePort("arm", "front")])
 
 
