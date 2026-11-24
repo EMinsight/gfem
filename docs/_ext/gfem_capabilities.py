@@ -463,8 +463,9 @@ RAISES_LABELS = {
     ),
     "cell_response x the cell's own design": (
         "`gfem.diffraction.cell_response`, with respect to the cell's own design "
-        "or a sample (its stored dS/dp would need second derivatives of the "
-        "solve; differentiate `gfem.solve` of the cell directly)"
+        "or its sample parameters (a cell response tabulates fixed cells; "
+        "differentiating it in the design would need second derivatives of the "
+        "solve)"
     ),
     "propagate x distance": (
         "`gfem.diffraction.propagate`, with respect to the propagation distance "
