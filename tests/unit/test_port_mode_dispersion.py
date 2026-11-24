@@ -147,11 +147,16 @@ def test_gmres_that_does_not_converge_falls_back_to_a_direct_solve(slab_mesh):
 # --- the sweep's exact solves ----------------------------------------------------
 
 
-def _greedy(slab_mesh, dispersion=()):
+def _greedy(slab_mesh, dispersion=(), tolerance=1e-6):
     space = _space(slab_mesh, "slab", 4.0, "air")
     grid = np.linspace(10e9, 20e9, 20)
     return _Greedy(
-        space, grid, [1], 1e-6, [gfem.WavePort("p1", "port1")], dispersion=dispersion
+        space,
+        grid,
+        [1],
+        tolerance,
+        [gfem.WavePort("p1", "port1")],
+        dispersion=dispersion,
     )
 
 
@@ -491,3 +496,176 @@ def test_the_dispersion_parameter_of_a_known_beta_2():
 
 def test_there_is_no_dispersion_parameter_without_beta_2():
     assert _result(None).D is None
+
+
+# --- the public result: reduced rows ------------------------------------------------
+#
+# A reduced row's dispersion comes from the derivative basis: the sweep's own
+# basis then the samples' mode derivatives. Against an exact solve at the same
+# frequency it agrees to the gates of exact solves against each other.
+
+SWEEP_GRID = np.linspace(10e9, 20e9, 50)
+
+
+@pytest.fixture(scope="module")
+def swept(slab_mesh):
+    model = gfem.Model(
+        slab_mesh,
+        materials={"slab": gfem.Material(eps_r=4.0), "air": gfem.Material()},
+        boundaries=[gfem.PEC("walls")],
+        ports=[gfem.WavePort("p1", "port1")],
+    )
+    return model, gfem.solve(model, gfem.PortMode("p1", SWEEP_GRID))
+
+
+def test_every_row_of_a_sweep_carries_its_dispersion(swept):
+    _, result = swept
+    solved = np.asarray(result.solved)
+    assert 2 < solved.sum() < len(SWEEP_GRID)
+    for rows in (result.n_g, result.beta_2, result.beta_3):
+        assert np.isfinite(np.asarray(rows)).all()
+
+
+def test_a_reduced_row_s_dispersion_matches_an_exact_solve(swept):
+    model, result = swept
+    solved = np.asarray(result.solved)
+    for i in np.flatnonzero(~solved)[::4]:
+        ref = gfem.solve(model, gfem.PortMode("p1", SWEEP_GRID[i]))
+        assert bool(np.asarray(ref.solved)[0])
+        got = (result.n_g[i], result.beta_2[i], result.beta_3[i])
+        want = (ref.n_g[0], ref.beta_2[0], ref.beta_3[0])
+        for value, gate, expected in zip(got, (1e-12, 1e-10, 1e-8), want, strict=True):
+            assert _relative(complex(value), complex(expected)) <= gate, SWEEP_GRID[i]
+
+
+# --- the derivative basis and its guard ----------------------------------------------
+
+
+# residuals below this are the rounding of the QR factors, not the basis
+NOISE = 1e-11
+
+
+def _run(slab_mesh, tolerance=1e-6):
+    greedy = _greedy(slab_mesh, dispersion=(0,), tolerance=tolerance)
+    greedy.run()
+    return greedy
+
+
+def _not_raised(history):
+    """Each residual pair is at most the one before (up to `NOISE`)."""
+    history = np.array(history)
+    before, after = history[:-1], history[1:]
+    return ((after <= before * (1 + 1e-6)) | (before < NOISE)).all()
+
+
+def _residuals(greedy, basis, rows):
+    """Backward error and derivative residual of each reduced row on ``basis``."""
+    out = []
+    for i in rows:
+        row = basis.derivative_row(
+            greedy.space.pencil.taylor(greedy.k0[i]),
+            greedy.lam[0, i],
+            float(greedy.k0[i]),
+        )
+        out.append((row.eta, row.eta1))
+    return np.array(out)
+
+
+def test_enriching_the_derivative_basis_never_raises_a_row_s_residuals(slab_mesh):
+    # a loose tolerance keeps the residuals above rounding
+    greedy = _run(slab_mesh, tolerance=1e-3)
+    rows = np.flatnonzero(~greedy.solved)
+    space = greedy.space
+    # the sweep's basis alone, with the samples' mode derivatives, with an
+    # exact solve at a reduced row (its mode and mode derivative) besides
+    samples = [d.x1 for ds in greedy.derivatives.values() for d in ds]
+    j = int(rows[len(rows) // 2])
+    cand = greedy._solve(j)
+    derivative = greedy._mode_derivative(j, cand, 0, cand.factor)
+    chain = []
+    for added in ([], samples, [*samples, derivative.x, derivative.x1]):
+        basis = sweep._Reduced.on(space, greedy.reduced.v.copy())
+        if added:
+            basis.add(np.column_stack(added))
+        chain.append(_residuals(greedy, basis, rows))
+    assert chain[1].max() < chain[0].max() * 1e-3  # the derivatives do help
+    assert _not_raised(chain)
+
+
+def test_a_row_past_its_guard_gets_an_exact_solve_for_its_derivative_alone(
+    slab_mesh, monkeypatch
+):
+    greedy = _run(slab_mesh, tolerance=1e-3)
+    rows = np.flatnonzero(~greedy.solved)
+    before = (greedy.lam.copy(), greedy.residual.copy(), greedy.solved.copy())
+    exact_solves = greedy.exact_solves
+    seen = {}
+    real = sweep._Reduced.derivative_row
+
+    def spy(self, coefficients, lam, k0):
+        row = real(self, coefficients, lam, k0)
+        seen.setdefault(round(k0, 12), []).append((row.eta, row.eta1))
+        return row
+
+    monkeypatch.setattr(sweep._Reduced, "derivative_row", spy)
+    # no row can reach a floor of 0
+    monkeypatch.setattr(_Greedy, "_guard_floor", lambda self: np.zeros_like(self.floor))
+    greedy.dispersion_pass()
+    # the sweep itself is untouched, and a fallback solve is not a sample
+    np.testing.assert_array_equal(greedy.lam, before[0])
+    np.testing.assert_array_equal(greedy.residual, before[1])
+    np.testing.assert_array_equal(greedy.solved, before[2])
+    assert greedy.exact_solves == exact_solves
+    assert sorted(i for _, i in greedy.fallbacks) == rows.tolist()
+    assert np.isfinite(greedy.dispersion_rows(0)).all()
+    # Each fallback leaves every other row's residuals where they were or
+    # lower, up to the shift of the row's own eigenvalue (its Rayleigh
+    # quotient moves as the basis grows): never the cascade of a Galerkin
+    # solve, whose residuals grew by 10^2 to 10^5.
+    assert max(len(h) for h in seen.values()) > 2
+    for history in map(np.array, seen.values()):
+        assert (history[1:] <= 2 * history[:-1] + NOISE).all()
+
+
+def test_a_reduced_row_that_fell_back_reports_its_exact_derivative(slab_mesh):
+    greedy = _run(slab_mesh)
+    ref = _run(slab_mesh).dispersion_rows(0)  # no pass yet: NaN on reduced rows
+    assert np.isnan(ref[:, ~greedy.solved]).all()
+    rows = np.flatnonzero(~greedy.solved)
+    greedy.dispersion_pass()
+    i = int(rows[len(rows) // 2])
+    exact = greedy._fallback(i, 0).dispersion(greedy.space.section.scale)
+    got = greedy.dispersion_rows(0)[:, i]
+    for value, gate, want in zip(got, (1e-12, 1e-10, 1e-8), exact, strict=True):
+        assert _relative(value, want) <= gate
+
+
+# --- the reduced rows beside the driven solve's port modes -------------------------
+
+
+@pytest.mark.bitwise
+def test_dispersion_leaves_a_shared_surface_s_port_modes_bit_identical():
+    mesh = gfem.Mesh.from_gmsh(DATA / "hybrid_waveguide.msh", length_unit="mm")
+    model = gfem.Model(
+        mesh,
+        materials={"block": gfem.Material(eps_r=6.0), "air": gfem.Material()},
+        boundaries=[gfem.PEC("walls")],
+        ports=[
+            gfem.WavePort(name, f"port{name[1]}", mode=int(name[-1]))
+            for name in ("p1_m1", "p1_m2", "p2_m1", "p2_m2")
+        ],
+    )
+    grid = tuple(np.linspace(16e9, 20e9, 9))
+    options = gfem.SolverOptions(order=3, linear_solver="direct", threads=1)
+    driven = gfem.solve(
+        model, gfem.Driven(grid, excite="p1_m1", keep_fields=True), options=options
+    )
+    for port in ("p1_m1", "p1_m2"):
+        result = gfem.solve(model, gfem.PortMode(port, grid), options=options)
+        mode = driven.port_modes[port]
+        assert not np.asarray(mode.solved).all()
+        for name in ("gamma", "residual", "solved"):
+            np.testing.assert_array_equal(getattr(result, name), getattr(mode, name))
+        np.testing.assert_array_equal(result.e_field._coords, mode.e_field._coords)
+        for rows in (result.n_g, result.beta_2, result.beta_3):
+            assert np.isfinite(np.asarray(rows)).all()
