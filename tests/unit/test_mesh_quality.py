@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import meshio
 import numpy as np
 import pytest
+from strip2d import write_strip
 
 import gfem
 from gfem.shape import boundary_morph, quality
@@ -56,6 +57,19 @@ def test_flat_and_inverted_tets_score_zero_and_below(tmp_path):
         0, abs=1e-14
     )
     assert float(quality(_with_nodes(mesh, jnp.asarray(through)))[0]) < 0
+
+
+def test_a_2d_mesh_scores_its_triangles(tmp_path):
+    # the strip's triangles are right isosceles: min sin 45 deg x 2 / sqrt(3)
+    strip = gfem.Mesh.from_gmsh(write_strip(tmp_path / "strip.msh"))
+    q = np.asarray(quality(strip))
+    assert q.shape == (len(strip.volume_elements),)
+    np.testing.assert_allclose(q, np.sqrt(2 / 3), rtol=1e-14)
+    # mirrored, every corner turns negative; the right angle's is the minimum
+    mirrored = np.asarray(strip.nodes) * np.array([-1.0, 1.0])
+    np.testing.assert_allclose(
+        quality(_with_nodes(strip, jnp.asarray(mirrored))), -2 / np.sqrt(3), rtol=1e-14
+    )
 
 
 def test_quality_is_differentiable(tmp_path):
