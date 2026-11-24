@@ -146,6 +146,7 @@ from gfem._engine.incident import (
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.port_network import (
     PortNetwork,
+    PortSolutions,
     complex_reference,
     parallel_scale,
     resistance,
@@ -2071,12 +2072,6 @@ class DrivenRule:
         ``port_modes`` the port mode rows a rebuilt system stands on, the
         ones its forward was handed (`SolveRequest.port_modes`).
         """
-        if self.reciprocal:
-            raise NotImplementedError(
-                "Gradients of a Driven(source_fields=False) solve are not "
-                "available in this version: solve with source_fields=True "
-                "(the default) under jax.grad."
-            )
         # the pairs carry the law pieces' dθ/dp only when a law parameter is
         # wanted, so a gradient beside a law computes and factors none of them
         laws = wanted is None or any(k[0] == "law" for k in wanted)
@@ -2091,6 +2086,7 @@ class DrivenRule:
         n_columns = len(self.columns)
         ct_e = cotangents.get("e_field")
         ct_p = cotangents.get("emitted_power")
+        ct_w = cotangents.get("port_waves")
         frequencies = self.problem.frequency
         nodes = bool(self.dipoles) and (wanted is None or ("nodes",) in wanted)
         self._explicit_nodes = None
@@ -2107,20 +2103,26 @@ class DrivenRule:
             # the wave ports' modes follow a design at their faces: one 2D pass
             # per surface that reads a wanted input, none elsewhere
             port_pass = PortPass(self, model, system, ports, wanted)
+            self._refuse_reciprocal_port_pass(port_pass)
             sources = None
-            if system is not None and (ct_p is not None or nodes):
+            if system is not None and (
+                ct_p is not None or nodes or (self.reciprocal and ct_w is not None)
+            ):
                 sources = self._source_columns(model, system)
             domain = em_region(model, op.built)
             omegas = [2 * math.pi * f for f in frequencies]
+            readings = self._port_readings(ports, system) if self.reciprocal else None
+            starts = self._column_starts(readings)
             with _progress.task(
                 _progress.UNIFORM_SWEEP_ADJOINT, total=len(frequencies)
             ) as row:
                 for n in system.adjoint_order(omegas):
                     f = frequencies[n]
                     omega = 2 * math.pi * f
-                    x = solution[:, n * n_columns : (n + 1) * n_columns]
+                    x = solution[:, starts[n] : starts[n + 1]]
+                    reading = None if readings is None else readings[n]
                     adjoint, load, undefined = self._output_loads(
-                        n, ports, sources, x, cotangents
+                        n, ports, sources, x, cotangents, reading=reading
                     )
                     if ct_e is not None and n in self.kept:
                         k = self.kept.index(n)
@@ -2128,13 +2130,10 @@ class DrivenRule:
                         if self.comm is not None:  # a rank's rows, then its padding
                             g = g[: op.field_ndof]
                         # the field is P x: its cotangent loads P^T g
-                        load += g if op.expansion is None else op.expansion.field.T @ g
-                    # a rank without port DOFs would skip a collective solve
-                    if _mpi.agree_any(self.comm, flag=bool(load.any())):
-                        try:
-                            adjoint += system.solve_adjoint(n, omega, load)
-                        except LinearSolverConvergenceError as err:
-                            raise _adjoint_error(f, err) from err
+                        load[:, :n_columns] += (
+                            g if op.expansion is None else op.expansion.field.T @ g
+                        )
+                    self._solve_loads(system, n, f, adjoint, load)
                     adjoint[:, undefined] = np.nan
                     pairs[n] = op.pair(
                         -adjoint,
@@ -2144,7 +2143,11 @@ class DrivenRule:
                     )
                     if port_pass.active:
                         port_pass.collect(n, adjoint, x, cotangents)
-                    if nodes and sources is not None:
+                    if nodes and sources is not None and reading is not None:
+                        self._add_reciprocal_nodes(
+                            model, sources, omega, x, ports, n, reading, ct_w
+                        )
+                    elif nodes and sources is not None:
                         self._add_explicit_nodes(
                             model,
                             sources,
@@ -2171,6 +2174,81 @@ class DrivenRule:
         """
         return getattr(self, "_explicit_inputs", {})
 
+    def _port_readings(
+        self, ports: PortNetwork, system: SystemOperator
+    ) -> list[PortSolutions]:
+        """Each frequency's `PortSolutions`, as its forward solved them.
+
+        Which ports' own solutions are the excited columns scaled and which
+        are solved columns after them; the loads themselves are dropped
+        (``(N, 0)``): the backward reads the solved columns.
+        """
+        width = len(self.excite)
+        out = []
+        for f in self.problem.frequency:
+            omega = 2 * math.pi * f
+            reading = ports.solution_loads(
+                omega, _rhs(ports, None, omega, system, width)
+            )
+            out.append(dataclasses.replace(reading, loads=reading.loads[:, :0]))
+        return out
+
+    def _column_starts(self, readings: list[PortSolutions] | None) -> np.ndarray:
+        """Where each frequency's columns start in a uniform entry's solution.
+
+        The excited ports' and the sources' columns; with ``source_fields=False``
+        (``readings``) the excited ports', then the other ports' own solutions.
+        """
+        n = len(self.columns)
+        if readings is None:
+            widths = [n] * len(self.problem.frequency)
+        else:
+            widths = [n + len(r.ports) for r in readings]
+        return np.cumsum([0, *widths])
+
+    def _solve_loads(
+        self,
+        system: SystemOperator,
+        n: int,
+        f: float,
+        adjoint: np.ndarray,
+        load: np.ndarray,
+    ) -> None:
+        """Add the adjoint solve of frequency ``n`` (``f`` Hz) to ``adjoint``, in place.
+
+        Raises:
+            LinearSolverConvergenceError: The adjoint solve did not converge
+                (`_adjoint_error`).
+        """
+        loaded = self._loaded_columns(load)
+        if not loaded.any():
+            return
+        try:
+            adjoint[:, loaded] += system.solve_adjoint(
+                n, 2 * math.pi * f, load[:, loaded]
+            )
+        except LinearSolverConvergenceError as err:
+            raise _adjoint_error(f, err) from err
+
+    def _loaded_columns(self, load: np.ndarray) -> np.ndarray:
+        """The columns of ``load`` the adjoint solve takes, the same on every rank.
+
+        Every column when any is loaded, else none; with ``source_fields=False``
+        only the loaded ones, so a port whose port waves carry no cotangent
+        costs no solve.
+        """
+        # a rank without port DOFs would skip a collective solve
+        if not self.reciprocal:
+            flag = _mpi.agree_any(self.comm, flag=bool(load.any()))
+            return np.full(load.shape[1], flag)
+        return np.array(
+            [
+                _mpi.agree_any(self.comm, flag=bool(load[:, j].any()))
+                for j in range(load.shape[1])
+            ],
+            bool,
+        )
+
     def _output_loads(
         self,
         n: int,
@@ -2178,6 +2256,8 @@ class DrivenRule:
         sources: SourceColumns | None,
         x: np.ndarray,
         cotangents: Mapping[str, np.ndarray],
+        *,
+        reading: PortSolutions | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Frequency ``n``'s adjoint columns from the outputs' cotangents.
 
@@ -2185,7 +2265,9 @@ class DrivenRule:
         without a solve (S's reciprocity, a dipole's self-adjoint shortcut),
         the loads left to solve, and the columns meeting an undefined S row.
         S's cotangent loads the excited ports' columns, the port waves' and
-        the emitted power's the sources'.
+        the emitted power's the sources'. With ``source_fields=False``
+        (``reading``) the port waves' cotangent loads the ports' own
+        columns instead (`_reciprocal_loads`).
         """
         omega = 2 * math.pi * self.problem.frequency[n]
         width = len(self.excite)
@@ -2201,7 +2283,14 @@ class DrivenRule:
             # port wave (i, j) = d_i f_i^T x_j: loads f_i d_i ct_ij
             d = ports.deembedding[n]
             ct = np.asarray(ct_w[n]) * d[:, None]
-            load[:, width:] += ports.functional(omega) @ ct
+            if reading is not None and sources is not None:
+                _reciprocal_loads(
+                    reading, ports.columns, sources.port_wave_loads, omega, ct, load
+                )
+                if not _reciprocal_defined(reading, ct):
+                    undefined[:] = True
+            else:
+                load[:, width:] += ports.functional(omega) @ ct
         if ct_p is not None and sources is not None:
             _power_adjoint(
                 sources, omega, ct_p[n], ports.layout, x, adjoint, load, width
@@ -2323,6 +2412,21 @@ class DrivenRule:
                 )
         return [*pairs, *port_terms]
 
+    def _refuse_reciprocal_port_pass(self, port_pass: PortPass | None) -> None:
+        """Refuse a design at a wave port face under ``source_fields=False``.
+
+        The port pass pairs each solved column with its adjoint; under the
+        flag the columns are the ports' own solutions and the adjoints are
+        loaded by the dipoles' cotangent rows, a pairing no case verifies.
+        """
+        if self.reciprocal and port_pass is not None and port_pass.active:
+            raise NotImplementedError(
+                "Driven(source_fields=False) does not differentiate with respect "
+                "to a design at a wave port face: the port waves read by "
+                "reciprocity have no gradient through the port modes in this "
+                "version. Solve with source_fields=True (the default)."
+            )
+
     def _finish_ports(self, port_pass: PortPass | None) -> list[Integrated]:
         """Run the port pass's 2D work: its material terms; the rest go explicit."""
         self._explicit_inputs = {}
@@ -2389,6 +2493,63 @@ class DrivenRule:
             adjoint=adjoint[:, positions],
             solution=x[:, positions],
             power=np.zeros(len(positions)) if ct is None else np.asarray(ct),
+            comm=self.comm,
+        )
+        held = getattr(self, "_explicit_nodes", None)
+        self._explicit_nodes = term if held is None else held + term
+
+    def _add_reciprocal_nodes(  # noqa: PLR0917 - one frequency's columns
+        self,
+        model: Model,
+        sources: SourceColumns,
+        omega: float,
+        x: np.ndarray,
+        ports: PortNetwork,
+        n: int,
+        reading: PortSolutions,
+        ct: np.ndarray | None,
+    ) -> None:
+        """Add frequency ``n``'s node term of reciprocal port waves to `explicit_nodes`.
+
+        ``x`` holds the frequency's columns, from which `PortSolutions`
+        ``reading`` takes the ports' own solutions; ``ct`` is the port waves'
+        cotangent ``(n_freq, n_ports, n_sources)`` (`PointLoads.port_wave_nodes`).
+        """
+        if ct is None:
+            return
+        self._add_port_wave_nodes(
+            model,
+            sources,
+            omega,
+            solutions=reading.solutions(ports.columns, x),
+            weights=np.asarray(ct[n]) * ports.deembedding[n][:, None],
+        )
+
+    def _add_port_wave_nodes(
+        self,
+        model: Model,
+        sources: SourceColumns,
+        omega: float,
+        *,
+        solutions: np.ndarray,
+        weights: np.ndarray,
+    ) -> None:
+        """Add the node term at ω of port waves read by reciprocity to `explicit_nodes`.
+
+        ``solutions`` ``(N, n_ports)`` are the ports' own, ``weights``
+        ``(n_ports, n_sources)`` the port waves' cotangent, de-embedded
+        (`PointLoads.port_wave_nodes`).
+        """
+        found = sources.dipoles
+        if found is None:
+            return
+        positions, loads = found
+        term = loads.port_wave_nodes(
+            model.mesh,
+            self._field_layout(),
+            omega,
+            solutions=solutions,
+            weights=np.asarray(weights)[:, positions],
             comm=self.comm,
         )
         held = getattr(self, "_explicit_nodes", None)
@@ -3599,6 +3760,48 @@ def _power_adjoint(  # noqa: PLR0917 - one frequency's columns, in place
             adjoint[:, j] += scale * x[:, j]
         else:
             load[:, j] += power[:, k]
+
+
+def _reciprocal_loads(  # noqa: PLR0917 - one frequency's columns, in place
+    reading: PortSolutions,
+    columns: Sequence[int],
+    weighted: Callable[[float, np.ndarray], np.ndarray],
+    omega: float,
+    ct: np.ndarray,
+    load: np.ndarray,
+) -> None:
+    r"""Fold the cotangent of port waves read by reciprocity into ``load``, in place.
+
+    With :math:`W_{ic} = d_i\, b_c^\mathsf{T} z_i` and ``ct`` the cotangent
+    :math:`\bar W_{ic} d_i`, the derivative through the operator is
+    :math:`-\sum_i z_i^\mathsf{T}\, \partial A\, y_i` with :math:`y_i =
+    A^{-1} \sum_c \bar W_{ic} d_i b_c` (``weighted``, one column per port
+    with a nonzero row): it loads the column that holds :math:`z_i`, a
+    solved load column, or an excited port's column :math:`x_j` with
+    :math:`z_i = s\, x_j`, scaled by :math:`s` (`PortSolutions`). A port
+    with neither has no own solution (`_reciprocal_defined`).
+    """
+    rows = np.flatnonzero(np.any(ct != 0, axis=1))
+    if not rows.size:
+        return
+    width = len(columns)
+    for row, b in zip(rows, weighted(omega, ct[rows]).T, strict=True):
+        i = int(row)
+        scale = reading.own.get(i)
+        if i in reading.ports:
+            load[:, width + reading.ports.index(i)] += b
+        elif scale is not None:
+            load[:, list(columns).index(i)] += scale * b
+
+
+def _reciprocal_defined(reading: PortSolutions, ct: np.ndarray) -> bool:
+    """Whether every port with a nonzero cotangent row has an own solution.
+
+    A port without a defined wave (a lumped port without a resistance) has a
+    NaN row of port waves: a cotangent on it gives a NaN gradient.
+    """
+    rows = np.flatnonzero(np.any(ct != 0, axis=1))
+    return all(i in reading.ports or reading.own.get(int(i)) is not None for i in rows)
 
 
 def _adaptive_loads(

@@ -191,6 +191,19 @@ class SourceColumns:
             out[:, positions] = loads.reduced_port_waves(omega, projected, coordinates)
         return out
 
+    def port_wave_loads(self, omega: float, weights: np.ndarray) -> np.ndarray:
+        """``(N, r)``: the dipoles' loads summed with each row of ``weights``.
+
+        ``weights`` ``(r, n_sources)``, the cotangent rows of `port_waves`
+        de-embedded: the adjoint loads of their backward
+        (`PointLoads.weighted`).
+        """
+        found = self.dipoles
+        if found is None:
+            return np.zeros((self.ndof, len(weights)), complex)
+        positions, loads = found
+        return loads.weighted(omega, np.asarray(weights)[:, positions])
+
     def emitted_power(self, omega: float, x: np.ndarray) -> np.ndarray:
         """``(n_dipoles,)`` W from the source columns' solutions ``(N, n_sources)``."""
         found = self.dipoles

@@ -160,25 +160,3 @@ def test_adaptive_iterations_count_each_right_hand_side(model):
     )
     result = _adaptive(model, 2, excite=("p1",), options=options)
     assert all(len(row) == 2 for row in result.sweep.iterations)
-
-
-def test_gradients_are_not_available_yet(model):
-    structure = jax.tree_util.tree_structure(model.mesh)
-    problem = gfem.Driven(
-        rc.grid(3),
-        excite=(),
-        sources=rc.dipoles(2, magnetic=False),
-        source_fields=False,
-    )
-
-    def objective(nodes):
-        moved = model.replace(mesh=jax.tree_util.tree_unflatten(structure, [nodes]))
-        result = gfem.solve(moved, problem, options=rc.ORDER2)
-        return jnp.abs(result.port_wave("p1", "d0")[1]) ** 2
-
-    # raised on the host in the backward pass, inside JAX's runtime error
-    with pytest.raises(
-        jax.errors.JaxRuntimeError,
-        match=r"NotImplementedError: Gradients of a Driven\(source_fields=False",
-    ):
-        jax.grad(objective)(model.mesh.nodes)

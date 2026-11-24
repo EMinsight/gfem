@@ -133,6 +133,59 @@ class PointLoads:
         pairs = projected @ coordinates
         return (pairs * self.coefficients(omega)[:, None]).T
 
+    def weighted(self, omega: float, weights: np.ndarray) -> np.ndarray:
+        r"""``(N, r)``: :math:`\sum_k w_{jk}\, c_k b_k`, one column per row ``j``.
+
+        ``weights`` is ``(r, n)``. The backward of port waves read by
+        reciprocity loads port :math:`i`'s adjoint column with its cotangent
+        row, de-embedded: one column per port, whatever the number of dipoles.
+        """
+        scaled = self.coefficients(omega)[:, None] * np.asarray(weights).T
+        return np.asarray(self.vectors @ scaled)
+
+    def port_wave_nodes(
+        self,
+        mesh: Mesh,
+        layout: Layout,
+        omega: float,
+        *,
+        solutions: np.ndarray,
+        weights: np.ndarray,
+        comm: Any = None,
+    ) -> np.ndarray:
+        r"""The node term of port waves read by reciprocity at ω, ``(n_nodes, 3)``.
+
+        `nodes` with dipole :math:`k`'s adjoint :math:`\lambda_k = \sum_i
+        w_{ik} z_i`, read at the dipoles' positions from the ports' own
+        solutions ``solutions`` ``(N, n_ports)`` (one jet per port with a
+        nonzero row of ``weights`` ``(n_ports, n)``, the cotangent
+        de-embedded), and no power term: no dipole is solved.
+        """
+        out = np.zeros((len(mesh.nodes), 3))
+        rows = np.flatnonzero(np.any(weights != 0, axis=1))
+        electric = np.flatnonzero(~self.magnetic)
+        if not rows.size or not electric.size:
+            return out
+        probed = probe(mesh, layout, self.located, comm)
+        values = np.zeros((len(self.names), 3), complex)
+        gradients = np.zeros((len(self.names), 3, 3), complex)
+        for i in rows:
+            value, gradient = probed.jet(solutions[:, i])
+            values += weights[i][:, None] * value
+            gradients += weights[i][:, None, None] * gradient
+        coefficients = self.coefficients(omega)
+        for k in electric:
+            vertices, moved = transport(
+                mesh,
+                self.located,
+                int(k),
+                values=values[k][None],
+                gradients=gradients[k][None],
+                weight=(coefficients[k] * self.moments[k])[None],
+            )
+            np.add.at(out, vertices, np.real(moved[0]))
+        return out
+
     def power_scale(self, omega: float) -> float:
         r"""Emitted power per :math:`-\operatorname{Im}(b^H x)`, in W."""
         return 1.0 / (2 * omega * const.mu_0 * self.scale)
