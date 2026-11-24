@@ -1013,10 +1013,32 @@ def test_port_mode_result_round_trips_with_its_field(tmp_path, walls):
     result = job.run(out=tmp_path / "results")
     loaded = gfem.load_result(tmp_path / "results")
     assert (loaded.port, loaded.mode) == (result.port, result.mode)
-    for name in ("frequency", "gamma", "Z_PV", "residual", "solved"):
+    names = ("frequency", "gamma", "Z_PV", "residual", "solved")
+    for name in (*names, "n_g", "beta_2", "beta_3"):
         np.testing.assert_array_equal(getattr(loaded, name), getattr(result, name))
     points = np.asarray(mesh.nodes)[mesh.triangles[mesh.elements("port1")][:, 0]]
     np.testing.assert_array_equal(loaded.e_field.at(points), result.e_field.at(points))
+
+
+def test_an_old_port_mode_bundle_reads_no_dispersion(tmp_path):
+    mesh = gfem.Mesh.from_gmsh(DATA / "waveguide.msh", length_unit="mm")
+    model = gfem.Model(
+        mesh,
+        materials={"air": gfem.Material()},
+        boundaries=[gfem.PEC("walls")],
+        ports=[gfem.WavePort("p1", "port1")],
+    )
+    job = gfem.Job(model, gfem.PortMode("p1", [8e9, 10e9]), gfem.SolverOptions(order=1))
+    result = job.run(out=tmp_path / "results")
+    path = tmp_path / "results" / "result.json"
+    doc = json.loads(path.read_text())
+    (stored,) = _typed_in(doc, "PortModeResult")
+    for name in ("n_g", "beta_2", "beta_3"):  # as a gfem before them wrote it
+        del stored[name]
+    path.write_text(json.dumps(doc))
+    old = gfem.load_result(tmp_path / "results")
+    assert (old.n_g, old.beta_2, old.beta_3, old.D) == (None, None, None, None)
+    np.testing.assert_array_equal(old.gamma, result.gamma)
 
 
 def test_a_port_section_with_a_law_round_trips_with_its_field(tmp_path):
@@ -1133,6 +1155,9 @@ def test_a_shared_port_surface_round_trips_through_a_bundle(tmp_path):
             np.testing.assert_array_equal(
                 getattr(loaded.port_modes[name], field), getattr(mode, field)
             )
+        assert loaded.port_modes[name].n_g is None
+    # a driven result's port modes are written as before they had dispersion
+    assert '"n_g"' not in (tmp_path / "out" / "result.json").read_text()
 
 
 # --- thermal and DC conduction ------------------------------------------------------

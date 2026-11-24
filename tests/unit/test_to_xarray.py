@@ -64,6 +64,9 @@ def port_mode():
         Z_PV=jnp.array([50.0, 50.1, 50.2]),
         residual=jnp.array([1e-14, 1e-9, 1e-14]),
         solved=jnp.array([True, False, True]),
+        n_g=jnp.array([4.2, 4.19, 4.18]) + 0j,
+        beta_2=jnp.array([1.0, 0.5, -0.5]) * 1e-24 + 0j,
+        beta_3=jnp.array([1.0, 2.0, 3.0]) * 1e-39 + 0j,
     )
 
 
@@ -128,13 +131,24 @@ def test_sheet_participation_is_labelled_by_mode_and_sheet(modes):
 
 def test_port_mode_is_labelled_by_frequency(port_mode):
     ds = port_mode.to_xarray()
-    for name in ("gamma", "n_eff", "Z_PV", "residual", "solved"):
+    names = ("gamma", "n_eff", "Z_PV", "residual", "solved")
+    for name in (*names, "n_g", "beta_2", "beta_3", "D"):
         assert ds[name].dims == ("frequency",), name
     np.testing.assert_array_equal(ds["frequency"], F)
     np.testing.assert_allclose(ds["n_eff"], port_mode.n_eff)
     assert ds.attrs["port"] == "p1"
     assert ds.attrs["mode"] == 1
     assert ds["gamma"].attrs["units"] == "1/m"
+    assert "units" not in ds["n_g"].attrs
+    assert ds["beta_2"].attrs["units"] == "s^2/m"
+    assert ds["beta_3"].attrs["units"] == "s^3/m"
+    assert ds["D"].attrs["units"] == "s/m^2"
+    np.testing.assert_array_equal(ds["n_g"], port_mode.n_g)
+
+
+def test_a_port_mode_without_dispersion_exports_none(port_mode):
+    bare = dataclasses.replace(port_mode, n_g=None, beta_2=None, beta_3=None)
+    assert not {"n_g", "beta_2", "beta_3", "D"} & set(bare.to_xarray().data_vars)
 
 
 def test_to_xarray_without_xarray_names_the_extra(network, monkeypatch):

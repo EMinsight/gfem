@@ -14,6 +14,7 @@ import math
 from pathlib import Path
 from types import SimpleNamespace
 
+import jax.numpy as jnp
 import numpy as np
 import pml_cases
 import pytest
@@ -463,3 +464,30 @@ def test_dispersion_is_the_difference_of_the_order_below(case, tmp_path):
     assert _relative(n_g[1], C0 * (beta[2] - beta[0]) / step) <= 1e-7
     assert _relative(beta_2[1], (n_g[2] - n_g[0]) / (C0 * step)) <= 1e-6
     assert _relative(beta_3[1], (beta_2[2] - beta_2[0]) / step) <= 2e-6
+
+
+# --- the dispersion parameter -------------------------------------------------------
+
+
+def _result(beta_2):
+    f = jnp.array([C0 / 1.55e-6])
+    return gfem.PortModeResult(
+        port="p1",
+        mode=1,
+        frequency=f,
+        gamma=jnp.array([1e6j]),
+        Z_PV=jnp.array([math.nan + 0j]),
+        residual=jnp.array([1e-14]),
+        solved=jnp.array([True]),
+        beta_2=beta_2,
+    )
+
+
+def test_the_dispersion_parameter_of_a_known_beta_2():
+    # the pair of the silicon slab reference at 1.55 um
+    result = _result(jnp.array([1874.25555506947e-27 + 0j]))
+    np.testing.assert_allclose(result.D, [-1469.48778932109e-6], rtol=1e-13)
+
+
+def test_there_is_no_dispersion_parameter_without_beta_2():
+    assert _result(None).D is None

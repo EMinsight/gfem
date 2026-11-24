@@ -106,6 +106,15 @@ def test_the_result_holds_each_wave_ports_mode(plate_result):
     assert modes["p1"].e_field is not None  # with or without kept fields
 
 
+def test_a_driven_result_s_port_modes_carry_no_dispersion(plate_result):
+    # solve gfem.PortMode on the same grid for them
+    mode = plate_result.port_modes["p1"]
+    assert (mode.n_g, mode.beta_2, mode.beta_3, mode.D) == (None, None, None, None)
+    ds = mode.to_xarray()
+    assert not {"n_g", "beta_2", "beta_3", "D"} & set(ds.data_vars)
+    assert "n_g" not in repr(mode)
+
+
 def test_reference_impedance_is_z_pv_or_nan(plate_result):
     z = np.asarray(plate_result.s.z_ref)
     np.testing.assert_allclose(z[:, 0], z_tem(), rtol=1e-8)
