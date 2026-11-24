@@ -126,6 +126,10 @@ _EXACT_ONLY = 3
 _NEW_DIRECTION = 1e-12
 # The fields of a `PortModeSweep` that differ between the modes of one surface.
 _PER_MODE = ("gamma", "residual", "floor", "coords", "voltage", "power")
+# A polarity point's field below this fraction of the port's peak fixes no
+# sign: the exact node of an odd mode reads about 1e-3 on a coarse mesh, a
+# point 10 nm off it about 7e-2.
+_POLARITY_GUARD = 1e-2
 # Gauss-Legendre rule for voltage line integrals: points per piece, pieces.
 _GAUSS = np.polynomial.legendre.leggauss(4)
 _PIECES = 32
@@ -227,11 +231,17 @@ class PortModeRule:
         self.mode = self.port.mode if problem.mode is None else problem.mode
         # its own mode: the surface's joint sweep, with the surface's wave
         # ports in model order, as a driven problem runs it
-        self._ports = (
-            list(wave_port_surfaces(model.ports)[self.port.surface])
-            if problem.mode is None
-            else [self.port]
-        )
+        if problem.mode is None:
+            self._ports = list(wave_port_surfaces(model.ports)[self.port.surface])
+            self._index = self._ports.index(self.port)
+        else:
+            # the polarity's arrow is drawn on the port's own mode: another
+            # mode takes the default sign
+            own = self.mode == self.port.mode
+            self._ports = [
+                self.port if own else dataclasses.replace(self.port, polarity=None)
+            ]
+            self._index = 0
         self._model = model
         dispersion.warn_fitted_range(
             model,
@@ -311,7 +321,7 @@ class PortModeRule:
                 tolerance=self.options.port_mode_tolerance,
                 ports=ports,
             )
-        sweep = sweeps[ports.index(self.port)]
+        sweep = sweeps[self._index]
         outputs = {
             "gamma": sweep.gamma,
             "Z_PV": sweep.z_pv,
@@ -458,10 +468,14 @@ def port_mode_sweep(
         )
         for p in ports
     ]
+    arrows = [
+        None if p.polarity is None else _polarity_rule(space, p.name, p.polarity)
+        for p in ports
+    ]
     order = np.argsort(f_given, kind="stable")
     sweep = _Greedy(space, f_given[order], modes, tolerance, ports)
     sweep.run()
-    basis, coords, gamma, voltage, power = sweep.normalized(rules)
+    basis, coords, gamma, voltage, power = sweep.normalized(rules, arrows)
     out = np.empty_like(order)
     out[order] = np.arange(len(order))
     return [
@@ -913,7 +927,9 @@ class _Greedy:
     # --- normalization ----------------------------------------------------------
 
     def normalized(
-        self, rules: list[tuple[np.ndarray, np.ndarray] | None]
+        self,
+        rules: list[tuple[np.ndarray, np.ndarray] | None],
+        arrows: list[tuple[np.ndarray, np.ndarray] | None],
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """The fixed basis, then per mode 1 W coordinates, gamma, voltages, powers.
 
@@ -923,6 +939,12 @@ class _Greedy:
 
         Args:
             rules: Each mode's voltage path rule, or ``None`` without a path.
+            arrows: Each mode's polarity rule (`_polarity_rule`), or ``None``
+                without a polarity.
+
+        Raises:
+            PortModeError: A mode's field at its polarity point is too small
+                at some frequency to fix its sign.
 
         Returns:
             ``basis (ndof, M)``, ``coords (n_modes, n_f, M)``, ``gamma
@@ -941,11 +963,17 @@ class _Greedy:
         voltage = np.full((n_modes, n), complex(math.nan, math.nan))
         phase = np.ones((n_modes, n), complex)
         gamma = 1j * np.sqrt(-self.lam + 0j)
-        for k, rule in enumerate(rules):
+        for k, (rule, arrow) in enumerate(zip(rules, arrows, strict=True)):
             volts = (
                 None
                 if rule is None
                 else _voltage_functional(planar(space), basis, rule)
+            )
+            polarity = self.ports[k].polarity
+            polar = (
+                None
+                if arrow is None or polarity is None
+                else _polarity_functionals(space, basis, arrow)
             )
             for i in range(n):
                 y = self.coords_at(i, k)
@@ -954,7 +982,12 @@ class _Greedy:
                 power = fields.power(z, gamma[k, i], omega)
                 z /= math.sqrt(abs(power))
                 phase[k, i] = power / abs(power)
-                if i == 0:
+                if polar is not None and polarity is not None:
+                    # the field at the point along the arrow is real and
+                    # positive, at every frequency on its own
+                    a = self._polarity_value(k, i, z, polar, polarity)
+                    z *= abs(a) / a
+                elif i == 0:
                     g = fields.gauge(z, gamma[k, i], omega)
                     c = w @ z
                     if abs(g) > 1e-12 * np.abs(c).max():
@@ -971,6 +1004,35 @@ class _Greedy:
                         z, voltage[k, i] = -z, -voltage[k, i]
                 coords[k, i] = z
         return basis, coords, gamma / space.section.scale, voltage, phase
+
+    def _polarity_value(
+        self,
+        k: int,
+        i: int,
+        z: np.ndarray,
+        functionals: tuple[np.ndarray, np.ndarray],
+        polarity: tuple[tuple[float, ...], tuple[float, float, float]],
+    ) -> complex:
+        """Mode ``k``'s field at its polarity point along the arrow, at ``f[i]``.
+
+        Raises:
+            PortModeError: It is below `_POLARITY_GUARD` of the port's peak.
+        """
+        at, peak = functionals
+        a = complex(at @ z)
+        top = float(np.linalg.norm(np.einsum("k,kpc->pc", z, peak), axis=1).max())
+        ratio = abs(a) / top if top > 0 else 0.0
+        if ratio < _POLARITY_GUARD:
+            point, direction = polarity
+            raise PortModeError(
+                f"{self._who(k)}: its polarity reads a field of {ratio:.1e} of the "
+                f"port's peak at the point {_numbers(point)} m along "
+                f"{_numbers(direction)} at {hertz(self.f[i])}, too small to fix "
+                "the mode's sign (the point sits near a node of the field, or the "
+                "direction is across the field). Move the point towards the "
+                "field's maximum, or turn the direction along the field."
+            )
+        return a
 
     # --- errors -------------------------------------------------------------------
 
@@ -1298,6 +1360,77 @@ def _voltage_functional(
     return np.einsum("kpc,pc->k", e, wts)
 
 
+def _numbers(values: Sequence[float]) -> str:
+    return "(" + ", ".join(f"{v:.6g}" for v in values) + ")"
+
+
+def _polarity_rule(
+    space: ModeSpace,
+    name: str,
+    polarity: tuple[tuple[float, ...], tuple[float, float, float]],
+) -> tuple[np.ndarray, np.ndarray]:
+    """A polarity's point on the section and its arrow's weights.
+
+    Returns:
+        The point's local coordinates (``(1, 2)`` plane coordinates, or
+        ``(1,)`` along a line) and the weights of the field components the
+        arrow reads (the in-plane components ``(E_u, E_v)``, or the sign of
+        the solved field normal to a 2D plane).
+
+    Raises:
+        ValueError: The point is off the port's plane or line, off its
+            cross-section, or inside a perfectly matched layer.
+    """
+    point, direction = polarity
+    section = space.section
+    local, dist = section.to_local(np.asarray([point], float))
+    where = f"WavePort {name!r}: the polarity point {_numbers(point)} m"
+    if abs(float(dist[0])) > 1e-5 * section.diameter:
+        line = "line" if isinstance(section, LineSection) else "plane"
+        raise ValueError(
+            f"{where} is off the port {line}; give a point (m) on the port surface."
+        )
+    inside = (
+        space.mesh(float(local[0]))
+        if isinstance(section, LineSection)
+        else space.mesh(float(local[0, 0]), float(local[0, 1]))
+    )
+    if inside.nr < 0:
+        raise ValueError(
+            f"{where} is off the port's cross-section (beyond its edge, or in a "
+            "hole such as a conductor); give a point where the mode has a field."
+        )
+    if isinstance(section, LineSection):
+        return local, np.array([direction[2]])
+    regions = _layer_regions(section, local)
+    if regions:
+        raise ValueError(
+            f"{where} lies in the perfectly matched layer ({regions}), where the "
+            "field is not physical. Give a point in the physical part of the port "
+            "face."
+        )
+    return local, section.frame[:2] @ np.asarray(direction, float)
+
+
+def _polarity_functionals(
+    space: ModeSpace, basis: np.ndarray, arrow: tuple[np.ndarray, np.ndarray]
+) -> tuple[np.ndarray, np.ndarray]:
+    """The arrow's reading of each basis column, and the columns' peak fields.
+
+    Returns:
+        ``(M,)``: the field at the point along the arrow per column, and
+        ``(M, n_nodes, c)``: the field the arrow reads (``c = 2`` in-plane
+        components, or ``c = 1``) at the section's nodes, for its peak.
+    """
+    local, weights = arrow
+    nodes = space.section.points
+    if isinstance(space, PortModeSpace):
+        at = space.evaluate(basis.T, local)[:, 0, :2] @ weights
+        return at, space.evaluate(basis.T, nodes)[:, :, :2]
+    at = space.evaluate(basis.T, local)[:, 0] * weights[0]
+    return at, space.evaluate(basis.T, nodes)[:, :, None]
+
+
 def _voltage_rule(
     section: PortSection,
     path: np.ndarray,
@@ -1342,9 +1475,20 @@ def _refuse_layer_path(
     The field there is the stretched one, so a line integral along real
     coordinates is not a voltage or a current.
     """
+    names = _layer_regions(section, local)
+    if names:
+        raise ValueError(
+            f"{subject}: {what} on port {name!r} passes through the perfectly "
+            f"matched layer ({names}), where the field is not physical. Keep the "
+            "path in the physical part of the port face."
+        )
+
+
+def _layer_regions(section: PortSection, local: np.ndarray) -> str:
+    """The layer regions beyond whose interior faces plane points lie, or ``""``."""
     stretch = section.stretch
     if stretch is None:
-        return
+        return ""
     points = section.to_global(local)
     tol = PLANE_RTOL * section.diameter * section.scale
     regions = [
@@ -1353,13 +1497,7 @@ def _refuse_layer_path(
         if (side.sign * (points[:, side.axis] - side.face) > tol).any()
         for r in side.regions
     ]
-    if regions:
-        names = ", ".join(map(repr, dict.fromkeys(regions)))
-        raise ValueError(
-            f"{subject}: {what} on port {name!r} passes through the perfectly "
-            f"matched layer ({names}), where the field is not physical. Keep the "
-            "path in the physical part of the port face."
-        )
+    return ", ".join(map(repr, dict.fromkeys(regions)))
 
 
 def path_voltage(
