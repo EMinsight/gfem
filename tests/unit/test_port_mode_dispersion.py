@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pml_cases
 import pytest
 import scipy.constants
 import scipy.sparse.linalg as spla
@@ -370,3 +371,95 @@ def test_a_filled_line_port_s_dispersion_is_its_closed_form(case):
     problem = gfem.PortMode("p1", 50e9, polarization=polarization)
     result = gfem.solve(model, problem, options=gfem.SolverOptions(order=3))
     _assert_closed_form(result, eps)
+
+
+# --- the public result: finite differences of exact solves -------------------------
+#
+# Up to three frequencies are all exact solves, and a perfectly matched layer
+# keeps the lowest one's stretch, so the outer rows of one three-row PortMode
+# difference the middle row's derivatives. Each order is checked against the
+# difference of the order below it (n_g of beta, beta_2 of n_g, beta_3 of
+# beta_2), never a second difference of beta, which rounding swamps.
+
+DELTA = 1e-4
+
+
+def _guide_walls(walls):
+    mesh = gfem.Mesh.from_gmsh(DATA / "waveguide.msh", length_unit="mm")
+    model = gfem.Model(
+        mesh,
+        materials={"air": gfem.Material()},
+        boundaries=[walls],
+        ports=[gfem.WavePort("p1", "port1")],
+    )
+    return model, 10e9, {}
+
+
+def _lossy_plates():
+    mesh = gfem.Mesh.from_gmsh(DATA / "parallel_plate.msh", length_unit="um")
+    model = gfem.Model(
+        mesh,
+        materials={"fill": gfem.Material(eps_r=4.0)},
+        boundaries=[gfem.Conductor("plates", conductivity=1e6)],
+        ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")],
+    )
+    return model, 50e9, {}
+
+
+def _absorbing_end_beside_a_law(polarization, damping):
+    law = gfem.PermittivityLaw(
+        eps_inf=2.0,
+        terms=[gfem.Lorentz(delta_eps=2.0, resonance_frequency=200e9, damping=damping)],
+    )
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh(LINE_MESH, length_unit="mm"),
+        materials={
+            "feed": gfem.Material(eps_r=law),
+            "design": gfem.Material(eps_r=4.0),
+        },
+        boundaries=[gfem.Absorbing("side", order=2)],
+        ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")],
+    )
+    return model, 50e9, {"polarization": polarization, "order": 3}
+
+
+def _pml_strip(tmp_path):
+    path = pml_cases.strip_guide(
+        tmp_path / "strip.msh", 0.6, length=0.15, clad_h=0.2, core_h=0.1
+    )
+    return pml_cases.strip_model(path), pml_cases.STRIP_F, {}
+
+
+FD_CASES = {
+    "thick-conductor": lambda _: _guide_walls(
+        gfem.Conductor("walls", conductivity=5.8e7)
+    ),
+    "film-conductor": lambda _: _guide_walls(
+        gfem.Conductor("walls", conductivity=5.8e7, thickness=1e-7)
+    ),
+    "lossy-plates": lambda _: _lossy_plates(),
+    "absorbing-end-Ez": lambda _: _absorbing_end_beside_a_law("Ez", 0.0),
+    "absorbing-end-Hz-lossy": lambda _: _absorbing_end_beside_a_law("Hz", 5e9),
+    "pml-strip": _pml_strip,
+}
+
+
+@pytest.mark.parametrize("case", FD_CASES)
+def test_dispersion_is_the_difference_of_the_order_below(case, tmp_path):
+    model, f, options = FD_CASES[case](tmp_path)
+    polarization = options.pop("polarization", None)
+    grid = [f * (1 - DELTA), f, f * (1 + DELTA)]
+    result = gfem.solve(
+        model,
+        gfem.PortMode("p1", grid, polarization=polarization),
+        options=gfem.SolverOptions(**options),
+    )
+    assert np.asarray(result.solved).all()
+    step = 2 * (2 * math.pi * f * DELTA)
+    beta = np.asarray(result.gamma) / 1j
+    n_g, beta_2, beta_3 = (
+        np.asarray(v) for v in (result.n_g, result.beta_2, result.beta_3)
+    )
+    assert _relative(n_g[1], C0 * (beta[2] - beta[0]) / step) <= 1e-7
+    assert _relative(beta_2[1], (n_g[2] - n_g[0]) / (C0 * step)) <= 1e-6
+    assert _relative(beta_3[1], (beta_2[2] - beta_2[0]) / step) <= 2e-6
