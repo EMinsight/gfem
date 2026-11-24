@@ -9,11 +9,13 @@ vectors, every high-symmetry point among them. Geometry only: nothing here
 solves.
 """
 
+import itertools
 import math
 
 import numpy as np
 import periodic_cases as pc
 import pytest
+from strip2d import write_strip
 
 import gfem
 
@@ -133,3 +135,202 @@ def test_named_points_of_each_lattice(models):
             got = path.wave_vectors[path.index(name)]
             scale = np.linalg.norm(k)
             np.testing.assert_allclose(got, k, rtol=0, atol=1e-14 * scale)
+
+
+# --- sampling the path ----------------------------------------------------------------
+
+PATHS = {
+    "square": ["Γ", "X", "M", "Γ"],
+    "rect": ["Γ", "X", "S", "Y", "Γ"],
+    "hex60": ["Γ", "M", "K", "Γ"],
+    "cubic": ["Γ", "X", "M", "Γ", "R"],
+}
+
+
+@pytest.mark.parametrize("n_points", [None, 7, 31, 100])
+@pytest.mark.parametrize("case", PATHS)
+def test_n_points_is_exact_and_hits_every_corner(models, case, n_points):
+    model, points = models(case), PATHS[case]
+    n_points = n_points or len(points)
+    path = gfem.wave_vector_path(model, points, n_points=n_points)
+    corners = _corners(model, points).wave_vectors
+    k = path.wave_vectors
+    assert len(path) == len(k) == len(path.distance) == n_points
+    assert path.labels == tuple(points)
+    index = np.asarray(path.label_index)
+    assert index[0] == 0
+    assert index[-1] == n_points - 1
+    np.testing.assert_array_equal(k[index], corners)
+    # the intervals shared by segment length, at least one each
+    lengths = np.linalg.norm(np.diff(corners, axis=0), axis=1)
+    counts = np.diff(index)
+    quota = (n_points - 1) * lengths / lengths.sum()
+    assert (counts >= 1).all()
+    assert (np.abs(counts - quota) <= 1).all(), (counts, quota)
+    # evenly spaced inside each segment, no joint repeated
+    steps = np.linalg.norm(np.diff(k, axis=0), axis=1)
+    for s, (start, stop) in enumerate(itertools.pairwise(index)):
+        np.testing.assert_allclose(
+            steps[start:stop], lengths[s] / counts[s], rtol=1e-12
+        )
+    assert (steps > 0).all()
+    np.testing.assert_allclose(np.diff(path.distance), steps, rtol=1e-12)
+    assert path.distance[0] == 0
+    assert math.isclose(path.distance[-1], lengths.sum(), rel_tol=1e-12)
+    # plotting and lookup
+    positions, names = path.ticks
+    np.testing.assert_array_equal(positions, path.distance[index])
+    assert names == points
+    assert path.index("Γ") == path.index("G") == path.index("Gamma") == 0
+    assert path.index(points[2]) == index[2]
+
+
+def test_named_points_add_and_override(models):
+    square = models("square")
+    b1, b2 = np.asarray(square.reciprocal_lattice)
+    path = _corners(
+        square, ["Γ", "X", "Q"], named_points={"X": (0.25, 0.0), "Q": (0.1, 0.2)}
+    )
+    np.testing.assert_array_equal(path.wave_vectors[1], 0.25 * b1)
+    np.testing.assert_allclose(path.wave_vectors[2], 0.1 * b1 + 0.2 * b2, rtol=1e-15)
+    assert path.lattice == "square"
+    # fcc-style points on the cubic cell, beside its own X
+    cubic = models("cubic")
+    g = 2 * math.pi / (pc.C4_L * pc.MM)
+    fcc = {"W": (0.5, 0.25, 0.75), "L": (0.5, 0.5, 0.5)}
+    path = _corners(cubic, ["Γ", "X", "W", "L", "Γ"], named_points=fcc)
+    expected = [(0, 0, 0), (0.5, 0, 0), *fcc.values(), (0, 0, 0)]
+    np.testing.assert_allclose(path.wave_vectors, g * np.asarray(expected), atol=1e-12)
+
+
+def test_a_path_of_given_wave_vectors_computes_its_distance():
+    k = [(0.0, 0.0, 0.0), (3.0, 4.0, 0.0), (3.0, 4.0, 12.0)]
+    path = gfem.WaveVectorPath(k, labels=("Γ", "Z"), label_index=(0, 2))
+    np.testing.assert_array_equal(path.distance, [0.0, 5.0, 17.0])
+    assert path.lattice == "other"
+    assert path.index("Z") == 2
+    assert repr(path) == "WaveVectorPath(Γ-Z, 3 wave vectors, other lattice)"
+    assert repr(gfem.WaveVectorPath(k[:1])) == (
+        "WaveVectorPath(1 wave vector, other lattice)"
+    )
+    with pytest.raises(ValueError, match="read-only"):
+        path.wave_vectors[0, 0] = 1.0
+    with pytest.raises(ValueError, match=r"shape \(n_k, 3\).*got shape \(3,\)"):
+        gfem.WaveVectorPath(k[0])
+    with pytest.raises(ValueError, match="'K' is not a label of this path"):
+        path.index("K")
+
+
+def test_a_wave_vector_path_repr(models):
+    path = gfem.wave_vector_path(models("square"), ["Γ", "X", "M", "Γ"], n_points=31)
+    assert repr(path) == "WaveVectorPath(Γ-X-M-Γ, 31 wave vectors, square lattice)"
+
+
+# --- refusals -------------------------------------------------------------------------
+
+
+def _model(models, tmp_path, which):
+    """A lattice case of `models`, or one of the models that cannot have a path."""
+    if which == "non-model":
+        return "cell"
+    if which == "2D":
+        flat = write_strip(tmp_path / "strip.msh")
+        mesh = gfem.Mesh.from_gmsh(flat, length_unit="um")
+        return gfem.Model(mesh, materials={k: gfem.Material() for k in "abc"})
+    if which == "no pair":
+        mesh = pc.c2_mesh(tmp_path, cells=(2, 2, 1))
+        return gfem.Model(mesh, materials={"cell": gfem.Material()})
+    return models(which)
+
+
+#: (model, points, keywords, error, message) per refusal.
+REFUSALS = {
+    "non-model": (
+        "non-model",
+        ["Γ", "X"],
+        {},
+        TypeError,
+        r"^wave_vector_path: needs a gfem\.Model, got str\.$",
+    ),
+    "2D": (
+        "2D",
+        ["Γ", "X"],
+        {},
+        NotImplementedError,
+        (
+            r"^gfem\.wave_vector_path is not available on a 2D mesh\. .*PEC faces "
+            r"give the Ez bands, natural faces the Hz bands; .*from_gmsh_cross_section"
+        ),
+    ),
+    "no pair": (
+        "no pair",
+        ["Γ", "X"],
+        {},
+        ValueError,
+        r"no gfem\.Periodic pair, so it has no Bloch wave vector.*Pair the cell's",
+    ),
+    "unknown name": (
+        "square",
+        ["Γ", "K"],
+        {},
+        ValueError,
+        (
+            r"'K' is not a named point of this lattice \(square: Γ, X, M\); give "
+            r"its reduced coordinates in named_points=\{'K': \(…\)\}"
+        ),
+    ),
+    "wrong length": (
+        "cubic",
+        ["Γ", "W"],
+        {"named_points": {"W": (0.5, 0.25)}},
+        ValueError,
+        r"named_points\['W'\] has 2 coordinates, but the model has 3 periodic pairs",
+    ),
+    "one point": (
+        "square",
+        ["Γ"],
+        {},
+        ValueError,
+        r"a path needs at least 2 points, got 1",
+    ),
+    "repeated point": (
+        "square",
+        ["Γ", "X", "X", "M"],
+        {},
+        ValueError,
+        r"points 1 and 2 \('X', 'X'\) are the same wave vector",
+    ),
+    "same wave vector": (
+        "square",
+        ["Γ", "G"],
+        {},
+        ValueError,
+        r"points 0 and 1 \('Γ', 'Γ'\) are the same wave vector",
+    ),
+    "too few n_points": (
+        "square",
+        ["Γ", "X", "M", "Γ", "X"],
+        {"n_points": 4},
+        ValueError,
+        (
+            r"n_points=4 is fewer than the 5 points of the path: every "
+            r"high-symmetry point is a wave vector"
+        ),
+    ),
+    "one string": ("square", "ΓXM", {}, TypeError, r"points is a sequence of names"),
+    "float n_points": (
+        "square",
+        ["Γ", "X"],
+        {"n_points": 7.0},
+        TypeError,
+        r"n_points must be an integer, got 7\.0",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", REFUSALS)
+def test_wave_vector_path_refusals(models, tmp_path, case):
+    which, points, kwargs, error, message = REFUSALS[case]
+    model = _model(models, tmp_path, which)
+    with pytest.raises(error, match=message):
+        gfem.wave_vector_path(model, points, **({"n_points": 7} | kwargs))
