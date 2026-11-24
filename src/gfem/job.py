@@ -94,10 +94,12 @@ from gfem.mesh import (
 from gfem.model import EnclosedBy, Model
 from gfem.options import SolverOptions
 from gfem.problems import (
+    DampingFrame,
     DCConduction,
     Driven,
     Eigenmode,
     Electrostatic,
+    Piezoelectric,
     PortMode,
     SteadyThermal,
     TransientThermal,
@@ -110,6 +112,7 @@ from gfem.results import (
     ElectrostaticResult,
     Field,
     NetworkParameters,
+    PiezoelectricResult,
     PortModeField,
     PortModeResult,
     ReducedFields,
@@ -159,7 +162,10 @@ class Job:
     def __post_init__(self) -> None:
         if not isinstance(self.model, Model):
             raise TypeError(f"Job needs a gfem.Model, got {type(self.model).__name__}.")
-        if not isinstance(getattr(type(self.problem), "_rule", None), str):
+        kind = type(self.problem)
+        if not any(
+            isinstance(getattr(kind, a, None), str) for a in ("_rule", "_rule_2d")
+        ):
             raise TypeError(
                 "Job needs a problem type such as gfem.Electrostatic(...), got "
                 f"{type(self.problem).__name__}."
@@ -761,6 +767,17 @@ def _terminal_args(
     return {"terminals": dict(problem.terminals), "ground": problem.ground}
 
 
+def _piezoelectric_args(problem: Piezoelectric, _: _codec.Context) -> dict[str, Any]:
+    return {
+        "frequency": problem.frequency,
+        "terminals": dict(problem.terminals),
+        "ground": problem.ground,
+        "clamped": problem.clamped,
+        "damping_frame": problem.damping_frame,
+        "keep_fields": problem.keep_fields,
+    }
+
+
 #: A transient's arguments: its waveform is written as the pytree holds it,
 #: start times and scales apart, so the scales' sidecar key is their leaf path.
 _TRANSIENT_NAMES = (
@@ -1076,6 +1093,9 @@ _codec.register(
     # "sigma": the scalar conductivity of sections saved by 0.1.0
     names=[f.name for f in dataclasses.fields(PortSection) if f.init] + ["sigma"],
 )
+_codec.register(Piezoelectric, to_args=_piezoelectric_args)
+_codec.register(DampingFrame)
+_codec.register(PiezoelectricResult)
 _codec.register(Electrostatic, to_args=_terminal_args)
 _codec.register(DCConduction, to_args=_terminal_args)
 _codec.register(

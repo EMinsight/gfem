@@ -387,3 +387,21 @@ def test_the_new_names_are_exported_from_their_modules():
     assert gfem.PiezoelectricResult is results.PiezoelectricResult
     for name in ("Piezoelectric", "DampingFrame", "PiezoelectricResult"):
         assert name in gfem.__all__
+
+
+def test_a_job_writes_and_reads_the_problem_and_its_result(tmp_path):
+    mesh = pc.mesh(tmp_path / "idt.msh", "lines")
+    model = pc.model(mesh, "lines")
+    problem = pc.problem(keep_fields=True, clamped="bottom")
+    job = gfem.Job(model, problem)
+    path = job.to_json(tmp_path / "job.json")
+    assert gfem.Job.from_json(path).problem == problem
+    result = job.run(tmp_path / "out")
+    back = gfem.load_result(tmp_path / "out")
+    assert isinstance(back, gfem.PiezoelectricResult)
+    assert _rel(back.admittance_per_length, result.admittance_per_length) == 0.0
+    assert back.kept == result.kept
+    point = np.array([[0.3e-6, -0.5e-6]])
+    assert complex(back.displacement(pc.FREQUENCY)["z"].at(point)[0]) == complex(
+        result.displacement(pc.FREQUENCY)["z"].at(point)[0]
+    )
