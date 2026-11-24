@@ -33,7 +33,7 @@ import numpy as np
 import scipy.constants as const
 
 from gfem import _beam
-from gfem._background import Background
+from gfem._background import Background, lossless
 from gfem._materials import Material
 from gfem._sources import (
     GaussianBeam,
@@ -113,10 +113,6 @@ def background_material(background: Background) -> Any:
     return background.layers[0]
 
 
-def _lossless(material: Any) -> bool:
-    return not np.any(material.tan_delta) and not np.any(material.conductivity)
-
-
 def incidence_material(source: PlaneWave, background: Background) -> Material:
     """The layer ``source`` comes from (the incidence layer)."""
     return background.layers[incidence_layer(background, source.theta)]
@@ -141,7 +137,7 @@ def _check_layered(source: Incident, background: Background) -> None:
         )
     j = incidence_layer(background, source.theta)
     material = background.layers[j]
-    if not _lossless(material):
+    if not lossless(material):
         raise NotImplementedError(
             f"The PlaneWave {source.name!r} comes from layer {j} of the "
             f"background stack ({material!r}), which is lossy: its wave would be "
@@ -166,7 +162,7 @@ def check_solvable(source: Incident, background: Background) -> None:
         _beam.check_background(source, background)
         return
     material = background_material(background)
-    if isinstance(source, PlaneWave) and not _lossless(material):
+    if isinstance(source, PlaneWave) and not lossless(material):
         raise NotImplementedError(
             f"The PlaneWave {source.name!r} comes from a lossy background "
             f"({material!r}); a plane wave is solved in a lossless one. Give "

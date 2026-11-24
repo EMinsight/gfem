@@ -35,7 +35,7 @@ from gfem._adjoint.measure import measure
 from gfem._adjoint.solve_vjp import input_kind
 from gfem._checks import check_fixed, is_traced
 from gfem._dim2 import refuse_entry
-from gfem._power_flow import _model_role, _Role, concrete_field
+from gfem._power_flow import _model_role, _Role, concrete_field, side_names
 from gfem._pytree import register_fields
 from gfem._sources import DIPOLES, INCIDENT, PlaneWave
 from gfem.errors import NonDifferentiableError
@@ -308,7 +308,7 @@ def far_field(
             f"far_field needs model= a gfem.Model, got {type(model).__name__}."
         )
     theta_b, phi_b = _angles(theta, phi)
-    names = _side(side)
+    names = side_names(side, "far_field", default="the layer touching the truncation")
     source = result.sources.get(name)
     if source is None and name not in result.s.excited:
         columns = ", ".join(map(repr, result._excitations)) or "none"  # noqa: SLF001
@@ -397,21 +397,6 @@ def _angles(theta: Any, phi: Any) -> tuple[np.ndarray, np.ndarray]:
     return theta_b, phi_b
 
 
-def _side(side: Any) -> Any:
-    """``None``, the names as a tuple, or the predicate."""
-    if side is None or callable(side):
-        return side
-    if isinstance(side, str):
-        return (side,)
-    if isinstance(side, Sequence) and all(isinstance(s, str) for s in side):
-        return tuple(side)
-    raise TypeError(
-        "far_field's side must be None (the layer touching the truncation), "
-        "volume region names, or a predicate on element centroids, got "
-        f"{type(side).__name__}."
-    )
-
-
 def _check_half_space(rhat: np.ndarray, ground: Any) -> None:
     """Raise for a direction below the ground plane."""
     below = rhat @ ground.normal < -1e-12
@@ -459,7 +444,7 @@ def _measure(
     for path, leaf in f_paths:
         key = _FIELD_INPUTS[path[0].name]
         inputs[key] = leaf
-        roles[key] = _field_role(key, field)
+        roles[key] = field_role(key, field)
     for path, leaf in m_paths:
         key = "model" + jax.tree_util.keystr(tuple(path))
         inputs[key] = leaf
@@ -484,7 +469,7 @@ def _measure(
     return out["amplitude"], out["power"]
 
 
-def _field_role(name: str, field: Field) -> _Role:
+def field_role(name: str, field: Field) -> _Role:
     """The role of a field input."""
     if name == "nodes":
         return _Role("read", None, "the mesh node coordinates (field.mesh.nodes)")

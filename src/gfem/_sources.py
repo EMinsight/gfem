@@ -411,7 +411,7 @@ def _background(model: Any, name: str) -> Any:
     return model.background
 
 
-def _qualified(function: Callable) -> str:
+def qualified(function: Callable) -> str:
     module = getattr(function, "__module__", None)
     name = getattr(function, "__qualname__", None) or type(function).__qualname__
     return f"{module}.{name}" if module else name
@@ -463,7 +463,7 @@ class IncidentField:
         _set(self, name=_name(name, "IncidentField"), function=function)
 
     def __repr__(self) -> str:
-        return f"IncidentField({self.name!r}, function={_qualified(self.function)})"
+        return f"IncidentField({self.name!r}, function={qualified(self.function)})"
 
 
 # --- point dipoles -----------------------------------------------------------------

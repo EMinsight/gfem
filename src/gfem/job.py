@@ -75,7 +75,7 @@ from gfem._sources import (
     IncidentField,
     MagneticDipole,
     PlaneWave,
-    _qualified,
+    qualified,
 )
 from gfem.errors import LinearSolverConvergenceError
 from gfem.measurements import InterfaceParticipation
@@ -1024,7 +1024,7 @@ _codec.register(
 
 def _incident_field_args(field: IncidentField, _: _codec.Context) -> dict[str, Any]:
     raise _codec.UnencodableError(
-        f"the IncidentField {field.name!r} (function {_qualified(field.function)}) "
+        f"the IncidentField {field.name!r} (function {qualified(field.function)}) "
         "cannot be written: its function is code, not data, and a file without "
         "it would solve another problem"
     )

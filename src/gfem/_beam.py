@@ -66,6 +66,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import scipy.constants as const
 
+from gfem._background import lossless
 from gfem._sources import jones, propagation_basis
 from gfem.conventions import INCIDENT_POWER
 
@@ -120,7 +121,7 @@ def check_background(source: GaussianBeam, background: Background) -> Any:
             "gfem.beam_coupling."
         )
     material = background.layers[0]
-    if np.any(material.tan_delta) or np.any(material.conductivity):
+    if not lossless(material):
         raise NotImplementedError(
             f"The GaussianBeam {source.name!r} travels in a lossy background "
             f"({material!r}); its 1 W is a power through planes across its "

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 
 import jax
@@ -66,6 +66,37 @@ class _Role(NamedTuple):
     unsupported: str | None
     #: The input, as the user knows it.
     description: str
+
+
+def side_names(
+    side: Any, who: str, *, default: str | None = None
+) -> tuple[str, ...] | Callable[[np.ndarray], np.ndarray] | None:
+    """A measurement's ``side`` as a tuple of region names or a predicate.
+
+    Args:
+        side: The argument as given.
+        who: The measurement, for the message.
+        default: What ``side=None`` means, for a measurement that takes it
+            (it is then returned as is); ``None`` refuses it.
+
+    Raises:
+        TypeError: ``side`` is neither a volume region name, a non-empty
+            sequence of names, a predicate on element centroids, nor an
+            accepted ``None``.
+    """
+    if side is None and default is not None:
+        return None
+    if isinstance(side, str):
+        return (side,)
+    if callable(side):
+        return side
+    if isinstance(side, Sequence) and side and all(isinstance(s, str) for s in side):
+        return tuple(side)
+    none = "" if default is None else f"None ({default}), "
+    raise TypeError(
+        f"{who}'s side must be {none}a volume region name, a sequence of names "
+        f"or a predicate on element centroids, got {side!r}."
+    )
 
 
 def engine() -> Any:

@@ -17,7 +17,7 @@ from gfem._checks import is_traced, static_float
 from gfem._materials import Material, MaterialField, PermittivityLaw
 from gfem.errors import NonDifferentiableError
 
-__all__ = ["Background"]
+__all__ = ["Background", "lossless"]
 
 _FIXED = "Build the background from concrete values: it is a constant of the solve."
 
@@ -176,6 +176,11 @@ class Background:
 
 
 jax.tree_util.register_static(Background)
+
+
+def lossless(material: Material) -> bool:
+    """Whether ``material`` has neither ``tan_delta`` nor ``conductivity``."""
+    return not np.any(material.tan_delta) and not np.any(material.conductivity)
 
 
 def background_of(value: Any) -> Background | None:

@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from gfem import _incident
-from gfem._background import Background
+from gfem._background import Background, lossless
 from gfem._boundaries import (
     PEC,
     Conductor,
@@ -86,7 +86,7 @@ def check_lossless(background: Background) -> None:
             field.
     """
     for j, material in enumerate(background.layers):
-        if np.any(material.tan_delta) or np.any(material.conductivity):
+        if not lossless(material):
             where = (
                 f"layer {j} of the background stack"
                 if _incident.layered(background)
@@ -100,7 +100,9 @@ def check_lossless(background: Background) -> None:
             )
 
 
-_SHEETS = (Conductor, Impedance, LumpedPort, PEC)
+#: The surfaces that are part of the scatterer: none may reach the truncation
+#: layer, which must be background.
+_SCATTERER_SURFACES = (Conductor, Impedance, LumpedPort, PEC)
 
 
 def check_truncation_layer(
@@ -139,7 +141,7 @@ def check_truncation_layer(
         )
     neighbours = mesh.triangle_neighbours
     for item in (*model.boundaries, *model.ports):
-        if not isinstance(item, _SHEETS):
+        if not isinstance(item, _SCATTERER_SURFACES):
             continue
         for surface in surfaces_of(item):
             nb = neighbours[mesh.elements(surface)]
@@ -164,14 +166,14 @@ def check_side(model: Model, where: Surface, who: str) -> None:
         ValueError: Naming the port.
     """
     mesh = model.mesh
-    keys = pf._edge_keys(where.tie, mesh.tetrahedra, np.array(_TET_EDGES))  # noqa: SLF001
+    keys = pf.edge_keys(where.tie, mesh.tetrahedra, np.array(_TET_EDGES))
     closure = np.unique(keys[where.inside])
     for port in model.ports:
         if not isinstance(port, WavePort):
             continue
         for name in surfaces_of(port):
             tris = mesh.triangles[mesh.elements(name)]
-            edges = pf._edge_keys(where.tie, tris, pf._TRI_EDGES)  # noqa: SLF001
+            edges = pf.edge_keys(where.tie, tris, pf.TRI_EDGES)
             if np.isin(edges, closure).any():
                 raise ValueError(
                     f"{who}: the side reaches wave port {port.name!r}'s surface "

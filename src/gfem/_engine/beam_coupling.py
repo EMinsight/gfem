@@ -53,8 +53,15 @@ from gfem._boundaries import Absorbing, surfaces_of
 from gfem._engine import far_field as ff
 from gfem._engine import power_flow as pf
 from gfem._engine import probe
-from gfem._engine.incident import CONTACT, _Faces, _same_material, layer_regions
-from gfem._materials import Material, MaterialField
+from gfem._engine.incident import (
+    CONTACT,
+    Faces,
+    constant_isotropic,
+    layer_regions,
+    one_medium,
+    region_of,
+)
+from gfem._materials import Material
 from gfem._sources import GaussianBeam, IncidentField
 from gfem.mesh import Mesh
 
@@ -169,11 +176,11 @@ def coupling_layer(
             "has Periodic pairs: a periodic structure radiates diffraction "
             "orders, read them at a FloquetPort."
         )
-    support = pf._check_support(field, model)  # noqa: SLF001
+    support = pf.check_support(field, model)
     pml = np.zeros(len(tets), bool)
     for region in layer_regions(model):
         pml[mesh.elements(region)] = True
-    region_of = ff._regions(model)  # noqa: SLF001
+    regions = region_of(mesh)
     if side is None:
         cut = _entrance(
             model,
@@ -182,13 +189,13 @@ def coupling_layer(
             beam=beam,
             frequency=frequency,
             nodes=nodes,
-            region_of=region_of,
+            regions=regions,
         )
         chi = np.zeros(n_nodes)
         chi[np.unique(tets[support])] = 1.0
         chi[cut] = 0.0
     else:
-        selected = pf._selection(mesh, side) & support  # noqa: SLF001
+        selected = pf.selection(mesh, side) & support
         if not selected.any():
             raise ValueError(
                 "beam_coupling's side selects no element of the field's support: "
@@ -208,8 +215,8 @@ def coupling_layer(
             "beam_coupling's side has no element layer just outside it outside "
             "the perfectly matched layer: put its surface in the physical region."
         )
-    material = _medium(model, beam, region_of, varies)
-    ff._check_sources(  # noqa: SLF001
+    material = _medium(model, beam, regions, varies)
+    ff.check_enclosed(
         field,
         model,
         model.background or Background(material),
@@ -226,7 +233,7 @@ def coupling_layer(
         beam=beam,
         frequency=frequency,
         nodes=np.asarray(nodes, float),
-        region_of=region_of,
+        regions=regions,
     )
     layer = CouplingLayer(
         chi=chi,
@@ -256,7 +263,7 @@ def _truncation_faces(
     `gfem.Absorbing` faces and the faces between the physical region and
     the perfectly matched layer.
     """
-    faces = _Faces.of(model)
+    faces = Faces.of(model)
     a, b = faces.tets[:, 0], faces.tets[:, 1]
     names = {
         name
@@ -286,7 +293,7 @@ def _face_flux(
     beam: GaussianBeam | IncidentField,
     frequency: float,
     nodes: np.ndarray,
-    region_of: np.ndarray,
+    regions: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """``(inward normals, centroids, power in)`` of truncation faces, W each.
 
@@ -304,11 +311,11 @@ def _face_flux(
     normal = np.where((np.sum(inward * normal, axis=1) < 0)[:, None], -normal, normal)
     flux = np.zeros(len(tri))
     omega = 2 * math.pi * frequency
-    for region in np.unique(region_of[owner]):
+    for region in np.unique(regions[owner]):
         material = model.materials.get(region)
-        if not isinstance(material, Material) or _is_varying(material):
+        if not constant_isotropic(material):
             continue
-        rows = region_of[owner] == region
+        rows = regions[owner] == region
         e, curl = host_field(beam, material, centroid[rows], frequency)
         mu = const.mu_0 * float(np.real(complex(np.asarray(material.mu_r))))
         h = curl / (-1j * omega * mu)
@@ -325,7 +332,7 @@ def _entrance(
     beam: GaussianBeam | IncidentField,
     frequency: float,
     nodes: np.ndarray,
-    region_of: np.ndarray,
+    regions: np.ndarray,
 ) -> np.ndarray:
     """The nodes of the truncation face the beam enters through (most power in).
 
@@ -343,7 +350,7 @@ def _entrance(
         beam=beam,
         frequency=frequency,
         nodes=nodes,
-        region_of=region_of,
+        regions=regions,
     )
     extent = float(np.ptp(nodes, axis=0).max())
     keys = np.round(
@@ -364,43 +371,24 @@ def _entrance(
     return cut
 
 
-def _is_varying(material: Any) -> bool:
-    """A material that is not one constant isotropic number pair."""
-    from gfem._materials import _is_law
-
-    if isinstance(material, MaterialField) or _is_law(material):
-        return True
-    return any(np.ndim(getattr(material, k)) for k in ("eps_r", "mu_r"))
-
-
 def _medium(
     model: Model,
     beam: GaussianBeam | IncidentField,
-    region_of: np.ndarray,
+    regions: np.ndarray,
     varies: np.ndarray,
 ) -> Material:
     """The layer's one constant, isotropic, lossless material: the beam's medium."""
-    medium: Material | None = None
-    for region in sorted(set(region_of[varies])):
+    medium, region = one_medium(model, regions[varies])
+    if region is not None:
         material = model.materials.get(region)
-        lossless = isinstance(material, Material) and not (
-            np.any(material.tan_delta) or np.any(material.conductivity)
+        first = "" if medium is None else f" (the layer also holds {medium!r})"
+        raise ValueError(
+            f"beam_coupling's layer just outside the side holds region "
+            f"{region!r}, of material {material!r}{first}: the layer must be "
+            f"one constant, isotropic, lossless medium, the medium the beam "
+            f"{beam.name!r} travels in. Put the side's surface in that "
+            "medium, clear of the device."
         )
-        if (
-            not isinstance(material, Material)
-            or _is_varying(material)
-            or not lossless
-            or (medium is not None and not _same_material(material, medium))
-        ):
-            first = "" if medium is None else f" (the layer also holds {medium!r})"
-            raise ValueError(
-                f"beam_coupling's layer just outside the side holds region "
-                f"{region!r}, of material {material!r}{first}: the layer must be "
-                f"one constant, isotropic, lossless medium, the medium the beam "
-                f"{beam.name!r} travels in. Put the side's surface in that "
-                "medium, clear of the device."
-            )
-        medium = material
     if medium is None:  # pragma: no cover - the layer is never empty here
         raise ValueError("beam_coupling's layer is empty.")
     return medium
@@ -423,17 +411,10 @@ def _check_walls(
     (:math:`\nabla\times E`) vanishes on it, to `CONTACT` of its peak in
     the layer.
     """
-    faces = _Faces.of(model)
-    a, b = faces.tets[:, 0], faces.tets[:, 1]
-    owner = np.maximum(a, 0)
-    rows = (b < 0) & (a >= 0) & varies[owner] & ~pml[owner]
-    rows &= layer.chi[faces.nodes].max(axis=1) > 0
-    if not rows.any():
+    walls = ff.layer_walls(model, layer.chi, varies, pml)
+    faces = walls.faces
+    if not len(walls.rows):
         return
-    kinds: dict[str, str] = {}
-    for item in (*model.boundaries, *model.ports):
-        for name in surfaces_of(item):
-            kinds.setdefault(name, type(item).__name__)
     nodes = np.asarray(nodes, float)
     tets = np.asarray(model.mesh.tetrahedra)[layer.tetrahedra]
     peak_e, peak_curl = host_field(
@@ -442,9 +423,7 @@ def _check_walls(
     scale = {"PEC": np.abs(peak_e).max(), "PMC": np.abs(peak_curl).max()}
     for kind in ("PEC", "PMC"):
         picked = []
-        for row in np.flatnonzero(rows):
-            named = [kinds[s] for s in faces.surfaces[row] if s in kinds]
-            this = named[0] if named else "PMC"
+        for row, this in zip(walls.rows, walls.kinds, strict=True):
             if this == "Absorbing":
                 continue
             if this not in ("PEC", "PMC"):
@@ -561,7 +540,7 @@ def reaction(
     the field's reference values; ``test(points, jacobians)`` gives the test
     field and its curl at the ``(n_tets, n_points, 3)`` quadrature points.
     """
-    jac = ff._jacobians(corners)  # noqa: SLF001
+    jac = ff.jacobians(corners)
     det = jnp.linalg.det(jac)
     inv_t = jnp.linalg.inv(jac).transpose(0, 2, 1)
     e = jnp.einsum("tij,tpj->tpi", inv_t, e_ref)

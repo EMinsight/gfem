@@ -840,7 +840,9 @@ def power_flow(
         raise TypeError(
             f"power_flow needs model= a gfem.Model, got {type(model).__name__}."
         )
-    names = _side_names(side)
+    from gfem._power_flow import side_names
+
+    names = side_names(side, "power_flow")
     _check_driven(field)
     recorder = _objective.recording()
     if recorder is not None:
@@ -1599,26 +1601,6 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
         region: jnp.asarray(energy, dtype=float)
         for region, energy in engine.electric_energy(field, model).items()
     }
-
-
-def _side_names(
-    side: Any,
-) -> tuple[str, ...] | Callable[[np.ndarray], np.ndarray]:
-    """``side`` as a predicate or a tuple of region names.
-
-    Raises:
-        TypeError: ``side`` is neither.
-    """
-    if isinstance(side, str):
-        return (side,)
-    if callable(side):
-        return side
-    if isinstance(side, Sequence) and side and all(isinstance(s, str) for s in side):
-        return tuple(side)
-    raise TypeError(
-        "power_flow's side must be a volume region name, a sequence of names or "
-        f"a predicate on element centroids, got {side!r}."
-    )
 
 
 def _check_time_harmonic(field: Field, who: str, *, static: str) -> None:
