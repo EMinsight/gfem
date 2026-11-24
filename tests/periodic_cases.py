@@ -976,6 +976,67 @@ def f1_airy(
     )
 
 
+#: The lossy slab of the emissivity cells: eps 4 with loss tangent 0.1.
+F1_TAN_DELTA = 0.1
+
+
+def pec_backed_lossy(mesh: gfem.Mesh) -> gfem.Model:
+    """F1 with a PEC on ``z_min`` and a lossy slab, Floquet ports on ``z_max`` only.
+
+    Nothing leaves through the back, so the absorptance is 1 - R and the
+    emissivity of the cell is that of the PEC-backed slab.
+    """
+    return gfem.Model(
+        mesh,
+        materials={
+            "sub": gfem.Material(eps_r=F1_EPS_SUB),
+            "slab": gfem.Material(eps_r=F1_EPS_SLAB, tan_delta=F1_TAN_DELTA),
+            "air": gfem.Material(),
+        },
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+            gfem.PEC("z_min"),
+        ],
+        ports=[
+            gfem.FloquetPort(f"R_{pol}", "z_max", polarization=pol)
+            for pol in ("TE", "TM")
+        ],
+    )
+
+
+def airy_pec(
+    kt: float,
+    pol: str,
+    eps_slab: complex,
+    eps_sub: float,
+    frequency: float = F1_FREQUENCY,
+) -> complex:
+    """The reflection of F1 backed by a PEC at the substrate's lower face.
+
+    ``(E, H) = (0, 1)`` at the PEC is carried up through the substrate, the
+    slab and the air, and ``r = (Y0 E - H) / (Y0 E + H)`` at the top port
+    plane; ``kt`` the in-plane wave number, rad/m (e^{+i omega t}).
+    """
+    k0 = 2 * math.pi * frequency / C0
+
+    def admittance(eps):
+        kz = np.sqrt(complex(k0**2 * eps - kt**2))
+        return kz, (kz if pol == "TE" else k0**2 * eps / kz)
+
+    e, h = 0j, 1.0 + 0j
+    for eps, d in [
+        (eps_sub, F1_D * UM),
+        (eps_slab, F1_H * UM),
+        (1.0, F1_D * UM),
+    ]:
+        kz, y = admittance(eps)
+        c, s = np.cos(kz * d), np.sin(kz * d)
+        e, h = c * e + 1j * s * h / y, 1j * y * s * e + c * h
+    y0 = admittance(1.0)[1]
+    return (y0 * e - h) / (y0 * e + h)
+
+
 #: The wave plate's uniaxial slab: ordinary and extraordinary permittivity.
 #: $\varepsilon_e$ makes the slab a quarter-wave plate for F1's thickness:
 #: $\arg(t_e / t_o) = -\pi/2$ at normal incidence (Fabry-Perot amplitudes

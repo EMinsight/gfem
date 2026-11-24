@@ -8,6 +8,13 @@ Floquet surface.
 from __future__ import annotations
 
 from gfem._diffraction.aperture import ApertureField, propagate
+from gfem._diffraction.emissivity import (
+    Emissivity,
+    HemisphereRule,
+    emissivity,
+    hemisphere,
+    hemispherical_emissivity,
+)
 from gfem._diffraction.outputs import (
     Efficiencies,
     Jones,
@@ -23,11 +30,16 @@ __all__ = [
     "AngleSweepResult",
     "ApertureField",
     "Efficiencies",
+    "Emissivity",
+    "HemisphereRule",
     "Jones",
     "PowerBalance",
     "angle_sweep",
     "efficiencies",
+    "emissivity",
     "floquet_ports",
+    "hemisphere",
+    "hemispherical_emissivity",
     "jones",
     "power_balance",
     "propagate",

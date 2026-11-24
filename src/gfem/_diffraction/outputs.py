@@ -858,7 +858,22 @@ def power_balance(
             diffraction orders are traced (the result entered `jax.jit` or
             `jax.vmap` as an argument).
     """
-    who = "power_balance"
+    return balance_of(
+        "power_balance", result, surface, polarization=polarization, model=model,
+        order=order,
+    )
+
+
+def balance_of(
+    who: str,
+    result: Any,
+    surface: str,
+    *,
+    polarization: Any,
+    model: Model,
+    order: Any = (0, 0),
+) -> PowerBalance:
+    """`power_balance` whose messages name the calling function ``who``."""
     cell = cell_of(result, model, who)
     order = check_order(order, who)
     inc = incidence_of(cell, surface, polarization, order)
