@@ -12,7 +12,9 @@ The measured errors and the gates are recorded in `multipole_cases`.
 """
 
 import free_space_cases as fsc
+import multipole_cases as mc
 import numpy as np
+import scipy.constants as const
 import pytest
 
 import gfem
@@ -55,3 +57,38 @@ def test_v7_the_toroidal_correction_improves_the_long_wavelength_dipole(lossy_sp
     kt = 1j * cm.wavenumber[0] * np.asarray(cm.toroidal_dipole)[0]
     print("V7", np.linalg.norm(p0 - p), np.linalg.norm(p0 - kt - p))
     assert np.linalg.norm(p0 - kt - p) <= np.linalg.norm(p0 - p) / 5
+
+
+#: Reference tier: the anapole sphere D' (index 4, :math:`x = 1.1654`), where the
+#: exact dipole vanishes and the long-wavelength one does not.
+ANAPOLE_GATE = 2.5e-2
+MOMENT_GATE = 5e-2
+
+
+@pytest.mark.reference
+def test_rm2_the_anapole_has_no_exact_dipole_but_long_wavelength_moments(tmp_path):
+    case = mc.CASES["D'"]
+    mesh, a_vol, frequency = mc.sphere_case(tmp_path / "anapole.msh", case)
+    model = fsc.model(mesh, gfem.Material(eps_r=case.eps.real))
+    problem = gfem.Driven(frequency, sources=AXIAL, keep_fields=True)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    mp = gfem.multipoles(result, "z", model=model)
+    ref_alpha, ref_beta = mc.mie_multipoles(case.eps, case.x, mp.lmax)
+    norm = np.sqrt(np.sum(abs(ref_alpha) ** 2) + np.sum(abs(ref_beta) ** 2))
+    alpha = np.asarray(mp.alpha)[0]
+    dipole = np.linalg.norm(alpha[:3]) / norm
+    print("RM2 alpha_1", dipole)
+    assert dipole <= ANAPOLE_GATE
+    # the long-wavelength moments, in units of 6 pi eps0 E0 / k^3
+    cm = gfem.current_moments(result, "z", model=model)
+    k = cm.wavenumber[0]
+    unit = 6 * np.pi * const.epsilon_0 / k**3
+    p0 = np.asarray(cm.long_wavelength_dipole)[0] / unit
+    kt = 1j * k * np.asarray(cm.toroidal_dipole)[0] / unit
+    want_p0, want_kt = mc.ANAPOLE_LONG_WAVELENGTH["D'"]
+    print("RM2 p0, -ikT", p0, -kt)
+    assert p0[0] == pytest.approx(want_p0, rel=MOMENT_GATE)
+    assert -kt[0] == pytest.approx(want_kt, rel=MOMENT_GATE)
+    miss = np.linalg.norm(p0 - kt) / np.linalg.norm(p0)
+    print("RM2 miss", miss)
+    assert 0.03 <= miss <= 0.12
