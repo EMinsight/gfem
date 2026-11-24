@@ -43,6 +43,7 @@ __all__ = [
     "ElectrostaticResult",
     "Field",
     "NetworkParameters",
+    "PiezoelectricResult",
     "PortModeField",
     "PortModeResult",
     "ReducedFields",
@@ -2564,5 +2565,204 @@ register_fields(
         "cluster",
         "principal_participation",
         "sheet_participation",
+    ),
+)
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class PiezoelectricResult:
+    r"""The result of a `Piezoelectric` problem.
+
+    Excitation ``j`` puts terminal ``j`` at 1 V and every other terminal and
+    the ground at 0 V. A 2D section states extensive quantities per metre
+    along :math:`z`; the device's admittance is
+    ``admittance_per_length`` times its aperture.
+
+    Attributes:
+        admittance_per_length: :math:`Y'_{ij}(f)` in S/m, complex, shape
+            ``(n_frequencies, n_terminals, n_terminals)``, in `terminals`
+            order: ``[k, i, j]`` is the current into terminal ``i`` per volt
+            on terminal ``j`` at frequency ``k``, per metre along
+            :math:`z`, :math:`Y' = i\omega q'` with :math:`q'` the charge per
+            length. Symmetric, with a positive semidefinite real part.
+        clamped_capacitance_per_length: :math:`C'_0` in F/m, shape
+            ``(n_terminals, n_terminals)``: the Maxwell matrix of the
+            potential alone, with the clamped permittivity
+            :math:`\varepsilon^S` and no displacement. It is not the
+            low-frequency limit of :math:`Y'/i\omega`, the free capacitance
+            (larger by :math:`1 + K^2`).
+        terminals: The terminal names (static labels), the matrix order.
+        frequencies: The frequencies in Hz, in the problem's order (static;
+            `frequency` reads them as an array).
+        displacement_fields: The kept displacements
+            (``Piezoelectric(keep_fields=...)``), one `FieldMap` per kept
+            (frequency, terminal) labelled by `kept`, with the keys ``"x"``,
+            ``"y"`` and ``"z"``: scalar `Field` s of quantity ``"ux"``,
+            ``"uy"`` or ``"uz"`` in m, per volt on the terminal, on H1 of the
+            solve order over the mechanical domain. Empty by default.
+        potential_fields: The kept potentials, one `Field` per kept
+            (frequency, terminal), quantity ``"V"``, per volt on the
+            terminal, on H1 over the electromagnetic domain.
+        kept: ``(frequency in Hz, terminal)`` of each kept field, frequency
+            major (static labels).
+    """
+
+    admittance_per_length: jax.Array
+    clamped_capacitance_per_length: jax.Array
+    terminals: tuple[str, ...]
+    frequencies: tuple[float, ...]
+    displacement_fields: Sequence[FieldMap] = ()
+    potential_fields: Sequence[Field] = ()
+    kept: tuple[tuple[float, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        """Hold the kept fields as sequences matching their labels."""
+        object.__setattr__(self, "terminals", tuple(self.terminals))
+        object.__setattr__(
+            self, "frequencies", tuple(float(f) for f in self.frequencies)
+        )
+        object.__setattr__(self, "displacement_fields", tuple(self.displacement_fields))
+        object.__setattr__(self, "potential_fields", tuple(self.potential_fields))
+        object.__setattr__(
+            self, "kept", tuple((float(f), str(t)) for f, t in self.kept)
+        )
+        if (
+            not len(self.displacement_fields)
+            == len(self.potential_fields)
+            == len(self.kept)
+        ):
+            raise ValueError(
+                f"{len(self.displacement_fields)} displacements and "
+                f"{len(self.potential_fields)} potentials but {len(self.kept)} "
+                "labels in kept."
+            )
+
+    @property
+    def frequency(self) -> np.ndarray:
+        """The frequencies in Hz, ``(n_frequencies,)``."""
+        return np.array(self.frequencies)
+
+    def index(self, terminal: str) -> int:
+        """Row / column of ``terminal`` in `admittance_per_length`.
+
+        Raises:
+            KeyError: ``terminal`` is not a terminal of this result.
+        """
+        try:
+            return self.terminals.index(terminal)
+        except ValueError:
+            raise KeyError(
+                f"No terminal {terminal!r}; the terminals are "
+                f"{', '.join(repr(t) for t in self.terminals)}."
+            ) from None
+
+    def displacement(self, frequency: float, terminal: str | None = None) -> FieldMap:
+        """The kept displacement at ``frequency`` for 1 V on ``terminal``.
+
+        Args:
+            frequency: A kept frequency, Hz (matched to 1e-9 relative).
+            terminal: The excited terminal; may be left out when there is one.
+
+        Returns:
+            The scalar `Field` s ``"x"``, ``"y"`` and ``"z"`` of the
+            displacement, in m per volt.
+
+        Raises:
+            ValueError: No field was kept at ``frequency``, or ``terminal``
+                is needed.
+            KeyError: ``terminal`` is not a terminal of this result.
+        """
+        return self._kept_field(self.displacement_fields, frequency, terminal)
+
+    def potential(self, frequency: float, terminal: str | None = None) -> Field:
+        """The kept potential at ``frequency`` for 1 V on ``terminal``.
+
+        Raises:
+            ValueError: No field was kept at ``frequency``, or ``terminal``
+                is needed.
+            KeyError: ``terminal`` is not a terminal of this result.
+        """
+        return self._kept_field(self.potential_fields, frequency, terminal)
+
+    def _kept_field(
+        self, fields: Sequence[Any], frequency: float, terminal: str | None
+    ) -> Any:
+        if not self.kept:
+            raise ValueError(
+                "This result keeps no fields: solve with Piezoelectric(..., "
+                "keep_fields=True) or keep_fields=[frequencies] to keep them."
+            )
+        if terminal is None:
+            if len(self.terminals) > 1:
+                raise ValueError(
+                    f"Terminals {', '.join(map(repr, self.terminals))} were "
+                    "solved; pass terminal= to choose one."
+                )
+            terminal = self.terminals[0]
+        self.index(terminal)
+        for k, (f, name) in enumerate(self.kept):
+            if name == terminal and math.isclose(f, frequency, rel_tol=1e-9):
+                return fields[k]
+        listed = ", ".join(f"{f:g}" for f in sorted({f for f, _ in self.kept}))
+        raise ValueError(
+            f"No field kept at {frequency:g} Hz; the kept frequencies are {listed} "
+            "Hz (Piezoelectric.keep_fields)."
+        )
+
+    def to_xarray(self) -> xarray.Dataset:
+        """The admittance and clamped capacitance as an `xarray.Dataset`.
+
+        ``admittance_per_length`` (S/m) has dimensions ``("frequency",
+        "terminal", "excitation")`` and ``clamped_capacitance_per_length``
+        (F/m) ``("terminal", "excitation")``, labelled by `terminals` and the
+        frequencies. Needs the ``xarray`` extra: ``pip install
+        "gfem[xarray]"``.
+
+        Raises:
+            ImportError: xarray is not installed.
+            TypeError: The result holds JAX tracers.
+        """
+        xr = _xarray(self)
+        data = {
+            "admittance_per_length": _variable(
+                ("frequency", "terminal", "excitation"),
+                self.admittance_per_length,
+                "S/m",
+            ),
+            "clamped_capacitance_per_length": _variable(
+                ("terminal", "excitation"), self.clamped_capacitance_per_length, "F/m"
+            ),
+        }
+        coords = {
+            "frequency": self.frequency,
+            "terminal": list(self.terminals),
+            "excitation": list(self.terminals),
+        }
+        return xr.Dataset(data, coords=coords)
+
+    def __repr__(self) -> str:
+        f = self.frequency
+        band = hertz_band(f.min(), f.max(), 4)
+        what = f"{len(f)} frequencies {band}" if len(f) > 1 else band
+        head = f"PiezoelectricResult(terminals={list(self.terminals)}, {what}"
+        try:
+            c = np.asarray(self.clamped_capacitance_per_length) * 1e12
+        except (TypeError, jax.errors.TracerArrayConversionError):
+            return f"{head})"
+        width = max(len(t) for t in self.terminals)
+        rows = "\n".join(
+            f"  {t:>{width}}: " + "  ".join(f"{v:10.4g}" for v in row)
+            for t, row in zip(self.terminals, c, strict=True)
+        )
+        return f"{head}, clamped capacitance per length in pF/m:\n{rows})"
+
+
+register_fields(
+    PiezoelectricResult,
+    (
+        "admittance_per_length",
+        "clamped_capacitance_per_length",
+        "displacement_fields",
+        "potential_fields",
     ),
 )

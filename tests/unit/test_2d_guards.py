@@ -87,18 +87,6 @@ MODEL_ITEMS = {
         {"ports": (gfem.WavePort("p", "outer", voltage_path=((0, 0, 0), (1, 0, 0))),)},
         r"voltage_path.*leave it out",
     ),
-    "anisotropic material": (
-        {"materials": {"a": gfem.Material(eps_r=(2.0, 3.0, 4.0))}},
-        rf"anisotropic.*'a'.*one value per property.*{SLAB}",
-    ),
-    "anisotropic material field": (
-        {
-            "materials": {
-                "a": gfem.MaterialField(eps_r=jnp.ones((2, 3)), axes=AXES, region="a")
-            }
-        },
-        rf"anisotropic.*'a'.*axes.*{SLAB}",
-    ),
     "perfectly matched layer": (
         {"pml": gfem.PML("c")},
         rf"perfectly matched layer \(gfem\.PML on 'c'\).*gfem\.Absorbing.*{SLAB}",
@@ -123,6 +111,29 @@ def test_a_model_on_a_2d_mesh_builds_with_pec_and_named_exclusions(mesh):
     )
     assert model.mesh.dim == 2
     assert model.excluded == ("c",)
+
+
+ANISOTROPIC = {
+    "anisotropic material": (
+        {"a": gfem.Material(eps_r=(2.0, 3.0, 4.0))},
+        rf"anisotropic.*'a'.*one value per property.*{SLAB}",
+    ),
+    "anisotropic material field": (
+        {"a": gfem.MaterialField(eps_r=jnp.ones((2, 3)), axes=AXES, region="a")},
+        rf"anisotropic.*'a'.*axes.*{SLAB}",
+    ),
+}
+
+
+@pytest.mark.parametrize("item", ANISOTROPIC)
+def test_a_2d_electromagnetic_solve_of_an_anisotropic_material_refuses_by_name(
+    mesh, item
+):
+    change, remedy = ANISOTROPIC[item]
+    model = gfem.Model(
+        mesh, materials=materials() | change, boundaries=(gfem.PEC("outer"),)
+    )
+    _raises(remedy, lambda: gfem.solve(model, gfem.Driven(1e9, polarization="Ez")))
 
 
 # --- the solve entry -----------------------------------------------------------
