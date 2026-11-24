@@ -64,7 +64,9 @@ def test_e4_each_node_matches_airy_and_is_labelled_pi(e4):
         emis = dif.emissivity(sweep, model=model, polarization=pol)
         for i, theta in enumerate(rule.theta):
             want = (
-                _airy_unpolarized(theta) if pol == "unpolarized" else _airy_a(theta, pol)
+                _airy_unpolarized(theta)
+                if pol == "unpolarized"
+                else _airy_a(theta, pol)
             )
             assert abs(float(emis.values[i, 0]) - want) <= 1e-5
         assert emis.phi == (math.pi,) * len(rule.theta)
@@ -73,7 +75,9 @@ def test_e4_each_node_matches_airy_and_is_labelled_pi(e4):
 def test_e4_hemispherical_emissivity_matches_the_node_sum_and_the_exact_value(e4):
     model, rule, sweep = e4
     got = float(dif.hemispherical_emissivity(sweep, rule, model=model)[0])
-    same_nodes = sum(w * _airy_unpolarized(t) for w, t in zip(rule.weight, rule.theta))
+    same_nodes = sum(
+        w * _airy_unpolarized(t) for w, t in zip(rule.weight, rule.theta, strict=True)
+    )
     assert abs(got - same_nodes) <= 1e-5
     x, w = roots_legendre(4000)
     mu = (x + 1) / 2
@@ -99,7 +103,10 @@ def test_e5_the_emission_azimuth_is_the_reversed_incidence(tmp_path):
     ridge = len(mesh.elements("ridge"))
     rng = np.random.default_rng(30)
     eps = np.concatenate(
-        [rng.uniform(3.5, 4.5, ridge), rng.uniform(1.0, 1.5, len(mesh.elements("groove")))]
+        [
+            rng.uniform(3.5, 4.5, ridge),
+            rng.uniform(1.0, 1.5, len(mesh.elements("groove"))),
+        ]
     ) * (1 - 0.02j)
     model = (
         pc.f2(mesh, ports=ports)

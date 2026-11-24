@@ -859,7 +859,11 @@ def power_balance(
             `jax.vmap` as an argument).
     """
     return balance_of(
-        "power_balance", result, surface, polarization=polarization, model=model,
+        "power_balance",
+        result,
+        surface,
+        polarization=polarization,
+        model=model,
         order=order,
     )
 

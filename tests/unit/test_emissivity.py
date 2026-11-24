@@ -44,7 +44,8 @@ def test_e1_hemisphere_is_exact_on_mu_powers(n):
     assert np.all(np.diff(rule.theta) > 0)
     assert rule.theta[-1] < math.pi / 2
     assert not rule.mirror
-    assert not rule.theta.flags.writeable and not rule.weight.flags.writeable
+    assert not rule.theta.flags.writeable
+    assert not rule.weight.flags.writeable
 
 
 def test_e1_folding_keeps_the_symmetric_azimuths():
@@ -72,15 +73,23 @@ def test_e1_folding_keeps_the_symmetric_azimuths():
 
 
 def test_h1_h2_h3_texts():
-    with pytest.raises(TypeError, match=r"^hemisphere: n_theta must be an integer, got 2.5\.$"):
+    with pytest.raises(
+        TypeError, match=r"^hemisphere: n_theta must be an integer, got 2.5\.$"
+    ):
         dif.hemisphere(2.5, 1)
     with pytest.raises(TypeError, match=r"n_phi must be an integer, got True"):
         dif.hemisphere(2, True)
-    with pytest.raises(TypeError, match=r"^hemisphere: mirror must be True or False, got 1\.$"):
+    with pytest.raises(
+        TypeError, match=r"^hemisphere: mirror must be True or False, got 1\.$"
+    ):
         dif.hemisphere(2, 1, mirror=1)
-    with pytest.raises(ValueError, match=r"^hemisphere: rotation must be >= 1, got 0\.$"):
+    with pytest.raises(
+        ValueError, match=r"^hemisphere: rotation must be >= 1, got 0\.$"
+    ):
         dif.hemisphere(2, 4, rotation=0)
-    with pytest.raises(ValueError, match=r"^hemisphere: n_theta must be >= 1, got 0\.$"):
+    with pytest.raises(
+        ValueError, match=r"^hemisphere: n_theta must be >= 1, got 0\.$"
+    ):
         dif.hemisphere(0, 4)
     with pytest.raises(
         ValueError,
@@ -99,14 +108,19 @@ def test_e1_e2_e3_texts_of_emissivity(f1_model):
         dif.emissivity([], model=f1_model)
     sweep = _fake_sweep([0.0], [0.0])
     with pytest.raises(
-        ValueError, match=r"^emissivity: polarization must be 'TE', 'TM', 'RCP', 'LCP' or 'unpolarized', got 'X'\.$"
+        ValueError,
+        match=r"^emissivity: polarization must be 'TE', 'TM', 'RCP', 'LCP' or "
+        r"'unpolarized', got 'X'\.$",
     ):
         dif.emissivity(sweep, model=f1_model, polarization="X")
-    with pytest.raises(ValueError, match=r"is a Jones pair; emissivity is defined here"):
+    with pytest.raises(
+        ValueError, match=r"is a Jones pair; emissivity is defined here"
+    ):
         dif.emissivity(sweep, model=f1_model, polarization=(1, 0))
     with pytest.raises(
         TypeError,
-        match=r"^hemispherical_emissivity needs rule= a gfem.diffraction.HemisphereRule .* got str\.$",
+        match=r"^hemispherical_emissivity needs rule= a gfem.diffraction."
+        r"HemisphereRule .* got str\.$",
     ):
         dif.hemispherical_emissivity(sweep, "rule", model=f1_model)
     with pytest.raises(TypeError, match=r"^hemispherical_emissivity needs a gfem"):
@@ -123,7 +137,10 @@ def test_e4_e5_texts_of_the_hemispherical_emissivity(f1_model):
     ):
         dif.hemispherical_emissivity(_fake_sweep([0.0], [0.0]), rule, model=f1_model)
     bad = _fake_sweep([rule.theta[0], rule.theta[1] + 1e-9], [0.0, 0.0])
-    with pytest.raises(ValueError, match=r"incidence 1 is \(theta, phi\) = \(.*\) rad, node 1 is \(.*\) rad"):
+    with pytest.raises(
+        ValueError,
+        match=r"incidence 1 is \(theta, phi\) = \(.*\) rad, node 1 is \(.*\) rad",
+    ):
         dif.hemispherical_emissivity(bad, rule, model=f1_model)
     folded = dif.hemisphere(2, 4, rotation=4, mirror=True)
     with pytest.raises(
@@ -133,7 +150,10 @@ def test_e4_e5_texts_of_the_hemispherical_emissivity(f1_model):
         r"mirror=False, or use 'TE', 'TM' or 'unpolarized'\.$",
     ):
         dif.hemispherical_emissivity(
-            _fake_sweep(folded.theta, folded.phi), folded, model=f1_model, polarization="RCP"
+            _fake_sweep(folded.theta, folded.phi),
+            folded,
+            model=f1_model,
+            polarization="RCP",
         )
 
 
@@ -213,11 +233,12 @@ def test_e3_pec_backed_emissivity_is_one_minus_r_squared(pec_cell, pec_sweep, po
     assert emis.theta == pec_sweep.theta
     assert emis.phi[0] == pytest.approx(math.pi)
     assert emis.phi[1] == pytest.approx(210 * DEG - 2 * math.pi)
-    assert emis.polarization == pol and emis.surface == TOP
+    assert emis.polarization == pol
+    assert emis.surface == TOP
     assert emis.values.shape == (2, 1)
 
 
-def test_e3_an_undeclared_polarization_names_emissivity(pec_cell, tmp_path_factory):
+def test_e3_an_undeclared_polarization_names_emissivity(pec_cell):
     model = gfem.Model(
         pec_cell.mesh,
         materials=pec_cell.materials,
@@ -231,7 +252,7 @@ def test_e3_an_undeclared_polarization_names_emissivity(pec_cell, tmp_path_facto
         dif.emissivity(sweep, model=model, polarization="TE")
 
 
-def test_e3_the_hemispherical_sum_is_the_weighted_rows(pec_cell, pec_sweep):
+def test_e3_the_hemispherical_sum_is_the_weighted_rows(pec_cell):
     rule = dif.hemisphere(1, 1)
     sweep = dif.angle_sweep(
         pec_cell, [F0], surface=TOP, theta=rule.theta, phi=rule.phi, options=OPTS

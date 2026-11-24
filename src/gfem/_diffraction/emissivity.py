@@ -41,9 +41,7 @@ _NODE_TOL = 1e-12
 
 
 def _integer(name: str, value: Any) -> int:
-    if isinstance(value, (bool, np.bool_)) or not isinstance(
-        value, numbers.Integral
-    ):
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, numbers.Integral):
         raise TypeError(f"hemisphere: {name} must be an integer, got {value!r}.")
     if value < 1:
         raise ValueError(f"hemisphere: {name} must be >= 1, got {value}.")
@@ -83,9 +81,7 @@ class HemisphereRule:
             object.__setattr__(self, name, a)
 
     def __repr__(self) -> str:
-        return (
-            f"HemisphereRule({len(self.theta)} nodes, mirror={self.mirror})"
-        )
+        return f"HemisphereRule({len(self.theta)} nodes, mirror={self.mirror})"
 
 
 def hemisphere(
@@ -132,7 +128,8 @@ def hemisphere(
         raise ValueError(
             f"hemisphere: n_phi={n_phi} is not a multiple of rotation={rotation}, "
             "so the azimuths are not invariant under a rotation by "
-            f"2*pi/{rotation}. Use n_phi = {rotation * max(1, round(n_phi / rotation))}."
+            f"2*pi/{rotation}. Use n_phi = "
+            f"{rotation * max(1, round(n_phi / rotation))}."
         )
     x, w = roots_jacobi(n_theta, 0, 1)
     mu, wt = ((1 + x) / 2)[::-1], (w / 2)[::-1]  # theta ascending
@@ -211,13 +208,15 @@ def _check_polarization(polarization: Any, who: str) -> None:
     )
 
 
-def _emit(
-    sweep: Any, model: Model, polarization: Any, who: str
-) -> Emissivity:
+def _emit(sweep: Any, model: Model, polarization: Any, who: str) -> Emissivity:
     _check_sweep(sweep, who)
     _check_polarization(polarization, who)
     balance = balance_of(
-        who, sweep, sweep.surface, polarization=polarization, model=model,
+        who,
+        sweep,
+        sweep.surface,
+        polarization=polarization,
+        model=model,
         order=(0, 0),
     )
     phi = []
