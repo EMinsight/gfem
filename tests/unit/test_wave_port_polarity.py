@@ -11,6 +11,7 @@ import warnings
 
 import jax
 import numpy as np
+import pml_cases
 import pytest
 import structured_meshes as sm
 
@@ -230,6 +231,19 @@ def test_a_point_off_the_port_raises(slabs, point, message):
     model = _slab(slabs["A to A"], polarity=(point, (2e-6, 0.2e-6)))
     with pytest.raises(ValueError, match=message):
         _solve(model, gfem.Driven(F, excite=None, polarization="Ez"))
+
+
+def test_a_point_in_the_perfectly_matched_layer_raises(tmp_path):
+    # the quarter strip of the layer tests: the +x layer starts at x = 0.9 um
+    path = pml_cases.strip_guide(tmp_path / "strip.msh", 0.4, length=0.15)
+    model = pml_cases.strip_model(path)
+    arrow = gfem.WavePort("p1", "p1", polarity=((1.2e-6, 0.1e-6, 0.0), "+x"))
+    model = model.replace(ports=[arrow, gfem.WavePort("p2", "p2")])
+    problem = gfem.PortMode("p1", (pml_cases.STRIP_F,))
+    with pytest.raises(
+        ValueError, match=r"'p1'.*polarity point.*perfectly matched layer \('pml'\)"
+    ):
+        gfem.solve(model, problem, options=OPTIONS)
 
 
 # --- the port mode problem -------------------------------------------------------
