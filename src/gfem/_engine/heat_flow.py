@@ -438,8 +438,10 @@ class BoundaryTerms:
         At the temperature coefficients ``t``; ``"temperature"`` has none.
         """
         item = model.boundaries[index]
-        if name == "flux":
+        if isinstance(item, HeatFlux):
             return self.fluxes[index]
+        if not isinstance(item, Convection):
+            return 0.0
         if name == "coefficient":
             ambient = float(np.asarray(item.ambient))
             return float(self.weights[index] @ (np.asarray(t) - ambient * self.ones))
