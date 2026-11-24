@@ -72,7 +72,7 @@ def _lattice(k, n_modes):
     return out[:n_modes]
 
 
-def test_empty_square_lattice_bands_cross_and_fill_gamma(square):
+def test_empty_square_lattice_bands_match_the_empty_lattice(square):
     path, bd = square
     expected = [
         pc.empty_lattice(k, (pc.C2_AX * pc.MM, pc.C2_AX * pc.MM, None), pc.C2_EPS, 7)
@@ -81,6 +81,10 @@ def test_empty_square_lattice_bands_cross_and_fill_gamma(square):
     np.testing.assert_allclose(
         np.asarray(bd.frequency), np.stack(expected), rtol=pc.C2_BAND_RTOL, atol=0
     )
+
+
+def test_empty_square_lattice_bands_cross_and_fill_gamma(square):
+    _, bd = square
     assert bd.static.sum(axis=1).tolist() == [1, 0, 0, 0, 0, 0]
     assert np.isnan(np.asarray(bd.v_g)[0, 0]).all()
     assert bd.anchored.all()
@@ -90,9 +94,9 @@ def test_empty_square_lattice_bands_cross_and_fill_gamma(square):
     assert bool(bd.connection_by_overlap[3, 6])
     # the X doublet is one cluster, connected by frequency order
     cluster = np.asarray(bd.cluster)[5]
-    assert cluster[1] == cluster[2]
-    assert not bd.connection_by_overlap[5, 1:3].any()
-    assert bd.connection[5, 1:3].tolist() == [1, 2]
+    assert cluster[0] == cluster[1]
+    assert not bd.connection_by_overlap[5, :2].any()
+    assert bd.connection[5, :2].tolist() == [0, 1]
 
 
 def test_empty_square_lattice_group_velocities_are_the_lattice_slopes(square):
@@ -168,8 +172,6 @@ def test_rods_crystal_bands_gap_and_group_velocity(rod_diagrams, pol):
     for i in (0, 6):  # Γ at both ends: band 0 is the static one
         assert bool(bd.static[i, 0])
         assert int(bd.static[i].sum()) == 1
-    assert not bd.lost.any()
-    assert bd.anchored.all()
     if pol == "Ez":
         gap = nu[:, 1].min() - nu[:, 0].max()
         middle = 0.5 * (nu[:, 1].min() + nu[:, 0].max())
@@ -181,6 +183,8 @@ def test_rods_crystal_bands_gap_and_group_velocity(rod_diagrams, pol):
             continue
         along = v[midpoint].real @ SEGMENT_DIRECTION[segment]
         np.testing.assert_allclose(along, want, rtol=0, atol=RODS_VG_TOL[pol])
+    assert bd.anchored.all()
+    assert not bd.lost.any()
 
 
 @pytest.mark.parametrize("pol", POLARIZATIONS)
