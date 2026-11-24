@@ -175,7 +175,7 @@ def test_the_map_has_the_column_s_power_and_the_lines_phase(ran):
     assert slope == pytest.approx(-1.0, abs=1e-4)
 
 
-def test_the_reciprocity_formula_is_on_the_page_and_holds(page, tmp_path):
+def test_the_reciprocity_formula_is_on_the_page_and_holds(page):
     assert (
         r"b_i = -\frac{i\omega}{4}\,\mathbf{p}\cdot\mathbf{E}_i(\mathbf{r}_0)" in page
     )

@@ -284,8 +284,8 @@ def far_field(
             a ``Driven(source_fields=False)`` solve, whose field was not
             solved; the model has no background, no PML layer and no
             `gfem.Absorbing` face, or `gfem.Periodic` pairs; ``theta`` and
-            ``phi`` do not broadcast or are not finite; the side selects nothing or everything; its
-            outside layer is not the exterior medium (another material, a
+            ``phi`` do not broadcast or are not finite; the side selects nothing
+            or everything; its outside layer is not the exterior medium (another material, a
             `gfem.MaterialField`, the perfectly matched layer); a dipole,
             port, sheet, wall or scatterer is in that layer or outside the
             side; the layer meets a boundary of the solve domain that is not
