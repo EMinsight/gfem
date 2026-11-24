@@ -258,7 +258,7 @@ Free space:
   `gfem.current_moments` gives the long-wavelength electric dipole and the
   toroidal dipole of the induced current, to read anapoles. The multipoles
   differentiate with respect to material designs, so the magnetic dipole can
-  be maximized ({doc}`../recipes/multipoles`).
+  be maximized ({doc}`../recipes/multipoles`, {doc}`../tutorials/meta-atom`).
 
 Material data:
 

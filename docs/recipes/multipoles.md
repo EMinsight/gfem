@@ -182,14 +182,15 @@ for l_, m_ in ((1, -1), (1, 0), (1, 1)):
     print(f"l={l_} m={m_:+d}: |alpha| {abs(alpha[j]):.4f}  |beta| {abs(beta[j]):.4f}")
 dipole = np.asarray(mp.l) == 1
 power = abs(alpha) ** 2 + abs(beta) ** 2
-print(f"dipole share of the power: {power[dipole].sum() / power.sum():.5f}")
+fraction = power[dipole].sum() / power.sum()
+print(f"dipole fraction of the partial scattering cross sections: {fraction:.5f}")
 ```
 
 ```text
 l=1 m=-1: |alpha| 1.0056  |beta| 0.9837
 l=1 m=+0: |alpha| 0.0012  |beta| 0.0057
 l=1 m=+1: |alpha| 1.0038  |beta| 0.9825
-dipole share of the power: 0.99943
+dipole fraction of the partial scattering cross sections: 0.99943
 ```
 
 A plane wave along $z$ polarized along $x$ only drives $m = \pm1$ about the
