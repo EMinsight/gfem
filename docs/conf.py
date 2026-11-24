@@ -228,6 +228,9 @@ nitpick_ignore = [
     ("py:obj", "_PointDipole"),
     ("py:obj", "Blend"),
     ("py:class", "Blend"),
+    # The map of a piezoelectric result's displacement (x, y, z): not
+    # exported, and the result's docstring describes it.
+    ("py:class", "gfem._field.FieldMap"),
     # JAX and NumPy document ArrayLike as data (a type alias), so a class
     # reference misses.
     ("py:class", "jax.typing.ArrayLike"),

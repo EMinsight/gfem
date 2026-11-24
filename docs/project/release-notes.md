@@ -116,9 +116,15 @@ Piezoelectric acoustics:
   raises an anisotropic material when it is built; a 2D driven or port-mode
   solve still refuses it, now at the solve. `MissingMaterialPropertyError` names
   the missing properties of any problem, not only thermal ones.
+- **Behaviour change: a region excluded from every physics.** The check that a
+  region cannot carry a material when it is excluded from every physics, and
+  that a model cannot exclude every volume, now counts the `"mechanical"` key
+  too. A model that excludes every volume from the electromagnetic, thermal and
+  DC conduction domains only now raises when it is solved, not when the `Model`
+  is built.
 - **Documentation.** A tutorial, "An acoustic transducer: shear plate waves in
-  thin-film lithium niobate", the recipe "Find a transducer's admittance and
-  reflection", a "Piezoelectric problems" section of the conventions, a
+  thin-film lithium niobate", the recipes "Find a transducer's admittance and
+  reflection" and "Differentiate a transducer's admittance", a "Piezoelectric problems" section of the conventions, a
   "Piezoelectric acoustics" section of the glossary and a section of the
   verification page.
 

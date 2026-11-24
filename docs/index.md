@@ -47,6 +47,7 @@ recipes/shape-gradient
 recipes/adaptive-sweep-gradient
 recipes/thermal-gradient
 recipes/electro-optic-gradient
+recipes/piezoelectric-gradient
 ```
 
 ```{toctree}

@@ -362,7 +362,7 @@ def isotropic_stiffness(young_modulus: Any, poisson_ratio: Any) -> Any:
     :math:`\lambda` plus :math:`2\mu` on its diagonal and the shear
     diagonal is :math:`\mu`, in the Voigt order xx, yy, zz, yz, xz, xy with
     engineering shear strain. The matrix is the same in every frame, so the
-    material takes any `axes`, or none.
+    material takes any ``axes``, or none.
 
     Plain array arithmetic: JAX inputs give a JAX array, so `jax.grad` with
     respect to :math:`E` and :math:`\nu` flows through a

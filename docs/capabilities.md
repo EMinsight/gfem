@@ -217,6 +217,13 @@ every input its model function builds from its settings, so one `jax.grad` of
 a SAX circuit reaches gfem's inputs and SAX's analytic models together. With
 respect to the circuit's wavelength or frequency it is the derivative of the
 band's interpolation ({doc}`recipes/sax-circuit`).
+The piezoelectric problem differentiates its admittance per length, its
+clamped capacitance and readings of its fields with respect to the stiffness,
+piezoelectric tensor, permittivity, mass density and mechanical quality
+factor of every element, and the mesh's nodes through a node map of your own
+({py:meth}`gfem.Mesh.with_nodes`), each checked against finite differences;
+its frequencies, terminals, clamped lines and damping frame raise
+({doc}`recipes/piezoelectric-gradient`).
 
 How each mark is checked: {doc}`verification`.
 

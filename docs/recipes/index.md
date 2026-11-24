@@ -15,6 +15,7 @@ orphan: true
 - {doc}`adaptive-sweep-gradient`
 - {doc}`thermal-gradient`
 - {doc}`electro-optic-gradient`
+- {doc}`piezoelectric-gradient`
 
 ## Designs
 

@@ -105,6 +105,8 @@ How gfem itself is checked: {doc}`../verification`.
 ## Next
 
 {py:obj}`gfem.shape.boundary_morph`, {py:obj}`gfem.shape.quality`;
+{py:meth}`gfem.Mesh.with_nodes` for a node map of your own, on any mesh
+({doc}`piezoelectric-gradient` differentiates a transducer through one);
 {doc}`s-parameter-gradient`, {doc}`capacitance-gradient`,
 {doc}`eigenmode-gradient`, {doc}`quantum-metrics`; {doc}`../tutorials/transmon`;
 {doc}`../capabilities`.

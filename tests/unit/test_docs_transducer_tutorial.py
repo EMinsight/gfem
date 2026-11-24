@@ -63,7 +63,7 @@ def test_the_radiation_conductance_is_positive_and_peaks_at_the_shear_plate_spee
     cells,
 ):
     assert "positive at all 25 frequencies" in _printed(cells)
-    f_peak, speed = _line(cells, "Re Y' peaks at")
+    f_peak, speed = _line(cells, "Re Y' peaks at 0.8")
     assert 0.855 < f_peak < 0.875  # GHz, at the 2.2 um pitch
     assert 3.7 < speed < 3.9  # km/s, v = 2 p f
 
@@ -171,3 +171,44 @@ def test_the_section_builder_refuses_what_it_cannot_build(helper):
         helper.transducer_section(electrodes="foil")
     with pytest.raises(ValueError, match="at least 1"):
         helper.transducer_section(outer=0)
+
+
+def test_the_pitch_derivative_matches_its_central_difference(cells):
+    value, derivative = _line(cells, "Re Y' at 0.9 GHz =")[-2:]
+    assert value > 0
+    _step, difference, error = _line(cells, "central difference")
+    assert difference == pytest.approx(derivative, rel=1e-4)
+    assert error < 1e-5
+
+
+def test_the_design_loop_raises_the_conductance_at_the_target(cells):
+    text = _printed(cells)
+    assert "success True" in text
+    (evaluations,) = re.findall(r"(\d+) evaluations", text)
+    assert 2 <= int(evaluations) <= 10
+    before, after = _line(cells, "pitch")[-2:]
+    assert 2.05 < after < 2.17 < before
+    start, end = _line(cells, "Re Y' at 0.9 GHz:")[-2:]
+    assert end > start
+
+
+def test_the_synchronous_product_survives_the_pitch_change(cells):
+    (f_after, f_before) = _line(cells, "Re Y' peaks at 0.9")
+    assert 0.88 < f_after < 0.93  # GHz, near the 0.9 GHz target
+    assert f_before < 0.875
+    after, before = _line(cells, "f_peak * p")
+    assert after == pytest.approx(before, rel=0.01)
+
+
+def test_the_page_states_what_it_does_not_compute(cells):
+    prose = " ".join(_source(c) for c in cells if c["cell_type"] == "markdown")
+    assert "1.004 V·cm at 0.842 GHz" in prose  # measured, not computed
+    assert "## Limits" in prose
+    assert "## Next" in prose
+
+
+def test_the_closing_cell_asserts_the_pages_numbers_and_reports_its_run_time(cells):
+    closing = _source(_code(cells)[-1])
+    assert "assert_allclose(f_opt * pitch_opt" in closing
+    assert "page run in" in closing
+    assert re.search(r"page run in \d+ s", _printed(cells))

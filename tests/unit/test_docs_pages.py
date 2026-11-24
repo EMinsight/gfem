@@ -328,6 +328,7 @@ USER_TERMS = (
     "Engineering strain",
     "Radiation conductance",
     "Synchronous frequency",
+    "Node map",
 )
 
 
