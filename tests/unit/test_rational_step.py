@@ -156,9 +156,8 @@ def test_resampled_low_pass_step_agrees_with_the_closed_form_after_the_edge():
     n = round(F_MAX / DF)
     low_pass = model.network(DF * np.arange(0, n + 1)).step_response()
     assert low_pass.mode == "low_pass"
-    t = np.asarray(low_pass.time)
-    late = t >= 10 * RISE
-    closed = model.step_response(t[late])
+    late = low_pass.time >= 10 * RISE
+    closed = model.step_response(low_pass.time[late])
     np.testing.assert_allclose(
         np.asarray(low_pass.values)[late], closed.values, rtol=0, atol=2e-3
     )

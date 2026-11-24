@@ -27,7 +27,7 @@ from numpy.typing import ArrayLike
 
 from gfem._broadband._poles import evaluate
 from gfem._checks import is_traced
-from gfem._pytree import register_fields
+from gfem._pytree import readonly, register_fields
 from gfem._text import hertz, hertz_band
 from gfem.errors import NonDifferentiableError
 from gfem.results import NetworkParameters, _variable, _xarray
@@ -61,11 +61,11 @@ class TimeResponse:
     arrays that differentiate with respect to S and the reference.
 
     Attributes:
-        time: The sample times in s, a tuple of ``n_time`` floats (static
-            labels, as `gfem.NetworkParameters.frequency`; ``np.asarray``
-            gives an array): increasing for the windowed responses, whose
-            negative times hold the window's pre-response; as given for a
-            rational model's closed form.
+        time: The sample times in s, a read-only NumPy array of shape
+            ``(n_time,)`` (a pytree child, like `values`; under
+            `jax.jit` it is a traced array): increasing for the windowed
+            responses, whose negative times hold the window's
+            pre-response; as given for a rational model's closed form.
         values: The responses, real, ``(n_time, n_ports, n_excited)``.
         z_ref: The real reference impedance of each port in ohm,
             ``(n_ports,)``; NaN for every port of a network without
@@ -79,7 +79,7 @@ class TimeResponse:
             (exact response of a rational model).
     """
 
-    time: tuple[float, ...]
+    time: np.ndarray
     values: jax.Array
     z_ref: jax.Array
     ports: tuple[str, ...]
@@ -88,9 +88,10 @@ class TimeResponse:
     mode: Literal["low_pass", "band_pass", "closed_form"]
 
     def __post_init__(self) -> None:
-        """Store `time` as a tuple of floats: JAX needs static labels hashable."""
-        t = np.asarray(self.time, dtype=float).reshape(-1)
-        object.__setattr__(self, "time", tuple(t.tolist()))
+        """Store concrete `time` as a flat read-only float array."""
+        if not is_traced(self.time):
+            t = np.asarray(self.time, dtype=float).reshape(-1)
+            object.__setattr__(self, "time", readonly(t))
 
     def __getitem__(self, key: tuple[str, str]) -> jax.Array:
         """The response at port ``to`` to port ``from``, ``(n_time,)``.
@@ -198,7 +199,7 @@ class TimeResponse:
         )
 
 
-register_fields(TimeResponse, ("values", "z_ref"))
+register_fields(TimeResponse, ("time", "values", "z_ref"))
 
 
 # --- Rational models -------------------------------------------------------
@@ -439,7 +440,7 @@ class RationalModel:
         step = self.d[None] + np.einsum("tn,nij->tij", grow, scaled).real
         values = np.where(after[:, None, None], step, 0.0)
         return TimeResponse(
-            time=tuple(t.tolist()),
+            time=t,
             values=jnp.asarray(values),
             z_ref=jnp.asarray(self._response_z_ref()),
             ports=self.ports,

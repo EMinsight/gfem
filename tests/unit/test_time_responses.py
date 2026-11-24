@@ -135,7 +135,7 @@ def test_the_rise_time_of_a_step_is_set_by_the_span_and_the_window(beta, expecte
 def test_padding_only_interpolates_the_impulse():
     net = _line()
     default = net.impulse_response()
-    padded = net.impulse_response(n_time=4 * len(default.time))
+    padded = net.impulse_response(n_time=4 * default.time.size)
     peak = np.max(np.asarray(default["p1", "p1"]))
     assert np.max(np.asarray(padded["p1", "p1"])) == pytest.approx(peak, abs=1e-3)
 
@@ -185,8 +185,8 @@ def test_a_grid_that_is_not_harmonic_is_refused_with_the_remedies(frequency):
 
 def test_the_time_axis_is_the_two_sided_record():
     step = _line().step_response()
-    assert isinstance(step.time, tuple)
-    t = np.asarray(step.time)
+    t = step.time
+    assert isinstance(t, np.ndarray)
     assert t.size == 16384  # the smallest power of two >= 20 N = 16000
     assert np.allclose(np.diff(t), 1 / (t.size * DF), rtol=1e-12, atol=0)
     assert t[0] == pytest.approx(-1 / (2 * DF), rel=1e-12)
@@ -200,7 +200,7 @@ def test_an_odd_or_short_record_is_refused(n_time):
 
 
 def test_the_shortest_record_is_twice_the_frequencies():
-    assert len(_line().step_response(n_time=2 * N).time) == 2 * N
+    assert _line().step_response(n_time=2 * N).time.size == 2 * N
 
 
 @pytest.mark.parametrize("beta", [-1.0, math.nan, math.inf])
@@ -512,7 +512,7 @@ def test_a_traced_window_or_record_is_not_differentiable(argument):
 
 
 def test_a_jitted_function_of_a_response_takes_responses_on_other_grids():
-    # the time axis is a static label, as a network's frequencies are
+    # the time axis is a pytree child, as the values are
     profile = jax.jit(lambda step: step.impedance("p1"))
     for frequency in (_harmonic(100), _harmonic(100, df=2 * DF), _harmonic(50)):
         step = _line(frequency).step_response()

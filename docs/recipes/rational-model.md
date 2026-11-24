@@ -163,9 +163,8 @@ error:
 
 ```python
 step = s.step_response()  # from S, band-limited
-t = np.asarray(step.time)  # s
-later = t > 3e-9
-exact = rational.step_response(t[later])
+later = step.time > 3e-9  # s
+exact = rational.step_response(step.time[later])
 gap = abs(np.asarray(exact.values) - np.asarray(step.values)[later]).max()
 print(gap < rational.error)  # about 3.5e-4 here
 ```
