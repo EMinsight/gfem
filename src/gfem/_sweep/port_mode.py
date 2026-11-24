@@ -59,6 +59,7 @@ from gfem._boundaries import (
     wave_port_surfaces,
 )
 from gfem._checks import is_traced
+from gfem._engine import dispersion
 from gfem._engine.line_mode import ModeSpace, mode_space
 from gfem._engine.port_mode import PortModeSpace
 from gfem._engine.runtime import task_manager
@@ -232,6 +233,13 @@ class PortModeRule:
             else [self.port]
         )
         self._model = model
+        dispersion.warn_fitted_range(
+            model,
+            problem.frequency,
+            "port mode solve",
+            comm=comm,
+            regions=_section_regions(model, self.port),
+        )
 
     def output_specs(self, model: Model) -> dict[str, jax.ShapeDtypeStruct]:
         """Shape and dtype of each forward output (one value per frequency)."""
@@ -352,6 +360,21 @@ class PortModeRule:
             )
         sweep = self.forward(self._model, keep=False)[0]["sweep"]
         return sweep.space, sweep.basis, sweep.coords
+
+
+def _section_regions(model: Model, port: WavePort) -> set[str]:
+    """The volume regions of the solve domain beside ``port``'s surface.
+
+    The regions whose materials the port's cross-section reads, found from
+    the mesh's adjacency alone, so no section is built.
+    """
+    mesh = model.mesh
+    topology = mesh._topology  # noqa: SLF001
+    active = model._domain.active  # noqa: SLF001
+    nb = topology.surface_neighbours[mesh.elements(port.surface)]
+    cells = np.unique(nb[(nb >= 0) & active[np.maximum(nb, 0)]])
+    names = mesh._region_names()  # noqa: SLF001
+    return {names[int(tag)] for tag in np.unique(topology.volume_tags[cells])}
 
 
 def _wave_port(model: Model, name: str) -> WavePort:

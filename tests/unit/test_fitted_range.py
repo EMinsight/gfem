@@ -259,3 +259,41 @@ def test_an_eigenmode_target_and_a_mode_outside_warn_once(tmp_path):
         "region 'upper': its permittivity law was fitted over 19-21 GHz, and this "
         "eigenmode reads it at 2 of 2 modes, "
     )
+
+
+def test_a_port_mode_outside_warns():
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh(
+            Path(__file__).parent / "data" / "waveguide.msh", length_unit="mm"
+        ),
+        materials={"air": gfem.Material(eps_r=_box_law((7 * GHZ, 9 * GHZ)))},
+        boundaries=[gfem.PEC("walls")],
+        ports=[gfem.WavePort("p1", "port1")],
+    )
+    _, messages = _solve_noting(model, gfem.PortMode("p1", [8 * GHZ, 10 * GHZ]))
+    (message,) = messages
+    assert message.startswith(
+        "region 'air': its permittivity law was fitted over 7-9 GHz, and this "
+        "port mode solve reads it at 1 of 2 frequencies, 10 GHz."
+    )
+    _, messages = _solve_noting(model, gfem.PortMode("p1", 8 * GHZ))
+    assert messages == []
+
+
+def test_a_port_mode_reads_only_the_regions_beside_its_port():
+    # both line ports lie on "feed": the "design" law is not in their sections
+    mesh = gfem.Mesh.from_gmsh(DATA / "line2d.msh", length_unit="mm")
+
+    def line(feed, design):
+        return gfem.Model(
+            mesh,
+            materials={"feed": feed, "design": design},
+            ports=(gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")),
+        )
+
+    problem = gfem.PortMode("p1", 1 * GHZ, polarization="Ez")
+    fitted, plain = gfem.Material(eps_r=FITTED), gfem.Material()
+    _, messages = _solve_noting(line(plain, fitted), problem)
+    assert messages == []
+    _, messages = _solve_noting(line(fitted, plain), problem)
+    assert [m.split(":")[0] for m in messages] == ["region 'feed'"]
