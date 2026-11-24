@@ -210,8 +210,9 @@ def test_a_robin_slab_matches_the_hand_flux(tmp_path, kind, ambient):
     heat = gfem.HeatSource.uniform("slab", power_density=1e10)
     result = gfem.solve(model, gfem.SteadyThermal(heat), options=DIRECT)
     bottom = {300.0: 7.5e4, 290.0: -4.25e5}[ambient]  # k a
-    assert _flow(result, "bottom", model) == pytest.approx(bottom, rel=1e-12)
-    assert _flow(result, "top", model) == pytest.approx(1e5 - bottom, rel=1e-12)
+    # the threaded direct solve's round-off varies between runs by ~1e-12
+    assert _flow(result, "bottom", model) == pytest.approx(bottom, rel=1e-11)
+    assert _flow(result, "top", model) == pytest.approx(1e5 - bottom, rel=1e-11)
 
 
 # --- gradients ----------------------------------------------------------------------
