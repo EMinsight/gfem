@@ -34,6 +34,8 @@ result reloaded with `gfem.load_result`.
   (`FarField`).
 - `multipoles`: the spherical multipoles of the field an incident wave
   scatters, from the far field of the scattered field (`Multipoles`).
+- `current_moments`: the long-wavelength electric dipole and the toroidal
+  dipole of the induced current in a scatterer (`CurrentMoments`).
 - `beam_coupling`: the amplitude a field couples into an incoming beam
   (a fiber), by reciprocity the S-parameter between the beam and a port.
 
@@ -69,7 +71,12 @@ from gfem._checks import check_fixed, is_traced
 from gfem._dim2 import entry_refusal, refuse_entry
 from gfem._far_field import FarField, far_field
 from gfem._materials import Material, _is_law, field_principal_values
-from gfem._multipoles import CurrentMoments, Multipoles, multipoles
+from gfem._multipoles import (
+    CurrentMoments,
+    Multipoles,
+    current_moments,
+    multipoles,
+)
 from gfem._purcell import purcell_factor
 from gfem._pytree import register_fields
 from gfem._truncation import truncation
@@ -97,6 +104,7 @@ __all__ = [
     "beam_coupling",
     "characteristic_impedance",
     "cross_sections",
+    "current_moments",
     "dissipated_power",
     "electric_energy",
     "element_mean",

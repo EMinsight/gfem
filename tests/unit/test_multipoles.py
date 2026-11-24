@@ -378,11 +378,12 @@ def test_construction_checks():
 def test_u6_top_level_identity():
     from gfem import measurements
 
-    for name in ("Multipoles", "CurrentMoments", "multipoles"):
+    for name in ("Multipoles", "CurrentMoments", "multipoles", "current_moments"):
         assert getattr(gfem, name) is getattr(measurements, name)
         assert name in gfem.__all__
         assert name in measurements.__all__
     assert gfem.multipoles is mpm.multipoles
+    assert gfem.current_moments is mpm.current_moments
     assert gfem.Multipoles is mpm.Multipoles
 
 
@@ -662,6 +663,16 @@ def test_u8_an_empty_scatterer_scatters_round_off(tmp_path_factory, run):
         assert np.abs(np.asarray(c)).max() <= 1e-10, np.abs(np.asarray(c)).max()
 
 
+def test_u8_an_empty_scatterer_has_exactly_zero_current_moments(tmp_path_factory):
+    path = mc.cube(tmp_path_factory.mktemp("zero") / "z.msh", centred=True)
+    for field in (False, True):
+        model = mc.portless_scatterer_model(path, eps=1.0, field=field)
+        cm = gfem.current_moments(_solve(model, WAVE), "te", model=model)
+        for moment in (cm.long_wavelength_dipole, cm.toroidal_dipole):
+            assert moment.shape == (1, 3)
+            assert not np.any(np.asarray(moment))
+
+
 def test_u9_a_design_equal_to_the_background_scatters_nothing(tmp_path_factory):
     path = mc.cube(tmp_path_factory.mktemp("field") / "d.msh", centred=True)
     model = mc.portless_scatterer_model(path, eps=1.0, field=True)
@@ -739,3 +750,259 @@ def test_sphere_case_puts_the_volume_equivalent_size_parameter_on_the_case(tmp_p
     assert 0.8 * case.x / (2 * math.pi) < a_vol < case.x / (2 * math.pi)
     nodes = np.asarray(mesh.nodes)
     assert nodes.max() == pytest.approx((case.x / (2 * math.pi) + 0.4 + 0.35) * UM)
+
+
+# --- current_moments --------------------------------------------------------------
+
+
+def test_u7_current_moments_checks_are_in_order_and_refusals_are_named(
+    run, tmp_path_factory
+):
+    model, result = run
+    call = lambda **kw: gfem.current_moments(result, "te", model=model, **kw)  # noqa: E731
+    flat = gfem.Model(
+        gfem.Mesh.from_gmsh(
+            write_strip(tmp_path_factory.mktemp("cmstrip") / "s.msh"),
+            length_unit="um",
+        ),
+        materials={k: gfem.Material(eps_r=2.0) for k in "abc"},
+        boundaries=(gfem.PEC("outer"),),
+    )
+    with pytest.raises(
+        NotImplementedError,
+        match=r"gfem\.current_moments is not available on a 2D mesh.*3D mesh",
+    ):
+        gfem.current_moments("not a result", "te", model=flat)
+    with pytest.raises(
+        TypeError, match=r"current_moments needs a gfem\.DrivenResult, got str"
+    ):
+        gfem.current_moments("r", "te", model=model)
+    with pytest.raises(
+        TypeError, match=r"current_moments needs model= a gfem\.Model, got int"
+    ):
+        gfem.current_moments(result, "te", model=1)
+    with pytest.raises(
+        gfem.NonDifferentiableError, match=r"current_moments' origin must be fixed"
+    ):
+        jax.grad(lambda o: abs(call(origin=o).toroidal_dipole).sum())(jnp.zeros(3))
+    for bad in ((0.0, 0.0), (0.0, np.nan, 0.0), "abc", None, 1.0):
+        with pytest.raises(
+            ValueError, match=r"current_moments: origin must be three finite numbers"
+        ):
+            call(origin=bad)
+    with pytest.raises(KeyError, match=r"'nope' is not a column of the result"):
+        gfem.current_moments(result, "nope", model=model)
+    with pytest.raises(
+        ValueError,
+        match=r"current_moments: 'd' is a ElectricDipole column; the moments of "
+        r"the induced current are taken for an incident field.*gfem\.far_field",
+    ):
+        gfem.current_moments(result, "d", model=model)
+    with pytest.raises(
+        ValueError, match=r"current_moments needs the model's background"
+    ):
+        gfem.current_moments(result, "te", model=model.replace(background=None))
+    with pytest.raises(
+        NotImplementedError,
+        match=r"current_moments in a lossy background \(.*\) is not computed",
+    ):
+        gfem.current_moments(
+            result, "te", model=model.replace(background=gfem.Material(tan_delta=0.01))
+        )
+    ground = gfem.Background(AIR, ground=-1e-6)
+    with pytest.raises(NotImplementedError, match=r"current_moments over a layered"):
+        gfem.current_moments(result, "te", model=model.replace(background=ground))
+    problem = gfem.Driven(F0, sources=WAVE)
+    unkept = gfem.solve(model, problem, options=OPTIONS)
+    with pytest.raises(
+        ValueError, match=r"current_moments needs the kept fields of 'te'"
+    ):
+        gfem.current_moments(unkept, "te", model=model)
+
+
+def test_u7_current_moments_has_no_intensity_and_reads_a_field_without_incident_part(
+    run,
+):
+    model, result = run
+    with pytest.raises(TypeError, match="intensity"):
+        gfem.current_moments(result, "te", model=model, intensity=1.0)
+    # the total field is read: a stored incident part is not needed
+    fields = tuple(dataclasses.replace(f, _incident=None) for f in result.e_fields)
+    stale = dataclasses.replace(result, e_fields=fields)
+    moved = gfem.current_moments(stale, "te", model=model)
+    assert np.allclose(
+        moved.toroidal_dipole,
+        gfem.current_moments(result, "te", model=model).toroidal_dipole,
+        rtol=0,
+        atol=0,
+    )
+
+
+def test_u7_current_moments_walls_truncation_layer_and_wave_port(tmp_path_factory):
+    plane = lambda c: "ground" if abs(c[2]) < 1e-9 else ""  # noqa: E731
+    slab = _walled(tmp_path_factory, ("-z", "+z"))
+    ground = _walled(
+        tmp_path_factory, ("-x", "+x", "-y", "+y", "+z"), plane, (gfem.PEC("ground"),)
+    )
+    solved = _solve(mc.portless_scatterer_model(_cube_path(tmp_path_factory)), WAVE)
+    for walled in (slab, ground):
+        with pytest.raises(
+            NotImplementedError,
+            match=r"current_moments: the model ends on the (PEC|PMC) wall",
+        ):
+            gfem.current_moments(solved, "te", model=walled)
+    grown = _touching_model(tmp_path_factory)
+    result = _solve(grown, gfem.IncidentField("w", _windowed))
+    with pytest.raises(
+        ValueError,
+        match=r"current_moments: the scatterer region 'scat' reaches the "
+        r"truncation layer.*no finite multipole expansion",
+    ):
+        gfem.current_moments(result, "w", model=grown)
+    guide = _port_scatterer_model(tmp_path_factory)
+    result = _solve(guide, gfem.IncidentField("w", _away_from_the_port), excite=())
+    with pytest.raises(
+        ValueError,
+        match=r"current_moments: the scatterer region 'scat' meets wave port "
+        r"'o1': it continues beyond the model and has no finite multipole "
+        r"expansion\.",
+    ):
+        gfem.current_moments(result, "w", model=guide)
+
+
+def _cube_path(tmp_path_factory):
+    return mc.cube(tmp_path_factory.mktemp("cm") / "c.msh", centred=True)
+
+
+def _port_scatterer_volume(c):
+    inside = bool(((c > 0) & (c < 1)).all())
+    if inside and c[0] < 0.2 and 0.25 < c[1] < 0.75 and 0.25 < c[2] < 0.75:
+        return "scat"
+    return "air" if inside else "pml"
+
+
+def _port_scatterer_model(tmp_path_factory):
+    path = pc.box(
+        tmp_path_factory.mktemp("portscat") / "p.msh",
+        ("-z", "+z"),
+        cells=8,
+        surface=_port_surface,
+        volume=_port_scatterer_volume,
+    )
+    return gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="um"),
+        materials={"air": AIR, "pml": AIR, "scat": gfem.Material(eps_r=4.0)},
+        boundaries=[gfem.Absorbing("side")],
+        ports=[gfem.WavePort("o1", "feed")],
+        pml=gfem.PML("pml"),
+        background=AIR,
+    )
+
+
+def _sheet_model(path, kind):
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="um")
+    materials = {"air": AIR, "pml": AIR, "scat": gfem.Material(eps_r=3.0)}
+    boundaries, ports, excluded = [], [], ()
+    if kind == "PEC":
+        boundaries = [gfem.PEC("feed")]
+    elif kind == "PMC":
+        boundaries = [gfem.PMC("feed")]
+    elif kind == "PEC volume":
+        boundaries, excluded = [gfem.PEC("feed")], ("scat",)
+        del materials["scat"]
+    elif kind == "Conductor":
+        boundaries = [gfem.Conductor("feed", 1e6, 1e-8)]
+    elif kind == "Impedance":
+        boundaries = [gfem.Impedance("feed", resistance=50.0)]
+    elif kind == "LumpedPort":
+        ports = [gfem.LumpedPort("p1", "feed", "+y")]
+    else:
+        materials["scat"] = gfem.Material(eps_r=3.0, mu_r=2.0)
+    return gfem.Model(
+        mesh,
+        materials=materials,
+        boundaries=boundaries,
+        ports=ports,
+        excluded=excluded,
+        pml=gfem.PML("pml"),
+        background=AIR,
+    )
+
+
+@pytest.mark.parametrize(
+    "kind", ["PEC", "PMC", "PEC volume", "Conductor", "Impedance", "LumpedPort"]
+)
+def test_u13_current_moments_refuses_a_surface_current_that_multipoles_accepts(
+    kind, tmp_path_factory
+):
+    path = mc.cube(
+        tmp_path_factory.mktemp("sheet") / "s.msh",
+        centred=True,
+        feed=True,
+        shell=kind == "PEC volume",
+        # a perfect conductor's faces need two background elements to the layer
+        cells=8 if kind == "PEC volume" else 4,
+    )
+    model = _sheet_model(path, kind)
+    result = _solve(model, WAVE, **({"excite": ()} if kind == "LumpedPort" else {}))
+    assert gfem.multipoles(result, "te", model=model).lmax >= 2
+    shown = kind.split()[0]
+    with pytest.raises(
+        NotImplementedError,
+        match=rf"current_moments: the {shown} surface 'feed' carries a surface "
+        r"current that is not decomposed in this gfem version\..*"
+        r"gfem\.multipoles\.",
+    ):
+        gfem.current_moments(result, "te", model=model)
+
+
+def test_u13_current_moments_refuses_a_permeability_contrast(tmp_path_factory):
+    path = mc.cube(tmp_path_factory.mktemp("mu") / "m.msh", centred=True)
+    model = _sheet_model(path, "mu")
+    result = _solve(model, WAVE)
+    assert gfem.multipoles(result, "te", model=model).lmax >= 2
+    with pytest.raises(
+        NotImplementedError,
+        match=r"current_moments: region 'scat' differs from the background in "
+        r"mu_r: its magnetization current is not decomposed in this gfem "
+        r"version\. Read its exact moments with gfem\.multipoles\.",
+    ):
+        gfem.current_moments(result, "te", model=model)
+
+
+def test_current_moments_is_refused_under_jax_transforms(run):
+    model, result = run
+    message = r"gfem\.current_moments is not differentiable in this gfem version"
+    inside = lambda r: abs(  # noqa: E731
+        gfem.current_moments(r, "te", model=model).toroidal_dipole
+    ).sum()
+    with pytest.raises(gfem.NonDifferentiableError, match=message):
+        jax.grad(lambda x: inside(jax.tree.map(lambda a: a * x, result)))(1.0)
+    with pytest.raises(gfem.NonDifferentiableError, match=message):
+        jax.jit(lambda x: inside(jax.tree.map(lambda a: a * x, result)))(1.0)
+    # the opt-out: stop_gradient leaves the value untouched
+    out = jax.grad(
+        lambda x: (
+            x
+            * abs(
+                gfem.current_moments(
+                    jax.lax.stop_gradient(result),
+                    "te",
+                    model=jax.lax.stop_gradient(model),
+                ).toroidal_dipole
+            ).sum()
+        )
+    )(1.0)
+    assert out == pytest.approx(inside(result), rel=1e-12)
+
+
+def test_current_moments_of_the_cube_approximate_the_exact_dipole(run, reference):
+    model, result = run
+    cm = gfem.current_moments(result, "te", model=model)
+    assert cm.frequency == reference.frequency
+    assert cm.wavenumber == reference.wavenumber
+    assert cm.origin == (0.0, 0.0, 0.0)
+    p = np.asarray(reference.electric_dipole)[0]
+    p0 = np.asarray(cm.long_wavelength_dipole)[0]
+    kt = 1j * cm.wavenumber[0] * np.asarray(cm.toroidal_dipole)[0]
+    assert np.linalg.norm(p0 - kt - p) < np.linalg.norm(p0 - p)

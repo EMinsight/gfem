@@ -32,11 +32,19 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 import jax
 import jax.numpy as jnp
 import numpy as np
-from scipy.special import sph_harm_y
+from scipy.special import sph_harm_y, spherical_jn
 
 from gfem import _incident
 from gfem._background import Background, lossless
-from gfem._boundaries import PEC, Conductor, Impedance, LumpedPort, surfaces_of
+from gfem._boundaries import (
+    PEC,
+    PMC,
+    Conductor,
+    Impedance,
+    LumpedPort,
+    WavePort,
+    surfaces_of,
+)
 from gfem._checks import check_fixed, is_traced
 from gfem._dim2 import refuse_entry
 from gfem._far_field import _measure, engine
@@ -52,7 +60,7 @@ if TYPE_CHECKING:
     from gfem.model import Model
     from gfem.results import DrivenResult
 
-__all__ = ["CurrentMoments", "Multipoles", "multipoles"]
+__all__ = ["CurrentMoments", "Multipoles", "current_moments", "multipoles"]
 
 
 class _Grid(NamedTuple):
@@ -526,10 +534,10 @@ register_fields(CurrentMoments, ("long_wavelength_dipole", "toroidal_dipole"))
 # --- the entry ----------------------------------------------------------------------
 
 #: The surfaces that belong to the scatterer when they lie inside the mesh.
-_SCATTERER_SURFACES = (Conductor, Impedance, LumpedPort, PEC)
+_SCATTERER_SURFACES = (Conductor, Impedance, LumpedPort, PEC, PMC)
 
 
-def _background(model: Model) -> Background:
+def _background(model: Model, entry: str = "multipoles") -> Background:
     """The model's background.
 
     Raises:
@@ -537,7 +545,7 @@ def _background(model: Model) -> Background:
     """
     if model.background is None:
         raise ValueError(
-            "multipoles needs the model's background (Model(background=...)): "
+            f"{entry} needs the model's background (Model(background=...)): "
             "pass the model the result was solved with."
         )
     return model.background
@@ -591,7 +599,7 @@ def _layer_radius(model: Model, layer: Layer, origin: np.ndarray) -> float:
     return float(np.linalg.norm(nodes[used] - origin, axis=1).max())
 
 
-def _check_walls(model: Model) -> None:
+def _check_walls(model: Model, entry: str = "multipoles") -> None:
     """Raise if the physical region ends on a PEC or PMC wall of the mesh.
 
     A ground plane, a mirror half model or a slab model: the multipoles of
@@ -622,7 +630,7 @@ def _check_walls(model: Model) -> None:
         if kind in ("PEC", "PMC"):
             face = faces.surfaces[row][0] if faces.surfaces[row] else "(untagged)"
             raise NotImplementedError(
-                f"multipoles: the model ends on the {kind} wall {face!r} beside "
+                f"{entry}: the model ends on the {kind} wall {face!r} beside "
                 "its physical region (a ground plane, mirror half model or slab "
                 "model), which is not computed in this gfem version: the "
                 "multipoles of the meshed part are not those of the scatterer. "
@@ -706,42 +714,46 @@ def _column_coefficients(
 
 
 def _check_column(
-    result: DrivenResult, source: str, model: Model
+    result: DrivenResult, source: str, model: Model, entry: str = "multipoles"
 ) -> tuple[Any, list[float], Any]:
     """Rows 7 to 13 of the refusal table: ``(source, kept frequencies, background)``."""
     from gfem.measurements import _column_kind
 
     kind = _column_kind(result, source)
     if kind is not None:
+        what = (
+            "multipoles are decomposed"
+            if entry == "multipoles"
+            else "the moments of the induced current are taken"
+        )
         raise ValueError(
-            f"multipoles: {source!r} is a {kind} column; multipoles are "
-            "decomposed for an incident field (gfem.PlaneWave, "
-            "gfem.GaussianBeam, gfem.IncidentField). For a dipole's or port's "
-            "radiation, read gfem.far_field."
+            f"{entry}: {source!r} is a {kind} column; {what} for an incident "
+            "field (gfem.PlaneWave, gfem.GaussianBeam, gfem.IncidentField). "
+            "For a dipole's or port's radiation, read gfem.far_field."
         )
     wave = result.sources[source]
     frequencies = [f for f, label in result.kept if label == source]
     if not frequencies:
         raise ValueError(
-            f"multipoles needs the kept fields of {source!r}: solve with "
+            f"{entry} needs the kept fields of {source!r}: solve with "
             "Driven(..., keep_fields=True) or keep_fields=[frequencies]."
         )
-    background = _background(model)
+    background = _background(model, entry)
     for material in background.layers:
         if not lossless(material):
             raise NotImplementedError(
-                f"multipoles in a lossy background ({material!r}) is not "
+                f"{entry} in a lossy background ({material!r}) is not "
                 "computed in this gfem version: a lossy medium carries no "
                 "scattered power to infinity. Give a lossless background."
             )
     if _incident.layered(background):
         raise NotImplementedError(
-            "multipoles over a layered background (a substrate or a ground "
+            f"{entry} over a layered background (a substrate or a ground "
             "plane) is not computed in this gfem version: the field radiated "
             "into a stack is not a sum of free-space multipoles. Give a "
             "homogeneous background."
         )
-    _check_walls(model)
+    _check_walls(model, entry)
     return wave, frequencies, background
 
 
@@ -891,6 +903,329 @@ def multipoles(
     )
 
 
+def _check_induced_current(model: Model, background: Background) -> None:
+    """Rows 19 and 20: what the induced current of a volume does not hold.
+
+    Raises:
+        NotImplementedError: A perfect conductor or magnetic wall, a
+            `gfem.Conductor`, a `gfem.Impedance` or a `gfem.LumpedPort` inside
+            the mesh (a surface current), or a scatterer region whose
+            permeability differs from the background's (a magnetization
+            current).
+    """
+    from gfem._engine.incident import scatterer_regions
+
+    mesh = model.mesh
+    neighbours = np.asarray(mesh.triangle_neighbours)
+    for item in (*model.boundaries, *model.ports):
+        if not isinstance(item, _SCATTERER_SURFACES):
+            continue
+        for surface in surfaces_of(item):
+            # a face with one element beside it is a wall, not a sheet
+            if (neighbours[mesh.elements(surface)] >= 0).all(axis=1).any():
+                raise NotImplementedError(
+                    f"current_moments: the {type(item).__name__} surface "
+                    f"{surface!r} carries a surface current that is not "
+                    "decomposed in this gfem version. Give the metal as a "
+                    "volume material (conductivity= or a permittivity law), or "
+                    "read its exact moments with gfem.multipoles."
+                )
+    mu_b = float(_incident.background_material(background).mu_r)
+    for region in scatterer_regions(model, background):
+        mu = getattr(model.materials[region], "mu_r", None)
+        try:
+            differs = mu is not None and bool(np.any(np.asarray(mu) != mu_b))
+        except (TypeError, ValueError):  # not a number: a law
+            differs = True
+        if differs:
+            raise NotImplementedError(
+                f"current_moments: region {region!r} differs from the "
+                "background in mu_r: its magnetization current is not "
+                "decomposed in this gfem version. Read its exact moments with "
+                "gfem.multipoles."
+            )
+
+
+def _check_wave_ports(model: Model, background: Background) -> None:
+    """Row 17: a scatterer element sharing a node with a wave port's surface.
+
+    Raises:
+        ValueError: Naming the region and the port.
+    """
+    from gfem._engine.incident import region_of, scatterer_elements
+
+    mesh = model.mesh
+    ports = [p for p in model.ports if isinstance(p, WavePort)]
+    if not ports:
+        return
+    tets = np.asarray(mesh.tetrahedra)
+    inside = np.flatnonzero(scatterer_elements(model, background))
+    names = region_of(mesh)
+    for port in ports:
+        for surface in surfaces_of(port):
+            on_port = np.unique(np.asarray(mesh.triangles)[mesh.elements(surface)])
+            touching = np.isin(tets[inside], on_port).any(axis=1)
+            if touching.any():
+                region = names[inside[touching][0]]
+                raise ValueError(
+                    f"current_moments: the scatterer region {region!r} meets "
+                    f"wave port {port.name!r}: it continues beyond the model "
+                    "and has no finite multipole expansion."
+                )
+
+
+def current_moments(
+    result: DrivenResult,
+    source: str,
+    *,
+    model: Model,
+    origin: Any = (0.0, 0.0, 0.0),
+) -> CurrentMoments:
+    r"""The long-wavelength electric dipole and the toroidal dipole of a scatterer.
+
+    Integrals of the induced current :math:`J = i\omega\varepsilon_0
+    (\varepsilon_r - \varepsilon_b)E`, with :math:`E` the total field of an
+    incident-field column, over the scatterer's elements outside the
+    perfectly matched layer, with :math:`r` measured from ``origin``
+    (`CurrentMoments`): :math:`p_0 = (i\omega)^{-1}\int J\,dV` and
+    :math:`T = (10v)^{-1}\int[(r\cdot J)r - 2r^2J]\,dV`. They approximate
+    the exact dipole as :math:`p \approx p_0 - ikT`, which is how an anapole
+    reads (:math:`p \approx 0`); read the exact moments, which carry the
+    whole expansion, with `gfem.multipoles`. A scatterer with no region
+    differing from the background gives exact zeros.
+
+    The permittivity is read per element at the frequency of the field, with
+    its losses and conductivity (the conduction current included), and a
+    tensor permittivity is a tensor. The current of a perfect conductor, a
+    `gfem.Conductor`, a `gfem.Impedance`, a `gfem.LumpedPort` or a perfect
+    magnetic wall is a surface current, and a permeability contrast is a
+    magnetization current: neither is decomposed here; `gfem.multipoles`
+    reads their exact moments.
+
+    The background must be one lossless medium, the whole scatterer meshed
+    inside a perfectly matched layer or `gfem.Absorbing` faces, with at least
+    one background element between it and the truncation, and not touching a
+    wave port. A PEC or PMC wall beside the physical region is refused.
+
+    On a result of a distributed solve it is a collective call: every rank
+    calls it with the same arguments and gets the same moments.
+
+    Not differentiable: the result and the model must be fixed values, not
+    computed inside `jax.grad`, `jax.jit` or `jax.vmap`
+    (`jax.lax.stop_gradient` inside `jax.grad` is the opt-out). The exact
+    moments of `gfem.multipoles` are.
+
+    Args:
+        result: A driven result with kept fields, solved with ``source``.
+        source: The name of an incident-field source of the result.
+        model: The model the result was solved with.
+        origin: The origin of :math:`r`, m, in model coordinates: three
+            finite numbers.
+
+    Returns:
+        A `CurrentMoments`.
+
+    Raises:
+        TypeError: ``result`` or ``model`` is of the wrong type.
+        KeyError: ``source`` is not a column of the result.
+        ValueError: ``origin`` is not three finite numbers; ``source`` is a
+            port or a dipole (read `gfem.far_field`); the result keeps no
+            field of it; the model has no background; a scatterer reaches the
+            truncation layer or a wave port.
+        NotImplementedError: A 2D mesh; a lossy or layered background; a PEC
+            or PMC wall beside the physical region; a surface current or a
+            permeability contrast in the scatterer.
+        NonDifferentiableError: ``result``, ``model`` or ``origin`` is traced.
+    """
+    from gfem.model import Model
+    from gfem.results import DrivenResult
+
+    refuse_entry(getattr(model, "mesh", None), "current_moments")
+    if not isinstance(result, DrivenResult):
+        raise TypeError(
+            f"current_moments needs a gfem.DrivenResult, got {type(result).__name__}."
+        )
+    if not isinstance(model, Model):
+        raise TypeError(
+            f"current_moments needs model= a gfem.Model, got {type(model).__name__}."
+        )
+    if is_traced(result) or is_traced(model):
+        raise NonDifferentiableError(
+            "gfem.current_moments is not differentiable in this gfem version: "
+            "the moments of the induced current read the scatterer's "
+            "permittivity directly, and their result and model must be fixed "
+            "values, not computed inside jax.grad, jax.jit or jax.vmap. Read "
+            "the exact moments, differentiable, with gfem.multipoles, or call "
+            "current_moments outside the function JAX transforms "
+            "(jax.lax.stop_gradient on the result and model inside jax.grad)."
+        )
+    check_fixed(origin, "current_moments' origin must be fixed numbers")
+    origin_a = _origin(origin, "current_moments")
+    _, frequencies, background = _check_column(result, source, model, "current_moments")
+    from gfem._truncation import truncation
+
+    xs = importlib.import_module("gfem._engine.cross_sections")
+    pf = importlib.import_module("gfem._engine.power_flow")
+    fields = [result.e_field(f, source) for f in frequencies]
+    # before the side is built: a port beside it is refused there with no region
+    _check_wave_ports(model, background)
+    where = pf.surface_of(concrete_field(fields[0]), truncation(model).side, model)
+    xs.check_truncation_layer(
+        model,
+        background,
+        where,
+        entry="current_moments",
+        outcome="finite multipole expansion",
+        remedy="Leave at least one background element between every "
+        "scatterer and the PML layer or Absorbing face.",
+    )
+    _check_induced_current(model, background)
+    k = np.array([_incident.wavenumber(background, f) for f in frequencies])
+    p0, t = _induced_moments(
+        fields, model, background, frequencies=frequencies, origin=origin_a, k=k
+    )
+    return CurrentMoments(
+        frequency=tuple(float(f) for f in frequencies),
+        origin=(float(origin_a[0]), float(origin_a[1]), float(origin_a[2])),
+        wavenumber=tuple(float(x) for x in k),
+        long_wavelength_dipole=jnp.asarray(p0),
+        toroidal_dipole=jnp.asarray(t),
+    )
+
+
+def _induced_moments(
+    fields: list[Field],
+    model: Model,
+    background: Background,
+    *,
+    frequencies: list[float],
+    origin: np.ndarray,
+    k: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    r""":math:`p_0` and :math:`T` per frequency, each ``(n_freq, 3)``."""
+    engine_ = importlib.import_module("gfem._engine.multipoles")
+    rows = engine_.elements(model, background)
+    p0 = np.zeros((len(fields), 3), complex)
+    t = np.zeros((len(fields), 3), complex)
+    if len(rows) == 0:
+        return p0, t
+    for i, (field, f) in enumerate(zip(fields, frequencies, strict=True)):
+        omega = 2 * math.pi * f
+        cur = engine_.current(field, model, background, rows, omega)
+        r = cur.points - origin
+        j = cur.current
+        w = cur.weights[:, None]
+        p0[i] = np.sum(w * j, axis=0) / (1j * omega)
+        rj = np.sum(r * j, axis=1)[:, None]
+        r2 = np.sum(r * r, axis=1)[:, None]
+        v = omega / k[i]
+        t[i] = np.sum(w * (rj * r - 2 * r2 * j), axis=0) / (10 * v)
+    return p0, t
+
+
+def _riccati_derivative(l: int, x: np.ndarray) -> np.ndarray:
+    r""":math:`(x\,j_l(x))'`."""
+    return spherical_jn(l, x) + x * spherical_jn(l, x, derivative=True)
+
+
+def _regular_waves(
+    l: int, m: int, k: float, points: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    r""":math:`\mathrm{Rg}M_{lm}` and :math:`\mathrm{Rg}N_{lm}` at ``points``.
+
+    Cartesian components, ``(n, 3)`` each.
+
+    The regular vector spherical waves,
+    :math:`\mathrm{Rg}M = j_l(kr)X_{lm}` and
+    :math:`\mathrm{Rg}N = k^{-1}\nabla\times\mathrm{Rg}M`, in Cartesian
+    components.
+    """
+    r = np.linalg.norm(points, axis=1)
+    theta = np.arccos(np.clip(points[:, 2] / r, -1.0, 1.0))
+    phi = np.arctan2(points[:, 1], points[:, 0])
+    kr = k * r
+    xt, xp = _x_lm(l, m, theta, phi)
+    rxt, rxp = -xp, xt  # rhat x X
+    s = math.sqrt(l * (l + 1))
+    jl = spherical_jn(l, kr)
+    d = _riccati_derivative(l, kr) / kr
+    radial = 1j * s * jl * _y(l, m, theta, phi) / kr
+    return (
+        _spherical_to_cartesian(0 * xt, jl * xt, jl * xp, theta, phi),
+        _spherical_to_cartesian(radial, d * rxt, d * rxp, theta, phi),
+    )
+
+
+def _spherical_to_cartesian(
+    v_r: np.ndarray,
+    v_t: np.ndarray,
+    v_p: np.ndarray,
+    theta: np.ndarray,
+    phi: np.ndarray,
+) -> np.ndarray:
+    st, ct, sp, cp = np.sin(theta), np.cos(theta), np.sin(phi), np.cos(phi)
+    return np.stack(
+        [
+            v_r * st * cp + v_t * ct * cp - v_p * sp,
+            v_r * st * sp + v_t * ct * sp + v_p * cp,
+            v_r * ct - v_t * st,
+        ],
+        axis=-1,
+    )
+
+
+def _volume_coefficients(
+    result: DrivenResult,
+    name: str,
+    *,
+    model: Model,
+    origin: Any = (0.0, 0.0, 0.0),
+    lmax: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    r"""The absolute spherical coefficients from the induced current, V/m.
+
+    The route that needs no far-field layer: with the induced current
+    :math:`J` over the scatterer (`current_moments`' integrand),
+
+    .. math::
+
+        c^E_{lm} = -k^2\eta\int \overline{\mathrm{Rg}N_{lm}}\cdot J\,dV,
+        \qquad
+        c^M_{lm} = -k^2\eta\int \overline{\mathrm{Rg}M_{lm}}\cdot J\,dV,
+
+    the same :math:`E_\mathrm{inc}\alpha_{lm}` and :math:`E_\mathrm{inc}\beta_{lm}`
+    as `_column_coefficients`, for a scatterer made of volume materials only
+    (no surface currents, no permeability contrast). Test-only: it holds the
+    two routes against each other.
+    """
+    origin_a = np.asarray(origin, float)
+    frequencies = [f for f, c in result.kept if c == name]
+    background = _background(model)
+    fields = [result.e_field(f, name) for f in frequencies]
+    if lmax is None:
+        lmax = _default_lmax(model, origin_a, max(frequencies))
+    engine_ = importlib.import_module("gfem._engine.multipoles")
+    rows = engine_.elements(model, background)
+    eta = _incident.impedance(background)
+    n = lmax * (lmax + 2)
+    c_alpha = np.zeros((len(fields), n), complex)
+    c_beta = np.zeros((len(fields), n), complex)
+    ls, ms = _flat_lm(lmax)
+    for i, (field, f) in enumerate(zip(fields, frequencies, strict=True)):
+        k = _incident.wavenumber(background, f)
+        cur = engine_.current(field, model, background, rows, 2 * math.pi * f)
+        r = cur.points - origin_a
+        for j, (l, m) in enumerate(zip(ls, ms, strict=True)):
+            rg_m, rg_n = _regular_waves(int(l), int(m), k, r)
+            for out, rg in ((c_alpha, rg_n), (c_beta, rg_m)):
+                out[i, j] = (
+                    -(k**2)
+                    * eta
+                    * np.sum(cur.weights * np.sum(np.conj(rg) * cur.current, axis=1))
+                )
+    return c_alpha, c_beta
+
+
 def _check_nodes(nodes: Any) -> None:
     if is_traced(nodes):
         raise NonDifferentiableError(
@@ -902,7 +1237,7 @@ def _check_nodes(nodes: Any) -> None:
         )
 
 
-def _origin(origin: Any) -> np.ndarray:
+def _origin(origin: Any, entry: str = "multipoles") -> np.ndarray:
     try:
         value = np.asarray(origin, float)
         ok = value.shape == (3,) and bool(np.isfinite(value).all())
@@ -910,7 +1245,7 @@ def _origin(origin: Any) -> np.ndarray:
         ok = False
     if not ok:
         raise ValueError(
-            "multipoles: origin must be three finite numbers, the multipole "
+            f"{entry}: origin must be three finite numbers, the multipole "
             f"origin in m (model coordinates), got {origin!r}."
         )
     return value

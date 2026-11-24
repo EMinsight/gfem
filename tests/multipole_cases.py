@@ -201,6 +201,12 @@ def _cube_feed(c: np.ndarray) -> str:
     return "feed" if on else ""
 
 
+def _cube_shell(c: np.ndarray) -> str:
+    inside = ((c > 0.25 - 1e-9) & (c < 0.5 + 1e-9)).all()
+    on = (abs(c - 0.25) < 1e-9) | (abs(c - 0.5) < 1e-9)
+    return "feed" if inside and on.any() else ""
+
+
 def cube(
     path: str | Path,
     *,
@@ -208,6 +214,7 @@ def cube(
     cells: int = 4,
     centre: tuple[float, float, float] | None = None,
     feed: bool = False,
+    shell: bool = False,
 ) -> Path:
     """A one-cell cube "scat" in air "air" wrapped in a layer "pml", um.
 
@@ -217,7 +224,7 @@ def cube(
     translates the whole mesh so that the cube's centre is the origin;
     ``centre`` puts it at the given point (um). The same mesh, translated.
     With ``feed`` the cube's :math:`+x` face is the surface region "feed", to
-    hang a port on.
+    hang a port on; with ``shell`` all its faces are.
     """
     target = (0.0, 0.0, 0.0) if centred else centre
     mapping: Callable[[np.ndarray], np.ndarray] | None = None
@@ -230,7 +237,7 @@ def cube(
         thickness=0.25,
         cells=cells,
         volume=_cube_volume,
-        surface=_cube_feed if feed else None,
+        surface=_cube_shell if shell else _cube_feed if feed else None,
         mapping=mapping,
     )
 
