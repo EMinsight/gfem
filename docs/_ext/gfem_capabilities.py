@@ -556,6 +556,30 @@ RAISES_LABELS = {
         "Cross sections (`cross_sections`), with respect to node coordinates (the "
         "incident-field solve refuses them first)"
     ),
+    "multipoles x node coordinates": (
+        "Multipoles (`multipoles`), with respect to node coordinates through a "
+        "solve (the incident-field solve refuses them first)"
+    ),
+    "multipoles x node coordinates at fixed coefficients": (
+        "Multipoles (`multipoles`), with respect to node coordinates at fixed "
+        "coefficients"
+    ),
+    "multipoles x design in the truncation layer": (
+        "Multipoles (`multipoles`), with respect to a material field with "
+        "elements in the truncation layer (the elements touching the perfectly "
+        "matched layer or an absorbing face)"
+    ),
+    "multipoles x traced origin": (
+        "Multipoles (`multipoles`), with respect to the multipole origin"
+    ),
+    "multipoles x traced intensity": (
+        "Multipoles (`multipoles`), with respect to the intensity of a "
+        "`gfem.IncidentField`"
+    ),
+    "current_moments of a traced design": (
+        "Current moments (`current_moments`) of a traced result or model "
+        "(read the exact moments with `multipoles`)"
+    ),
     "heat_flow x node coordinates": (
         "The heat through a surface (`heat_flow`, `heat_flow_per_length`), with "
         "respect to node coordinates"
