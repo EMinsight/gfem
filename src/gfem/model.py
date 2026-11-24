@@ -26,6 +26,7 @@ from gfem._boundaries import (
     Impedance,
     LumpedPort,
     Periodic,
+    Polarity,
     Port,
     WavePort,
     sheet_of,
@@ -1144,7 +1145,7 @@ def _items(values: Any, kinds: tuple[type, ...], what: str) -> tuple:
 
 def _check_polarity(
     name: str,
-    polarity: tuple[tuple[float, ...], tuple[float, float, float]],
+    polarity: Polarity,
     dim: int,
 ) -> None:
     """A polarity's point has the mesh's dimension; a line port's arrow is ±z."""

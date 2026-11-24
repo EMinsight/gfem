@@ -247,6 +247,29 @@ def test_a_point_in_the_perfectly_matched_layer_raises(tmp_path):
         gfem.solve(model, problem, options=OPTIONS)
 
 
+@pytest.mark.parametrize("direction", ["+z", (0.0, 0.0, -1.0)], ids=["axis", "vector"])
+def test_a_direction_normal_to_the_port_plane_raises_before_the_sweep(
+    tmp_path, monkeypatch, direction
+):
+    # wave port case A: the port is the plane z = 15 mm
+    def no_sweep(_self):
+        raise AssertionError("the sweep ran")
+
+    monkeypatch.setattr("gfem._sweep.port_mode._Greedy.run", no_sweep)
+    mesh = ported_guide(tmp_path / "a.msh", CASE_A, left_port=False)
+    arrow = gfem.WavePort(
+        "p1", "port", polarity=((11.43e-3, 5.08e-3, 15e-3), direction)
+    )
+    with pytest.raises(
+        ValueError, match=r"'p1': the polarity direction .* is normal to the port plane"
+    ):
+        gfem.solve(
+            ported_model(mesh, CASE_A, [arrow]),
+            gfem.PortMode("p1", (11.67e9,)),
+            options=OPTIONS,
+        )
+
+
 # --- the port mode problem -------------------------------------------------------
 
 

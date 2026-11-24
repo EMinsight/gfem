@@ -43,7 +43,7 @@ import itertools
 import math
 import warnings
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
@@ -54,6 +54,7 @@ import scipy.linalg
 from gfem import _mpi, _pml, _progress
 from gfem._boundaries import (
     FloquetPort,
+    Polarity,
     WavePort,
     lead_port,
     wave_port_label,
@@ -131,6 +132,9 @@ _PER_MODE = ("gamma", "residual", "floor", "coords", "voltage", "power")
 # sign: the exact node of an odd mode reads about 1e-3 on a coarse mesh, a
 # point 10 nm off it about 7e-2.
 _POLARITY_GUARD = 1e-2
+# A polarity direction whose in-plane part is below this is normal to the
+# port plane: it reads no field, refused before the sweep.
+_NORMAL_ARROW = 1e-6
 # Gauss-Legendre rule for voltage line integrals: points per piece, pieces.
 _GAUSS = np.polynomial.legendre.leggauss(4)
 _PIECES = 32
@@ -971,11 +975,8 @@ class _Greedy:
                 if rule is None
                 else _voltage_functional(planar(space), basis, rule)
             )
-            polarity = self.ports[k].polarity
             polar = (
-                None
-                if arrow is None or polarity is None
-                else _polarity_functionals(space, basis, arrow)
+                None if arrow is None else _polarity_functionals(space, basis, arrow)
             )
             for i in range(n):
                 y = self.coords_at(i, k)
@@ -984,10 +985,10 @@ class _Greedy:
                 power = fields.power(z, gamma[k, i], omega)
                 z /= math.sqrt(abs(power))
                 phase[k, i] = power / abs(power)
-                if polar is not None and polarity is not None:
+                if polar is not None:
                     # the field at the point along the arrow is real and
                     # positive, at every frequency on its own
-                    a = self._polarity_value(k, i, z, polar, polarity)
+                    a = self._polarity_value(k, i, z, polar)
                     z *= abs(a) / a
                 elif i == 0:
                     g = fields.gauge(z, gamma[k, i], omega)
@@ -1013,7 +1014,6 @@ class _Greedy:
         i: int,
         z: np.ndarray,
         functionals: tuple[np.ndarray, np.ndarray],
-        polarity: tuple[tuple[float, ...], tuple[float, float, float]],
     ) -> complex:
         """Mode ``k``'s field at its polarity point along the arrow, at ``f[i]``.
 
@@ -1025,7 +1025,8 @@ class _Greedy:
         top = float(np.linalg.norm(np.einsum("k,kpc->pc", z, peak), axis=1).max())
         ratio = abs(a) / top if top > 0 else 0.0
         if ratio < _POLARITY_GUARD:
-            point, direction = polarity
+            # functionals are made from the port's polarity only
+            point, direction = cast("Polarity", self.ports[k].polarity)
             raise PortModeError(
                 f"{self._who(k)}: its polarity reads a field of {ratio:.1e} of the "
                 f"port's peak at the point {_numbers(point)} m along "
@@ -1369,19 +1370,20 @@ def _numbers(values: Sequence[float]) -> str:
 def _polarity_rule(
     space: ModeSpace,
     name: str,
-    polarity: tuple[tuple[float, ...], tuple[float, float, float]],
+    polarity: Polarity,
 ) -> tuple[np.ndarray, np.ndarray]:
     """A polarity's point on the section and its arrow's weights.
 
     Returns:
         The point's local coordinates (``(1, 2)`` plane coordinates, or
         ``(1,)`` along a line) and the weights of the field components the
-        arrow reads (the in-plane components ``(E_u, E_v)``, or the sign of
+        arrow reads (the in-plane components :math:`(E_u, E_v)`, or the sign of
         the solved field normal to a 2D plane).
 
     Raises:
         ValueError: The point is off the port's plane or line, off its
-            cross-section, or inside a perfectly matched layer.
+            cross-section, or inside a perfectly matched layer, or a 3D
+            arrow is normal to the port plane.
     """
     point, direction = polarity
     section = space.section
@@ -1411,7 +1413,15 @@ def _polarity_rule(
             "field is not physical. Give a point in the physical part of the port "
             "face."
         )
-    return local, section.frame[:2] @ np.asarray(direction, float)
+    weights = section.frame[:2] @ np.asarray(direction, float)
+    if np.linalg.norm(weights) < _NORMAL_ARROW:
+        raise ValueError(
+            f"WavePort {name!r}: the polarity direction {_numbers(direction)} is "
+            "normal to the port plane, so it reads no field of the mode (the "
+            "arrow reads the in-plane E field). Give a direction in the port "
+            "plane, along the mode's field at the point."
+        )
+    return local, weights
 
 
 def _polarity_functionals(
