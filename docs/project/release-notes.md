@@ -24,6 +24,9 @@ Periodic cells:
 - **Band group velocity.** `EigenmodeResult.v_g` gives
   $\partial\omega/\partial\mathbf{k}$ of a mode under a Bloch wave vector, in
   m/s. It is not differentiable, and `to_xarray` carries it.
+- **Faster Bloch solves.** After a mesh's second wave vector, a Bloch eigenmode
+  solve builds its operators from a per-mesh template instead of assembling
+  them again.
 
 Thermal:
 

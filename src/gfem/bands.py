@@ -231,7 +231,7 @@ def wave_vector_path(
     joints are not repeated, and the spacing is even within each segment.
 
     Example:
-        Γ-X-M-Γ of a square lattice, for `matplotlib` ticks::
+        Γ-X-M-Γ of a square lattice, for matplotlib ticks::
 
             path = gfem.wave_vector_path(model, ["Γ", "X", "M", "Γ"], n_points=31)
             plt.xticks(*path.ticks)
