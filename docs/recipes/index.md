@@ -32,8 +32,6 @@ orphan: true
 - {doc}`periodic-cell`
 - {doc}`floquet-ports`
 - {doc}`perfectly-matched-layer`
-- {doc}`incident-fields`
-- {doc}`cross-sections`
 - {doc}`heater-temperature`
 - {doc}`thermo-optic-phase`
 - {doc}`thermal-step-response`
@@ -48,5 +46,7 @@ orphan: true
 
 ## Free space
 
+- {doc}`incident-fields`
+- {doc}`cross-sections`
 - {doc}`point-dipoles`
 - {doc}`far-field`

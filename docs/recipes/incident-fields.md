@@ -4,8 +4,8 @@ An {term}`incident field` is the field a {term}`source` would have in the
 {term}`background stack` alone: a plane wave ({py:obj}`gfem.PlaneWave`), a
 focused Gaussian beam ({py:obj}`gfem.GaussianBeam`) or a field you give as a
 function ({py:obj}`gfem.IncidentField`). Pass it to
-{py:obj}`gfem.Driven` as `sources=`; each source adds a column to the solve,
-beside the excited ports, on the same factorization. Use it for anything lit
+{py:obj}`gfem.Driven` as `sources=`; each source adds a column to the solve
+(an {term}`excitation`), beside the excited ports, on the same factorization. Use it for anything lit
 from outside: a particle, an antenna receiving a wave, an absorber.
 
 gfem solves for the {term}`total field` (incident plus {term}`scattered
@@ -85,8 +85,8 @@ source)` is the wave each source sends into each port.
 
 ## Focus a Gaussian beam
 
-A {py:obj}`gfem.GaussianBeam` takes the plane wave's angles and
-polarizations, a waist $w_0$ (m, the same at every frequency) and a focus
+A {term}`Gaussian beam` ({py:obj}`gfem.GaussianBeam`) takes the plane wave's
+angles and polarizations, a {term}`waist` $w_0$ (m, the same at every frequency) and a focus
 (m). It is an exact solution of Maxwell's equations whose paraxial limit is
 the fundamental Gaussian beam, so it leaves no spurious source however tight
 it is. Like an excited port it carries 1 W through any plane across its axis,

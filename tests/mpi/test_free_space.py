@@ -21,6 +21,10 @@ process:
   (amplitudes and radiated power) and their couplings into a wide Gaussian
   beam and into a plane wave given as an `gfem.IncidentField` (interpolated
   on each rank's piece) are one process's to `GATE`;
+- a lossy particle on a film over a substrate, lit from the top and from
+  the substrate past the critical angle: each rank evaluates the stack's
+  field on its own piece, and the kept fields, their parts, the cross
+  sections and the corrected power flow are one process's to `GATE`;
 - ranks given different backgrounds stop at the entry check, naming it.
 """
 
@@ -317,6 +321,98 @@ def test_balance_and_far_field_across_ranks_are_one_process_s(fine_box):
     for name, value in one.items():
         error = _relative(got[name], value)
         print(f"ranks={RANKS} {name} error={error:.3g}")  # noqa: T201
+        assert error < GATE, f"{name} off by {error:.3g} relative"
+
+
+# --- a layered background -----------------------------------------------------------
+
+SUB = gfem.Material(eps_r=2.25)
+FILM = gfem.Material(eps_r=4.0)
+AIR = gfem.Material()
+#: Substrate below z = 1/4, film to z = 1/2, air above (um): grid planes.
+STACK = gfem.Background([SUB, FILM, AIR], interfaces=[0.25e-6, 0.5e-6])
+#: From the top at 40 degrees, and from the substrate at 50 degrees, past the
+#: substrate/air critical angle: the particle sits in the evanescent tail.
+LAYERED_WAVES = (
+    gfem.PlaneWave("top", theta=np.pi - np.radians(40), polarization="TE"),
+    gfem.PlaneWave("tir", theta=np.radians(50), phi=0.3, polarization="TM"),
+)
+
+
+def _stack_layer(z):
+    return "sub" if z < 0.25 else "film" if z < 0.5 else "air"
+
+
+def _layered_volume(c):
+    """A particle on the film, the stack around it, a layer split at its planes."""
+    if not ((c > 0) & (c < 1)).all():
+        return f"pml_{_stack_layer(c[2])}"
+    if (c[:2] > 0.25).all() and (c[:2] < 0.75).all() and 0.5 < c[2] < 0.75:
+        return "particle"
+    return _stack_layer(c[2])
+
+
+def _layered_model(path):
+    materials = {"particle": gfem.Material(eps_r=4.0, tan_delta=0.25)}
+    for name, material in (("sub", SUB), ("film", FILM), ("air", AIR)):
+        materials[name] = materials[f"pml_{name}"] = material
+    return gfem.Model(
+        gfem.Mesh.from_gmsh(path),
+        materials=materials,
+        pml=gfem.PML(["pml_sub", "pml_film", "pml_air"]),
+        background=STACK,
+    )
+
+
+def _layered(path):
+    """The kept fields at points, the cross sections and the absorbed power."""
+    model = _layered_model(path)
+    problem = gfem.Driven(F, sources=LAYERED_WAVES, keep_fields=True)
+    result = gfem.solve(model, problem, options=_options())
+    mesh = model.mesh
+    tets = np.concatenate([mesh.elements(n) for n in ("sub", "film", "particle")])
+    chosen = np.random.default_rng(5).choice(tets, 12, replace=False)
+    points = np.asarray(mesh.nodes)[np.asarray(mesh.tetrahedra)[chosen]].mean(axis=1)
+    out = {}
+    for wave in LAYERED_WAVES:
+        for part in ("total", "scattered", "incident"):
+            field = result.e_field(F, wave.name, part=part)
+            out[f"{wave.name} {part}"] = np.asarray(field.at(points))
+        xs = gfem.cross_sections(result, wave.name, model=model)
+        for name in ("extinction", "absorption", "scattering"):
+            out[f"{wave.name} {name}"] = np.asarray(getattr(xs, name))
+        total = result.e_field(F, wave.name)
+        absorbed = -gfem.power_flow(total, "particle", model=model)
+        out[f"{wave.name} absorbed"] = np.asarray(absorbed)
+    return out
+
+
+@pytest.fixture
+def layered_box(tmp_path):
+    """The stacked box at 4 cells per um, a one-cell layer split at the planes."""
+    import pml_cases as pc
+
+    path = pc.box(
+        tmp_path / "layered.msh",
+        ("-x", "+x", "-y", "+y", "-z", "+z"),
+        thickness=0.25,
+        cells=4,
+        volume=_layered_volume,
+    )
+    return str(path)
+
+
+@needs_stack
+def test_a_layered_plane_wave_across_ranks_is_one_process_s(layered_box):
+    got, *_ = on_ranks(_layered, layered_box, ranks=RANKS, limit=600)
+    one = _layered(layered_box)
+    assert (
+        min(abs(float(np.ravel(one[f"{w.name} absorption"])[0])) for w in LAYERED_WAVES)
+        > 0
+    )
+    for name, value in one.items():
+        error = _relative(got[name], value)
+        print(f"ranks={RANKS} layered {name} error={error:.3g}")  # noqa: T201
         assert error < GATE, f"{name} off by {error:.3g} relative"
 
 

@@ -245,6 +245,35 @@ USER_TERMS = (
     "Resonant mode",
     "Quasi-normal mode",
     "Excited port",
+    "Incident field",
+    "Scattered field",
+    "Total field",
+    "Background stack",
+    "Incidence layer",
+    "Scatterer",
+    "Source",
+    "Excitation",
+    "Gaussian beam",
+    "Waist",
+    "Focal intensity",
+    "Incident intensity",
+    "Cross sections",
+    "Port wave",
+    "Point dipole",
+    "Emitted power",
+    "Bulk power",
+    "Purcell factor",
+    "Beta factor",
+    "Radiative efficiency",
+    "Far-field amplitude",
+    "Far-field layer",
+    "Exterior medium",
+    "Radiation intensity",
+    "Directivity",
+    "Ground plane",
+    "Beam coupling",
+    "Incident contact",
+    "Truncation layer",
 )
 
 
@@ -257,7 +286,9 @@ def test_a_user_term_is_defined_and_linked_from_a_page(term):
     for page in PAGES:
         for role in re.findall(r"\{term\}`([^`]+)`", page.read_text(encoding="utf-8")):
             explicit = re.search(r"<([^>]+)>\s*$", role)
-            targets.add((explicit[1] if explicit else role).strip().lower())
+            # a role wrapped across lines names the term with single spaces
+            target = explicit[1] if explicit else role
+            targets.add(" ".join(target.split()).lower())
     assert term.lower() in targets, f"no user page links the term {term!r}"
 
 

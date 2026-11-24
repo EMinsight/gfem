@@ -67,14 +67,15 @@ into the port: 4.1767e-15 W, beta = 0.5000
   frequency: positive, and finite although the exact field at $r_0$ is not
   (gfem pairs the dipole's load with the discrete solution). Its real
   counterpart, the self-reaction, has no limit and is never reported.
-- `result.port_wave(port, name)` is the outgoing wave at the port in √W, as a
-  column of S: $|b|^2$ is the power the dipole sends into the port. The
+- `result.port_wave(port, name)` is the {term}`port wave`, outgoing at the
+  port in √W, as a column of S: $|b|^2$ is the power the dipole sends into the port. The
   {term}`beta factor` of that port's mode is $\beta = |b|^2 / P$; on a
   {term}`shared port surface` each mode has its own port and its own wave.
 
 ## The Purcell factor and the local density of states
 
-`gfem.purcell_factor(result, name, model=model)` is $F = P / P_0$, the
+`gfem.purcell_factor(result, name, model=model)` is the {term}`Purcell factor`
+$F = P / P_0$, the
 emitted power over the {term}`bulk power`: the power of the same dipole in
 the unbounded material at its position,
 

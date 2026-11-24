@@ -172,6 +172,14 @@ p_box = gfem.power_flow(e, "design", model=model)
 - **With a perfectly matched layer**, `side` set to the layer regions gives
   the power they absorb; a surface that cuts through the layer has no
   physical meaning ({doc}`perfectly-matched-layer`).
+- **Under an incident field.** On the total field of an incident-field
+  column (`r.e_field(f, "wave")`, {doc}`incident-fields`) the incident load
+  is not a port, and its share of the residual is subtracted, so the number
+  is again exact: minus the power leaving a side of physical elements is
+  what that side absorbs, one region at a time. A side holding perfectly
+  matched layer elements raises (the field there is the scattered one), and
+  so does `part="incident"`, which balances no load; the scattered part
+  (`part="scattered"`) is the power the {term}`scattered field` carries out.
 - **Keep the surface off the ports.** A port's term needs its excitation,
   which a field does not record: a surface within one element of a port's
   surface raises `ValueError`. Move it one element away, or put the port's

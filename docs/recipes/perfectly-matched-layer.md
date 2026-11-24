@@ -258,6 +258,32 @@ q = modes.q  # the radiation Q of a lossless disk
   only. In a {term}`loss budget`, what $1/Q$ holds beyond the listed losses
   is the radiation, plus any loss of the layer's background.
 
+## Light a scatterer from outside
+
+A layer also truncates a model lit by an {term}`incident field`
+(`Model(background=...)`, `Driven(sources=...)`, {doc}`incident-fields`).
+gfem then solves for the {term}`total field` outside the layer and for the
+{term}`scattered field` inside it, so the layer absorbs only what the
+{term}`scatterer` sends out. Mesh it as above, with the background's
+material in its regions (on a {term}`background stack`, split at the stack's
+planes, each region carrying the stack's material at its height).
+
+- **The incident field is dropped in the layer.** Where a scatterer reaches
+  the layer, the incident field there must be negligible, at most $10^{-3}$
+  of its peak (the {term}`incident contact`); otherwise the solve raises
+  before any factorization, naming the face, the ratio it found and the
+  remedy. A waveguide running into the layer is fine under a narrow beam
+  that misses its end.
+- **Keep one background element next to the layer.** The physical elements
+  touching it, the {term}`truncation layer`, are where
+  {py:obj}`gfem.cross_sections` reads its power balance and where
+  {py:obj}`gfem.far_field` and {py:obj}`gfem.beam_coupling` read by default
+  ({doc}`cross-sections`, {doc}`far-field`): they must hold the background
+  only.
+- **Shape designs hold it.** `gfem.shape.boundary_morph` holds the layer's
+  nodes and those of the truncation layer, so the measurements read there
+  keep their elements while the device moves ({doc}`shape-gradient`).
+
 ## What you read inside the layer
 
 - **Fields.** Inside the layer the field is the stretched one, not a

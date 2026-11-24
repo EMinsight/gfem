@@ -367,6 +367,13 @@ and prints a second line, `gfem: note: ...`, that says where it is.
   file records them. An input it cannot record, such as a subclass of a
   gfem class, is never guessed at: that call solves without the cache
   ({py:obj}`gfem.SolveCacheWarning`).
+- Plane waves, Gaussian beams and point dipoles are written with the
+  problem and the result. A {py:obj}`gfem.IncidentField` is not: its
+  function is code, not data, and a file without it would describe another
+  problem, so saving a result or a job that holds one raises `TypeError`
+  naming the source and its function. Save what you read from the result
+  instead (S, cross sections, fields to VTU), or describe the field as a
+  `PlaneWave` or `GaussianBeam` when it is one ({doc}`incident-fields`).
 - Across ranks, write S and the job from rank 0, and call a field's
   `to_vtu` on every rank ({doc}`distributed-solve`, "Write files").
 - A job or result file records the gfem version that wrote it. gfem reads

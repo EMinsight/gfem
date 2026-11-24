@@ -818,6 +818,16 @@ Incident intensity
   wave's $|E_0|^2/(2\eta)$, a Gaussian beam's {term}`focal intensity`, or the
   value given for an incident field from a function.
 
+Gaussian beam
+  A focused beam carrying 1 W through any plane across its axis, given by
+  its {term}`waist`, focus and direction (`gfem.GaussianBeam`): an exact
+  solution of Maxwell's equations in a homogeneous lossless background whose
+  paraxial limit is the fundamental Gaussian beam.
+
+Waist
+  The $1/e$ field radius $w_0$ of a {term}`Gaussian beam` at its focus, in m,
+  the same at every frequency.
+
 Focal intensity
   $I_0 = |E(r_f)|^2/(2\eta)$ at the focus $r_f$ of a Gaussian beam carrying
   1 W, with $\eta$ the wave impedance of the background
