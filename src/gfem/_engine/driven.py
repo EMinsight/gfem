@@ -2314,7 +2314,7 @@ class DrivenRule:
         laws: bool,
         wanted: frozenset | None = None,
     ) -> list[FieldPair | Integrated]:
-        r"""The frozen-basis backward of an adaptive sweep: no full-size solve.
+        r"""The backward of an adaptive sweep: frozen-basis adjoints, and full-size ones by reciprocity.
 
         With the basis V and the sample set held fixed, the reduced solution
         at ω solves ``A_r(ω) y = b_r(ω)``, ``A_r = Vᵀ A(ω) V`` complex
@@ -2414,7 +2414,9 @@ class DrivenRule:
                     )
                 if adjoint is None:
                     continue
-                if nodes and sources is not None:
+                # under the flag the dipoles have no column: their node term
+                # is the full-size pair's
+                if nodes and sources is not None and not self.reciprocal:
                     self._add_explicit_nodes(
                         model,
                         sources,

@@ -461,27 +461,41 @@ def test_adaptive_reciprocal_gradients_between_samples_follow_the_field_error(
     assert error <= FIELD_ERROR_RATIO * forward
 
 
-def test_adaptive_reciprocal_node_gradients_are_exact_at_the_samples(dipole_line):
+@pytest.mark.parametrize("excite", [(), ("p1",)], ids=["waves", "waves-and-s"])
+def test_adaptive_reciprocal_node_gradients_are_exact_at_the_samples(
+    dipole_line, excite
+):
     # the node term reads the ports' reduced solutions at the dipoles: their
-    # full ones at a sample (1.3e-11 measured)
+    # full ones at a sample (1.3e-11 measured). With an excited port the S
+    # cotangent loads the reduced adjoint too, and the dipoles, with no
+    # column under the flag, add no node term of their own to it.
     build, t = _slab_kind(dipole_line, "nodes")
     grid = tuple(float(f) for f in np.linspace(0.9, 1.1, 5) * pml_cases.F0)
 
+    def solve(t, source_fields, **sweep):
+        problem = gfem.Driven(
+            grid,
+            excite=excite,
+            sources=ELECTRIC,
+            source_fields=source_fields,
+            **sweep,
+        )
+        return gfem.solve(build(t), problem, options=DIPOLE_OPTIONS)
+
+    # the port waves are tiny beside S: weight them to the same order
+    scale = 1.0 / float(np.sum(np.abs(solve(t, True).port_waves[2]) ** 2))
+
     def gradient(source_fields, **sweep):
         def objective(t):
-            problem = gfem.Driven(
-                grid,
-                excite=(),
-                sources=ELECTRIC,
-                source_fields=source_fields,
-                **sweep,
-            )
-            w = gfem.solve(build(t), problem, options=DIPOLE_OPTIONS).port_waves[2]
-            return jnp.sum(jnp.abs(w) ** 2)
+            r = solve(t, source_fields, **sweep)
+            w = jnp.sum(jnp.abs(r.port_waves[2]) ** 2)
+            if not excite:
+                return w
+            return jnp.sum(jnp.abs(r.s.values[2]) ** 2) + scale * w
 
         return jax.grad(objective)(t)
 
-    adaptive = gradient(False, sweep="adaptive", samples=(grid[0], grid[4], grid[2]))
     column = gradient(True)
+    adaptive = gradient(False, sweep="adaptive", samples=(grid[0], grid[4], grid[2]))
     assert np.abs(np.asarray(column)).max() > 0
     assert _relative(adaptive, column) <= SAMPLE_GATE
