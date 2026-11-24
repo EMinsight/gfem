@@ -210,7 +210,7 @@ class LayerPattern:
 
     @property
     def area(self) -> float:
-        """The solid area (m²): the outer rings' areas minus the holes'."""
+        """The solid area in m², the outer rings' areas minus the holes'."""
         return float(sum(_signed_area(r) for r in _rings(self.polygons)))
 
     def __len__(self) -> int:
