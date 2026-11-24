@@ -15,8 +15,13 @@ tolerance, but it is the same smooth function of the design at every sample
 and cancels in the differences, as long as each evaluation solves as if
 alone: a ``bddc_gmres`` solve would otherwise start from the previous
 evaluation's solution (the design initial guess), stop at another
-iterate, and leave noise of the tolerance's order. Every evaluation here
-drops the design guesses first.
+iterate, and leave noise of the tolerance's order. A ``direct`` solve above
+the factor-reuse floor would likewise solve by GMRES on the previous
+evaluation's factors and stop at a fraction of the tolerance, noise of
+about 1e-9 relative on a model of some 10^5 unknowns, which a node step of
+a nanometre turns into 1e-6 in the difference. Every evaluation here drops
+the design guesses and the pooled factorizations first, so each direct
+solve factorizes its own matrix.
 
 Both are measured against the directional derivative ``grad . d``, which
 for a random ``d`` can sit far below ``|grad|`` (a direction nearly
@@ -73,9 +78,14 @@ def unit_directions(rng: np.random.Generator, shape, n: int) -> list[np.ndarray]
 
 
 def _alone(objective: Objective, p) -> jax.Array:
-    """``objective(p)`` solved as if alone: without design guesses."""
+    """``objective(p)`` solved as if alone: without design guesses or reused factors."""
     for disc in cache._DISCRETIZATIONS.values():
         disc.drop_guesses()
+    # a consumed entry's base would return to the plan pool at the next
+    # differentiated forward; free it, then every pooled plan, so no solve
+    # starts from an earlier evaluation's factors
+    cache.ENTRIES.free_consumed()
+    cache.ENTRIES.free_plans_off(set())
     return objective(p)
 
 
