@@ -446,6 +446,36 @@ def test_the_drive_must_fit_the_result(line, single):
         _heat(result, model, incident_power={"p1": -1e-3})
 
 
+def _air_in_layer(c):
+    return "air" if ((c > 0) & (c < 1)).all() else "pml"
+
+
+def test_a_result_of_sources_alone_is_refused_with_the_dissipated_power(tmp_path):
+    import pml_cases as pc
+
+    sides = ("-x", "+x", "-y", "+y", "-z", "+z")
+    mesh = gfem.Mesh.from_gmsh(
+        pc.box(tmp_path / "b.msh", sides, thickness=0.25, cells=4, volume=_air_in_layer)
+    )
+    air = gfem.Material()
+    model = gfem.Model(
+        mesh,
+        materials={"air": air, "pml": air},
+        pml=gfem.PML("pml"),
+        background=air,
+    )
+    wave = gfem.PlaneWave("w", theta=0.4, phi=0.3, polarization="TE")
+    result = gfem.solve(
+        model,
+        gfem.Driven(pc.F0, sources=(wave,), keep_fields=True),
+        options=gfem.SolverOptions(order=1, linear_solver="direct"),
+    )
+    with pytest.raises(ValueError, match=r"no excited port.*dissipated_power"):
+        gfem.electromagnetic_heating(
+            result, model=model, frequency=pc.F0, incident_power=1.0
+        )
+
+
 def test_the_per_length_drive_is_the_cross_section_s(line, slab):
     model, result = line
     with pytest.raises(ValueError, match="give the total incident_power= in W"):
