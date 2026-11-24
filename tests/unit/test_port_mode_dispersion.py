@@ -29,6 +29,7 @@ from gfem._sweep import port_mode as sweep
 from gfem._sweep.port_mode import _Greedy, _wavenumbers
 
 DATA = Path(__file__).parent / "data"
+LINE_MESH = Path(__file__).parents[2] / "docs" / "tutorials" / "data" / "line2d.msh"
 C0 = 299792458.0
 EPS0 = scipy.constants.epsilon_0
 F = 15e9
@@ -326,3 +327,46 @@ def test_a_filled_guide_s_reported_dispersion_is_its_closed_form(guide_mesh, fil
         ports=[gfem.WavePort("p1", "port1")],
     )
     _assert_closed_form(gfem.solve(model, gfem.PortMode("p1", 10e9)), eps)
+
+
+LINE_LAW = (
+    2.0,
+    gfem.Lorentz(delta_eps=2.0, resonance_frequency=200e9, damping=5e9),
+)
+# a loss tangent of 0.4 at the line cases' frequency
+LINE_SIGMA = 0.4 * 2 * math.pi * 50e9 * EPS0
+LINE_CASES = {
+    "Ez-law": ("Ez", _law(*LINE_LAW), {}),
+    "Hz-law": ("Hz", _law(*LINE_LAW), {}),
+    "Hz-law-pec-ends": ("Hz", _law(*LINE_LAW), {"pec_edges": ("side",)}),
+    "Hz-conductive-pec-ends": (
+        "Hz",
+        (
+            gfem.Material(eps_r=4.0, conductivity=LINE_SIGMA),
+            _conductive(4.0, LINE_SIGMA),
+        ),
+        {"pec_edges": ("side",)},
+    ),
+    "Ez-conductive-pec-ends": (
+        "Ez",
+        (
+            gfem.Material(eps_r=4.0, conductivity=LINE_SIGMA),
+            _conductive(4.0, LINE_SIGMA),
+        ),
+        {"pec_edges": ("side",)},
+    ),
+}
+
+
+@pytest.mark.parametrize("case", LINE_CASES)
+def test_a_filled_line_port_s_dispersion_is_its_closed_form(case):
+    polarization, (material, eps), port = LINE_CASES[case]
+    mesh = gfem.Mesh.from_gmsh(LINE_MESH, length_unit="mm")
+    model = gfem.Model(
+        mesh,
+        materials={"feed": material, "design": material},
+        ports=[gfem.WavePort("p1", "port1", **port), gfem.WavePort("p2", "port2")],
+    )
+    problem = gfem.PortMode("p1", 50e9, polarization=polarization)
+    result = gfem.solve(model, problem, options=gfem.SolverOptions(order=3))
+    _assert_closed_form(result, eps)
