@@ -743,6 +743,12 @@ Boundary morph
 Moving surface
   The selected surface whose nodes carry the shape {term}`design parameters`.
 
+Node map
+  A function of {term}`design parameters`, written by you in JAX, that returns a
+  mesh's node coordinates with its topology unchanged, applied with
+  {py:meth}`gfem.Mesh.with_nodes`. Where a {term}`boundary morph` moves a
+  surface and lets the rest follow, a node map says where every node goes.
+
 Sliding surface
   A surface whose nodes may move only within their own facet plane during a
   {term}`boundary morph`. On a {term}`periodic pair`, a node and its partner
@@ -1247,6 +1253,104 @@ Electrode clearance
   $\ln(1/\delta) / (2\kappa)$ with $\kappa = k_0 \sqrt{n_\mathrm{eff}^2 -
   n_\mathrm{slab}^2}$, so that the mode's intensity at the metal is $\delta$
   of its value at the ridge's edge.
+```
+
+## Piezoelectric acoustics
+
+```{glossary}
+Stiffness
+  A solid's elastic stiffness at constant electric field, $c^E$: a symmetric
+  positive-definite 6 × 6 matrix in Pa in {term}`Voigt order <engineering strain>`
+  (`stiffness`), in the frame of the material's `axes`. The piezoelectric
+  stiffening is added by the solve. {py:obj}`gfem.isotropic_stiffness` builds an
+  isotropic solid's from its Young's modulus and Poisson's ratio.
+
+Piezoelectric tensor
+  The stress constants $e$ of a crystal, a 3 × 6 matrix in C/m²
+  (`piezoelectric_tensor`): rows the field components, columns in Voigt order,
+  in the frame of the material's `axes`. The stress and the electric
+  displacement are $T = c^E S - e^\mathsf{T} E$ and $D = e S + \varepsilon^S E$.
+
+Clamped permittivity
+  The permittivity at constant strain, $\varepsilon^S$: in gfem the `eps_r` of a
+  material in a {py:obj}`gfem.Piezoelectric` problem.
+
+Mechanical quality factor
+  The loss of a solid as a complex stiffness $c (1 + i/Q_m)$ under
+  $e^{+i\omega t}$ (`mechanical_quality_factor`). It lumps the material's, the
+  scattering and the electrodes' losses, which the model does not compute.
+
+Mechanical domain
+  The volumes a {py:obj}`gfem.Piezoelectric` problem solves the displacement on:
+  every volume not excluded with `excluded={"mechanical": [...]}`. Each needs a
+  {term}`stiffness` and a `mass_density`; air and a handle's potential-only
+  regions are left out of it.
+
+Interdigital transducer
+  Interleaved comb electrodes on a piezoelectric surface whose alternating
+  fingers launch and detect acoustic waves. In a cross-section model it is the
+  whole finger set, with its reflectors if it has any.
+
+Meshed electrode
+  A metal region that carries displacement, stiffness and mass, with its
+  potential fixed on the whole region. It is named as a terminal or as ground by
+  its area, and loads the crystal under it.
+
+Line electrode
+  A zero-thickness electrode: a potential fixed on a named line, with no mass.
+  It is named as a terminal or as ground by its line.
+
+Clamped surface
+  A line of a piezoelectric section where the displacement is held at zero
+  (`clamped=`). Every other boundary is traction-free.
+
+Damping frame
+  An absorbing edge region where the stiffness becomes
+  $c (1 + i(1/Q_m + \eta r^2))$, with $r$ the normalised depth into the region
+  and $\eta$ its {term}`loss factor <Loss factor (of a damping frame)>`
+  ({py:obj}`gfem.DampingFrame`). It absorbs the acoustic waves that leave a
+  piezoelectric section, as a {term}`perfectly matched layer` does the
+  electromagnetic ones.
+
+Loss factor (of a damping frame)
+  The loss $\eta$ that a {term}`damping frame` adds to the stiffness at its outer
+  edge. The default, 1.2, absorbs well from about four wavelengths of frame.
+
+Admittance per length
+  The current into a terminal per volt on another, per metre along $z$:
+  $Y'_{ij}(f)$ in S/m, the result's `admittance_per_length`. A device of
+  {term}`aperture` $W$ has $Y = W Y'$.
+
+Clamped capacitance
+  The capacitance of the electrodes with the {term}`clamped permittivity` and the
+  solid held still, $C_0'$ per metre along $z$
+  (`clamped_capacitance_per_length`). It is not the low-frequency limit of
+  $Y'/i\omega$, the free capacitance, which is larger by $1 + K^2$.
+
+Aperture
+  The length along $z$ over which an
+  {term}`interdigital transducer <Interdigital transducer>`'s fingers overlap. It
+  multiplies a per-length admittance into the device's.
+
+Series resistance
+  The resistance of an electrode's fingers and bus in series with its terminal,
+  added when the {term}`admittance per length` becomes network parameters
+  (`network_parameters(series_resistance=...)`).
+
+Engineering strain
+  The six strain components in Voigt order $xx, yy, zz, yz, xz, xy$, with the
+  shear entries twice the tensor components: $S_{xz} = \partial_x u_z$ for a
+  field that does not vary along $z$ ({py:obj}`gfem.strain`).
+
+Radiation conductance
+  The real part of a transducer's {term}`admittance per length`,
+  $G' = \mathrm{Re}\,Y'$. When its waves leave through absorbing edges,
+  $\tfrac12 G' |V|^2$ is the power radiated and dissipated per metre of aperture.
+
+Synchronous frequency
+  The frequency at which the acoustic wavelength equals a transducer's period,
+  $f_0 = v / (2p)$ for fingers alternating at pitch $p$ and a wave of speed $v$:
+  where the {term}`radiation conductance` peaks.
 ```
 
 ## Distributed runs

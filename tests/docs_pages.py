@@ -48,6 +48,9 @@ MESHES = {
     / "tfln_section.py",
     MESH_URL.replace("line.msh", "antenna_box.msh"): MESH.with_name("antenna_box.msh"),
     MESH_URL.replace("line.msh", "sphere.msh"): MESH.with_name("sphere.msh"),
+    MESH_URL.replace("data/line.msh", "transducer_section.py"): DOCS
+    / "tutorials"
+    / "transducer_section.py",
 }
 
 _FENCE = re.compile(

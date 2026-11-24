@@ -31,6 +31,7 @@ tutorials/grating
 tutorials/heater
 tutorials/heater3d
 tutorials/modulator
+tutorials/transducer
 ```
 
 ```{toctree}
@@ -78,6 +79,7 @@ recipes/heater-temperature
 recipes/electromagnetic-heating
 recipes/thermo-optic-phase
 recipes/electro-optic-phase
+recipes/piezoelectric-admittance
 recipes/thermal-step-response
 recipes/shared-port-surface
 recipes/measurements

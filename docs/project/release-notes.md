@@ -84,6 +84,44 @@ Electro-optics:
   "Electro-optic shift" section of the conventions and an "Electro-optics"
   section of the glossary.
 
+Piezoelectric acoustics:
+
+- **Piezoelectric problems.** `gfem.Piezoelectric` solves linear
+  piezoelectricity on a 2D section for the admittance per length between
+  electrodes over a list of frequencies. It returns a
+  `gfem.PiezoelectricResult`: `admittance_per_length` (S/m), the
+  `clamped_capacitance_per_length` (F/m) and, with `keep_fields`, the kept
+  displacement (`displacement(f)`, a map of x, y and z) and potential. The
+  electrodes are meshed fingers or lines, the handle's base is a `clamped=`
+  line, and `gfem.DampingFrame` names the regions that absorb the waves leaving
+  the section ({doc}`../recipes/piezoelectric-admittance`).
+- **Solid materials.** `Material` and `MaterialField` take `stiffness` (the
+  6 × 6 $c^E$ in Pa), `piezoelectric_tensor` (the 3 × 6 $e$ in C/m²) and
+  `mechanical_quality_factor`, in the frame of `axes`; `gfem.isotropic_stiffness`
+  builds an isotropic solid's stiffness. `excluded={"mechanical": [...]}` leaves
+  regions, such as air, out of the mechanical domain.
+- **Network parameters and strain.** `PiezoelectricResult.network_parameters`
+  turns the admittance into S-parameters for an aperture, a series resistance and
+  a reference impedance, with Touchstone output, and `gfem.strain` reads the
+  engineering strain of a kept displacement at points.
+- **Node maps.** `Mesh.with_nodes(nodes)` returns a mesh with its nodes at new
+  coordinates, on any mesh: write a JAX function of your design parameters that
+  returns the coordinates, apply it, and differentiate through it.
+- **Gradients.** The admittance, the clamped capacitance and readings of the
+  fields differentiate with respect to the stiffness, piezoelectric tensor,
+  permittivity, mass density and mechanical quality factor of every element, and
+  through a node map; the frequencies, terminals, clamped lines and damping frame
+  raise `gfem.NonDifferentiableError`.
+- **Behaviour change: anisotropic materials on a 2D model.** A 2D model no longer
+  raises an anisotropic material when it is built; a 2D driven or port-mode
+  solve still refuses it, now at the solve. `MissingMaterialPropertyError` names
+  the missing properties of any problem, not only thermal ones.
+- **Documentation.** A tutorial, "An acoustic transducer: shear plate waves in
+  thin-film lithium niobate", the recipe "Find a transducer's admittance and
+  reflection", a "Piezoelectric problems" section of the conventions, a
+  "Piezoelectric acoustics" section of the glossary and a section of the
+  verification page.
+
 Linear solvers:
 
 - **A p-multigrid linear solver.** `SolverOptions(linear_solver="pmg_gmres")`
