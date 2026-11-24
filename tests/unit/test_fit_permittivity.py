@@ -36,7 +36,7 @@ def _eps(f, eps_inf, drude=None, lorentz=()):
 
 
 def _nk(eps):
-    """The tabulated index: :math:`n - ik = \\sqrt{\\varepsilon}` with k >= 0."""
+    """The tabulated index: :math:`n - ik = \\sqrt{\\varepsilon}`, :math:`k \\ge 0`."""
     s = np.sqrt(eps)
     s = np.where(s.imag > 0, -s, s)
     return s.real, -s.imag
@@ -173,7 +173,8 @@ def test_the_record_is_frozen_and_the_law_differentiates(lossy_fit):
 
 # --- warnings ----------------------------------------------------------------------
 
-#: Two weak resonances: Re eps stays > 0, so the remedies do not suggest a metal.
+#: Two weak resonances: :math:`\mathrm{Re}\,\varepsilon > 0` throughout, so the
+#: remedies do not suggest a metal.
 TWO = (2.0, None, [(0.5, 200 * THZ, 40 * THZ), (0.3, 450 * THZ, 60 * THZ)])
 
 
@@ -188,7 +189,7 @@ def test_too_few_terms_warns_and_returns_the_best():
     assert f"{100 * fit.eps_error:.2g} %" in message
     assert "1 Lorentz" in message
     assert "max_lorentz_terms" in message
-    assert "narrow the band" in message
+    assert "fit a narrower range" in message
     assert "raise tolerance" in message
     assert "drude=True" not in message  # Re eps > 0: not a metal
 

@@ -464,7 +464,10 @@ def _law_number(owner: str, name: str, value: Any, bound: str, unit: str) -> Any
 
 
 def _fitted_range(value: Any) -> tuple[float, float] | None:
-    """A checked fitted range: ``None``, or two floats with 0 < low < high (Hz).
+    r"""A checked fitted range: ``None``, or two floats in Hz.
+
+    The two are :math:`(f_\mathrm{low}, f_\mathrm{high})` with
+    :math:`0 < f_\mathrm{low} < f_\mathrm{high}`.
 
     The range is static pytree data, so a traced value or an array (whose
     entries could be traced, and which does not hash) is refused.
@@ -581,7 +584,7 @@ class Drude(_DispersionTerm):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Lorentz(_DispersionTerm):
-    r"""A bound-oscillator (Lorentz) term of a `PermittivityLaw`.
+    r"""A Lorentz term of a `PermittivityLaw`: a damped bound-charge resonance.
 
     Under :math:`e^{+i\omega t}` it adds
     :math:`\Delta\varepsilon\, \omega_0^2 /
@@ -758,7 +761,8 @@ class PermittivityLaw:
     Raises:
         ValueError: ``eps_inf`` is not a finite real number > 0, or
             ``terms`` is empty (a constant permittivity is ``eps_r=<number>``),
-            or ``frequency_range`` is not finite with 0 < low < high.
+            or ``frequency_range`` is not finite with
+            :math:`0 < f_\mathrm{low} < f_\mathrm{high}`.
         TypeError: An entry of ``terms`` is not a dispersion term, or
             ``frequency_range`` is not two numbers (an array or a value
             under a JAX transformation is refused: the range is static).

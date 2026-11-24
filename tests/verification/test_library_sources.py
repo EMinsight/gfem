@@ -101,8 +101,8 @@ def test_lithium_niobate_against_zelmon_1997():
     np.testing.assert_allclose(np.sqrt(eps[:, 2]), extraordinary, rtol=0, atol=1e-12)
 
 
-#: Rakic 1998, Table 1 (hbar omega_p, eV) and Table 2 (f_0, Gamma_0, then
-#: f_j, Gamma_j, omega_j in eV).
+#: Rakic 1998, Table 1 (:math:`\hbar\omega_p`, eV) and Table 2 (:math:`f_0`,
+#: :math:`\Gamma_0`, then :math:`f_j, \Gamma_j, \omega_j` in eV).
 RAKIC = {
     "gold": (
         9.03,
@@ -143,10 +143,10 @@ RAKIC = {
 
 def _rakic(metal, energy_ev):
     """Rakic's eqs. (2)-(3) in eV, under :math:`e^{+i\\omega t}` as printed."""
-    wp, f0, g0, oscillators = RAKIC[metal]
+    wp, f0, g0, terms = RAKIC[metal]
     w = np.asarray(energy_ev, complex)
     eps = 1 - f0 * wp**2 / (w * (w - 1j * g0))
-    for fj, gj, wj in oscillators:
+    for fj, gj, wj in terms:
         eps = eps + fj * wp**2 / ((wj**2 - w**2) + 1j * w * gj)
     return eps
 
@@ -179,7 +179,8 @@ def test_the_clamped_tensor_and_static_permittivity():
     np.testing.assert_allclose(
         np.array(entries) * 1e12, (8.6, 3.4, 30.8, 28.0), rtol=1e-12
     )
-    # Smith and Welsh print eps_11^S = 0.392 nF/m and eps_33^S = 0.247 nF/m
+    # Smith and Welsh print :math:`\varepsilon_{11}^S = 0.392` nF/m and
+    # :math:`\varepsilon_{33}^S = 0.247` nF/m
     static = materials.lithium_niobate_static(axes=X_CUT).eps_r
     printed = np.array([0.392, 0.392, 0.247]) * 1e-9 / epsilon_0
     np.testing.assert_allclose(static, printed, atol=0.05)

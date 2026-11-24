@@ -127,16 +127,18 @@ _EV = e / h
 
 
 def _wavelengths(short: float, long: float) -> tuple[float, float]:
-    """The fitted range in Hz of a band given in micrometres."""
+    """The fitted range in Hz of wavelengths given in micrometres."""
     return (c / (long * _UM), c / (short * _UM))
 
 
 def _energies(low: float, high: float) -> tuple[float, float]:
-    """The fitted range in Hz of a band given in eV."""
+    """The fitted range in Hz of photon energies given in eV."""
     return (low * _EV, high * _EV)
 
 
-#: ``(hbar omega_p, f_0, Gamma_0, ((f_j, Gamma_j, omega_j), ...))``, in eV.
+#: A Lorentz-Drude row
+#: :math:`(\hbar\omega_p, f_0, \Gamma_0, ((f_j, \Gamma_j, \omega_j), \dots))`,
+#: energies in eV.
 type _RakicRow = tuple[float, float, float, tuple[tuple[float, float, float], ...]]
 
 
@@ -145,8 +147,9 @@ class _Source:
     r"""One cited source's numbers, as the paper (or gfem's refit) prints them.
 
     ``sellmeier`` holds lossless terms :math:`B \lambda^2 / (\lambda^2 -
-    \lambda_0^2)` as ``(B, lambda_0 in um)``; ``rakic`` a Lorentz-Drude row
-    ``(hbar omega_p, f_0, Gamma_0, ((f_j, Gamma_j, omega_j), ...))`` in eV.
+    \lambda_0^2)` as pairs :math:`(B, \lambda_0)`, :math:`\lambda_0` in
+    µm; ``rakic`` a Lorentz-Drude row :math:`(\hbar\omega_p, f_0, \Gamma_0,
+    ((f_j, \Gamma_j, \omega_j), \dots))`, energies in eV.
     """
 
     tag: str
@@ -163,9 +166,10 @@ class _Source:
                 for b, lam in self.sellmeier
             )
         else:
-            # Rakic et al. print the model under exp(+i omega t) with gfem's own
-            # term forms, so the parameters map one to one, without conjugation.
-            wp, f0, g0, oscillators = self.rakic
+            # Rakic et al. print the model under :math:`e^{+i\omega t}` with
+            # gfem's own term forms, so the parameters map one to one, without
+            # conjugation.
+            wp, f0, g0, rakic_terms = self.rakic
             drude = Drude(plasma_frequency=math.sqrt(f0) * wp * _EV, damping=g0 * _EV)
             terms = (
                 drude,
@@ -175,7 +179,7 @@ class _Source:
                         resonance_frequency=wj * _EV,
                         damping=gj * _EV,
                     )
-                    for fj, gj, wj in oscillators
+                    for fj, gj, wj in rakic_terms
                 ),
             )
         return PermittivityLaw(
@@ -184,7 +188,7 @@ class _Source:
 
 
 # Si: gfem's lossless minimax refit of Li's eq. (22) at 293 K, whose
-# A / lambda^2 term is no passive pole.
+# :math:`A / \lambda^2` term is no passive pole.
 _LI = _Source(
     tag="silicon (Li 1980)",
     fitted_range=_wavelengths(1.2, 14.0),
@@ -205,7 +209,7 @@ _LUKE = _Source(
     sellmeier=((3.0244902, 0.1354027), (261.41515, 100.0)),
 )
 # LN, congruent: Zelmon's ordinary and extraordinary Sellmeier, verbatim
-# (B, C in um^2, so lambda_0 = sqrt(C)).
+# (:math:`B`, and :math:`C` in µm², so :math:`\lambda_0 = \sqrt{C}`).
 _ZELMON_O = _Source(
     tag="lithium niobate, ordinary (Zelmon 1997)",
     fitted_range=_wavelengths(0.4, 5.0),
@@ -224,7 +228,8 @@ _ZELMON_E = _Source(
         (8.9543, math.sqrt(416.08)),
     ),
 )
-# Au, Cu, Al: Rakic et al. Table 1 (hbar omega_p) and Table 2, verbatim.
+# Au, Cu, Al: Rakic et al. Table 1 (:math:`\hbar\omega_p`) and Table 2,
+# verbatim.
 _RAKIC_GOLD = _Source(
     tag="gold (Rakic 1998)",
     fitted_range=_energies(0.1, 6.0),
@@ -329,7 +334,11 @@ def _warn_outside(
 
 
 def _real_value(source: _Source, frequency: float) -> float:
-    """``Re law(frequency)``: the whole value, since the law is lossless."""
+    r"""The law's value at ``frequency``, a float.
+
+    :math:`\mathrm{Re}\,\varepsilon` is the whole value, since the law is
+    lossless.
+    """
     return float(np.real(complex(source.law()(frequency))))
 
 

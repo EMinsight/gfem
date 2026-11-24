@@ -52,9 +52,9 @@ url = (
 )
 urllib.request.urlretrieve(url, "gold.csv")
 wavelength, n, k = np.loadtxt("gold.csv", delimiter=",", unpack=True)  # µm, n, k
-band = (wavelength >= 0.4) & (wavelength <= 1.7)
-frequency = c / (wavelength[band] * 1e-6)  # Hz
-fit = gfem.fit_permittivity(frequency, n=n[band], k=k[band], drude=True)
+rows = (wavelength >= 0.4) & (wavelength <= 1.7)
+frequency = c / (wavelength[rows] * 1e-6)  # Hz
+fit = gfem.fit_permittivity(frequency, n=n[rows], k=k[rows], drude=True)
 print(fit)
 
 gold = gfem.Material(eps_r=fit.law, name="gold (McPeak 2015)")
@@ -113,9 +113,9 @@ The three errors answer different questions:
 
 ```python
 index = np.sqrt(np.asarray(fit.law(frequency)))  # n - ik
-worst = np.argmax(np.abs(index.real - n[band]) / n[band])
-print(f"at {wavelength[band][worst]:.2f} µm: n {n[band][worst]:.4f}, law {index.real[worst]:.4f}")
-print(f"at {wavelength[band][worst]:.2f} µm: k {k[band][worst]:.3f}, law {-index.imag[worst]:.3f}")
+worst = np.argmax(np.abs(index.real - n[rows]) / n[rows])
+print(f"at {wavelength[rows][worst]:.2f} µm: n {n[rows][worst]:.4f}, law {index.real[worst]:.4f}")
+print(f"at {wavelength[rows][worst]:.2f} µm: k {k[rows][worst]:.3f}, law {-index.imag[worst]:.3f}")
 ```
 
 ```text
@@ -125,7 +125,7 @@ at 0.70 µm: k 4.305, law 4.302
 
 There the law's $\mathrm{Im}\,\varepsilon$ is about 18 % larger than the
 table's, so a device whose loss comes from the gold near 0.7 µm loses about
-that much more in the model. Fit a narrower band around the
+that much more in the model. Fit a narrower range around the
 wavelengths you solve at when that matters.
 
 When the fit stops above its tolerance it still returns its best law and
@@ -136,7 +136,7 @@ warns `gfem.PermittivityFitWarning`, naming the remedies:
   fewer terms.
 - **A metal.** Pass `drude=True` when the table has
   $\mathrm{Re}\,\varepsilon < 0$.
-- **A narrower band.** Fit only the rows you will solve at.
+- **A narrower range.** Fit only the rows you will solve at.
 - **A looser tolerance.** When the table's own scatter is larger than the
   tolerance, no law follows it closer: set `tolerance` to the scatter.
 
@@ -172,7 +172,7 @@ A law with `frequency_range=None` never warns, as a law written by hand.
   use
   {py:obj}`PermittivityLaw.djordjevic_sarkar <gfem.PermittivityLaw.djordjevic_sarkar>`.
 - **Isotropic.** A law is one value for every direction. For a crystal, give
-  constant principal values per band.
+  constant principal values at one frequency.
 - **Not differentiable.** The fit chooses a term count and starting
   resonances, so it has no derivative, and an input traced by `jax.grad` or
   `jax.jit` raises `gfem.NonDifferentiableError`. Fit outside the
@@ -182,8 +182,8 @@ A law with `frequency_range=None` never warns, as a law written by hand.
   last bit on one machine, in any row order; on another machine it may
   differ in its last digits.
 - **Resonances in the range.** A fitted metal law holds one to four damped
-  Lorentz resonances inside or near its fitted range. Each one inside a
-  sweep's band costs the adaptive sweep two solves. Each also raises the
+  Lorentz resonances inside or near its fitted range. Each one among a
+  sweep's frequencies costs the adaptive sweep two solves. Each also raises the
   law's index near it, and the eigenmode {term}`unresolved band` reads that
   index: a coarse mesh in the metal may refuse a target near a resonance.
 - **No narrow lines.** Every Lorentz damping is at least twice the median

@@ -24,7 +24,7 @@ EV = e / h  # Hz per eV
 
 
 def _table(path, low_um=0.0, high_um=np.inf):
-    """Frequency (Hz) and the table's other columns, over a band in µm."""
+    """Frequency (Hz) and the table's other columns, over a wavelength range in µm."""
     rows = np.loadtxt(path, delimiter=",", ndmin=2)
     rows = rows[(rows[:, 0] >= low_um - 1e-9) & (rows[:, 0] <= high_um + 1e-9)]
     return c / (rows[:, 0] * 1e-6), rows[:, 1:].T
@@ -47,7 +47,8 @@ def test_gold_film_table():
     fit = _quiet_fit(f, n=n, k=k, drude=True)
     assert fit.eps_error <= 1e-2
     assert fit.k_error <= 1e-2
-    # a metal's loss: Im eps = -2nk, so the n error is that of its absorption
+    # a metal's loss is :math:`\mathrm{Im}\,\varepsilon = -2nk`, so the
+    # :math:`n` error is that of its absorption
     assert 0.1 < fit.n_error < 0.3
     assert isinstance(fit.law.terms[0], gfem.Drude)
     assert sum(isinstance(t, gfem.Lorentz) for t in fit.law.terms) <= 4

@@ -2,7 +2,7 @@
 
 Each entry is a function returning a plain `gfem.Material`. The expected
 numbers below are the sources' own (ranges in Hz from the wavelength or
-photon-energy bands the papers state, indices at 1.55 um from the source
+photon-energy ranges the papers state, indices at 1.55 um from the source
 formulas), not recomputed the way the module computes them.
 """
 
@@ -141,8 +141,8 @@ def test_the_docstrings_state_the_out_of_range_values():
     assert "13.5" in doc
 
 
-#: ADR-fixed fitted ranges in Hz: the source bands 1.2-14 um, 0.31-5.504 um,
-#: 0.21-3.71 um and 0.1-6 eV.
+#: The fitted ranges in Hz: each is its source's own printed range, 1.2-14 µm,
+#: 0.31-5.504 µm, 0.21-3.71 µm and 0.1-6 eV.
 RANGES = {
     "silicon": (2.141375e13, 2.498270e14),
     "silicon_nitride": (5.446811e13, 9.670724e14),
@@ -209,7 +209,7 @@ def test_frequency_gives_the_law_s_real_value():
         assert type(constant.eps_r) is float
         assert constant.eps_r == float(np.real(law(F_1550)))
         assert constant.name == getattr(materials, entry)().name
-    # silica at 1.55 um is 1.444^2, not its static permittivity
+    # silica at 1.55 µm is :math:`1.444^2`, not its static permittivity
     assert materials.silica(frequency=F_1550).eps_r == pytest.approx(2.085, abs=1e-3)
 
 

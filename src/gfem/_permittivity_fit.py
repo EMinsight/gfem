@@ -179,10 +179,12 @@ def fit_permittivity(
             comes without ``n``, or ``drude`` is not a bool.
         ValueError: The data are unusable: not 1-D or of unequal lengths,
             not real (``frequency``, ``n``, ``k``) or not numbers, NaN or
-            infinite, a frequency <= 0 or repeated, :math:`n < 0`, gain
-            (:math:`k < 0`, or :math:`\mathrm{Im}\,\varepsilon > 0`), an
-            ``eps`` of 0, too few points for the smallest law, or a
-            ``max_lorentz_terms`` or ``tolerance`` out of range. Nothing is
+            infinite, a frequency :math:`f \le 0` or repeated,
+            :math:`n < 0`, gain (:math:`k < 0`, or
+            :math:`\mathrm{Im}\,\varepsilon > 0`), an ``eps`` of 0, too few
+            points for the smallest law, or a ``max_lorentz_terms`` or
+            ``tolerance`` out of range; or no lossless law fits (every
+            resonance tried fell between the data's frequencies). Nothing is
             clipped; the message names the remedy.
         NonDifferentiableError: An input is traced by JAX
             (`jax.grad`, `jax.jit`): the fit picks a term count and
@@ -697,7 +699,10 @@ def _build(params: np.ndarray, data: _Data, scale: float) -> PermittivityLaw:
 
 
 def _index(eps: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """``n`` and ``k`` from ``n - ik = sqrt(eps)`` on the branch ``k >= 0``."""
+    r"""The index ``n`` and extinction coefficient ``k`` of ``eps``.
+
+    :math:`n - ik = \sqrt{\varepsilon}` on the branch :math:`k \ge 0`.
+    """
     s = np.sqrt(eps.astype(complex))
     s = np.where(s.imag > 0, -s, s)
     return s.real, -s.imag
@@ -737,7 +742,7 @@ def _warn(fit: PermittivityFit, data: _Data, terms: int) -> None:
         if not data.drude and np.any(data.eps.real < 0):
             remedies.append("pass drude=True (the data have Re eps < 0, as a metal)")
         remedies += [
-            "narrow the band (fit a slice of the rows)",
+            "fit a narrower range (a slice of the rows)",
             "raise tolerance if the table's own scatter is that large",
         ]
         lines.append(

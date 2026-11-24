@@ -45,7 +45,8 @@ def test_the_law_block_builds_gold_and_a_datasheet_substrate(laws):
     gold = laws["gold"]
     assert isinstance(gold, gfem.Material)
     assert isinstance(gold.eps_r, gfem.PermittivityLaw)
-    # gold at 1.55 µm: Re eps far below 0, a little loss (the tutorial's value)
+    # gold at 1.55 µm: :math:`\mathrm{Re}\,\varepsilon` far below 0, a little
+    # loss (the tutorial's value)
     eps = complex(gold.eps_r(299792458.0 / 1.55e-6))
     assert eps.real == pytest.approx(-125.83, abs=0.01)
     assert eps.imag == pytest.approx(-8.39, abs=0.01)

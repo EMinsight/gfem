@@ -340,7 +340,7 @@ ELECTROSTATIC = gfem.Electrostatic(terminals={"top": "top"}, ground="bottom")
 
 
 def test_an_electrostatic_solve_warns_with_the_static_value(tmp_path):
-    # law(0) = eps_inf + delta_eps = 3.5
+    # :math:`\varepsilon(0) = \varepsilon_\infty + \Delta\varepsilon = 3.5`
     law = gfem.PermittivityLaw(
         eps_inf=2.0,
         terms=[gfem.Lorentz(delta_eps=1.5, resonance_frequency=300 * THZ, damping=0.0)],
