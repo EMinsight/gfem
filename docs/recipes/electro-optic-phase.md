@@ -235,7 +235,7 @@ mode 2: n_eff 1.9076, TE fraction 0.994
 
 - **Mirror symmetry.** In a symmetric ground-signal-ground section the two
   arms' shifts are equal and opposite, to the meshes' asymmetry: $3 \times
-  10^{-3}$ above, and $4 \times 10^{-5}$ on the tutorial's finer section.
+  10^{-3}$ above, and $2.5 \times 10^{-5}$ on the tutorial's finer section.
 - **The bulk estimate.** A uniform field $V/g$ across a gap $g$ shifts a
   TE mode's index by about $\tfrac12 n_e^3 r_{33} V / g$. The ratio of the
   shift to it, the {term}`electro-optic overlap factor` $\Gamma$, is between

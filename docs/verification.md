@@ -689,7 +689,7 @@ remeshed sections. Each check runs on every change to gfem.
   optical model's permittivity and nodes raise.
 
 Three comparisons are observations, not checks, and live on the pages. The
-modulator of Wang et al. (2018): gfem's push-pull $V_\pi L$ is 1.61 V·cm
+modulator of Wang et al. (2018): gfem's push-pull $V_\pi L$ is 1.62 V·cm
 against the measured 1.8 V·cm, at assumed values of the dimensions the paper
 withholds ({doc}`tutorials/modulator`). An optical window and the whole
 section with the electrodes excluded give shifts within a few percent, and
