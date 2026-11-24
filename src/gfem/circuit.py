@@ -21,6 +21,7 @@ import dataclasses
 import inspect
 import os
 import types
+import weakref
 from collections.abc import Callable, Mapping
 from typing import Any, Literal
 
@@ -103,8 +104,14 @@ class SaxComponent:
     wavelength is not part of it), so SAX's no-argument call when the
     circuit is built, calls at new wavelengths and a block that is not
     differentiated cost no solve. A design computed inside `jax.grad`,
-    `jax.jit` or `jax.vmap` is solved on every call. A call inside a
-    transformation stores nothing.
+    `jax.jit` or `jax.vmap` is solved on every call, except that instances
+    fed the very same traced value (one tracer object, not an equal one)
+    share one forward and one backward solve, kept only while that tracer
+    lives. A call inside a transformation keeps no concrete entry. With an
+    adaptive template (``sweep="adaptive"``) without ``samples``, the
+    constructor's solve is the greedy sweep: its sampled frequencies are
+    frozen into `problem`, so every later solve, traced ones included, uses
+    them.
 
     Build the circuit once, outside the transformed function, and pass
     designs as instance settings.
@@ -147,7 +154,8 @@ class SaxComponent:
 
     Attributes:
         model: The model function or model, as given.
-        problem: The template, as given.
+        problem: The template, as given, with the samples of an adaptive
+            sweep frozen by the constructor.
         circuit: The circuit kind.
         ports: The exposed ports, gfem name -> circuit name.
         options: The solver options.
@@ -181,6 +189,7 @@ class SaxComponent:
     _band: np.ndarray
     _solved: Driven
     _memo: collections.OrderedDict[tuple, NetworkParameters]
+    _traced: dict[tuple, tuple[list[weakref.ref], NetworkParameters]]
 
     def __init__(
         self,
@@ -215,6 +224,15 @@ class SaxComponent:
         exposed = _circuit_ports(ports, built.port_names)
         _check_references(built, exposed)
         band, solved = _template(problem, exposed)
+        greedy = None
+        if solved.sweep == "adaptive" and solved.samples is None:
+            # the greedy solve is the constructor's solve at the defaults;
+            # its samples are the band's from now on, in every later solve
+            greedy = solve(built, solved, options=options, cache=cache)
+            assert greedy.sweep is not None  # an adaptive solve reports its sweep
+            samples = tuple(greedy.sweep.sampled_frequencies)
+            problem = dataclasses.replace(problem, samples=samples)
+            solved = dataclasses.replace(solved, samples=samples)
         middle = 0.5 * (band[0] + band[-1])
         default_f = float(band[np.argmin(np.abs(band - middle))])
         settings = {**defaults, "wl": _wavelength(default_f)}
@@ -231,6 +249,7 @@ class SaxComponent:
             "_band": band,
             "_solved": solved,
             "_memo": collections.OrderedDict(),
+            "_traced": {},
             # SAX reads the settings from the signature; no return annotation,
             # since SAX takes one naming a model or callable for a factory
             "__signature__": inspect.Signature(
@@ -242,7 +261,10 @@ class SaxComponent:
         }
         for name, value in fields.items():
             object.__setattr__(self, name, value)
-        self._network(defaults, built)
+        if greedy is None:
+            self._network(defaults, built)
+        else:
+            self._keep(self._key(defaults), greedy.s)
 
     def __call__(self, **settings: Any) -> dict[tuple[str, str], jax.Array]:
         """S between the circuit ports at ``wl``, for these settings.
@@ -292,36 +314,80 @@ class SaxComponent:
         built it already.
         """
         key = self._key(design)
-        if key is not None and key in self._memo:
-            self._memo.move_to_end(key)
-            return self._memo[key]
+        if key is not None:
+            hit = self._lookup(key)
+            if hit is not None:
+                return hit
         if model is None:
             model = _build(self._function, design)
         network = solve(model, self._solved, options=self.options, cache=self.cache).s
         self._keep(key, network)
         return network
 
-    def _key(self, design: dict[str, Any]) -> tuple | None:
-        """The memo key of ``design`` and the band, or ``None`` when unkeyable.
+    def _key(self, design: dict[str, Any]) -> tuple[tuple, list[Any]] | None:
+        """The memo key of ``design`` and the band, with its tracers, or ``None``.
 
-        A traced setting has no value to key; a setting that is not a
+        A concrete setting is keyed by its exact value, a traced one by the
+        identity of its tracer (the tracers are returned, for the weak
+        references that guard the identities); a setting that is not a
         number, an array of numbers, a string, a bool or ``None`` is never
-        keyed either, so it is solved every time rather than mistaken.
+        keyed, so it is solved every time rather than mistaken.
         """
         parts: list[Any] = [tuple(self._band)]
+        tracers: list[Any] = []
         for name in self._design:
-            part = _value_key(design[name])
+            value = design[name]
+            if is_traced(value):
+                leaves = jax.tree.leaves(value)
+                if not all(is_traced(leaf) for leaf in leaves):
+                    return None
+                parts.append((name, "tracer", tuple(id(leaf) for leaf in leaves)))
+                tracers.extend(leaves)
+                continue
+            part = _value_key(value)
             if part is None:
                 return None
             parts.append((name, part))
-        return tuple(parts)
+        return tuple(parts), tracers
 
-    def _keep(self, key: tuple | None, network: NetworkParameters) -> None:
-        """Keep ``network`` under ``key`` as NumPy arrays, least recent out."""
-        if key is None or is_traced((network.values, network.z_ref)):
-            # a solve staged inside jax.jit holds tracers, never kept
+    def _lookup(self, key: tuple[tuple, list[Any]]) -> NetworkParameters | None:
+        """The kept network for ``key``, or ``None``."""
+        parts, tracers = key
+        if tracers:
+            hit = self._traced.get(parts)
+            # an id is reused once its tracer dies: the entry must hold these
+            if hit is not None and all(
+                ref() is tracer for ref, tracer in zip(hit[0], tracers, strict=True)
+            ):
+                return hit[1]
+            return None
+        if parts in self._memo:
+            self._memo.move_to_end(parts)
+            return self._memo[parts]
+        return None
+
+    def _keep(
+        self, key: tuple[tuple, list[Any]] | None, network: NetworkParameters
+    ) -> None:
+        """Keep ``network`` under ``key``, least recent out.
+
+        A concrete key keeps NumPy arrays only, so a solve staged inside
+        `jax.jit` (tracers) is dropped. A traced key keeps the network
+        until one of its tracers dies, which is when the trace ends.
+        """
+        if key is None:
             return
-        self._memo[key] = dataclasses.replace(
+        parts, tracers = key
+        if tracers:
+
+            def drop(_ref: weakref.ref, parts: tuple = parts) -> None:
+                self._traced.pop(parts, None)
+
+            self._traced[parts] = ([weakref.ref(t, drop) for t in tracers], network)
+            return
+        if is_traced((network.values, network.z_ref)):
+            return
+        self._memo[parts] = dataclasses.replace(
             network, values=np.asarray(network.values), z_ref=np.asarray(network.z_ref)
         )
         while len(self._memo) > _MEMO_SIZE:
