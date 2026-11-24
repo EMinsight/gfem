@@ -315,7 +315,8 @@ How gfem itself is checked: {doc}`../verification`.
 - **Paths and surfaces in the physical part**: a characteristic impedance
   path through the layer, or an interface surface wholly in it, raises.
 - **Moved meshes**: a moved mesh may not push device elements past a
-  stretched face, and a morph of a surface wholly in the layer raises.
+  stretched face, and a morph of a surface wholly in the layer, or in the
+  elements touching it, raises.
 - **No iterative solver**: `linear_solver="bddc_gmres"` raises; `"auto"`
   picks the direct solver, MUMPS across MPI ranks.
 - **Thin layers**: a side thinner than about a hundredth of the reference

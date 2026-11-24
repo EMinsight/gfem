@@ -496,21 +496,6 @@ def _moved(model: gfem.Model, morph) -> np.ndarray:
     return np.abs(moved - np.asarray(model.mesh.nodes)).max(axis=1)
 
 
-def assert_layer_moves(model: gfem.Model, morph, side) -> None:
-    """The element layer outside the named ``side`` moves under ``morph``.
-
-    So that a node gradient through ``morph`` exercises the kernel's node pass.
-    """
-    mesh = model.mesh
-    tets = np.asarray(mesh.tetrahedra)
-    chi = np.zeros(len(mesh.nodes), bool)
-    for r in side:
-        chi[np.unique(tets[mesh.elements(r)])] = True
-    at = chi[tets]
-    layer = at.any(axis=1) & ~at.all(axis=1)
-    assert _moved(model, morph)[np.unique(tets[layer])].max() > 0
-
-
 def assert_truncation_layer_held(model: gfem.Model, morph) -> None:
     """The elements touching the layer stay where they were imported, bit for bit."""
     mesh = model.mesh

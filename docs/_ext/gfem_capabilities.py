@@ -475,8 +475,9 @@ RAISES_LABELS = {
         "The power through a surface (`power_flow`), with respect to a material "
         "field with elements in the element layer just outside its side"
     ),
-    "power_flow x node coordinates": (
-        "The power through a surface (`power_flow`), with respect to node coordinates"
+    "cross_sections x node coordinates": (
+        "Cross sections (`cross_sections`), with respect to node coordinates (the "
+        "incident-field solve refuses them first)"
     ),
     "power_flow x reduced field": (
         "The power through a surface (`power_flow`) of a field of an adaptive "
