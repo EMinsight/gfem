@@ -1903,6 +1903,7 @@ class TransientThermalRule(ThermalRule):
         self._explicit = {}
         properties = {k[2] for k in wanted if k[0] == "material"}
         trace_kinds = {k for k in wanted if k[0] == "problem"} - SOURCE_KINDS
+        values = {k for k in wanted if is_thermal_value(k)}
         steps = spec.steps
         dt, starts, kept = self._grid
         scales = self.scales()
@@ -1941,6 +1942,17 @@ class TransientThermalRule(ThermalRule):
             if handle is None:
                 entry.handle = PooledKeptHandle(stepper.handle)
             heat = _HeatAdjoint(self._heat_rows(model), ct_tr, stepper, dt, scales)
+            if values and heat.rows:
+                raise NotImplementedError(
+                    "gradients of heat-out traces with respect to thermal boundary "
+                    "values are not available in this version of gfem"
+                )
+            masses = {
+                k: self._boundary_mass(built, space, model.boundaries[k[1]].surface)
+                for k in sorted(values)
+                if k[2] == "coefficient"
+            }
+            by_h = dict.fromkeys(masses, 0.0)
             density = np.asarray(loads.density)
             face_density = None if face is None else np.asarray(face)
             terms = self.terms(model, nodes=False) if properties else []
@@ -1955,7 +1967,7 @@ class TransientThermalRule(ThermalRule):
                 rhs = np.where(free, rhs, 0.0)
                 return self._adjoint(stepper.handle, rhs[:, None], reused=reused)[:, 0]
 
-            states = bool(properties or trace_kinds)
+            states = bool(properties or trace_kinds or masses)
             sweep: Any = (
                 self._reverse(entry, stepper, scales, source)
                 if states
@@ -1985,6 +1997,13 @@ class TransientThermalRule(ThermalRule):
                         - m * c0 * (c @ mu2)
                     )
                     d = 2.0 * mu1 + mu2
+                    if masses:
+                        self._add_convection(
+                            by_h,
+                            masses,
+                            np.stack([-mu1, -mu2], axis=1),
+                            np.stack([stage + u, nxt], axis=1),
+                        )
                     if properties:
                         left = np.stack([-mu1, -mu2], axis=1)
                         batch += [
@@ -2014,6 +2033,13 @@ class TransientThermalRule(ThermalRule):
                         (1.0 - theta) / theta
                     ) * stepper.handle.apply(mu)
                     d = mu / theta
+                    if masses:
+                        self._add_convection(
+                            by_h,
+                            masses,
+                            -mu[:, None],
+                            (nxt + ((1.0 - theta) / theta) * u)[:, None],
+                        )
                     if properties:
                         left = -mu[:, None]
                         batch += [
@@ -2049,8 +2075,10 @@ class TransientThermalRule(ThermalRule):
                 flush()
             # the cotangent of T0 (dJ/dT0): read directly, and through a
             # uniform start u_0 = P (T_start - T0)
-            needs_t0 = (properties and "thermal_conductivity" in properties) or (
-                trace_kinds
+            needs_t0 = (
+                (properties and "thermal_conductivity" in properties)
+                or trace_kinds
+                or values
             )
             pairs: list[FieldPair | LoadField | Integrated] = []
             if integrals:
@@ -2062,6 +2090,7 @@ class TransientThermalRule(ThermalRule):
                     ct0 = ct0 + np.asarray(cotangents["source_free"], dtype=float)
                 if spec.initial_temperature is not None:
                     ct0 = ct0 - np.where(free, ubar, 0.0)
+                on_fixed = ct0
                 ct0 = np.where(free, ct0, 0.0)
                 if "thermal_conductivity" in properties and self._t0_solved():
                     pairs.append(
@@ -2072,6 +2101,10 @@ class TransientThermalRule(ThermalRule):
                 if trace_kinds:
                     self._explicit = self._trace_gradients(
                         loads, summed, ct_tr.sum(axis=0), t0
+                    )
+                if values:
+                    self._explicit |= self._boundary_gradients(
+                        model, built, space, (ct0, on_fixed), t0, by_h, values
                     )
             if properties and heat.rows:
                 t0 = entry.fields["source_free"]
@@ -2093,6 +2126,159 @@ class TransientThermalRule(ThermalRule):
             explicit = {**explicit, ("problem", ".scales"): values}
         self._explicit = explicit
         return pairs
+
+    def _boundary_mass(
+        self, built: EngineMesh, space: ngs.FESpace, surface: str
+    ) -> scipy.sparse.csr_matrix:
+        """The boundary mass ``h``'s operator reads: ``int_S u v`` (file units)."""
+        u, v = space.TnT()
+        region = boundary_region(built, (surface,))
+        form = ngs.BilinearForm(space)
+        form += (
+            built.scale * u * v * quadrature.ds(self.options.order, definedon=region)
+        )
+        form.Assemble()
+        return _sparse(form.mat)
+
+    @staticmethod
+    def _add_convection(
+        totals: dict[tuple, float],
+        masses: dict[tuple, Any],
+        left: np.ndarray,
+        right: np.ndarray,
+    ) -> None:
+        """Add a step's ``left^T M_S right`` to each coefficient's total.
+
+        The coefficient enters the stepping operator as ``h M_S`` beside the
+        conduction, so its pair is the conduction pair's fields on ``M_S``.
+        """
+        for kind, mass in masses.items():
+            totals[kind] += float(np.sum(left * (mass @ right)))
+
+    def _surface_load(
+        self, built: EngineMesh, space: ngs.FESpace, surface: str
+    ) -> np.ndarray:
+        """``int_S v`` (file units): a unit flux or ``h T_amb`` of one surface."""
+        v = space.TestFunction()
+        region = boundary_region(built, (surface,))
+        form = ngs.LinearForm(space)
+        form += built.scale * v * quadrature.ds(self.options.order, definedon=region)
+        form.Assemble()
+        return form.vec.FV().NumPy().copy()
+
+    def _unit_lift(
+        self, built: EngineMesh, space: ngs.FESpace, surface: str
+    ) -> np.ndarray:
+        """`_lift` of a unit temperature on ``surface`` and zero on the others."""
+        gf = ngs.GridFunction(space)
+        unit = {s: float(s == surface) for s, _ in self.boundaries.fixed}
+        values = built.mesh.BoundaryCF(unit, default=ngs.CF(0.0))
+        region = boundary_region(built, self.boundaries.dirichlet)
+        gf.Set(values, ngs.BND, definedon=region)
+        return gf.vec.FV().NumPy().copy()
+
+    def _boundary_gradients(  # noqa: PLR0917 - one backward's state
+        self,
+        model: Model,
+        built: EngineMesh,
+        space: ngs.FESpace,
+        ct0: tuple[np.ndarray, np.ndarray],
+        t0: np.ndarray,
+        stepping: dict[tuple, float],
+        values: set[tuple],
+    ) -> dict[tuple, np.ndarray]:
+        r"""The cotangents of the thermal boundary values.
+
+        ``ct0`` is the cotangent on the source-free temperature :math:`T_0`
+        (zero on the fixed DOFs, then as it is), ``stepping`` the coefficients'
+        share through the stepping operator. With :math:`A_0 \lambda_0 =
+        \bar T_0` on the free DOFs, :math:`M_S` the surface's boundary mass and
+        :math:`\ell_S = \int_S v`:
+
+        - :math:`h`: stepping :math:`+ \lambda_0^T (T_\infty \ell_S - M_S T_0)`;
+        - :math:`T_\infty`: :math:`h\, \lambda_0^T \ell_S`;
+        - flux: :math:`\lambda_0^T \ell_S`;
+        - fixed temperature: :math:`\bar T_0 \cdot \chi - \lambda_0^T A_0 \chi`
+          for the lift :math:`\chi` of a unit value.
+
+        The rise reads the coefficient alone (through the stepping operator)
+        and the start through :math:`T_0`, which ``ct0`` holds. No solve when
+        :math:`T_0` is the start everywhere.
+        """
+        free_cotangent, full_cotangent = ct0
+        items = model.boundaries
+        coupled = not (self.loose.all() or not self.boundaries.sinks)
+        lam = np.zeros(space.ndof)
+        reaction = None
+        if coupled and np.any(free_cotangent):
+            where = self.loose if self.loose.any() else None
+            handle = self._prepare(
+                model,
+                built,
+                space,
+                mass=0.0 if where is None else 1.0,
+                where=where,
+                tolerance=adjoint_tolerance(self.options),
+            )
+            try:
+                lam = self._adjoint(handle, free_cotangent[:, None], reused=False)[:, 0]
+                reaction = handle.apply
+                out = self._boundary_values(
+                    items,
+                    built,
+                    space,
+                    lam,
+                    full_cotangent,
+                    t0,
+                    stepping,
+                    values,
+                    reaction,
+                )
+            finally:
+                handle.free()
+            return out
+        return self._boundary_values(
+            items, built, space, lam, full_cotangent, t0, stepping, values, None
+        )
+
+    def _boundary_values(  # noqa: PLR0917 - one backward's state
+        self,
+        items: Any,
+        built: EngineMesh,
+        space: ngs.FESpace,
+        lam: np.ndarray,
+        full_cotangent: np.ndarray,
+        t0: np.ndarray,
+        stepping: dict[tuple, float],
+        values: set[tuple],
+        apply: Any,
+    ) -> dict[tuple, np.ndarray]:
+        """Each wanted value's cotangent from ``lam`` (see `_boundary_gradients`)."""
+        last = {
+            b.surface: i for i, b in enumerate(items) if isinstance(b, FixedTemperature)
+        }
+        out: dict[tuple, np.ndarray] = {}
+        for kind in values:
+            item = items[kind[1]]
+            name = kind[2]
+            if name == "temperature":
+                grad = 0.0
+                if last[item.surface] == kind[1]:
+                    chi = self._unit_lift(built, space, item.surface)
+                    grad = float(full_cotangent @ chi)
+                    if apply is not None:
+                        grad -= float(lam @ apply(chi))
+            else:
+                load = self._surface_load(built, space, item.surface)
+                grad = float(lam @ load)
+                if name == "ambient":
+                    grad *= float(item.coefficient)
+                elif name == "coefficient":
+                    mass = self._boundary_mass(built, space, item.surface)
+                    grad = stepping[kind] + float(item.ambient) * grad
+                    grad -= float(lam @ (mass @ t0))
+            out[kind] = np.asarray(grad)
+        return out
 
     def _t0_solved(self) -> bool:
         """Whether T0 depends on the conductivity (else it is one constant)."""

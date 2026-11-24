@@ -629,7 +629,7 @@ def unsupported(form: str, kind: tuple) -> str | None:  # noqa: PLR0911
                 None if read else f"the {form} forms of this version do not read {what}"
             )
     if is_thermal_value(kind):
-        if form == "steady_thermal":
+        if form in LOAD_FORMS:
             return None
         return (
             "gradients with respect to thermal boundary values are not available "
