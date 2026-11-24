@@ -59,7 +59,8 @@ class LayerPattern:
     Three routes build one: `gfem.design.LayerGrid.pattern` contours a
     filtered density at the projection threshold; `from_polygons` takes user
     polygons (feed guides, hand-drawn designs) and validates them; and
-    gfem's own fabrication steps. The constructor itself does not validate.
+    `gfem.design.FabricationModel.pattern` predicts the printed pattern of a
+    drawn design. The constructor itself does not validate.
     A sequence of `Polygon`: ``len(pattern)``, ``for exterior, holes in
     pattern``. Not a JAX pytree: its vertex count depends on the values.
 

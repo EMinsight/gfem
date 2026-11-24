@@ -39,6 +39,7 @@ import scipy.sparse as sp
 from gfem import _morph, _mpi, _pattern, _sparse, _spectral
 from gfem._checks import is_traced, static_float
 from gfem._dim2 import refuse_entry
+from gfem._fabrication import FabricationModel
 from gfem._length_scale import (
     LengthScaleConstraints,
     LengthScaleValues,
@@ -52,6 +53,7 @@ from gfem.errors import UnsampledPixelsWarning
 from gfem.mesh import Mesh
 
 __all__ = [
+    "FabricationModel",
     "HelmholtzFilter",
     "LayerDensity",
     "LayerGrid",

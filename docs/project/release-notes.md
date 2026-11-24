@@ -209,6 +209,16 @@ Design:
   pixels, to re-solve a pattern or pin fixed neighbours. contourpy is now a
   dependency.
 
+- **A fabrication model in the gradient.**
+  `gfem.design.FabricationModel(grid, sigma=..., bias=...)` predicts the
+  printed design of a drawn (projected) design: a Gaussian blur of standard
+  deviation `sigma` (m) and a threshold that moves a straight edge outwards
+  by the edge bias (m), differentiable in the design and in the bias.
+  `fab.robust(drawn, beta=..., tolerance=...)` gives the eroded, nominal and
+  dilated designs at the bias and $\pm$ a tolerance in metres, as the
+  `Robust` tuple of `gfem.design.robust`, and `fab.pattern(drawn)` the
+  printed layer pattern.
+
 ## 0.2.0 (2026-11-23)
 
 - **Native 2D models.** A gmsh file of triangles at one height reads as a
