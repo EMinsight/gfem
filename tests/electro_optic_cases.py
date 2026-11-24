@@ -1,7 +1,7 @@
 """Lithium niobate constants and cross-sections shared by the electro-optic tests.
 
 The crystal is congruent lithium niobate at 1550 nm (ordinary and
-extraordinary indices, the clamped 3m tensor, the static permittivity),
+extraordinary indices, the unclamped 3m tensor, the static permittivity),
 x-cut: propagation along global z. The sections are built at test time by
 `thermal_cases.section` (netgen); lengths are in micrometres.
 
