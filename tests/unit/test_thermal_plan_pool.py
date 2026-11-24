@@ -294,3 +294,56 @@ def test_the_gate_stays_closed_for_a_stepping_handle_above_the_floor(
     actions = [r.action for r in records("transient thermal", "forward")]
     assert actions.count("refactorized") >= 1
     assert not [a for a in actions if a.startswith("reused")]
+
+
+# --- traced boundary values ---------------------------------------------------
+
+
+def _traced_boundaries(top):
+    return [
+        gfem.FixedTemperature("bottom", temperature=300.0),
+        gfem.FixedTemperature("top", temperature=top),
+    ]
+
+
+def test_traced_boundary_values_and_a_k_gradient_prepare_the_steady_operator_once(
+    brick, monkeypatch
+):
+    prepared = []
+    prepare = gfem._linalg.ResolvedLinearSolver.prepare
+
+    def counted(self, *args, **kwargs):
+        prepared.append(1)
+        return prepare(self, *args, **kwargs)
+
+    monkeypatch.setattr(gfem._linalg.ResolvedLinearSolver, "prepare", counted)
+    gfem.release_memory()
+
+    def objective(k, top):
+        model = _model(brick, k, _traced_boundaries(top))
+        result = gfem.solve(model, gfem.SteadyThermal(HEAT), options=DIRECT)
+        return jnp.sum(result.temperature.coefficients**2) * 1e-6
+
+    gk, gt = jax.grad(objective, argnums=(0, 1))(_design(brick, 0), jnp.asarray(320.0))
+    assert np.abs(gk).max() > 0
+    assert abs(float(gt)) > 0
+    assert len(prepared) == 1
+
+
+def test_a_transient_with_traced_boundary_values_holds_the_t0_operator(brick, records):
+    def objective(k, top):
+        problem = gfem.TransientThermal(
+            HEAT, duration=1e-6, steps=3, initial_temperature=310.0, keep_fields=True
+        )
+        model = _model(brick, k, _traced_boundaries(top))
+        result = gfem.solve(model, problem, options=DIRECT)
+        return jnp.sum(result.temperature(1e-6).coefficients ** 2) * 1e-6
+
+    for i in range(2):
+        jax.grad(objective, argnums=(0, 1))(_design(brick, i), jnp.asarray(320.0))
+    backward = [r.action for r in records("transient thermal", "backward")]
+    per_design = len(backward) // 2
+    # the T0 pair and the boundary adjoint come last in a design's backward,
+    # and both find the source-free handle the forward returned to the pool
+    assert backward[per_design - 2 : per_design] == ["held", "held"]
+    assert backward[-2:] == ["held", "held"]

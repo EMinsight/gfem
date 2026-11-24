@@ -28,6 +28,14 @@ Thermal:
   `incident_power_per_length=`. A perfectly matched layer, absorbing faces,
   ports and lumped port loads give no heat
   ({doc}`../recipes/electromagnetic-heating`).
+- **Thermal and DC conduction designs reuse plans and factors.** An
+  optimization that solves one `gfem.SteadyThermal`, `gfem.TransientThermal` or
+  `gfem.DCConduction` problem per design on `linear_solver="direct"` plans the
+  factorization once and refactorizes it with each design's values, as driven
+  solves do. A design that leaves the operator unchanged (a heat-source
+  amount, the drive) solves on the held factors, and a gradient with respect to
+  the conductivity and the boundary temperatures factorizes the operator once
+  per design instead of twice. `retain_memory=0` turns it off.
 - **Heat of a law blend.** `gfem.dissipated_power` and
   `gfem.electromagnetic_heating` accept a metal-dielectric blend with a
   permittivity law, and their gradients flow to the blend's density.

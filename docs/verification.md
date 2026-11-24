@@ -53,6 +53,10 @@ A driven optimization on `linear_solver="direct"` that solves designs on an
 earlier design's factorization is checked against factorizing every design:
 S agrees to a twentieth of `tolerance` and the gradient to `tolerance`.
 
+Thermal and DC conduction designs on `linear_solver="direct"` reuse plans and
+factors across designs as driven ones do, and agree bit for bit with
+`retain_memory=0` at one solve thread.
+
 Tests: [gradient matrix](https://github.com/benvial/gfem/blob/main/tests/verification/test_gradient_matrix.py),
 [gradients that raise](https://github.com/benvial/gfem/blob/main/tests/verification/test_gradient_matrix_raise_table.py),
 [reused factorizations](https://github.com/benvial/gfem/blob/main/tests/verification/test_factor_reuse_gradient.py).
