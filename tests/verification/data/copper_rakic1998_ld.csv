@@ -1,0 +1,17 @@
+# Copper, Lorentz-Drude model of A. D. Rakic, A. B. Djurisic, J. M. Elazar,
+# M. L. Majewski, Appl. Opt. 37, 5271 (1998), doi:10.1364/AO.37.005271,
+# tabulated by the refractiveindex.info database (CC0 1.0): M. N. Polyanskiy,
+# Sci. Data 11, 94 (2024), doi:10.1038/s41597-023-02898-2. Ten rows of its
+# Rakic-LD table for Cu, as printed. Columns: wavelength (um), n, extinction
+# coefficient k >= 0.
+wavelength_um,n,k
+2.1094e-01,1.1579e+00,1.8851e+00
+3.3169e-01,1.2068e+00,1.7703e+00
+5.2157e-01,6.9590e-01,2.5066e+00
+8.2014e-01,2.3965e-01,5.1029e+00
+1.2896e+00,3.4595e-01,8.6009e+00
+1.9866e+00,7.4195e-01,1.3486e+01
+3.1239e+00,1.6896e+00,2.1006e+01
+4.9122e+00,3.0474e+00,3.2115e+01
+7.7242e+00,5.3425e+00,4.9928e+01
+1.2146e+01,1.1548e+01,7.7519e+01
