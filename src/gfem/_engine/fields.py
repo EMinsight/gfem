@@ -38,6 +38,7 @@ __all__ = [
     "element_rows",
     "face_keys",
     "fe_space",
+    "h1_key",
     "mean_rows",
     "one_process_column",
     "one_process_dofs",
@@ -138,8 +139,18 @@ def dirichlet_h1(
         )
         return ngs.Compress(space)
 
-    key = ((physics, regions, excluded), "h1", order, fixed)
-    return disc.space(key, build), built
+    return disc.space(h1_key(physics, regions, excluded, order, fixed), build), built
+
+
+def h1_key(
+    physics: str,
+    regions: tuple[str, ...],
+    excluded: tuple[tuple[int, int], ...],
+    order: int,
+    fixed: tuple[str, ...],
+) -> tuple:
+    """The key of `dirichlet_h1`'s space in its discretization: no node positions."""
+    return ((physics, regions, excluded), "h1", order, fixed)
 
 
 def vertex_dofs(space: ngs.FESpace, built: EngineMesh | None = None) -> np.ndarray:

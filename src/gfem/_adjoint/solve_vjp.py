@@ -341,9 +341,14 @@ def _forward(rule: Any, model: Any, *, keep: bool, request: SolveRequest) -> tup
         stacklevel=2,
         comm=getattr(rule, "comm", None),
     )
-    problem = _timing.problem_name(getattr(rule, "problem", None))
+    problem = _timing.problem_name(_problem_of(rule))
     with _timing.scope(problem, getattr(rule, "comm", None)):
         return rule.forward(model, keep=keep, request=request)
+
+
+def _problem_of(rule: Any) -> Any:
+    """The problem a rule solves: its static ``spec`` where ``problem`` holds loads."""
+    return getattr(rule, "spec", getattr(rule, "problem", None))
 
 
 @contextlib.contextmanager
@@ -432,7 +437,7 @@ def _host_backward(
     with (
         _mpi.section(comm, agreed=_mpi.FORWARD_ERRORS),
         _coarse_pool_bounded(rule.options, comm),
-        _timing.scope(_timing.problem_name(getattr(rule, "problem", None)), comm),
+        _timing.scope(_timing.problem_name(_problem_of(rule)), comm),
     ):
         if comm is not None:
             _mpi.entry_check(

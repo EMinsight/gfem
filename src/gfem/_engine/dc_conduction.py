@@ -45,17 +45,23 @@ from gfem._engine import quadrature
 from gfem._engine.cache import Entry, discretization
 from gfem._engine.coefficients import element_tensors, p0
 from gfem._engine.domain import boundary_region
-from gfem._engine.electrostatic import KeptHandle
 from gfem._engine.fields import (
     dirichlet_h1,
     face_keys,
     fe_space,
+    h1_key,
     support_region,
     surface_triangles,
     tetrahedron_face_keys,
 )
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.runtime import task_manager
+from gfem._engine.scalar_plans import (
+    PooledKeptHandle,
+    plan_site,
+    prepare_pooled,
+    release,
+)
 from gfem._engine.sensitivity import Derivative, FieldPair, Term
 from gfem._engine.solve_request import SolveRequest
 from gfem._field import FieldMap
@@ -330,12 +336,12 @@ class DCConductionRule:
             dissipation = self._dissipation(model, built, space, sigma, phi)
         g = 0.5 * (g + g.T)
         if not keep:
-            handle.free()
+            release(handle)
         entry = None
         if keep:
             entry = Entry(
                 physics=self.physics,
-                handle=KeptHandle(handle),
+                handle=PooledKeptHandle(handle),
                 fields={"potential": phi},
             )
         return {"conductance": g, "dissipation": dissipation, "potential": phi}, entry
@@ -360,9 +366,27 @@ class DCConductionRule:
         u, v = space.TnT()
         form = ngs.BilinearForm(space, symmetric=True)
         form += sigma * ngs.grad(u) * ngs.grad(v) * quadrature.dx(self.options.order)
-        return self.linear.prepare(
-            Operator(form, self._free_dofs(space)),
-            symmetry="hermitian",
+        free = self._free_dofs(space)
+        site = plan_site(
+            self.linear,
+            self.options,
+            topology=self._mesh._topology,  # noqa: SLF001
+            comm=None,
+            space=space,
+            space_key=h1_key(
+                _PHYSICS,
+                self.regions,
+                self._excluded,
+                self.options.order,
+                self.fixed,
+            ),
+            freedofs=free,
+            tag=("dc_conduction",),
+        )
+        return prepare_pooled(
+            self.linear,
+            site,
+            Operator(form, free),
             width=len(self.problem.terminals),
             tolerance=tolerance,
         )
@@ -495,7 +519,7 @@ class DCConductionRule:
                 right.append(phi @ (0.5 * (ct + ct.T)).T)
             if "potential" not in cotangents:
                 if entry.handle is not None:
-                    entry.handle.free()
+                    entry.handle.free(return_plans=True)
                     entry.handle = None
             else:
                 load = np.array(cotangents["potential"], dtype=float)
@@ -505,7 +529,7 @@ class DCConductionRule:
                 kept = handle is not None
                 if handle is None:
                     handle = self._prepare(space, conductivity(model, built), tolerance)
-                    entry.handle = KeptHandle(handle)
+                    entry.handle = PooledKeptHandle(handle)
                 adjoint, its = handle.solve_counted(load, tolerance=tolerance)
                 report.solve_step(
                     handle,

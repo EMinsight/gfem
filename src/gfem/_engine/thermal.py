@@ -64,11 +64,11 @@ from gfem._engine import heat_flow, quadrature
 from gfem._engine.cache import Entry, _alone, retain_budget
 from gfem._engine.coefficients import element_values, p0, surface_p0
 from gfem._engine.domain import boundary_region
-from gfem._engine.electrostatic import KeptHandle
 from gfem._engine.fields import (
     dirichlet_h1,
     face_keys,
     fe_space,
+    h1_key,
     support_region,
     surface_triangles,
     tetrahedron_face_keys,
@@ -76,6 +76,13 @@ from gfem._engine.fields import (
 )
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.runtime import task_manager
+from gfem._engine.scalar_plans import (
+    PooledKeptHandle,
+    digest,
+    plan_site,
+    prepare_pooled,
+    release,
+)
 from gfem._engine.sensitivity import (
     FACE_LOAD_KIND,
     LOAD_KIND,
@@ -549,9 +556,26 @@ class ThermalRule:
         self._add_conduction(form, model, built, space)
         if mass:
             form += self._capacity_term(model, built, space, where, factor=mass)
-        return self.linear.prepare(
+        site = plan_site(
+            self.linear,
+            self.options,
+            topology=model.mesh._topology,  # noqa: SLF001
+            comm=built.comm,
+            space=space,
+            space_key=h1_key(
+                _PHYSICS,
+                self.regions,
+                self._excluded,
+                self.options.order,
+                self.boundaries.dirichlet,
+            ),
+            freedofs=space.FreeDofs(),
+            tag=("thermal", float(mass), digest(where if mass else None)),
+        )
+        return prepare_pooled(
+            self.linear,
+            site,
             Operator(form, space.FreeDofs()),
-            symmetry="hermitian",
             width=width,
             tolerance=tolerance,
         )
@@ -797,6 +821,7 @@ class ThermalRule:
         t0: np.ndarray,
         *,
         loose: np.ndarray | None = None,
+        handle: Handle | None = None,
     ) -> FieldPair:
         """The T0 pair ``(-lambda0, T0)`` of a cotangent ``load`` on T0.
 
@@ -804,21 +829,26 @@ class ThermalRule:
         A0 (with the heat capacity of a sinkless part, ``loose``, where the
         source-free temperature is its uniform start and the capacity's own
         pair vanishes), so ``load . dT0 = -lambda0^T dA0 T0`` with ``A0
-        lambda0 = load``. One more solve, on its own prepared operator.
+        lambda0 = load``. One more solve, on ``handle`` if given (the steady
+        operator, which a steady problem's forward already prepared), else on
+        its own prepared operator.
         """
-        where = None if loose is None or not loose.any() else loose
-        handle = self._prepare(
-            model,
-            built,
-            space,
-            mass=0.0 if where is None else 1.0,
-            where=where,
-            tolerance=adjoint_tolerance(self.options),
-        )
-        try:
-            lam = self._adjoint(handle, load[:, None], reused=False)
-        finally:
-            handle.free()
+        if handle is not None:
+            lam = self._adjoint(handle, load[:, None], reused=True)
+        else:
+            where = None if loose is None or not loose.any() else loose
+            own = self._prepare(
+                model,
+                built,
+                space,
+                mass=0.0 if where is None else 1.0,
+                where=where,
+                tolerance=adjoint_tolerance(self.options),
+            )
+            try:
+                lam = self._adjoint(own, load[:, None], reused=False)
+            finally:
+                release(own)
         return FieldPair(
             space=space,
             left=-lam,
@@ -901,11 +931,11 @@ class SteadyThermalRule(ThermalRule):
         if keep:
             entry = Entry(
                 physics=self.physics,
-                handle=KeptHandle(handle),
+                handle=PooledKeptHandle(handle),
                 fields={"temperature": temperature, "rise": rise},
             )
         else:
-            handle.free()
+            release(handle)
         return {"temperature": temperature, "rise": rise}, entry
 
     def output_specs(self, model: Model) -> dict[str, jax.ShapeDtypeStruct]:
@@ -956,7 +986,7 @@ class SteadyThermalRule(ThermalRule):
             if handle is None:
                 tolerance = adjoint_tolerance(self.options)
                 handle = self._prepare(model, built, space, tolerance=tolerance)
-                entry.handle = KeptHandle(handle)
+                entry.handle = PooledKeptHandle(handle)
             lam = self._adjoint(handle, load[:, None], reused=kept)[:, 0]
             domain = self._domain(model, built)
             rise = entry.fields["rise"]
@@ -975,7 +1005,11 @@ class SteadyThermalRule(ThermalRule):
                 if ct_t is not None and self.boundaries.uniform is None:
                     t0 = entry.fields["temperature"] - rise
                     ct0 = np.where(free, np.asarray(ct_t, dtype=float), 0.0)
-                    pairs.append(self._source_free_pair(model, built, space, ct0, t0))
+                    pairs.append(
+                        self._source_free_pair(
+                            model, built, space, ct0, t0, handle=handle
+                        )
+                    )
             if wanted & LOAD_KINDS:
                 pairs.append(LoadField(space, lam, order, domain, length_power=2))
         return pairs
@@ -1447,7 +1481,7 @@ class TransientThermalRule(ThermalRule):
         if request.rerun:
             return "checkpoints"
         trajectory = 8 * ndof * (self.spec.steps + 1)
-        held = _alone(Entry(physics=self.physics, handle=KeptHandle(handle)))
+        held = _alone(Entry(physics=self.physics, handle=PooledKeptHandle(handle)))
         budget = retain_budget(self.options.retain_memory)
         return "full" if held + trajectory <= budget else "checkpoints"
 
@@ -1557,7 +1591,7 @@ class TransientThermalRule(ThermalRule):
                 rhs = rhs + capacity @ self._constant(space, start)
             return lift + self._solve(handle, rhs)
         finally:
-            handle.free()
+            release(handle)
 
     def _stepper(
         self,
@@ -1682,10 +1716,12 @@ class TransientThermalRule(ThermalRule):
                     "source_free": t0,
                 }
             entry = Entry(
-                physics=self.physics, handle=KeptHandle(stepper.handle), fields=fields
+                physics=self.physics,
+                handle=PooledKeptHandle(stepper.handle),
+                fields=fields,
             )
         else:
-            stepper.handle.free()
+            release(stepper.handle)
         return outputs, entry
 
     def _reverse(
@@ -1789,7 +1825,7 @@ class TransientThermalRule(ThermalRule):
             reused = handle is not None
             stepper = self._stepper(model, built, space, dt, handle=handle)
             if handle is None:
-                entry.handle = KeptHandle(stepper.handle)
+                entry.handle = PooledKeptHandle(stepper.handle)
             heat = _HeatAdjoint(self._heat_rows(model), ct_tr, stepper, dt, scales)
             density = np.asarray(loads.density)
             face_density = None if face is None else np.asarray(face)
