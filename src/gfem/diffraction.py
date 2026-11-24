@@ -7,4 +7,18 @@ Floquet surface.
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from gfem._diffraction.outputs import (
+    Efficiencies,
+    PowerBalance,
+    efficiencies,
+    floquet_ports,
+    power_balance,
+)
+
+__all__: list[str] = [
+    "Efficiencies",
+    "PowerBalance",
+    "efficiencies",
+    "floquet_ports",
+    "power_balance",
+]

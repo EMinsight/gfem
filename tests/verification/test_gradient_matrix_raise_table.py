@@ -3264,6 +3264,23 @@ def _out_floquet_petsc(request):
     jax.grad(_floquet_slab_objective(model, problem, options))(pc.F1_EPS_SLAB)
 
 
+def _out_diffraction_polarization(request):
+    # the incident polarization is a constant of the measurement
+    from gfem import diffraction as dif
+
+    model, problem = request.getfixturevalue("driven_floquet_cases")[
+        "driven_floquet_plain"
+    ]
+    options = gfem.SolverOptions(order=2, threads=2, linear_solver="direct")
+    result = gfem.solve(model, problem, options=options)
+
+    def objective(a):
+        eff = dif.efficiencies(result, "z_max", polarization=(a, 1j), model=model)
+        return eff.values.sum()
+
+    jax.make_jaxpr(jax.grad(objective))(1.0)
+
+
 def _out_eigenmode_floquet_port(request):
     # an order's propagation constant at a complex frequency: refused
     model = request.getfixturevalue("floquet_cell")
@@ -4082,6 +4099,12 @@ OUT_OF_SCOPE = [
         _out_eigenmode_floquet_port,
         NotImplementedError,
         r"Eigenmode does not support Floquet port 'R_TE'",
+    ),
+    (
+        "diffraction outputs x incident polarization",
+        _out_diffraction_polarization,
+        gfem.NonDifferentiableError,
+        r"efficiencies: polarization must be fixed numbers",
     ),
     # periodic eigenmode rows
     (

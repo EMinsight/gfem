@@ -443,6 +443,12 @@ RAISES_LABELS = {
         '`Driven` with Floquet ports on `linear_solver="petsc"`'
     ),
     "eigenmode x Floquet port": "`Eigenmode` on a model with Floquet ports",
+    "diffraction outputs x incident polarization": (
+        "`gfem.diffraction` efficiencies, power balances, Jones matrices and "
+        "aperture fields, with respect to the incident polarization (a constant "
+        "of the measurement; to optimize it, combine the columns of a Jones "
+        "matrix with your own vector)"
+    ),
     "driven x material of a Floquet port's half-space": (
         "Driven S-parameters, with respect to the material of the half-space "
         "behind a Floquet port (it fixes the diffraction orders)"
