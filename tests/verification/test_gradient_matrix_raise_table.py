@@ -1626,9 +1626,14 @@ def piezoelectric_case(tmp_path_factory):
 
     The film is a field holding every material property (its tensors scaled
     per element, on the crystal's axes, the unread ones given arbitrary
-    values); its damping frame is a constant material beside it.
+    values); its damping frame is a constant material beside it. The mesh is
+    the coarsest the layout allows (the electrode edges, not ``maxh``, set its
+    size): the table counts one adjoint solve per cell, so a cell's cost is the
+    section's.
     """
-    mesh = pz.mesh(tmp_path_factory.mktemp("piezoelectric") / "idt.msh", "lines")
+    mesh = pz.mesh(
+        tmp_path_factory.mktemp("piezoelectric") / "idt.msh", "lines", maxh=2.5
+    )
     ramp = np.linspace(1.0, 1.5, len(mesh.elements("ln")))
     values = ALL_PROPERTIES | {
         "eps_r": np.array(pz.EPS_LN),
