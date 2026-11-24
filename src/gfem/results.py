@@ -25,6 +25,7 @@ from gfem._sources import INCIDENT, Source
 from gfem._text import hertz, hertz_band
 
 if TYPE_CHECKING:
+    import skrf
     import xarray
 
     from gfem._engine.line_mode import ModeSpace
@@ -1138,6 +1139,75 @@ class NetworkParameters:
             for i_out, c_out in enumerate(names)
         }
 
+    def to_skrf(
+        self, *, ports: Sequence[str] | None = None, name: str | None = None
+    ) -> skrf.Network:
+        r"""S as a scikit-rf `skrf.Network`, on the ports' own references.
+
+        scikit-rf uses gfem's :math:`e^{+i\omega t}` and pseudo-waves on a
+        complex reference per port and frequency (``s_def="pseudo"``), so S
+        and `z_ref` pass unchanged: the network's ``z``, ``y`` and
+        ``renormalize`` are exact. Rows are put in increasing frequency, as
+        scikit-rf expects, whatever the order of `frequency`, and the port
+        names are the network's ``port_names``. Not differentiable: S is
+        copied to NumPy. Needs the ``skrf`` extra:
+        ``pip install "gfem[skrf]"``.
+
+        For one real reference, renormalize the network itself, e.g.
+        ``nw.renormalize(50.0)``. scikit-rf's ``Network.a`` (ABCD) assumes
+        power waves: it is wrong on a complex pseudo-wave reference and
+        right after renormalizing to a real one.
+
+        Args:
+            ports: The ports to export, in order; the other ports terminate
+                the device as in the solve, so a model with an internal
+                lumped load (a port with only L or C) exports the rest.
+                ``None`` exports every port.
+            name: The network's name.
+
+        Returns:
+            The network of the chosen ports.
+
+        Raises:
+            ImportError: scikit-rf is not installed.
+            TypeError: The values are computed inside `jax.grad`, `jax.jit`
+                or `jax.vmap`; export the result outside them.
+            ValueError: ``ports`` names a port that does not exist or repeats
+                one, a chosen port was not excited, or a chosen port has no
+                reference impedance (scikit-rf could not label S with it).
+        """
+        if is_traced(self.values) or is_traced(self.z_ref):
+            raise TypeError(
+                "NetworkParameters.to_skrf needs concrete values and cannot run "
+                "under jax.jit, jax.grad or jax.vmap; export the result outside "
+                "the transformed function."
+            )
+        try:
+            skrf = importlib.import_module("skrf")
+        except ImportError:
+            raise ImportError(
+                'NetworkParameters.to_skrf needs scikit-rf: pip install "gfem[skrf]".'
+            ) from None
+        sub = self._subnetwork(_port_selection(ports, self.ports), "to_skrf()")
+        _require_reference(
+            sub,
+            "scikit-rf labels S with it",
+            " A network of wave ports without voltage_path can be written under "
+            "a nominal label with to_touchstone(z0=).",
+        )
+        order = np.argsort(self.frequency, kind="stable")
+        network = skrf.Network(
+            f=np.asarray(self.frequency)[order],
+            s=np.asarray(sub.values)[order],
+            z0=np.asarray(sub.z_ref)[order],
+            s_def="pseudo",
+        )
+        if name is not None:
+            network.name = name
+        # an attribute, because scikit-rf 1.x ignores the port_names keyword
+        network.port_names = list(sub.ports)
+        return network
+
     def _subnetwork(self, ports: tuple[str, ...], what: str) -> NetworkParameters:
         """The network of ``ports`` with the other ports terminated as solved.
 
@@ -1521,9 +1591,6 @@ def _diag(v: jax.Array) -> jax.Array:
     return v[:, :, None] * jnp.eye(v.shape[-1])
 
 
-_MODE_SUFFIX = re.compile(r"@\w+")
-
-
 def _circuit_ports(
     ports: Mapping[str, str] | None, names: Sequence[str]
 ) -> dict[str, str]:
@@ -1574,7 +1641,7 @@ def _circuit_ports(
                 f"Circuit port name {', '.join(map(repr, repeated))} is given to "
                 "more than one port; each exposed port needs its own."
             )
-    moded = [_MODE_SUFFIX.search(c) is not None for c in exposed.values()]
+    moded = ["@" in c for c in exposed.values()]
     if any(moded) and not all(moded):
         raise ValueError(
             "Either every circuit port name is name@mode or none is (SAX cannot "
@@ -1617,8 +1684,11 @@ def _circuit_z0(z0: Any) -> Any:
     return z0
 
 
-def _require_reference(net: NetworkParameters, why: str) -> None:
-    """Raise if a port of ``net`` has no reference impedance (a NaN ``z_ref``)."""
+def _require_reference(net: NetworkParameters, why: str, also: str = "") -> None:
+    """Raise if a port of ``net`` has no reference impedance (a NaN ``z_ref``).
+
+    ``why`` says what needs one; ``also`` is one more remedy sentence.
+    """
     nan = np.isnan(np.asarray(net.z_ref)).any(axis=0)
     missing = [p for p, bad in zip(net.ports, nan, strict=True) if bad]
     if missing:
@@ -1627,8 +1697,38 @@ def _require_reference(net: NetworkParameters, why: str) -> None:
             "(z_ref is NaN): a LumpedPort without a resistance, a WavePort "
             "without a voltage_path, or a FloquetPort whose order is evanescent. "
             f"{why} and needs one: give the port a resistance or a voltage_path, "
-            "or leave it out of ports= to keep it inside the device."
+            f"or leave it out of ports= to keep it inside the device.{also}"
         )
+
+
+def _port_selection(ports: Sequence[str] | None, names: tuple[str, ...]) -> tuple:
+    """``ports`` checked: port names in the given order, every port if ``None``.
+
+    Raises:
+        TypeError: ``ports`` is one string, not a sequence of names.
+        ValueError: ``ports`` is empty, repeats a port or names one that
+            does not exist.
+    """
+    if ports is None:
+        return names
+    if isinstance(ports, str):
+        raise TypeError(
+            f"ports= is a sequence of port names, e.g. [{ports!r}]; got the "
+            f"string {ports!r}."
+        )
+    chosen = tuple(ports)
+    listed = ", ".join(map(repr, names))
+    if not chosen:
+        raise ValueError(f"ports= selects no port; the ports are {listed}.")
+    unknown = [p for p in chosen if p not in names]
+    if unknown:
+        raise ValueError(
+            f"No port {', '.join(map(repr, unknown))}; the ports are {listed}."
+        )
+    repeated = sorted({p for p in chosen if chosen.count(p) > 1})
+    if repeated:
+        raise ValueError(f"Port {', '.join(map(repr, repeated))} is listed twice.")
+    return chosen
 
 
 def _touchstone_z0(z0: object) -> float:
