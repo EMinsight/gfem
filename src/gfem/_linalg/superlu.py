@@ -19,16 +19,54 @@ import scipy.sparse.linalg as spla
 EIGS_TOLERANCE = 1e-10
 
 
-class _ShiftInvert(spla.LinearOperator):
-    """``x -> (A - sigma B)^-1 B x`` with ``A - sigma B`` factored by SuperLU."""
+class ShiftInvert(spla.LinearOperator):
+    """``x -> (A - sigma B)^-1 B x`` with ``A - sigma B`` factored by SuperLU.
 
-    def __init__(self, lu: spla.SuperLU, b: sp.csr_matrix) -> None:
+    One factor serves ARPACK (`eigs`) and, through `solve`, any further
+    solve near the shift, such as a preconditioner.
+    """
+
+    def __init__(self, lu: spla.SuperLU, b: sp.csr_matrix, sigma: complex) -> None:
         super().__init__(dtype=np.dtype(b.dtype), shape=b.shape)
         self._lu = lu
         self._b = b
+        self.sigma = sigma
+
+    @classmethod
+    def factor(cls, a: sp.csr_matrix, b: sp.csr_matrix, sigma: complex) -> ShiftInvert:
+        """Factor ``A - sigma B``; a real shift keeps a real pencil real."""
+        shift = complex(sigma)
+        sigma = shift.real if shift.imag == 0 else shift
+        dtype = np.result_type(a.dtype, b.dtype, type(sigma))
+        bb = sp.csr_matrix(b, dtype=dtype)
+        lu = spla.splu(sp.csc_matrix(sp.csr_matrix(a, dtype=dtype) - sigma * bb))
+        return cls(lu, bb, sigma)
 
     def _matvec(self, x: np.ndarray) -> np.ndarray:
         return self._lu.solve(self._b @ x)
+
+    def eigs(
+        self, k: int, *, tol: float = EIGS_TOLERANCE
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """The ``k`` eigenpairs nearest the shift; see `shift_invert_eigs`."""
+        n = self.shape[0]
+        k = max(1, min(k, n - 2))
+        ncv = min(n, max(2 * k + 1, 20))
+        v0 = np.ones(n, dtype=self._b.dtype)
+        try:
+            theta, vecs = spla.eigs(self, k=k, which="LM", tol=tol, ncv=ncv, v0=v0)
+        except spla.ArpackNoConvergence as err:
+            theta, vecs = err.eigenvalues, err.eigenvectors
+        keep = np.abs(theta) > 0
+        return self.sigma + 1 / theta[keep], vecs[:, keep]
+
+    def solve(self, r: np.ndarray) -> np.ndarray:
+        """``(A - sigma B)^-1 r``; a complex ``r`` on a real factor by parts."""
+        if np.iscomplexobj(r) and not np.iscomplexobj(self._b):
+            return self._lu.solve(np.ascontiguousarray(r.real)) + 1j * self._lu.solve(
+                np.ascontiguousarray(r.imag)
+            )
+        return self._lu.solve(r)
 
 
 def shift_invert_eigs(
@@ -56,22 +94,7 @@ def shift_invert_eigs(
     Returns:
         Eigenvalues ``(m,)`` and eigenvectors ``(n, m)``, ``m <= k``.
     """
-    n = a.shape[0]
-    k = max(1, min(k, n - 2))
-    shift = complex(sigma)
-    sigma = shift.real if shift.imag == 0 else shift
-    dtype = np.result_type(a.dtype, b.dtype, type(sigma))
-    bb = sp.csr_matrix(b, dtype=dtype)
-    lu = spla.splu(sp.csc_matrix(sp.csr_matrix(a, dtype=dtype) - sigma * bb))
-    op = _ShiftInvert(lu, bb)
-    ncv = min(n, max(2 * k + 1, 20))
-    v0 = np.ones(n, dtype=dtype)
-    try:
-        theta, vecs = spla.eigs(op, k=k, which="LM", tol=tol, ncv=ncv, v0=v0)
-    except spla.ArpackNoConvergence as err:
-        theta, vecs = err.eigenvalues, err.eigenvectors
-    keep = np.abs(theta) > 0
-    return sigma + 1 / theta[keep], vecs[:, keep]
+    return ShiftInvert.factor(a, b, sigma).eigs(k, tol=tol)
 
 
 def backward_error(
