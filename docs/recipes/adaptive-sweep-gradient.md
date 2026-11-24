@@ -85,7 +85,7 @@ The backward pass (the part of `jax.grad` that runs after the solve) solves
 no full-size system and keeps no solver. It solves one small reduced adjoint
 per frequency, then a few element-wise integrals: at most one per basis vector
 and material term, however many frequencies the grid has. Each port that is
-not excited, and each lossy wave port, adds one right-hand side per sample to
+not excited adds one right-hand side per sample to
 the sweep, which keeps the gradient exact at the samples. An adaptive sweep
 with `Driven(excite=...)` therefore solves as many right-hand sides per
 sample as one that excites every port; these run in every adaptive solve,

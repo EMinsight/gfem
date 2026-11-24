@@ -96,9 +96,9 @@ def parallel_scale(
 ) -> complex | None:
     """``c`` with ``functional = c excitation`` to `PARALLEL_RTOL`, else ``None``.
 
-    True for every lumped port and for a lone wave port on its surface; on a
-    shared surface a wave port's S functional mixes the surface's modes
-    (``R⁻¹ Hᵀ``), so it is parallel only up to their cross reactions. Both are load
+    True for every lumped port and every wave port, lone or shared: a wave
+    port's functional is row k of ``R⁻¹ Hᵀ`` and ``R`` is diagonal by
+    reciprocity, lossy or not. Both are load
     columns, so across ranks each product is the layout's agreed one.
     """
     norm = np.real(layout.inner(excitation, excitation))
@@ -420,8 +420,8 @@ class PortNetwork:
         """``(N, q)``: the S functionals whose adjoints the solutions miss.
 
         A wave port's S functional, unless the port is excited and its
-        functional parallel to its excitation (lossless: the adjoint is the
-        port's own solution); then the S functional of every lumped port
+        functional parallel to its excitation (lossy or not: the adjoint is
+        the port's own solution); then the S functional of every lumped port
         that is not excited (an excited one's adjoint is its own solution)
         and has a resistance (without one the functional is NaN and the row
         undefined). An adaptive sweep adds their solutions to its basis at
@@ -458,8 +458,9 @@ class PortNetwork:
         """The ports of ``indices`` whose adjoint is not their own solution scaled.
 
         Those not excited, or whose S functional is not parallel to their
-        excitation ``rhs`` (`parallel_scale`; ``None``: none is excited): a
-        hybrid lossy wave port mode. Returns them and their S functionals,
+        excitation ``rhs`` (`parallel_scale`; ``None``: none is excited; the
+        check guards a pair that is not biorthogonal in floating point, and
+        every wave port measured is parallel). Returns them and their S functionals,
         ``(N, len(them))``, the adjoint loads. ``functional`` is
         `functional` at ``omega`` when the caller has it already.
         """

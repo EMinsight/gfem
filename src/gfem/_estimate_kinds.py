@@ -236,7 +236,7 @@ def _s_objective(call: _Call, objective: Objective) -> ErrorEstimate:
     through its lossless rewrite, over every row of the columns it reads;
     otherwise through the C form.
     The S-functional adjoints of the rows that need one (a port not
-    excited, or a lossy wave port) and did not ride on the solve are
+    excited) and did not ride on the solve are
     solved by ``duals``: one more factorization per frequency
     (`gfem._dual_supply.DualSupply.s_adjoints`).
     """

@@ -11,9 +11,10 @@ correction is active:
   functional is its excitation scaled and the S adjoint is the port's own
   solution (no solve);
 - **lossy** ports (a lossy lower layer in the leads, offset reference
-  planes): the S functional projects on the conjugated mode, which is not
-  parallel to the excitation, so the adjoint takes a solve with the port
-  operator (Robin terms and modal corrections).
+  planes): complex propagation constants, a complex ``Z_PV`` and
+  de-embedding offsets enter the port terms. Their biorthogonal S functional
+  is still parallel to the excitation, so the adjoint is again the port's
+  own solution; a solve is needed only for a port that is not excited.
 
 The cells of the verification matrix (port x input x solver x sweep) are in
 test_gradient_matrix.py (the line is `gradient_cases.wave_line`); here a
@@ -128,8 +129,8 @@ def test_the_s21_gradient_does_not_depend_on_which_ports_are_excited(
     mesh, port, solver
 ):
     # Exciting p1 only leaves S21's adjoint to a solve with the port
-    # operator; with both ports excited a lossless port reuses p2's own
-    # solution and a lossy one solves too.
+    # operator; with both ports excited either kind reuses p2's own
+    # solution.
     values, _ = core_design(mesh, seed=3)
     model = wave_line(mesh, port)
 

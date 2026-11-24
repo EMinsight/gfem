@@ -28,22 +28,27 @@ with frequency, k(f) = k f / f_ref: each frequency is solved by a
 single-frequency rule of its own, with its Bloch space, operator,
 factorization and transposed system at ±k(f).
 
-S is read from the port voltages: with the excited port fed 1 W incident
-power (incident voltage sqrt(2 R)), ``S_ij = V_i / sqrt(2 R_i) - δ_ij``,
-the power wave of port i with reference impedance R_i. The solution
+S is read from each port's outgoing wave: a lumped port's is the power wave
+``V_i / sqrt(2 R_i)`` with reference impedance R_i; a wave port's is its
+pseudo-wave, the biorthogonal modal amplitude on its surface's modes times
+the port's pseudo-wave factor (`gfem._engine.wave_ports`), at the complex
+``Z_PV`` when it has a ``voltage_path``. The excited port is fed an incident
+wave of amplitude 1 (1 W on a lossless line), and ``S_ij`` is port i's
+outgoing wave minus ``δ_ij``. The solution
 itself (volts per mesh file unit) is that 1 W field's peak phasor in the
 `gfem.Field` coefficient convention, so kept fields are the solution
 columns as they are.
 
 Gradients (`DrivenRule.backward`): with ``A x_j = b_j`` and port i's S
-functional ``f_i`` parallel to its excitation ``b_i`` (every lumped port; a
-wave port whose mode is real up to one phase), port i's solution is (a
+functional ``f_i`` parallel to its excitation ``b_i`` (every lumped port and every
+wave port, lossy or not, lone or on a shared surface: by reciprocity the
+unconjugated reactions between a surface's modes vanish, so the biorthogonal
+functional is the port's own load scaled), port i's solution is (a
 multiple of) the adjoint of its own S row, ``A^-T f_i = A^-1 f_i = c x_i``
 (A^T = A, no transpose, no conjugate). An S cotangent therefore needs no
 solve when every port it reads is excited and parallel: per frequency it
 folds into one pair ``(-sum_i W_ij A^-T f_i, x_j)``. A kept-field
-cotangent, an S row of a port that was not excited, or of a lossy wave
-port (its S functional projects on the conjugated mode), takes one
+cotangent or an S row of a port that was not excited takes one
 multi-column adjoint solve per frequency with the system operator
 (wave-port modal corrections included); that frequency's operator is
 prepared on first use at the adjoint tolerance and kept in the cache entry
@@ -867,8 +872,9 @@ def port_loads(names: Sequence[str]) -> AdjointLoads:
 
     Keyed by port name, and only where a port's adjoint is not its own
     solution scaled: a port that is not excited, or whose S functional is
-    not parallel to its excitation (`PortNetwork.nonparallel`; a hybrid
-    lossy wave port mode).
+    not parallel to its excitation (`PortNetwork.nonparallel`; a guard for
+    a pair that is not biorthogonal in floating point: every wave port
+    measured is parallel).
     """
     names = tuple(names)
 
@@ -1873,13 +1879,12 @@ class DrivenRule:
         dy/dp = -sum_j Lambda_j^T (dA/dp) x_j`` (the excitations and the
         modal corrections depend on the port modes only). Without a Bloch
         wave vector ``A`` is complex symmetric, and when ``f_i`` is parallel
-        to port i's excitation (every lumped port, a wave port whose mode is
-        real up to a phase), ``A^-T f_i`` is port i's own solution scaled
-        (no solve). The remaining loads (kept-field cotangents, rows of
-        ports that were not excited, lossy wave ports, whose S functional
-        projects on the conjugated mode, and every row under a Bloch wave
-        vector) take one multi-column adjoint solve, on the transposed
-        system (-k) under a Bloch wave vector. On a periodic model the pair
+        to port i's excitation (every lumped port and every wave port, lossy
+        or not), ``A^-T f_i`` is port i's own solution scaled (no solve).
+        The remaining loads (kept-field cotangents, rows of ports that were
+        not excited, and every row under a Bloch wave vector) take one
+        multi-column adjoint solve, on the transposed system (-k) under a
+        Bloch wave vector. On a periodic model the pair
         is on the unpaired space (`DrivenOperator.pair`). ``z_ref``
         contributes nothing.
 
@@ -2021,7 +2026,7 @@ class DrivenRule:
         at ω solves ``A_r(ω) y = b_r(ω)``, ``A_r = Vᵀ A(ω) V`` complex
         symmetric (wave-port Robin terms and modal corrections included).
         A cotangent ``g`` on ``y`` (from S through the reduced S
-        functionals, the conjugated-mode projection for wave ports, and from
+        functionals, the biorthogonal modal projection for wave ports, and from
         kept fields' coordinates) gives the reduced adjoint ``λ = A_r^-T g``
         (n x n) and ``sum ct dy/dp = -Σ_t Σ_ab G_t,ab a_t'(V_a, V_b)`` with
         ``G_t = Σ_ω θ_t(ω) Λ(ω) Y(ω)ᵀ``. Each ``G_t`` (n x n) factors by

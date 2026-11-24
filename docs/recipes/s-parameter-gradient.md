@@ -95,12 +95,11 @@ model = gfem.Model(
 - The port modes in `result.port_modes`, and the reference impedances
   `s.z_ref` (the ports' `Z_PV`), are then constants: their gradient is an
   exact zero.
-- A lossless wave port reuses its own solution as the adjoint, as a lumped
-  port does.
-- A lossy port's mode is complex (conductor or dielectric loss in the
-  cross-section), so its S row is not its own adjoint. Each frequency with a
-  lossy port in the objective takes one adjoint solve, all such rows in one
-  call.
+- An excited wave port reuses its own solution as the adjoint, as a lumped
+  port does, lossy or not: by reciprocity the biorthogonal S functional is
+  the port's own load scaled. A port that is not excited has no field of its
+  own; each frequency with such a port in the objective takes one adjoint
+  solve, all such rows in one call.
 - Several wave ports on one surface, one mode each, give S between modes. A
   cross-mode entry such as `s["out_TM0", "in_TE0"]` differentiates like any
   other S entry, and reading the row of a mode left out of

@@ -31,7 +31,8 @@ Objectives of S (kind ``objective of s``, the cotangent-weighted form):
   n = 4): |S21|^2, |S11|^2, the absorbed power 1 - |S11|^2 - |S21|^2,
   (|S21|^2 + |S12|^2) / 2 and |S11|^2 + |S22|^2, against
   `refinement_cases.LOSSY_GUIDE_S`; the slab and step read a hybrid lossy
-  port mode, whose dual is the solved adjoint;
+  port mode, whose functional is parallel to its load like every wave
+  port's, so its dual is the port's own field;
 - deep metal (`contrast_cases.metal_floor_model`, wedge and flat at Re eps
   -29.7, n = 1, 2): |S21|^2 against `contrast_cases.METAL_FLOOR_S`.
 

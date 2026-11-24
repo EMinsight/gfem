@@ -253,9 +253,11 @@ def _cells() -> list[Cell]:
             # a lumped port's L and C, an impedance sheet's R and L
             cells.append(Cell("driven", "lumped", solver, sweep))
             # Wave ports: every port x input on the direct solver; on BDDC +
-            # GMRES the lossy ports (the adjoint solve through the port
-            # operator's Woodbury update, the adjoint loads' extra columns at
-            # the samples) in the permittivity, whose conductivity cells take
+            # GMRES the lossy ports (complex port terms in the Woodbury update
+            # and in the adaptive basis; the adjoint solve through the port
+            # operator is the shared cells' and
+            # test_the_s21_gradient_does_not_depend_on_which_ports_are_excited's)
+            # in the permittivity, whose conductivity cells take
             # the same code path, and in the nodes on the uniform sweep (the
             # adaptive backward is the solver's only through those solves).
             bddc = {"eps_r"} | ({"nodes"} if sweep == "uniform" else set())

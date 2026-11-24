@@ -193,8 +193,8 @@ class QuantityEstimator:
             (in `refine_mesh` it rides on the eigen solves from the second
             mesh on; `error_estimate` factorizes once more per mode). The estimate
             is absolute, in the objective's units, and `refine_mesh` needs
-            its ``tolerance`` given. A read row whose port is not excited,
-            or is a lossy wave port, uses that port's adjoint dual, as for
+            its ``tolerance`` given. A read row whose port is not excited
+            uses that port's adjoint dual, as for
             ``s``, and a read energy, potential mean, absorbed power or
             field mean its own dual; in
             `refine_mesh` each is solved once more on the first mesh and
@@ -227,8 +227,7 @@ class QuantityEstimator:
     quantity of a mode of a model with a `gfem.WavePort` (``omega``, ``q`` and
     objectives) raises it before any solve (``"wave port eigenmode"``): refine
     such a mode with `FieldEstimator`. An S entry
-    ``(to, from)`` whose port ``to`` is not excited, or is a wave port with a
-    lossy mode not parallel to its excitation, needs that port's adjoint
+    ``(to, from)`` whose port ``to`` is not excited needs that port's adjoint
     dual: `refine_mesh` adds it to each of its solves, one more right-hand
     side with its options; `error_estimate` on a finished result factorizes
     once more per frequency, with the direct solver at the result's order,
@@ -536,8 +535,7 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
     r"""Estimate the error of a solved result, without refining.
 
     No solve is needed, except for an S entry, or an objective reading a
-    row of S, whose port ``to`` is not excited, or is a wave port with a
-    lossy mode not parallel to its excitation: its adjoint dual factorizes
+    row of S, whose port ``to`` is not excited: its adjoint dual factorizes
     the system once more per frequency, with the direct solver at the
     result's order (the result does not record its solve options). An
     objective reading an electrostatic energy or a potential mean
@@ -758,8 +756,8 @@ def refine_mesh(
             plasmon-bound mode on the first estimate, after the first solve;
             see `QuantityEstimator`), an objective reading what it may not (on
             the first estimate), or ``frequency_workers`` above 1 for an
-            estimate that solves an adjoint dual (an unexcited ``to``, a
-            lossy wave port, or an objective's dual), which rides on the
+            estimate that solves an adjoint dual (an unexcited ``to`` or an
+            objective's dual), which rides on the
             forward solve.
         DegenerateModeError: The mode a `QuantityEstimator` follows is not
             alone: another mode lies within ``options.cluster_rtol`` of it,

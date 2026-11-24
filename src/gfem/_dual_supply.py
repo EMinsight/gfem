@@ -262,8 +262,8 @@ def _adjoint_ports(
 
     ``to`` of ``QuantityEstimator(s=(to, source))`` when it is not among
     ``excited`` (it has no field of its own), or when it is a wave port
-    touching a lossy element: its mode may then not be parallel to its
-    excitation (the solve checks), and its adjoint is not its own field.
+    touching a lossy element, asked as a guard: the solve finds it parallel
+    and returns no column, so its dual is its own field.
     """
     from gfem.refinement import QuantityEstimator
 
@@ -277,9 +277,8 @@ def _needs_adjoint(to: str, model: Model, excited: list[str]) -> bool:
     """Whether the row of port ``to`` may need its solved S-functional adjoint.
 
     When it is not among ``excited`` (it has no field of its own), or is a
-    wave port touching a lossy element: its mode may then not be parallel
-    to its excitation (the solve checks), and its adjoint is not its own
-    field.
+    wave port touching a lossy element, asked as a guard: the solve finds it
+    parallel and returns no column, so its dual is its own field.
     """
     from gfem._estimate_admission import _lossy_elements, _touching
 

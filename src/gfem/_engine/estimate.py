@@ -871,8 +871,8 @@ def s_entry(
     |d_i d_j| |c_K - k0^2 m_K|.
 
     ``adjoints`` holds z_i per (frequency, port) where port i is not
-    excited or its functional is not parallel to its excitation (a hybrid
-    lossy wave port mode).
+    excited or its functional is not parallel to its excitation (a guard:
+    every wave port measured is parallel).
     Elsewhere z_i = c_i x_i with c_i = -i / (4 k0 eta0) for fields of 1 W
     incident, times kappa^2 / N for a wave port with a voltage
     path (`_free_dual_ratio`): the free dual, x_i on that scale.

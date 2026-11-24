@@ -344,7 +344,12 @@ returning a wrong value:
   projection, so a lossy port line is matched to its own mode and the modes
   of a lossy shared port surface separate. With a `voltage_path` its
   reference impedance is the mode's complex $Z_{PV}$ (pseudo-waves); give
-  every wave port a `voltage_path`, or none, for a symmetric S.
+  every wave port a `voltage_path`, or none, for a symmetric S. With ports of
+  one kind, $S$ is symmetric to round-off when the port faces are meshed
+  alike; otherwise it is symmetric to the discretization error of the two
+  ports' modes, since $S_{12}/S_{21}$ is the ratio of the two discrete modes'
+  normalizations ($\kappa^2/N$ each), about $10^{-5}$ on a coarse lossy
+  microstrip and independent of the device.
 
 - **2D models**: normal incidence and one polarization only. Eigenmode,
   electrostatic and thermal problems, lumped and Floquet ports, periodic
