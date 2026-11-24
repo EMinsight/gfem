@@ -11,6 +11,7 @@ import json
 import warnings
 from pathlib import Path
 
+import electro_optic_cases as eo
 import jax
 import numpy as np
 import pytest
@@ -229,3 +230,64 @@ def test_library_materials_round_trip_through_the_codec(entry):
     assert _codec.Decoder(context, encoder.arrays).decode(doc) == material
     assert ("frequency_range" in json.dumps(doc)) == (entry in RANGES)
     assert _codec.SCHEMA_VERSION == 2
+
+
+def _sellmeier(wavelength_um, b, c):
+    lam2 = wavelength_um**2
+    return 1.0 + sum(bi * lam2 / (lam2 - ci) for bi, ci in zip(b, c, strict=True))
+
+
+def test_the_library_feeds_the_electro_optic_shift(tmp_path):
+    mesh = eo.layered_slab(tmp_path / "slab.msh", factor=2.0)
+    regions = ("below", "film", "above")
+    drive = gfem.Electrostatic(terminals={"r": ["right"]}, ground=["left"])
+    options = gfem.SolverOptions(order=2, linear_solver="direct")
+
+    def shift(ln_static, ln, oxide):
+        static = gfem.Model(
+            mesh,
+            materials={
+                "film": ln_static,
+                "below": gfem.Material(eps_r=3.9),
+                "above": gfem.Material(eps_r=3.9),
+            },
+        )
+        potential = gfem.solve(static, drive, options=options).potential["r"]
+        optical = gfem.Model(
+            mesh,
+            materials={"below": oxide, "film": ln, "above": oxide},
+            boundaries=[gfem.PEC("left"), gfem.PEC("right")],
+            ports=[gfem.WavePort("p", "front")],
+        )
+        return gfem.electro_optic_shift(
+            optical, potential, port="p", frequency=F_1550
+        )
+
+    library = shift(
+        materials.lithium_niobate_static(axes=X_CUT),
+        materials.lithium_niobate(frequency=F_1550, axes=X_CUT),
+        materials.silica(frequency=F_1550),
+    )
+    # Zelmon's congruent Sellmeier, Malitson's, Turner's clamped tensor and
+    # Smith and Welsh's static permittivity, typed from the papers
+    n_o2 = _sellmeier(1.55, (2.6734, 1.2290, 12.614), (0.01764, 0.05914, 474.60))
+    n_e2 = _sellmeier(1.55, (2.9804, 0.5981, 8.9543), (0.02047, 0.0666, 416.08))
+    oxide = _sellmeier(
+        1.55,
+        (0.6961663, 0.4079426, 0.8974794),
+        (0.0684043**2, 0.1162414**2, 9.896161**2),
+    )
+    by_hand = shift(
+        gfem.Material(eps_r=(44.3, 44.3, 27.9), axes=X_CUT),
+        gfem.Material(
+            eps_r=(n_o2, n_o2, n_e2),
+            axes=X_CUT,
+            electro_optic_tensor=_tensor_3m(8.6e-12, 3.4e-12, 30.8e-12, 28e-12),
+        ),
+        gfem.Material(eps_r=oxide),
+    )
+    assert abs(float(library.delta_n_eff_per_volt)) > 0
+    np.testing.assert_allclose(library.n_eff, by_hand.n_eff, rtol=1e-12)
+    np.testing.assert_allclose(
+        library.delta_n_eff_per_volt, by_hand.delta_n_eff_per_volt, rtol=1e-12
+    )
