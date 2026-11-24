@@ -255,9 +255,11 @@ zero dispersion at 417 nm, 631 nm
 
   The difference is the finite difference's, and shrinks as the square of
   the grid's spacing.
-- **A finer mesh.** Raise `gfem.SolverOptions(order=...)` to 4, or halve
-  `h_core` and `h_cladding`: $n_g$ moves in the fourth digit and $D$ by
-  about 1 ps/(nm km) on this guide.
+- **A finer mesh.** At 500 nm and 1.55 µm the page's mesh gives $n_g$ =
+  4.1959 and $D$ = +484.9 ps/(nm km). Raising `gfem.SolverOptions(order=...)`
+  to 4 gives 4.1960 and +486.0; halving `h_core` and `h_cladding` gives
+  4.1961 and +486.3; both give 4.1961 and +486.6. $n_g$ moves in the fourth
+  digit and $D$ by under 2 ps/(nm km), about 0.3 %.
 - **Against a measurement.** The 450 nm wire's group index, 4.29 above, sits
   beside the 4.30 measured from the free spectral range of racetrack
   resonators of 450 × 220 nm silicon wires (Bogaerts et al., Laser Photonics
