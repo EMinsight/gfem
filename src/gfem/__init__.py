@@ -23,6 +23,9 @@ from gfem._materials import (  # noqa: E402
 )
 from gfem.broadband import RationalModel, TimeResponse  # noqa: E402
 from gfem.circuit import SaxComponent  # noqa: E402
+
+
+from gfem.bands import WaveVectorPath, wave_vector_path  # noqa: E402
 from gfem.electro_optic import ElectroOpticShift, electro_optic_shift  # noqa: E402
 from gfem.errors import (  # noqa: E402
     AntiBoundRootWarning,
@@ -276,6 +279,7 @@ __all__ = [
     "UnsampledPixelsWarning",
     "UnsettledTraceWarning",
     "WavePort",
+    "WaveVectorPath",
     "__version__",
     "beam_coupling",
     "characteristic_impedance",
@@ -313,4 +317,5 @@ __all__ = [
     "strain",
     "thermo_optic_shift",
     "time_constant",
+    "wave_vector_path",
 ]
