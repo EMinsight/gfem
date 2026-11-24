@@ -370,7 +370,8 @@ block's own port mode: pass the `gamma` and `Z_PV` of a
 
 - Each component solves once when it is built, at its defaults. An evaluation
   solves each component once per distinct design, over its whole band:
-  instances with equal settings, or fed the same traced value, share one solve,
+  instances with equal settings, or fed the same traced value in the same trace,
+  share one solve,
   and a component whose settings do not change (a fixed block) costs no solve
   during an optimization. `cache=` passes gfem's disk solve cache
   ({doc}`save-and-export`) to every solve.

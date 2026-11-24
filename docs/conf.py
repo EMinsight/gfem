@@ -239,6 +239,7 @@ intersphinx_mapping = {
     "scipy": ("https://docs.scipy.org/doc/scipy", None),
     "jax": ("https://docs.jax.dev/en/latest", None),
     "xarray": ("https://docs.xarray.dev/en/stable", None),
+    "skrf": ("https://scikit-rf.readthedocs.io/en/latest", None),
 }
 # --- end API reference ----------------------------------------------------------
 

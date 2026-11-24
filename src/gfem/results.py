@@ -25,7 +25,7 @@ from gfem._sources import INCIDENT, Source
 from gfem._text import hertz, hertz_band
 
 if TYPE_CHECKING:
-    import skrf
+    import skrf.network
     import xarray
 
     from gfem._engine.line_mode import ModeSpace
@@ -1138,8 +1138,8 @@ class NetworkParameters:
 
     def to_skrf(
         self, *, ports: Sequence[str] | None = None, name: str | None = None
-    ) -> skrf.Network:
-        r"""S as a scikit-rf `skrf.Network`, on the ports' own references.
+    ) -> skrf.network.Network:
+        r"""S as a scikit-rf `~skrf.network.Network`, on the ports' own references.
 
         scikit-rf uses gfem's :math:`e^{+i\omega t}` and pseudo-waves on a
         complex reference per port and frequency (``s_def="pseudo"``), so S
@@ -1180,7 +1180,7 @@ class NetworkParameters:
                 "the transformed function."
             )
         try:
-            skrf = importlib.import_module("skrf")
+            rf = importlib.import_module("skrf")
         except ImportError:
             raise ImportError(
                 'NetworkParameters.to_skrf needs scikit-rf: pip install "gfem[skrf]".'
@@ -1193,7 +1193,7 @@ class NetworkParameters:
             "a nominal label with to_touchstone(z0=).",
         )
         order = np.argsort(self.frequency, kind="stable")
-        network = skrf.Network(
+        network = rf.Network(
             f=np.asarray(self.frequency)[order],
             s=np.asarray(sub.values)[order],
             z0=np.asarray(sub.z_ref)[order],
