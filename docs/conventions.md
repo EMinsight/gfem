@@ -359,6 +359,33 @@ print(abs(s["glass TE", "glass TE"][0]) ** 2 + abs(s["air TE", "glass TE"][0]) *
 0.9999999997457327
 ```
 
+**Jones matrices.** The Jones matrix of a cell between two orders is a
+$2\times2$ block of S in the Floquet references, ordered (TM, TE): rows the
+outgoing order's polarizations, columns the incident order's,
+$J_{ij} = S_{(p,i)\leftarrow(q,j)}$. The references are the same on both
+faces and in both directions, so nothing flips on reflection, and at normal
+incidence TM is $\hat{\mathbf{e}}_1$ and TE is $\hat{\mathbf{e}}_2$ on both faces:
+the Jones matrix is then the lab Cartesian one, and a wave plate with its axis
+at $\psi$ from $\hat{\mathbf{e}}_1$ reads at $\psi$ from either side. The entries are power-wave
+ratios like S, so $|J_{ij}|^2$ is an efficiency; the ratio of the fields is
+$J_{ij}\sqrt{Z_{\mathrm{out},i}/Z_{\mathrm{in},j}}$, and the two coincide only
+for a reflection at normal incidence. Both polarizations of each order need a
+port, and both columns of the incident order must be excited. The transmission
+of the interface above, glass to air, is diagonal, with
+$|J|^2 = 1 - r^2$ for the reflection $r$ of the
+previous block:
+
+```python
+jones = gfem.diffraction.jones(floquet, "top", "bottom", model=interface)
+print(complex(jones.values[0, 0, 0]), complex(jones.values[0, 1, 1]))  # TM, TE
+print(np.sqrt(1 - ((n_glass - 1) / (n_glass + 1)) ** 2))
+```
+
+```text
+(0.9833594819245479+4.923795437360556e-07j) (0.9833594901751661+4.858235650433676e-07j)
+0.9833596651914763
+```
+
 **Rows that do not propagate.** The (−1, 0) order is evanescent at 3.1 µm. Its
 row of S reads exactly 0 at every frequency where it does not propagate, and
 its reference impedance is NaN there. `diffraction_orders` gives its $\boldsymbol{\kappa}$, here
@@ -421,6 +448,121 @@ $(S[:, \mathrm{TM}] + i\, S[:, \mathrm{TE}]) / \sqrt{2}$ is the response to righ
 incidence in the IEEE sense (the field turns counterclockwise seen with the
 wave coming towards you). From the bottom face, incidence along $+\hat{\mathbf{e}}_3$, the same
 combination is left-handed, and $(S[:, \mathrm{TM}] - i\, S[:, \mathrm{TE}]) / \sqrt{2}$ is right-handed.
+`Jones.circular` does this for every beam:
+$J_\mathrm{circ} = U_{h_\mathrm{out}}^\dagger J\, U_{h_\mathrm{in}}$ with
+
+$$U_h = \frac{1}{\sqrt2}\begin{pmatrix}1 & 1\\ -ih & ih\end{pmatrix}$$
+
+and $h = \pm1$ the direction of the beam along $\hat{\mathbf{e}}_3$: its columns,
+right-handed (RCP) then left-handed (LCP), are the polarizations
+$(\hat{\mathbf{E}}_\mathrm{TM} \mp ih\,\hat{\mathbf{E}}_\mathrm{TE})/\sqrt2$, handed about the beam's own direction.
+Rows and columns of $J_\mathrm{circ}$ are (RCP, LCP). A mirror therefore swaps the
+handedness, and transmission through an interface keeps it. On a cell closed by a PEC on
+`"bottom"`, with the port on `"top"` moved down onto the mirror by its `offset`, the response
+to right-handed incidence is all left-handed, and the Jones matrix is $-P$ with $P$ the
+swap of the two circular polarizations, whose Mueller matrix is
+$\mathrm{diag}(1, 1, -1, -1)$:
+
+```python
+mirror = cell.with_material("glass", air).replace(
+    ports=[
+        gfem.FloquetPort(f"mirror {pol}", "top", polarization=pol, offset=1.7e-6)
+        for pol in ("TM", "TE")
+    ],
+    boundaries=[*pairs, gfem.PEC("bottom")],
+)
+closed = gfem.solve(
+    mirror, gfem.Driven(f, excite=["mirror TM", "mirror TE"]), options=direct
+)
+sm = closed.s
+column = [
+    (sm[row, "mirror TM"] + 1j * sm[row, "mirror TE"])[0] / np.sqrt(2)
+    for row in ("mirror TM", "mirror TE")
+]
+print(np.round(((column[0] + 1j * column[1]) / np.sqrt(2)).real, 4) + 0.0)  # right-handed out
+print(np.round(((column[0] - 1j * column[1]) / np.sqrt(2)).real, 4) + 0.0)  # left-handed out
+mirror_jones = gfem.diffraction.jones(closed, "top", "top", model=mirror)
+print(np.round(np.asarray(mirror_jones.circular[0]).real, 4) + 0.0)  # -P
+print(np.round(np.asarray(mirror_jones.mueller[0]), 4) + 0.0)  # diag(1, 1, -1, -1)
+```
+
+```text
+0.0
+-1.0
+[[ 0. -1.]
+ [-1.  0.]]
+[[ 1.  0.  0.  0.]
+ [ 0.  1.  0.  0.]
+ [ 0.  0. -1.  0.]
+ [ 0.  0.  0. -1.]]
+```
+
+The empty cell is the other extreme: it keeps the handedness and the Stokes
+vector, so $|J_\mathrm{circ}|$ is the identity and $M = I$ whatever the
+phase $e^{-i\beta L}$:
+
+```python
+free = cell.with_material("glass", air).replace(
+    ports=[
+        gfem.FloquetPort(f"{side} {pol}", side, polarization=pol)
+        for side in ("top", "bottom")
+        for pol in ("TM", "TE")
+    ]
+)
+through = gfem.solve(
+    free, gfem.Driven(f, excite=["bottom TM", "bottom TE"]), options=direct
+)
+free_jones = gfem.diffraction.jones(through, "top", "bottom", model=free)
+print(np.round(np.abs(np.asarray(free_jones.circular[0])), 4))  # |.| of e^{-i beta L} I
+print(np.round(np.asarray(free_jones.mueller[0]), 4) + 0.0)  # I
+```
+
+```text
+[[1. 0.]
+ [0. 1.]]
+[[1. 0. 0. 0.]
+ [0. 1. 0. 0.]
+ [0. 0. 1. 0.]
+ [0. 0. 0. 1.]]
+```
+
+**Stokes and Mueller.** The Stokes vector $(S_0, S_1, S_2, S_3)$ of a beam is
+taken in the beam's own right-handed frame $(\hat{\boldsymbol{\theta}}, \hat{\boldsymbol{\phi}})$,
+with components $(b_\theta, b_\phi) = (h\, b_\mathrm{TM}, b_\mathrm{TE})$ for the
+direction sign $h$ of the beam: $S = A\,(b \otimes b^*)$ with
+$$A = \begin{pmatrix}1&0&0&1\\1&0&0&-1\\0&1&1&0\\0&-i&i&0\end{pmatrix}.$$
+This is the $e^{+i\omega t}$ form: $S_3 = |b_\mathrm{R}|^2 - |b_\mathrm{L}|^2$
+is positive for the right-handed light of the labels above (the $0, i, -i, 0$ row of
+textbooks written for $e^{-i\omega t}$ gives the opposite sign). The Mueller matrix
+is $M = A\,(J_w \otimes J_w^*)\,A^{-1}$ with
+$J_w = \mathrm{diag}(h_\mathrm{out}, 1)\, J\, \mathrm{diag}(h_\mathrm{in}, 1)$:
+real, $4\times4$, mapping the incident Stokes vector to the outgoing one,
+and $M_{00} = \tfrac12 \sum_{ij} |J_{ij}|^2$ is the efficiency for unpolarized
+light. Because each beam has its own frame, $M$ is always a Mueller-Jones matrix: a
+mirror is $\mathrm{diag}(1, 1, -1, -1)$ and free transmission is the identity.
+The cost is that for a downward beam $S_2$ is measured from
+$\hat{\boldsymbol{\theta}} = -\hat{\mathbf{E}}_\mathrm{TM}$, so a plate with its axis at $\psi$
+lit from the top shows its linear block at $-\psi$; lit from the bottom, where
+the Floquet references, $(\hat{\boldsymbol{\theta}}, \hat{\boldsymbol{\phi}})$ and the usual
+light-along-$+z$ frame coincide, it reads at $+\psi$. A
+quarter-wave plate with its slow axis along $\hat{\mathbf{e}}_1$ turns light linearly
+polarized at 45° into right-handed light when lit from the top, and into left-handed
+light from the bottom.
+
+**Normal incidence in a conical scan.** At $\boldsymbol{\kappa} = 0$ the references
+are $\hat{\mathbf{e}}_1$ and $\hat{\mathbf{e}}_2$ whatever the azimuth $\varphi$ of the scan, while for
+$\theta > 0$ they are those rotated by $\varphi$: a $\theta$ scan at $\varphi \ne 0$ sees
+the linear entries of $J$ jump by that rotation at $\theta = 0$, and the linear block
+of $M$ by twice the angle. Efficiencies do not change, and the circular entries
+change only by phases $e^{\pm i\varphi}$. The jump is documented, not corrected: no
+basis is continuous at $\boldsymbol{\kappa} = 0$.
+
+**Emission direction.** An emitter in equilibrium radiates into a direction as it
+absorbs the time-reversed wave (Kirchhoff's law). A wave with the in-plane wave
+vector at azimuth $\varphi$ travels towards $(\cos\varphi, \sin\varphi)$, and the reversed
+one leaves towards $-\hat{\boldsymbol{\kappa}}$, so the absorptance of the incidence
+$(\theta, \varphi)$ is the emissivity towards $(\theta, \varphi + \pi)$, and
+`gfem.diffraction.emissivity` labels its rows so.
 
 ## Temperature and thermo-optic phase
 
@@ -803,6 +945,10 @@ points along the Floquet TM reference for a wave going up and against it for
 a wave going down. Under `TIME_DEPENDENCE`, the real field of RCP turns from
 $\hat{\boldsymbol{\theta}}$ to $\hat{\boldsymbol{\phi}}$ with the thumb along
 $\hat{\mathbf{k}}$.
+So for a wave going down the Floquet circular unit vector
+$(\hat{\mathbf{E}}_\mathrm{TM} + i\hat{\mathbf{E}}_\mathrm{TE})/\sqrt2$ of the RCP column is
+$-(\hat{\boldsymbol\theta} - i\hat{\boldsymbol\phi})/\sqrt2$: the same right-handed
+wave as `"RCP"`, with the opposite phase.
 
 A plane wave's `amplitude` $E_0$ is the peak field in V/m (`PHASOR`) in the
 layer it comes from; in a homogeneous background its field is
