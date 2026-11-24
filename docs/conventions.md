@@ -641,8 +641,8 @@ print(f"{np.angle(np.exp(-1j * delay)):.4f}")  # the transmission's argument
 
 ```text
 True
--0.9452
-0.9452
+-0.9435
+0.9435
 ```
 
 **$V_\pi L$ per arm, and push-pull.** `v_pi_l` is one arm's
@@ -658,7 +658,7 @@ print(f"arm a {100 * float(a.v_pi_l):.3f} V cm, push-pull {100 * pair:.3f} V cm"
 ```
 
 ```text
-arm a 3.324 V cm, push-pull 1.660 V cm
+arm a 3.330 V cm, push-pull 1.663 V cm
 ```
 
 Solve each arm's mode on an optical window that reaches the electrodes'

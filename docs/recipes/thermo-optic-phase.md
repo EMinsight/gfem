@@ -79,7 +79,7 @@ print(f"P_pi = {1e3 * float(p_pi):.2f} mW")
 ```
 
 ```text
-ThermoOpticShift(port 'core', mode 1, 1.93414e+14 Hz, n_eff 2.447236, delta_n_eff 3.43746e-05, phase_per_length 139.343 rad/m)
+ThermoOpticShift(port 'core', mode 1, 1.93414e+14 Hz, n_eff 2.447236, delta_n_eff 3.4375e-05, phase_per_length 139.345 rad/m)
 phase per watt: 139.3 rad/W
 P_pi = 22.55 mW
 ```

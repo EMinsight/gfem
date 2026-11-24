@@ -146,7 +146,7 @@ print(f"core temperature: {float(gfem.region_mean(steady.temperature, 'core')):.
 HeatSource(joule, regions=['heater'], total 70.5398 W/m)
 power: 70.5398 W/m
 I^2 R': 70.5398 W/m
-mean rise: core 12.074 K, heater 31.509 K
+mean rise: core 12.074 K, heater 31.508 K
 core temperature: 312.074 K
 ```
 
