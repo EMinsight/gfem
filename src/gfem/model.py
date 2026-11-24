@@ -669,6 +669,25 @@ class Model:
         return tuple(p.translation for p in self._periodic)
 
     @property
+    def reciprocal_lattice(self) -> tuple[tuple[float, float, float], ...]:
+        r"""The reciprocal lattice vector :math:`\mathbf b_i` of each `Periodic`, rad/m.
+
+        One per pair, in ``boundaries`` order, inside the span of the
+        `periodic_translations` :math:`\mathbf a_j`, with
+        :math:`\mathbf b_i \cdot \mathbf a_j = 2\pi\delta_{ij}`: the rows of
+        :math:`B = 2\pi (A A^T)^{-1} A`, where the rows of :math:`A` are the
+        translations. A Bloch wave vector is
+        :math:`\mathbf k = \sum_i c_i \mathbf b_i` in reduced coordinates
+        :math:`c_i`, and :math:`\mathbf k` and :math:`\mathbf k + \mathbf b_i`
+        give every pair the same phase. Empty without a periodic pair.
+        """
+        if not self._periodic:
+            return ()
+        a = np.asarray(self.periodic_translations, dtype=float)
+        b = 2 * np.pi * np.linalg.solve(a @ a.T, a)
+        return tuple((float(x), float(y), float(z)) for x, y, z in b)
+
+    @property
     def excluded_entities(self) -> tuple[tuple[str, int], ...]:
         """``(region name, gmsh entity number)`` of each EM-excluded volume entity.
 

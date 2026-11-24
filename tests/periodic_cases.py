@@ -12,7 +12,7 @@ read without NGSolve. Meshes are in mm, wave vectors in rad/m.
   the last x cell's y = 0 strip, touching the seam: its Bloch S is far from
   reciprocal.
 - C2, `c2`: an empty parallel-plate cell periodic along x and y; its bands
-  are the empty lattice, `empty_lattice`.
+  are the empty lattice, `empty_lattice`. `c2_square_mesh` makes it square.
 - C3, `c3`: a layered (Bragg) TEM line periodic along x; its bands are the
   transfer-matrix roots, `tmm_frequency`.
 - C4, `c4`: an empty vacuum cube periodic along x, y and z (no other
@@ -20,6 +20,8 @@ read without NGSolve. Meshes are in mm, wave vectors in rad/m.
 - Rods, `rods`: a square lattice of dielectric rods in air, one element
   thick between PEC (TM) or PMC (TE) plates, the rod staircased on the
   structured grid; with loss in the rod only, the loss varies in space.
+- `sheared_cell`: a vacuum cell whose two pairs make any angle, the
+  hexagonal (60 or 120 degrees) and oblique lattices, for geometry only.
 - G, `g`: the gradient cell, periodic along x and y, with two lumped
   ports, a PEC ground, an absorbing top, a resistive `gfem.Impedance` sheet
   touching both pairs and a sidewall "wall" crossing the x seam (the
@@ -241,6 +243,14 @@ def c2_gmsh_mesh() -> gfem.Mesh:
     return gfem.Mesh.from_gmsh(path, length_unit="mm")
 
 
+def c2_square_mesh(
+    directory: Path, cells: tuple[int, int, int] = (8, 8, 1)
+) -> gfem.Mesh:
+    """C2's cell made square, ``C2_AX`` along x and y: a square lattice for `c2`."""
+    cell = sm.periodic_cell(_edges((C2_AX, C2_AX, C2_H), cells))
+    return _mesh(directory, "c2_square", cell)
+
+
 def c2(mesh: gfem.Mesh) -> gfem.Model:
     """C2: periodic in x and y (the pairs share the z edges), PEC at z = 0 and h."""
     return gfem.Model(
@@ -408,10 +418,45 @@ def rods(mesh: gfem.Mesh, *, tan_delta: float = 0.0, tm: bool = True) -> gfem.Mo
     )
 
 
+# --- the sheared cell: two pairs at any angle ----------------------------------------
+
+SHEAR_A, SHEAR_H = 10.0, 1.0  # mm
+
+
+def sheared_cell_mesh(
+    directory: Path, angle: float, cells: tuple[int, int, int] = (3, 3, 1)
+) -> gfem.Mesh:
+    """A Kuhn box sheared so that the y pair's translation makes ``angle`` (deg) with x.
+
+    Both pairs' translations are ``SHEAR_A`` long: a1 = (a, 0, 0) and
+    a2 = (a cos(angle), a sin(angle), 0). The faces stay translates of each
+    other, so `sheared_cell` pairs them; 60 and 120 give a hexagonal lattice,
+    other angles an oblique one. For geometry only.
+    """
+    theta = math.radians(angle)
+    nodes, *rest = sm.periodic_cell(
+        _edges((SHEAR_A, SHEAR_A * math.sin(theta), SHEAR_H), cells)
+    )
+    nodes = np.array(nodes, dtype=float)
+    nodes[:, 0] += nodes[:, 1] / math.tan(theta)
+    return _mesh(directory, f"sheared_{angle:g}", (nodes, *rest))
+
+
+def sheared_cell(mesh: gfem.Mesh) -> gfem.Model:
+    """The sheared cell: vacuum, periodic in x and along the sheared y faces."""
+    return gfem.Model(
+        mesh,
+        materials={"cell": gfem.Material()},
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+        ],
+    )
+
+
 def rods_frequency(u: float) -> float:
     r"""The frequency, Hz, of the normalized frequency $u = \omega a / 2\pi c$."""
     return u * C0 / (ROD_A * MM)
-
 
 # --- G: the gradient cell ---------------------------------------------------------
 
