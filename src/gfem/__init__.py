@@ -26,6 +26,13 @@ from gfem.circuit import SaxComponent  # noqa: E402
 
 
 from gfem.bands import WaveVectorPath, wave_vector_path  # noqa: E402
+
+from gfem.bands import (  # noqa: E402
+    BandDiagram,
+    WaveVectorPath,
+    band_diagram,
+    wave_vector_path,
+)
 from gfem.electro_optic import ElectroOpticShift, electro_optic_shift  # noqa: E402
 from gfem.errors import (  # noqa: E402
     AntiBoundRootWarning,
@@ -38,6 +45,7 @@ from gfem.errors import (  # noqa: E402
     FloquetOrderCapWarning,
     LayerClearanceWarning,
     LinearSolverConvergenceError,
+    LostBandWarning,
     LowFrequencyWarning,
     MeshQualityError,
     MeshQualityWarning,
@@ -62,6 +70,7 @@ from gfem.errors import (  # noqa: E402
     SweepNotConvergedWarning,
     SweepRankDeficientWarning,
     ThinLayerWarning,
+    UnanchoredBandWindowWarning,
     UnrequestedOrderWarning,
     UnsampledPixelsWarning,
     UnsettledTraceWarning,
@@ -177,6 +186,7 @@ __all__ = [
     "Absorbing",
     "AntiBoundRootWarning",
     "Background",
+    "BandDiagram",
     "Conductor",
     "Convection",
     "CrossSections",
@@ -218,6 +228,7 @@ __all__ = [
     "LayerClearanceWarning",
     "LinearSolverConvergenceError",
     "Lorentz",
+    "LostBandWarning",
     "LowFrequencyWarning",
     "LumpedPort",
     "MagneticDipole",
@@ -275,12 +286,14 @@ __all__ = [
     "Trace",
     "TransientThermal",
     "TransientThermalResult",
+    "UnanchoredBandWindowWarning",
     "UnrequestedOrderWarning",
     "UnsampledPixelsWarning",
     "UnsettledTraceWarning",
     "WavePort",
     "WaveVectorPath",
     "__version__",
+    "band_diagram",
     "beam_coupling",
     "characteristic_impedance",
     "conventions",

@@ -5,19 +5,26 @@ $\mathbf b_i \cdot \mathbf a_j = 2\pi\delta_{ij}$. `gfem.wave_vector_path`
 recognises the lattice from the translations, places its high-symmetry
 points (the hexagonal K as the zone corner, whatever the basis angle) and
 samples straight segments between them with exactly ``n_points`` wave
-vectors, every high-symmetry point among them. Geometry only: nothing here
-solves.
+vectors, every high-symmetry point among them: geometry only. The sweep
+`gfem.band_diagram` is tested below: its refusals, its band order, the
+Γ fill, the connections and the flags on a cheap C2 cell.
 """
 
+import dataclasses
 import itertools
 import math
+import warnings
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import periodic_cases as pc
 import pytest
 from strip2d import write_strip
 
 import gfem
+from gfem import _band_tracking as tracking
+from gfem import bands
 
 LATTICES = ("line", "rect", "square", "cubic", "hex60", "hex120", "oblique75")
 
@@ -335,3 +342,567 @@ def test_wave_vector_path_refusals(models, tmp_path, case):
     model = _model(models, tmp_path, which)
     with pytest.raises(error, match=message):
         gfem.wave_vector_path(model, points, **({"n_points": 7} | kwargs))
+
+
+# --- the band diagram sweep ---------------------------------------------------------
+
+TARGET = 2e9  # below half the highest frequency found on C2's lowest bands
+EG_TARGET = 0.5e9  # likewise on the eigen gradient cell, whose lowest band is 1.5-4 GHz
+
+
+class SolveRanError(AssertionError):
+    """A refusal came after a solve."""
+
+
+@pytest.fixture
+def no_solve(monkeypatch):
+    """Every per-wave-vector solve fails the test: a refusal must come first."""
+
+    def refuse(*_args, **_kwargs):
+        raise SolveRanError("a solve ran")
+
+    monkeypatch.setattr(bands, "_solve_wave_vector", refuse)
+
+
+@pytest.fixture(scope="module")
+def c2_cell(tmp_path_factory):
+    return pc.c2(pc.c2_mesh(tmp_path_factory.mktemp("c2_cell"), cells=(4, 4, 1)))
+
+
+@pytest.fixture(scope="module")
+def c2_path(c2_cell):
+    return gfem.wave_vector_path(c2_cell, ["Γ", "X"], n_points=3)
+
+
+def _diagram(model, path, **kwargs):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        return gfem.band_diagram(
+            model, path, **({"target": TARGET, "n_bands": 3} | kwargs)
+        )
+
+
+def _independent(model, k, n=3):
+    """The solve a band diagram must equal at ``k``, its modes in order of Re ω."""
+    result = gfem.solve(
+        model, gfem.Eigenmode(TARGET, n_modes=n, wave_vector=tuple(map(float, k)))
+    )
+    return result, np.argsort(np.asarray(result.omega).real, kind="stable")
+
+
+BAND_REFUSALS = {
+    "non-model": (
+        "non-model",
+        {},
+        TypeError,
+        r"^band_diagram: needs a gfem\.Model, got str\.$",
+    ),
+    "2D": (
+        "2D",
+        {},
+        NotImplementedError,
+        (
+            r"^gfem\.band_diagram is not available on a 2D mesh\. .*PEC faces give "
+            r"the Ez bands, natural faces the Hz bands"
+        ),
+    ),
+    "no pair": (
+        "no pair",
+        {},
+        ValueError,
+        (
+            r"^band_diagram: the model has no gfem\.Periodic pair, so it has no "
+            r"Bloch wave vector and no bands\. Pair the cell's opposite surfaces "
+            r"with gfem\.Periodic\.$"
+        ),
+    ),
+    "path shape": (
+        "rect",
+        {"path": np.zeros((3, 2))},
+        ValueError,
+        (
+            r"the path must be a gfem\.WaveVectorPath or wave vectors of shape "
+            r"\(n_k, 3\) in rad/m with n_k ≥ 1, got shape \(3, 2\)\.$"
+        ),
+    ),
+    "empty path": (
+        "rect",
+        {"path": np.zeros((0, 3))},
+        ValueError,
+        r"with n_k ≥ 1, got shape \(0, 3\)\.$",
+    ),
+    "nan path": (
+        "rect",
+        {"path": np.array([[np.nan, 0.0, 0.0]])},
+        ValueError,
+        r"the path must be a gfem\.WaveVectorPath",
+    ),
+    "off span": (
+        "rect",
+        {"path": np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 5.0]])},
+        ValueError,
+        (
+            r"wave vector 1 \(10, 0, 5\) rad/m has a component of 5 rad/m outside "
+            r"the span of the periodic translations .* Give it in that span, e\.g\. "
+            r"\(10, 0, 0\) rad/m"
+        ),
+    ),
+    "target zero": (
+        "rect",
+        {"target": 0.0},
+        ValueError,
+        r"^band_diagram: target must be a finite frequency > 0 Hz, got 0\.0\.$",
+    ),
+    "target nan": (
+        "rect",
+        {"target": math.nan},
+        ValueError,
+        r"target must be a finite frequency > 0 Hz, got nan",
+    ),
+    "n_bands zero": (
+        "rect",
+        {"n_bands": 0},
+        ValueError,
+        r"^band_diagram: n_bands must be an integer ≥ 1, got 0\.$",
+    ),
+    "n_bands float": (
+        "rect",
+        {"n_bands": 2.5},
+        ValueError,
+        r"n_bands must be an integer ≥ 1, got 2\.5",
+    ),
+    "keep_fields": (
+        "rect",
+        {"keep_fields": [0, 5]},
+        IndexError,
+        (
+            r"^band_diagram: keep_fields names wave vector 5, but the path has 2, "
+            r"numbered from 0\.$"
+        ),
+    ),
+}
+
+
+@pytest.mark.usefixtures("no_solve")
+@pytest.mark.parametrize("case", BAND_REFUSALS)
+def test_band_diagram_refusals_come_before_the_first_solve(models, tmp_path, case):
+    which, kwargs, error, message = BAND_REFUSALS[case]
+    model = _model(models, tmp_path, which)
+    path = np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]])
+    arguments = {"path": path, "target": TARGET, "n_bands": 2} | kwargs
+    with pytest.raises(error, match=message):
+        gfem.band_diagram(model, **arguments)
+
+
+@pytest.fixture(scope="module")
+def eigen_gradient_cell(tmp_path_factory):
+    mesh = pc.eigen_cell_mesh(tmp_path_factory.mktemp("eigen_cell"))
+    n = len(mesh.elements("cell"))
+    return mesh, jnp.linspace(*pc.EG_EPS, n)
+
+
+def _ramp_cell(mesh, eps):
+    return pc.eigen_cell(mesh, eps, tan_delta=pc.EG_TAN_DELTA)
+
+
+def _jit_case(name, eigen_gradient_cell):
+    mesh, eps = eigen_gradient_cell
+    k = np.array([[0.0, 0.0, 0.0], [0.5 * pc.EG_K[0], 0.0, 0.0]])
+
+    def gap(e, path=k, target=EG_TARGET):
+        bd = gfem.band_diagram(_ramp_cell(mesh, e), path, target=target, n_bands=2)
+        return bd.frequency.sum()
+
+    return {
+        "jit": (lambda: jax.jit(gap)(eps), r"not inside jax\.jit or jax\.vmap"),
+        "vmap": (
+            lambda: jax.vmap(gap)(jnp.stack([eps, eps])),
+            r"not inside jax\.jit or jax\.vmap",
+        ),
+        "jit_grad": (
+            lambda: jax.jit(jax.grad(gap))(eps),
+            r"not inside jax\.jit or jax\.vmap",
+        ),
+        "traced_k": (
+            lambda: jax.grad(lambda s: gap(eps, path=k * s))(1.0),
+            r"the wave vectors and the target must be fixed numbers",
+        ),
+        "traced_target": (
+            lambda: jax.grad(lambda t: gap(eps, target=t))(EG_TARGET),
+            r"the wave vectors and the target must be fixed numbers",
+        ),
+    }[name]
+
+
+@pytest.mark.usefixtures("no_solve")
+@pytest.mark.parametrize(
+    "case", ["jit", "vmap", "jit_grad", "traced_k", "traced_target"]
+)
+def test_band_diagram_inside_jit_or_vmap_raises_before_a_solve(
+    eigen_gradient_cell, case
+):
+    run, message = _jit_case(case, eigen_gradient_cell)
+    with pytest.raises(gfem.NonDifferentiableError, match=message):
+        run()
+
+
+# --- band connections from overlaps -------------------------------------------------
+
+#: (overlap, w_prev, w_cur) -> (link, by_overlap): the matrices of the probe
+#: that fixed the thresholds (clean continuations 0.90-1.00, doublets 0.707,
+#: leakage at most 0.36, a mode with no continuation at most 0.08).
+CONNECTIONS = {
+    "clean": (
+        [[0.97, 0.14], [0.12, 0.95]],
+        [1.0, 2.0],
+        [1.1, 2.1],
+        [0, 1],
+        [True, True],
+    ),
+    "crossing": (
+        [[0.05, 0.98], [0.97, 0.04]],
+        [1.0, 2.0],
+        [1.1, 1.9],
+        [1, 0],
+        [True, True],
+    ),
+    "leakage": (
+        [[0.95, 0.36], [0.30, 0.90]],
+        [1.0, 2.0],
+        [1.0, 2.0],
+        [0, 1],
+        [True, True],
+    ),
+    "doublet": (
+        [[0.707, 0.707], [0.707, 0.707]],
+        [1.0, 1.0],
+        [2.0, 2.0],
+        [0, 1],
+        [False, False],
+    ),
+    "doublet in frequency order": (
+        [[0.707, 0.707], [0.707, 0.707]],
+        [1.0, 2.0],
+        [2.1, 1.9],
+        [1, 0],
+        [False, False],
+    ),
+    "split pair, margin met": (
+        [[0.73, 0.67], [0.56, 0.78]],
+        [1.0, 2.0],
+        [1.0, 2.0],
+        [0, 1],
+        [True, True],
+    ),
+    "split pair, margin missed": (
+        [[0.73, 0.70], [0.56, 0.78]],
+        [1.0, 2.0],
+        [1.0, 2.0],
+        [0, 1],
+        [False, False],
+    ),
+    "one rival under the threshold": (
+        [[0.51, 0.49]],
+        [1.0],
+        [1.0, 2.0],
+        [0, -1],
+        [False, False],
+    ),
+    "two rows wanting one column": (
+        [[0.90, 0.10], [0.80, 0.10]],
+        [1.0, 2.0],
+        [1.0, 2.0],
+        [0, -1],
+        [True, False],
+    ),
+    "below the threshold": (
+        [[0.40, 0.10], [0.10, 0.45]],
+        [1.0, 2.0],
+        [1.0, 2.0],
+        [-1, -1],
+        [False, False],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", CONNECTIONS)
+def test_band_connections_from_overlaps(case):
+    overlap, w_prev, w_cur, link, by_overlap = CONNECTIONS[case]
+    got, by = tracking.connect(np.array(overlap), np.array(w_prev), np.array(w_cur))
+    assert got.tolist() == link
+    assert by.tolist() == by_overlap
+
+
+def test_the_modes_going_to_zero_at_gamma_are_filled_in_and_connected():
+    # three wave vectors, Γ in the middle: the lowest mode of each neighbour
+    # goes to zero frequency there, the solve at Γ finds the three above it
+    w = np.array([[0.5, 1.0, 2.0], [1.0, 2.0, 3.0], [0.5, 1.0, 2.0]])
+    into = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float) + 0.02
+    out = np.array([[0, 1, 0], [0, 0, 1], [0, 0, 0]], dtype=float) + 0.02
+    tracked = tracking.track(
+        [into, out], w, np.array([True] * 3), np.array([False, True, False])
+    )
+    assert tracked.static.tolist() == [0, 1, 0]
+    assert tracked.connection.tolist() == [[-1, -1, -1], [0, 1, 2], [0, 1, 2]]
+    assert tracked.by_overlap.tolist() == [
+        [False] * 3,
+        [False, True, True],
+        [False, True, True],
+    ]
+    assert not tracked.lost.any()
+
+
+def test_a_mode_with_no_partner_inside_the_window_is_lost_not_one_at_the_top():
+    w = np.array([[1.0, 2.0, 3.0], [1.0, 2.0, 3.5]])
+    # band 1 continues nowhere, band 2 continues into the top one
+    o = np.array([[0.99, 0.02, 0.0], [0.0, 0.03, 0.01], [0.0, 0.0, 0.97]])
+    tracked = tracking.track([o], w, np.array([True, True]), np.array([False] * 2))
+    assert tracked.lost.tolist() == [[False, True, False], [False, True, False]]
+    assert tracked.connection.tolist() == [[-1, -1, -1], [0, -1, 2]]
+    # the same mode left at the top of the window is an edge, not lost
+    o = np.array([[0.99, 0.0, 0.0], [0.0, 0.97, 0.0], [0.0, 0.0, 0.03]])
+    tracked = tracking.track([o], w, np.array([True, True]), np.array([False] * 2))
+    assert not tracked.lost.any()
+    # an unanchored window's bottom edge is open too
+    o = np.array([[0.03, 0.0, 0.0], [0.0, 0.97, 0.0], [0.0, 0.0, 0.99]])
+    tracked = tracking.track([o], w, np.array([False, False]), np.array([False] * 2))
+    assert not tracked.lost.any()
+    tracked = tracking.track([o], w, np.array([True, True]), np.array([False] * 2))
+    assert tracked.lost.tolist() == [[True, False, False], [True, False, False]]
+
+
+# --- a small diagram: order, Γ fill, fields and flags -------------------------------
+
+
+@pytest.fixture(scope="module")
+def c2_diagram(c2_cell, c2_path):
+    return _diagram(c2_cell, c2_path, keep_fields=[1])
+
+
+def test_bands_are_ascending_and_gamma_reports_static_bands(
+    c2_cell, c2_path, c2_diagram
+):
+    bd = c2_diagram
+    assert np.asarray(bd.omega).shape == (3, 3)
+    assert bd.omega[0, 0] == 0
+    assert bool(bd.static[0, 0])
+    assert int(bd.static.sum()) == 1
+    for name in ("error", "v_g"):
+        assert np.isnan(np.asarray(getattr(bd, name))[0, 0]).all()
+    assert np.isnan(np.asarray(bd.bulk_participation["cell"])[0, 0])
+    assert (np.diff(np.asarray(bd.omega).real, axis=1) >= 0).all()
+    for i, k in enumerate(c2_path.wave_vectors):
+        result, order = _independent(c2_cell, k)
+        found = np.asarray(result.omega)[order]
+        s = int(bd.static[i].sum())
+        np.testing.assert_allclose(
+            np.asarray(bd.omega)[i, s:], found[: 3 - s], rtol=1e-10, atol=0
+        )
+    assert bd.lost.sum() == 0
+    assert bool(bd.anchored.all())
+
+
+def test_band_diagram_to_xarray(c2_diagram):
+    ds = c2_diagram.to_xarray()
+    assert ds.frequency.dims == ("wave_vector", "band")
+    assert ds.v_g.dims == ("wave_vector", "band", "axis")
+    assert ds.v_g.attrs["units"] == "m/s"
+    assert ds.omega.attrs["units"] == "rad/s"
+    assert ds.anchored.dims == ("wave_vector",)
+    assert ds.distance.attrs["units"] == "rad/m"
+    assert ds.k.attrs["units"] == "rad/m"
+    assert ds.label.values.tolist() == ["Γ", "", "X"]
+    assert ds.axis.values.tolist() == ["x", "y", "z"]
+    assert ds.bulk_participation.dims == ("wave_vector", "band", "region")
+    for name in ("connection", "connection_by_overlap", "static", "lost", "cluster"):
+        assert ds[name].dims == ("wave_vector", "band")
+    assert ds.attrs["target"] == TARGET
+    assert ds.attrs["lattice"] == "rectangular"
+    assert not any("field" in name for name in ds.variables)
+    np.testing.assert_allclose(
+        ds.frequency.values, np.asarray(c2_diagram.omega).real / (2 * np.pi)
+    )
+    with pytest.raises(TypeError, match="needs concrete values"):
+        jax.jit(lambda b: b.to_xarray())(c2_diagram)
+
+
+def test_kept_fields_and_e_field(c2_cell, c2_path, c2_diagram):
+    bd = c2_diagram
+    result, order = _independent(c2_cell, c2_path.wave_vectors[1])
+    for band in range(3):
+        mine = np.asarray(bd.e_field(1, band).coefficients)
+        theirs = np.asarray(result.e_fields[int(order[band])].coefficients)
+        np.testing.assert_allclose(mine, theirs, rtol=0, atol=1e-10 * abs(theirs).max())
+    with pytest.raises(
+        ValueError,
+        match=r"fields were not kept at wave vector 2: "
+        r"pass keep_fields=\[2\] \(or True\)",
+    ):
+        bd.e_field(2, 0)
+    with pytest.raises(IndexError, match="Wave vector 3 does not exist"):
+        bd.e_field(3, 0)
+    with pytest.raises(IndexError, match="Band 3 does not exist"):
+        bd.e_field(1, 3)
+    both = _diagram(c2_cell, c2_path, keep_fields=[0], n_bands=2)
+    with pytest.raises(
+        ValueError,
+        match=r"band 0 at wave vector 0 \(Γ\) is a static band: it has no field",
+    ):
+        both.e_field(0, 0)
+    assert both.e_field(0, 1).quantity == "E"
+
+
+def test_band_diagram_is_a_pytree_with_a_repr(c2_diagram):
+    leaves, tree = jax.tree_util.tree_flatten(c2_diagram)
+    again = jax.tree_util.tree_unflatten(tree, leaves)
+    np.testing.assert_array_equal(np.asarray(again.omega), np.asarray(c2_diagram.omega))
+    assert again.path is c2_diagram.path
+    assert again.target == TARGET
+    assert repr(c2_diagram) == "BandDiagram(Γ-X, 3 wave vectors, 3 bands, 0-32 GHz)"
+    seen = []
+    jax.jit(lambda bd: seen.append(repr(bd)) or bd.omega)(c2_diagram)
+    assert seen == ["BandDiagram(3 wave vectors, 3 bands)"]
+
+
+def test_a_reversed_path_gives_the_same_bands(c2_cell, c2_path, c2_diagram):
+    reverse = bands.WaveVectorPath(c2_path.wave_vectors[::-1])
+    back = _diagram(c2_cell, reverse)
+    forward = c2_diagram
+    assert bool(back.static[2, 0])
+    assert not back.static[:2].any()
+    np.testing.assert_allclose(
+        np.asarray(back.omega)[::-1], np.asarray(forward.omega), rtol=1e-10, atol=0
+    )
+    np.testing.assert_array_equal(
+        np.asarray(back.cluster)[::-1], np.asarray(forward.cluster)
+    )
+    np.testing.assert_allclose(
+        np.asarray(back.v_g)[::-1],
+        np.asarray(forward.v_g),
+        rtol=0,
+        atol=1e-9 * pc.C0,
+    )
+
+
+def test_k_and_k_plus_g_give_the_same_bands(c2_cell):
+    b1 = np.asarray(c2_cell.reciprocal_lattice)[0]
+    path = np.array([0.3 * b1, 1.3 * b1, b1])
+    bd = _diagram(c2_cell, path)
+    omega = np.asarray(bd.omega)
+    np.testing.assert_allclose(omega[1], omega[0], rtol=1e-10, atol=0)
+    np.testing.assert_allclose(
+        np.asarray(bd.v_g)[1], np.asarray(bd.v_g)[0], rtol=0, atol=1e-9 * pc.C0
+    )
+    assert bd.connection[1].tolist() == [0, 1, 2]
+    assert bd.connection_by_overlap[1].all()
+    assert bd.static.tolist() == [[False] * 3, [False] * 3, [True, False, False]]
+    assert omega[2, 0] == 0
+
+
+def test_a_high_target_flags_and_warns_once_unanchored(c2_cell):
+    path = gfem.wave_vector_path(c2_cell, ["Γ", "X"], n_points=2)
+    with pytest.warns(gfem.UnanchoredBandWindowWarning) as record:
+        bd = gfem.band_diagram(c2_cell, path, target=20e9, n_bands=2)
+    ours = [w for w in record if w.category is gfem.UnanchoredBandWindowWarning]
+    assert len(ours) == 1
+    assert ours[0].filename == __file__
+    message = str(ours[0].message)
+    assert message.startswith("band_diagram: at wave vectors 0, 1 (Γ, X) the target")
+    assert "20 GHz is not below half the highest band found there" in message
+    assert bd.anchored.tolist() == [False, False]
+    assert not bd.static.any()
+    assert bd.omega[0, 0] != 0
+
+
+def test_a_band_missing_at_one_wave_vector_is_lost_and_warns_once(c2_cell):
+    path = gfem.wave_vector_path(c2_cell, ["Γ", "X"], n_points=5)
+    calls = []
+    real = bands._solve_wave_vector
+
+    def without_band_0(model, problem, options, comm, cache):
+        calls.append(None)
+        if len(calls) != 3:
+            return real(model, problem, options, comm, cache)
+        wider = dataclasses.replace(problem, n_modes=problem.n_modes + 1)
+        result = real(model, wider, options, comm, cache)
+        keep = np.argsort(np.asarray(result.omega).real)[1:]
+        return dataclasses.replace(
+            result,
+            omega=result.omega[keep],
+            error=result.error[keep],
+            cluster=result.cluster[keep],
+            v_g=result.v_g[keep],
+            e_fields=tuple(result.e_fields[int(i)] for i in keep),
+            bulk_participation={
+                k: v[keep] for k, v in result.bulk_participation.items()
+            },
+        )
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(bands, "_solve_wave_vector", without_band_0)
+        with pytest.warns(gfem.LostBandWarning) as record:
+            bd = gfem.band_diagram(c2_cell, path, target=TARGET, n_bands=3)
+    lost = [w for w in record if w.category is gfem.LostBandWarning]
+    assert len(lost) == 1
+    message = str(lost[0].message)
+    assert "band 0 at wave vector 1" in message
+    assert "band 0 at wave vector 3" in message
+    assert np.argwhere(np.asarray(bd.lost)).tolist() == [[1, 0], [3, 0]]
+
+
+@pytest.mark.filterwarnings("error::gfem.UnanchoredBandWindowWarning")
+def test_the_band_group_velocity_of_a_band_diagram_raises_under_grad(
+    eigen_gradient_cell,
+):
+    mesh, eps = eigen_gradient_cell
+    k = np.array([[0.5 * pc.EG_K[0], 0.0, 0.0]])
+
+    def velocity(e):
+        bd = gfem.band_diagram(_ramp_cell(mesh, e), k, target=EG_TARGET, n_bands=1)
+        return bd.v_g.real.sum()
+
+    with pytest.raises(gfem.NonDifferentiableError, match="'v_g'"):
+        jax.grad(velocity)(eps)
+
+
+@pytest.mark.filterwarnings("error::gfem.UnanchoredBandWindowWarning")
+def test_eager_grad_through_a_band_diagram_is_the_sum_of_per_wave_vector_gradients(
+    eigen_gradient_cell,
+):
+    mesh, eps = eigen_gradient_cell
+    model = _ramp_cell(mesh, eps)
+    path = gfem.wave_vector_path(model, ["Γ", "X"], n_points=3)
+    weights = jnp.array([1.0, 0.37])
+    target = EG_TARGET
+
+    def swept(e):
+        bd = gfem.band_diagram(_ramp_cell(mesh, e), path, target=target, n_bands=2)
+        return jnp.sum(weights * bd.frequency), bd.frequency[0, 0]
+
+    def apart(e, static):
+        total = 0.0
+        for i, k in enumerate(path.wave_vectors):
+            r = gfem.solve(
+                _ramp_cell(mesh, e),
+                gfem.Eigenmode(target, n_modes=2, wave_vector=tuple(map(float, k))),
+            )
+            w = jax.lax.stop_gradient(r.omega).real
+            order = np.argsort(np.asarray(w))
+            s = static[i]
+            total += jnp.sum(weights[s:] * (r.omega.real[order[: 2 - s]] / (2 * np.pi)))
+        return total
+
+    static = np.asarray(
+        gfem.band_diagram(model, path, target=target, n_bands=2).static.sum(axis=1)
+    )
+    assert static.tolist() == [1, 0, 0]
+    together = jax.grad(lambda e: swept(e)[0])(eps)
+    separate = jax.grad(lambda e: apart(e, static))(eps)
+    np.testing.assert_allclose(
+        np.asarray(together),
+        np.asarray(separate),
+        rtol=1e-9,
+        atol=1e-9 * abs(np.asarray(separate)).max(),
+    )
+    assert float(abs(np.asarray(together)).max()) > 0
+    assert np.all(np.asarray(jax.grad(lambda e: swept(e)[1])(eps)) == 0)

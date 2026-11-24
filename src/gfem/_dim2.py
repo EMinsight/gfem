@@ -244,6 +244,7 @@ _ENTRIES = {
     "helmholtz_filter": "Filter the pixels of a LayerGrid instead: "
     "helmholtz_filter(grid, radius=...).",
     "wave_vector_path": _BANDS,
+    "band_diagram": _BANDS,
 }
 
 
