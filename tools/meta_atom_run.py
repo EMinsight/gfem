@@ -24,6 +24,7 @@ import argparse
 import hashlib
 import io
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -204,6 +205,9 @@ def main(argv=None):
     parser.add_argument("--out", type=Path, required=True, help="the record's folder")
     parser.add_argument("--profile", choices=tuple(PROFILES), default="full")
     args = parser.parse_args(argv)
+    export = ROOT / "COMMIT"  # a git archive export names its commit in this file
+    if export.is_file():
+        os.environ.setdefault("GFEM_RUN_COMMIT", export.read_text().strip())
     memory, start = provenance.PeakMemory(), provenance._utc()  # noqa: SLF001
     commit = provenance.clean_commit(ROOT) if args.profile == "full" else None
     if commit is None:
