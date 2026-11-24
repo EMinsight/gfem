@@ -48,6 +48,61 @@ lossless bound mode has $\alpha = 0$. The fundamental mode of a silicon strip
 waveguide is bound, even though the structure is open: nothing about it
 radiates. A section that is open is not enough to make a mode leaky.
 
+## Group index and dispersion
+
+A port mode's propagation constant changes with frequency, and its
+derivatives say how a pulse travels along the guide. Every row of a
+{py:obj}`gfem.PortMode` grid carries them, computed exactly from the mode
+problem at that frequency, not from differences across the grid:
+
+| Result | Quantity | Unit |
+| --- | --- | --- |
+| `n_g` | {term}`group index` $n_g = c\,\mathrm{d}\beta/\mathrm{d}\omega = n_\mathrm{eff} + \omega\,\mathrm{d}n_\mathrm{eff}/\mathrm{d}\omega$ | 1 |
+| `beta_2` | {term}`group-velocity dispersion` $\beta_2 = \mathrm{d}^2\beta/\mathrm{d}\omega^2$ | s²/m |
+| `beta_3` | {term}`third-order dispersion` $\beta_3 = \mathrm{d}^3\beta/\mathrm{d}\omega^3$ | s³/m |
+| `D` | {term}`dispersion parameter` $D = -(2\pi c/\lambda^2)\,\beta_2$, $\lambda = c/f$ | s/m² |
+
+A pulse's envelope travels at the group velocity $v_g = c/n_g$. Where
+$\beta_2 > 0$ ($D < 0$) the dispersion is normal: lower frequencies travel
+faster. Where $\beta_2 < 0$ ($D > 0$) it is anomalous.
+
+The materials and the guide's shape both disperse, and the one derivative
+holds both. A region with a {term}`permittivity law` enters through the law's
+own frequency dependence. On a lossless section the group index is also
+$c$ times the energy the mode stores per unit length over the power it
+carries, with the {term}`energy permittivity` weighting a law region. A
+constant permittivity set to a law's value at one frequency gives the right
+$n_\mathrm{eff}$ and the wrong $n_g$: 3 % low on a silicon wire.
+
+With loss, $\gamma = \alpha + i\beta$ is complex, and so are its
+derivatives. gfem reports the derivatives of $\gamma$ itself, written
+$n' - in''$ like `n_eff`:
+
+$$
+n_g = \frac{c}{i}\frac{\mathrm{d}\gamma}{\mathrm{d}\omega}
+    = c\frac{\mathrm{d}\beta}{\mathrm{d}\omega} - i\,c\frac{\mathrm{d}\alpha}{\mathrm{d}\omega},
+\qquad
+\beta_k = \frac{1}{i}\frac{\mathrm{d}^k\gamma}{\mathrm{d}\omega^k}
+        = \frac{\mathrm{d}^k\beta}{\mathrm{d}\omega^k} - i\,\frac{\mathrm{d}^k\alpha}{\mathrm{d}\omega^k}.
+$$
+
+The real parts describe the phase, as on a lossless guide. The imaginary
+parts say how the loss changes with frequency. A {term}`leaky mode` is read
+the same way. What no longer holds with loss is the energy picture: the
+stored energy over the power is then the speed of the energy, not
+$c\,\mathrm{d}\beta/\mathrm{d}\omega$.
+
+The error in these values is the mesh's and the section's truncation, never
+a step. $\beta_2$ reacts to the section's edge far more than
+$n_\mathrm{eff}$ does. Around a silicon wire at its zero-dispersion width,
+0.5 µm of oxide gets $n_\mathrm{eff}$ within $3 \times 10^{-4}$ and gives
+$D$ the wrong sign, so converge $D$ in the {term}`clearance` on its own. A
+{term}`perfectly matched layer` keeps the stretch of its
+{term}`reference frequency` over the whole grid, and the derivatives are
+those of that section. A small imaginary part it adds on a lossless guide
+hints at the layer's load, but understates the error. The calculation, and
+its checks: {doc}`recipes/waveguide-dispersion`.
+
 ## Resonant modes: closed and open
 
 An {term}`eigenmode problem` finds the frequencies at which a source-free field
@@ -112,7 +167,8 @@ A leaky mode is one physical wave. Fix the frequency and it decays in space
 ($\alpha > 0$, a port mode); fix the wave number and it decays in time
 ($\mathrm{Im}\,\omega > 0$, a resonant mode of a periodic cell). For weak
 leakage, $\alpha \ll \beta$, the two rates are tied by the group velocity
-$v_g = d\omega / d\beta$ along the guide:
+$v_g = \mathrm{d}\omega/\mathrm{d}\beta = c/n_g$ along the guide
+(`PortModeResult.n_g`):
 
 $$
 \mathrm{Im}\,\omega \approx v_g\, \alpha .

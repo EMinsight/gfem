@@ -158,6 +158,56 @@ Tests: [circuits](https://github.com/benvial/gfem/blob/main/tests/unit/test_sax_
 [polarity](https://github.com/benvial/gfem/blob/main/tests/verification/test_circuit_polarity.py),
 [recipe](https://github.com/benvial/gfem/blob/main/tests/unit/test_docs_sax_recipe.py).
 
+## Group index and dispersion
+
+A port mode's group index $n_g$, its dispersion $\beta_2$ and $\beta_3$ and
+the dispersion parameter $D$ are checked against closed forms, against
+differences of exact solves and against the sweep's own exact solves:
+
+- **Uniformly filled guides.** In a rectangular guide filled with air, a
+  constant dielectric, or a lossless or lossy Lorentz or Drude medium, and on
+  a parallel-plate line in both polarizations with a lossy Lorentz or a
+  conductive fill, the discrete mode obeys the filled guide's dispersion
+  relation with the mesh's own cutoff. $n_g$, $\beta_2$ and $\beta_3$ match
+  that closed form to rounding, complex with loss.
+- **Under the element order.** The TE0 and TM0 modes of a 220 nm silicon
+  slab in oxide with Sellmeier laws, on a line port, converge to values
+  computed to 40 digits from the slab's dispersion relation, each order at
+  least five times closer. So do an empty rectangular guide's TE10 and a guide
+  with a dielectric slab against one wall. On the lossless slab the
+  reference group index is also the stored energy over the power.
+- **Sections without a closed form.** On guides with copper walls, thick and
+  thin, between lossy parallel plates, beside an absorbing end next to a
+  Lorentz medium and on a strip cut by a perfectly matched layer, the values
+  match central differences across three exact solves $10^{-4}$ apart in
+  relative frequency.
+- **Sweeps.** Rows served by the reduced port mode model match exact solves
+  at the same frequencies, on a slab guide, a hybrid section and a coplanar
+  line over 1-100 GHz, including rows that fall back to an exact solve for
+  their dispersion. At one solve thread, a port mode solve and a driven
+  solve on the same grid give the same propagation constants bit for bit:
+  computing the dispersion leaves the modes unchanged. On a quasi-TEM line
+  near DC, $\beta_2$ is limited by noise of about $10^{-3}$ relative.
+- **Results.** $D$ follows from $\beta_2$; a driven solve's port modes carry
+  none; the values survive saving, loading, `to_xarray` and `jax.jit`, and
+  `jax.grad` through them raises. On two MPI ranks they agree with one
+  process.
+
+Two comparisons are observations, not checks, and live on
+{doc}`recipes/waveguide-dispersion`: a 450 × 220 nm silicon wire's group
+index against a measured one, and a 500 × 220 nm wire's $\beta_2$ against a
+published simulation, which agree to about 10 %.
+
+Not checked: a fabricated guide's measured dispersion, and modes at an exact
+degeneracy (refused). All of these run on every change, the MPI case with
+the MPI tests.
+
+Tests: [unit checks](https://github.com/benvial/gfem/blob/main/tests/unit/test_port_mode_dispersion.py),
+[slab and order](https://github.com/benvial/gfem/blob/main/tests/verification/test_port_mode_dispersion.py),
+[rectangular guides](https://github.com/benvial/gfem/blob/main/tests/verification/test_port_mode_convergence.py),
+[sweeps](https://github.com/benvial/gfem/blob/main/tests/verification/test_port_mode_sweep.py),
+[MPI](https://github.com/benvial/gfem/blob/main/tests/mpi/test_wave_ports.py).
+
 ## Eigenmodes with wave ports
 
 Each case solves an eigenmode problem with wave ports and compares it with an
@@ -911,7 +961,7 @@ remeshed sections. Each check runs on every change to gfem.
 - **Across meshes.** The static field is read at fixed points of the optical
   model, wherever they fall in the static mesh: an optical model on a
   second mesh of the same section gives the same shift to
-  $5.5 	imes 10^{-4}$.
+  $5.5 \times 10^{-4}$.
 - **Capacitance per length.** Parallel plates on a section give
   $\varepsilon_0 \varepsilon_r H / d$ per metre, whatever the slab's thickness.
 - **Gradients.** The gradients with respect to the tensor and to the static

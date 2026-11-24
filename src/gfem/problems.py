@@ -658,6 +658,10 @@ class PortMode:
     ``polarity`` fixes the phase of its own mode as in a driven problem; an
     explicit other ``mode`` takes the default phase.
 
+    Each row also carries the mode's group index and dispersion (``n_g``,
+    ``beta_2``, ``beta_3``, ``D``), exact frequency derivatives of
+    the propagation constant, for about a fifth more time per exact solve.
+
     Example:
         The mode of wave port ``"p1"`` from 1 to 100 GHz::
 

@@ -584,6 +584,28 @@ V_\mathrm{inc}\, 2 Z_\mathrm{IDT}/(Z_L + Z_0)`, with :math:`Z_\mathrm{IDT} =
 1/Y` and :math:`Z_L = Z_\mathrm{IDT} + R_s`. A quantity per terminal volt is
 referred to the incident wave by that factor.
 
+Group index and dispersion
+--------------------------
+A port mode's group index and dispersion are the frequency derivatives of
+:math:`\gamma / i` at each frequency of a `gfem.PortMode` grid:
+
+.. math::
+
+    n_g = \frac{c}{i}\frac{\mathrm{d}\gamma}{\mathrm{d}\omega}, \qquad
+    \beta_k = \frac{1}{i}\frac{\mathrm{d}^k\gamma}{\mathrm{d}\omega^k}
+    \quad (k = 2, 3), \qquad
+    D = -\frac{2\pi c}{\lambda^2}\,\beta_2, \quad \lambda = c / f.
+
+For a lossless mode they are real: :math:`n_g = c\,\mathrm{d}\beta/\mathrm{d}\omega`
+and :math:`\beta_k = \mathrm{d}^k\beta/\mathrm{d}\omega^k`, the same under
+either time dependence. With loss they are complex, with real parts
+:math:`c\beta'` and :math:`\beta^{(k)}` and imaginary parts :math:`-c\alpha'`
+and :math:`-\alpha^{(k)}`; a code using :math:`e^{-i\omega t}` reports the
+complex conjugates. :math:`\beta_2 > 0` (:math:`D < 0`) is normal
+dispersion. Units: :math:`\beta_2` in s²/m, :math:`\beta_3` in s³/m,
+:math:`D` in s/m². A perfectly matched layer keeps its reference frequency's
+stretch over the whole grid, and the derivatives are those of that section.
+
 Incident fields
 ---------------
 A `gfem.PlaneWave` or `gfem.GaussianBeam` travels along
