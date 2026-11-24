@@ -24,16 +24,19 @@ from gfem._diffraction.outputs import (
     jones,
     power_balance,
 )
+from gfem._diffraction.response import CellResponse, cell_response
 from gfem._diffraction.sweep import AngleSweepResult, angle_sweep
 
 __all__ = [
     "AngleSweepResult",
     "ApertureField",
+    "CellResponse",
     "Efficiencies",
     "Emissivity",
     "HemisphereRule",
     "Jones",
     "PowerBalance",
+    "cell_response",
     "angle_sweep",
     "efficiencies",
     "emissivity",

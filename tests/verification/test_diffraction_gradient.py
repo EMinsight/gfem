@@ -125,3 +125,46 @@ def test_g2_emissivity_matches_finite_differences(tmp_path):
     assert (
         float(jnp.linalg.norm(frugal - grad) / jnp.linalg.norm(grad)) <= G2_RETAIN_TOL
     )
+
+
+# --- G3: the cell response's stored derivative -------------------------------------
+
+#: The finite-difference step in the ridge width, um (1 nm).
+G3_STEP = 1e-3
+#: Max |D_fd - D| over max |D|.
+G3_TOL = 1e-6
+
+
+def test_g3_the_stored_derivative_matches_fourth_order_differences(tmp_path):
+    um = 1e-6
+    w0 = pc.RIDGE_W0
+    mesh = pc.ridge_mesh(tmp_path)
+    base = pc.ridge(mesh)
+    morph = gfem.shape.boundary_morph(base, "sidewall", grows="atom")
+    wm = jnp.asarray(pc.ridge_width_map(morph))
+
+    def make_cell(p, dp):
+        return base.replace(mesh=morph((p - w0 + dp) * um * wm))
+
+    freqs = [pc.RIDGE_FREQUENCY, 1.05 * pc.RIDGE_FREQUENCY]
+    excite = ["sub TE", "sub TM"]
+    options = gfem.SolverOptions(
+        order=2, linear_solver="direct", threads=2, tolerance=1e-12
+    )
+    response = dif.cell_response(
+        make_cell, [w0], frequency=freqs, excite=excite, options=options
+    )
+    problem = gfem.Driven(freqs, excite=excite)
+
+    def s_of(k):
+        return np.asarray(
+            gfem.solve(
+                make_cell(w0 + k * G3_STEP, 0.0), problem, options=options
+            ).s.values
+        )
+
+    f = {k: s_of(k) for k in (-2, -1, 1, 2)}
+    fd = (8 * (f[1] - f[-1]) - (f[2] - f[-2])) / (12 * G3_STEP)
+    d = np.asarray(response.derivative[0])
+    assert d.shape == fd.shape == (2, 4, 2)
+    assert np.abs(fd - d).max() <= G3_TOL * np.abs(d).max()

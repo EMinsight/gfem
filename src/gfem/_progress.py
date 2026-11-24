@@ -44,6 +44,7 @@ ADAPTIVE_SWEEP = "adaptive sweep"
 PORT_MODE_SWEEP = "port mode sweep"
 MODE_SEARCH = "mode search"
 MESH_REFINEMENT = "mesh refinement"
+CELL_RESPONSE = "cell response"
 ANGLE_SWEEP = "angle sweep"
 
 #: The live display, or ``None`` while progress is off.

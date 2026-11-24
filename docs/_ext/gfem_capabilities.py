@@ -461,6 +461,11 @@ RAISES_LABELS = {
         "Driven S-parameters, with respect to node coordinates on a Floquet "
         "port's surface"
     ),
+    "cell_response x the cell's own design": (
+        "`gfem.diffraction.cell_response`, with respect to the cell's own design "
+        "or a sample (its stored dS/dp would need second derivatives of the "
+        "solve; differentiate `gfem.solve` of the cell directly)"
+    ),
     "propagate x distance": (
         "`gfem.diffraction.propagate`, with respect to the propagation distance "
         "or the padding (the transfer function is built once, outside the trace)"
