@@ -68,6 +68,7 @@ from gfem._engine import terms as driven_terms
 from gfem._engine.cache import Entry, discretization
 from gfem._engine.line_mode import LineModeSpace, ModeSpace, mode_space
 from gfem._engine.line_mode_sensitivity import line_integrated
+from gfem._engine.mode_derivative import ModeDerivative, gmres_on, mode_derivative
 from gfem._engine.port_mode import PortModeSpace
 from gfem._engine.port_mode_normalization import normalize_rows
 from gfem._engine.port_mode_sensitivity import section_inputs
@@ -76,7 +77,11 @@ from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import Term, is_thermal_value
 from gfem._engine.solve_request import SolveRequest
 from gfem._linalg import report
-from gfem._linalg.superlu import backward_error, shift_invert_eigs
+from gfem._linalg.superlu import (
+    EIGS_TOLERANCE,
+    ShiftInvert,
+    backward_error,
+)
 from gfem._line_section import LineSection, line_elements, line_section
 from gfem._port_section import (
     PLANE_RTOL,
@@ -143,6 +148,11 @@ _PML_SHARE = 0.5
 _CLEARANCE = 1e-2
 # With at most this many frequencies every one is solved exactly.
 _EXACT_ONLY = 3
+# A mode derivative is solved to the eigensolver's own tolerance: the mode is
+# good to no better, so a tighter solve buys nothing. A mode at the
+# low-frequency floor is good only to its backward error, so its derivative
+# is solved to that (the preconditioned system cannot reach 1e-10 there).
+_DERIVATIVE_RTOL = EIGS_TOLERANCE
 # A new mode adds its part orthogonal to the basis unless that part is below
 # this fraction of the mode (rounding noise). It must be tiny: a smooth mode
 # has |A x| << |A| |x|, so a part of 1e-8 still carries a backward error ~1e-6.
@@ -906,6 +916,8 @@ class _Candidates:
     residual: np.ndarray
     #: Each candidate's layer energy share; ``None`` reads as zero (no layer).
     share: np.ndarray | None = None
+    #: The solve's shift-invert factor while a mode derivative may need it.
+    factor: ShiftInvert | None = None
 
 
 class _Greedy:
@@ -920,6 +932,11 @@ class _Greedy:
 
     Per mode ``k`` (row of ``lam``, ``residual``, ``floor``; entry of
     ``coords`` and of each ``pick``); ``solved`` is shared by the modes.
+
+    The modes ``k`` in ``dispersion`` carry dispersion: each exact solve kept
+    for them gives their mode derivative (``derivatives[j][k]``, ``None`` for
+    the other modes) while its factor is alive. With ``dispersion`` empty no
+    factor outlives its solve and nothing more is computed.
     """
 
     def __init__(
@@ -929,12 +946,16 @@ class _Greedy:
         modes: list[int],
         tolerance: float,
         ports: list[WavePort],
+        *,
+        dispersion: Sequence[int] = (),
     ) -> None:
         self.space = space
         self.f = f
         self.modes = list(modes)
         self.ports = list(ports)
         self.tolerance = tolerance
+        self.dispersion = tuple(dispersion)
+        self.derivatives: dict[int, list[ModeDerivative | None]] = {}
         n, n_modes = len(f), len(self.modes)
         self.k0 = np.empty(n)
         self.k_max = np.empty(n)
@@ -971,8 +992,9 @@ class _Greedy:
             raise self._cutoff_error(first)
         for k in range(len(self.modes)):
             self._check_degenerate(first, k)
-        self._keep(0, first, [mode - 1 for mode in self.modes])
         self._warn_clearance(first)
+        self._keep(0, first, [mode - 1 for mode in self.modes])
+        del first  # the kept copy dropped its factor; this one would hold it
         if n <= _EXACT_ONLY:
             for j in range(1, n):
                 self._exact(j, j - 1, certain=True)
@@ -1015,13 +1037,14 @@ class _Greedy:
         self.exact_solves += 1
         a, b = space.pencil.at(self.k0[j])
         n = a.shape[0]
+        factor = ShiftInvert.factor(a, b, self.shift[j])
         first = max(6, 2 * mode + 4)
         # PML modes crowd the shift: widen until enough candidates survive
         layered = space.section.layer is not None
         wants = itertools.count() if layered else range(2)
         for step in wants:
             want = first * (2**step if layered else 4**step)
-            lam, vecs = shift_invert_eigs(a, b, self.shift[j], min(want, n - 2))
+            lam, vecs = factor.eigs(min(want, n - 2))
             beta = np.sqrt(-lam + 0j)
             res = np.array(
                 [backward_error(a, b, lam[i], vecs[:, i]) for i in range(len(lam))]
@@ -1044,6 +1067,7 @@ class _Greedy:
             vecs=vecs[:, ranked],
             residual=res[ranked],
             share=share[ranked],
+            factor=factor if self.dispersion else None,
         )
 
     def _warn_clearance(self, first: _Candidates) -> None:
@@ -1067,8 +1091,17 @@ class _Greedy:
             )
 
     def _keep(self, j: int, cand: _Candidates, picks: list[int]) -> None:
-        """Make candidate ``picks[k]`` of the exact solve at ``j`` mode ``k`` there."""
+        """Make candidate ``picks[k]`` of the exact solve at ``j`` mode ``k`` there.
+
+        The modes that carry dispersion get their mode derivative, on the
+        solve's factor or, for a sample re-picked after its factor was
+        dropped, on a new one; then the factor is dropped (one per sample
+        would hold hundreds of MiB each on a large section).
+        """
         new = j not in self.candidates
+        if self.dispersion:
+            self._derive(j, cand, picks)
+            cand = dataclasses.replace(cand, factor=None)
         self.candidates[j] = cand
         self.pick[j] = list(picks)
         self.solved[j] = True
@@ -1076,6 +1109,38 @@ class _Greedy:
         self.residual[:, j] = cand.residual[picks]
         if new:
             self.reduced.add(cand.vecs[:, picks])
+
+    def _derive(self, j: int, cand: _Candidates, picks: list[int]) -> None:
+        """The mode derivatives at ``j`` of the modes that carry dispersion.
+
+        A mode whose pick is unchanged keeps its derivative.
+        """
+        new = self.derivatives.get(j, [None] * len(self.modes))
+        todo = [
+            k for k in self.dispersion if new[k] is None or self.pick[j][k] != picks[k]
+        ]
+        if not todo:
+            return
+        pencil = self.space.pencil
+        factor = cand.factor
+        if factor is None:
+            a, b = pencil.at(self.k0[j])
+            factor = ShiftInvert.factor(a, b, self.shift[j])
+        coefficients = pencil.taylor(self.k0[j])
+        new = list(new)
+        for k in todo:
+            p = picks[k]
+            rtol = max(_DERIVATIVE_RTOL, float(cand.residual[p]))
+            new[k] = mode_derivative(
+                pencil.a,
+                pencil.b,
+                coefficients,
+                complex(cand.lam[p]),
+                cand.vecs[:, p],
+                solve=gmres_on(factor, rtol),
+                k0=float(self.k0[j]),
+            )
+        self.derivatives[j] = new
 
     def _exact(self, j: int, ref: int, *, certain: bool) -> None:
         """Exact solve at ``j``, keeping the candidates closest to the modes at ``ref``.
