@@ -32,7 +32,9 @@ result.sweep.sampled_frequencies  # the frequencies solved in full, Hz
   sweep, not in an adaptive one.
 - Point dipoles (`Driven(sources=...)`, {doc}`point-dipoles`) sweep too, with
   or without ports: their emitted power and port waves come from the reduced
-  model at every frequency. An incident field does not: its load is not a
+  model at every frequency. With `Driven(source_fields=False)` the samples
+  solve the ports alone, so the basis does not grow with the number of
+  dipoles ({doc}`point-dipoles`). An incident field does not: its load is not a
   fixed vector times a function of frequency, and `Driven` raises
   `NotImplementedError`.
 - It pays off above about 20 frequencies. Below that, keep the uniform sweep.

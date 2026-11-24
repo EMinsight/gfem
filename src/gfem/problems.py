@@ -931,7 +931,8 @@ class Driven:
             fixed: equal to the full solve's at the sample frequencies,
             accurate to the sweep's field error between them.
         keep_fields: Which electric fields the result keeps, one per kept
-            frequency and excited port: ``False`` (the default) none,
+            frequency and column (each excited port and, unless
+            ``source_fields=False``, each source): ``False`` (the default) none,
             ``True`` all, or a frequency or list of frequencies of
             ``frequency``. A field is a complex vector per DOF (16 bytes per
             DOF; 160 MB at 10M DOFs), so keep only what you use.
@@ -961,7 +962,9 @@ class Driven:
             condition for each. ``None`` (the default) on a 3D mesh, whose
             solve holds both.
         sources: A source or a sequence of them, one column each after the
-            excited ports, in this order, labelled by their names. An
+            excited ports (none for a point dipole with
+            ``source_fields=False``), in this order, labelled by their
+            names. An
             incident field needs ``Model(background=...)``, the medium it is
             a solution of.
         source_fields: Whether each source's own field is solved. ``True``
@@ -970,11 +973,20 @@ class Driven:
             field exists (its emitted power, Purcell factor, kept field, far
             field). gfem solves each port's own field once, the excited
             ports' columns and one load per other port with a defined wave,
-            and reads each dipole's port waves from them by reciprocity, at
+            and reads each dipole's port waves from them by reciprocity,
+            :math:`b_i = -\tfrac{i\omega}{4}\,\mathbf{p}\cdot\mathbf{E}_i(\mathbf{r}_0)`
+            with :math:`\mathbf{E}_i` the field of port :math:`i` fed 1 W, at
             the cost of one point overlap per dipole: a coupling map over any
             number of positions. Unlike ``keep_fields``, which chooses which
             solved fields are stored, this chooses whether the sources' fields
-            are solved at all. Point dipoles only; a uniform sweep.
+            are solved at all. Point dipoles only. The gradients cost one
+            adjoint solve per port at each frequency whatever the number of
+            dipoles. On a uniform sweep they are exact. On an adaptive sweep
+            they are exact at the samples and accurate to the sweep's field
+            error between them, at one full-size factorization per frequency
+            whose port waves carry a cotangent: cheap for an objective at a
+            few frequencies, about a uniform backward over the whole grid
+            when every frequency counts.
 
     Raises:
         TypeError: ``excite`` is not port names, ``keep_fields`` is not a

@@ -86,7 +86,8 @@ def purcell_factor(result: DrivenResult, name: str, *, model: Model) -> jax.Arra
         KeyError: ``name`` is not a point dipole of the result (a port, or
             not a source).
         ValueError: ``name`` is an incident-field source, which has no
-            emitted power.
+            emitted power, or a dipole of a ``Driven(source_fields=False)``
+            solve, whose own field was not solved.
     """
     sources = result.sources
     source = sources.get(name)

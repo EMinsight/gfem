@@ -2002,7 +2002,8 @@ class DrivenResult:
         sources: The problem's sources (``Driven(sources=...)``) by name, in
             column order: what a measurement reads of them (a direction, an
             amplitude, a position). Static; empty without sources.
-        port_waves: The outgoing wave at each port for each source column,
+        port_waves: The outgoing wave at each port for each source (its column, or
+            by reciprocity under ``Driven(source_fields=False)``),
             ``(n_freq, n_ports, n_sources)``, √W, with every port terminated
             in its reference impedance (`gfem.conventions`, Incident fields):
             on a real ``z_ref``, :math:`|b|^2` is the power the source sends
@@ -2010,7 +2011,8 @@ class DrivenResult:
             like S. ``None`` without sources or without ports.
         emitted_power: The time-averaged power each point dipole gives the
             field, W, ``(n_freq,)``, by source name (`gfem.conventions`,
-            Point dipoles). Empty without dipoles.
+            Point dipoles). Empty without dipoles, or with
+            ``Driven(source_fields=False)``.
 
     On a 2D model (a mesh of dimension 2, `gfem.conventions`) every port is
     fed 1 W/m time-averaged incident power per metre along :math:`z`, and S is
@@ -2147,8 +2149,10 @@ class DrivenResult:
         Raises:
             ValueError: No field was kept at ``frequency``, ``excite`` is
                 needed, ``part`` is unknown or is not ``"total"`` for a port
-                or a dipole, or the result is a 2D model's Hz solve (read
-                `h_field`).
+                or a dipole, the result is a 2D model's Hz solve (read
+                `h_field`), or ``excite`` is a dipole of a
+                ``Driven(source_fields=False)`` solve, whose field was not
+                solved.
             KeyError: ``excite`` is neither an excited port nor a source.
         """
         if part not in _PARTS:
@@ -2227,7 +2231,11 @@ class DrivenResult:
                 "This result keeps no fields: solve with Driven(..., "
                 "keep_fields=True) or keep_fields=[frequencies] to keep them."
             )
-        columns = self._excitations
+        # a dipole read by reciprocity was never solved: it is no column
+        kept = {port for _, port in self.kept}
+        columns = tuple(c for c in self._excitations if c in kept) or tuple(
+            self._excitations
+        )
         if excite is None:
             if len(columns) > 1:
                 what = "Ports" if not self.sources else "Excitations"

@@ -503,6 +503,11 @@ obey, and against finite differences:
   form, and the guided powers add up to the emitted power.
 - **A dipole's power split.** What the ports carry away, what the layer takes
   and what lossy materials absorb add up to the emitted power, to round-off.
+- **Port waves by reciprocity.** With `source_fields=False`, the port waves
+  of dipoles on a lumped-port line and in a wave-port guide equal their own
+  columns (to round-off on the line, to $10^{-9}$ relative in the guide), on uniform and adaptive sweeps; gradients match the
+  columns' (uniform) and are exact at the samples and to the sweep's field
+  error between (adaptive).
 - **The far field of a Hertzian dipole.** Its pattern matches the closed
   form, the intensity integrated over the sphere is the radiated power, the
   peak directivity is 1.5, and two crossed dipoles in quadrature radiate

@@ -165,3 +165,57 @@ def test_every_refusal_test_has_a_limit_and_every_limit_its_tests():
     tied = {t for names in LIMITS.values() for t in names}
     assert tied <= tests | set(INPUT_CHECKS), tied - tests
     assert tests - tied == set(INPUT_CHECKS), tests - tied
+
+
+def test_the_map_has_the_column_s_power_and_the_lines_phase(ran):
+    guided = _printed(ran, "Place a dipole")[2]
+    _, low, high, slope = _printed(ran, "Many positions: port waves by reciprocity")
+    assert low == pytest.approx(guided, rel=1e-3)
+    assert high == pytest.approx(guided, rel=1e-3)
+    assert slope == pytest.approx(-1.0, abs=1e-4)
+
+
+def test_the_reciprocity_formula_is_on_the_page_and_holds(page, tmp_path):
+    assert (
+        r"b_i = -\frac{i\omega}{4}\,\mathbf{p}\cdot\mathbf{E}_i(\mathbf{r}_0)" in page
+    )
+    url = dp.MESH_URL.replace("line.msh", "pml_line.msh")
+    mesh = gfem.Mesh.from_gmsh(str(dp.MESHES[url]), length_unit="um")
+    air = gfem.Material()
+    model = gfem.Model(
+        mesh,
+        materials={"air": air, "pml": air},
+        boundaries=[gfem.PEC("plates")],
+        ports=[gfem.WavePort("p1", "port")],
+        pml=gfem.PML("pml"),
+    )
+    f0 = 299_792_458.0 / 1e-6
+    options = gfem.SolverOptions(order=3, linear_solver="direct")
+    positions = [(0.07e-6, 0.13e-6, 0.5e-6), (0.07e-6, 0.13e-6, 1.1e-6)]
+    moment = (0, 1e-30, 0)
+    row = [
+        gfem.ElectricDipole(f"z{i}", position=r, moment=moment)
+        for i, r in enumerate(positions)
+    ]
+    reciprocal = gfem.solve(
+        model,
+        gfem.Driven(f0, excite=(), sources=row, source_fields=False),
+        options=options,
+    )
+    columns = gfem.solve(
+        model, gfem.Driven(f0, excite=(), sources=row), options=options
+    )
+    b = np.asarray(reciprocal.port_waves)[0, 0]
+    # the page claims the columns' own values
+    np.testing.assert_allclose(
+        b, np.asarray(columns.port_waves)[0, 0], rtol=0, atol=1e-9 * abs(b).max()
+    )
+    # and the formula, from the field of port p1 fed 1 W
+    fed = gfem.solve(
+        model, gfem.Driven(f0, excite=("p1",), keep_fields=True), options=options
+    )
+    omega = 2 * math.pi * f0
+    for value, r in zip(b, positions, strict=True):
+        field = fed.e_field(f0, "p1").at(np.array(r))
+        written = -1j * omega / 4 * (np.asarray(moment) @ field)
+        assert value == pytest.approx(written, rel=1e-6)

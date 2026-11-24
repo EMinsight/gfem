@@ -10,7 +10,9 @@ efficiency`.
 
 A dipole is one more column of the driven solve, beside the excited ports,
 on the same factorization: several dipoles (positions, orientations) cost one
-back-substitution each. A model with dipoles needs no port: close it with a
+back-substitution each. When only the port waves matter,
+`Driven(source_fields=False)` drops the dipoles' columns altogether (Many
+positions, below). A model with dipoles needs no port: close it with a
 {term}`perfectly matched layer`, absorbing faces or walls.
 
 ## Place a dipole
@@ -155,6 +157,60 @@ best orientation [0. 1. 0.], P = 8.3534e-15 W
 Only the imaginary part of $M$ enters, and it converges under refinement;
 its real part does not.
 
+## Many positions: port waves by reciprocity
+
+A coupling map asks how much of an emitter's light a guide collects, position
+by position. With `source_fields=False` gfem solves no dipole. It solves each
+port's own field once and reads every dipole's port wave from it by
+reciprocity:
+
+$$
+b_i = -\frac{i\omega}{4}\,\mathbf{p}\cdot\mathbf{E}_i(\mathbf{r}_0),
+$$
+
+where $\mathbf{E}_i$ is the field with port $i$ fed 1 W and every other port
+terminated. Ten positions along the line, reusing `model`, `f0` and `r0`:
+
+```python
+z = np.linspace(0.3, 1.2, 10) * 1e-6  # m, along the line
+row = [
+    gfem.ElectricDipole(f"z{i}", position=(r0[0], r0[1], zi), moment=(0, 1e-30, 0))
+    for i, zi in enumerate(z)
+]
+coupling = gfem.solve(
+    model,
+    gfem.Driven(f0, excite=(), sources=row, source_fields=False),
+    options=gfem.SolverOptions(order=3),
+)
+b = coupling.port_waves[0, 0]  # sqrt(W): port p1, one value per position
+k0 = 2 * np.pi * f0 / 299_792_458.0
+slope = np.polyfit(z, np.unwrap(np.angle(b)), 1)[0]
+print(f"|b|^2 from {min(abs(b) ** 2):.4e} to {max(abs(b) ** 2):.4e} W")
+print(f"phase slope {slope / k0:.4f} k0")
+```
+
+```text
+|b|^2 from 4.1770e-15 to 4.1770e-15 W
+phase slope -1.0000 k0
+```
+
+- **Cost**: one solve per port with a defined wave, plus one point overlap per
+  dipole, whatever the number of positions. gfem pairs each dipole's point
+  load with the port's discrete solution, so the values are the dipoles' own
+  columns (to $10^{-9}$ relative on this wave port, to round-off on a
+  lumped-port line), with the same mesh error.
+- **The physics of this map**: on this line $\mathbf{E}_1$ is the TEM field,
+  uniform across the section with phase $e^{-ik_0 z}$. So $|b|^2$ is the same
+  at every position, the power the first section's column sent into the port,
+  and the phase falls by $k_0$ per metre further from the port.
+- **What is not there**: the dipoles' own fields are not solved.
+  `coupling.emitted_power` is `{}`, and `gfem.purcell_factor`,
+  `coupling.e_field(f0, "z0")` and `gfem.far_field` raise `ValueError`
+  naming the flag. The beta factor $|b|^2 / P$ needs $P$, so solve the
+  positions where it matters with `source_fields=True` (the default).
+- **Exciting ports**: `excite=None` costs the same solves here and adds S,
+  because the port's own field is solved anyway.
+
 ## Magnetic dipoles
 
 A {py:obj}`gfem.MagneticDipole` is the current $\nabla \times (m\,
@@ -185,6 +241,17 @@ that error.
   one adjoint column.
 - Node coordinates ({py:func}`gfem.shape.boundary_morph`) are differentiable
   with an electric dipole: its load moves with the element that holds it.
+- With `source_fields=False` an adaptive sweep's samples come from the port
+  solutions alone: its basis does not grow with the number of dipoles, and
+  the port waves are read from the reduced model at every grid frequency.
+- The port waves of `source_fields=False` differentiate like the columns'.
+  The backward solves one adjoint per port at each frequency carrying a
+  cotangent, whatever the number of dipoles. On a uniform sweep the gradients
+  are exact. On an adaptive sweep they are exact at the samples and accurate
+  to the sweep's field error between them, at one full-size factorization per
+  frequency carrying a cotangent: cheap for an objective at a few
+  frequencies, about a uniform backward over the whole grid when every
+  frequency counts.
 - The dipole's position and moment are fixed values: gfem does not
   differentiate with respect to them.
 

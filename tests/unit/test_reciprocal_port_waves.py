@@ -61,6 +61,20 @@ def test_only_the_excited_ports_keep_fields(model):
         result.e_field(f, "d0")
 
 
+def test_the_one_solved_field_needs_no_name(model):
+    f = rc.grid(3)[1]
+    problem = gfem.Driven(
+        rc.grid(3),
+        excite=("p1",),
+        sources=rc.dipoles(2),
+        keep_fields=[f],
+        source_fields=False,
+    )
+    result = gfem.solve(model, problem, options=rc.ORDER2)
+    # the dipoles were not solved: p1 is the only field, so no name is asked
+    assert result.e_field(f) is result.e_field(f, "p1")
+
+
 def test_iterations_count_each_right_hand_side(model):
     problem = gfem.Driven(
         rc.grid(2), excite=("p1",), sources=rc.dipoles(2), source_fields=False

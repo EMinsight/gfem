@@ -69,6 +69,11 @@ $$
 Q = \frac{|\omega|}{2\, \mathrm{Im}\,\omega}.
 $$
 
+The modes give the poles of a driven response, their Q and, under `jax.grad`,
+how both move with the design ({doc}`recipes/eigenmode-gradient`). The
+response itself over a band comes from a driven sweep, whose adaptive form
+reads it from a few full solves ({doc}`recipes/frequency-sweep`).
+
 On a periodic cell with a fixed Bloch wave vector, `Eigenmode(wave_vector=...)`
 gives the modes of that wave vector; one problem per wave vector traces the
 band diagram $\omega(k)$. In a lossless cell a band of bound modes is real and a
