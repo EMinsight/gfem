@@ -725,7 +725,7 @@ wavenumber :math:`k = n\omega/c` and wave impedance :math:`\eta =
 
 Multipoles
 ----------
-``gfem.Multipoles`` expands the scattered field of an incident-field column
+`gfem.Multipoles` expands the scattered field of an incident-field column
 about an origin :math:`r_o` (default the model origin), outside a sphere
 that holds every source, in the background's outgoing vector spherical
 waves, of wavenumber :math:`k`, impedance :math:`\eta`, permittivity
@@ -809,7 +809,7 @@ waves, of wavenumber :math:`k`, impedance :math:`\eta`, permittivity
   :math:`1/(80\pi)` where this has :math:`1/(720\pi)`), and a Landau-style
   :math:`Q^e = \int\rho\,(r_\alpha r_\beta - \tfrac13r^2\delta_{\alpha\beta})\,dV`
   is :math:`\tfrac13` of this one.
-- Long-wavelength moments, ``gfem.CurrentMoments``, from the induced current
+- Long-wavelength moments, `gfem.CurrentMoments`, from the induced current
   :math:`J = +i\omega\varepsilon_0(\varepsilon_r - \varepsilon_b)E` of the
   total field over the scatterer, :math:`r` from the origin:
 

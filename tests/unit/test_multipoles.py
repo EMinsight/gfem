@@ -726,3 +726,16 @@ def test_u12_lmax_and_its_bounds(run, reference):
     with pytest.raises(ValueError, match=rf"lmax={cap + 1} is above {cap}"):
         gfem.multipoles(result, "te", model=model, lmax=cap + 1)
     assert "kR = " in str(info.value)
+
+
+def test_sphere_case_puts_the_volume_equivalent_size_parameter_on_the_case(tmp_path):
+    case = mc.CASES["C"]
+    mesh, a_vol, frequency = mc.sphere_case(
+        tmp_path / "s.msh", case, maxh=0.4, sphere_maxh=0.2
+    )
+    k = 2 * math.pi * frequency / C0
+    assert k * a_vol * UM == pytest.approx(case.x, rel=1e-12)
+    # the mesh keywords moved the sphere: radius x / 2 pi = 0.1248 um, faceted
+    assert 0.8 * case.x / (2 * math.pi) < a_vol < case.x / (2 * math.pi)
+    nodes = np.asarray(mesh.nodes)
+    assert nodes.max() == pytest.approx((case.x / (2 * math.pi) + 0.4 + 0.35) * UM)
