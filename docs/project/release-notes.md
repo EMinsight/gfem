@@ -426,6 +426,12 @@ Meshes:
   coordinates, not node numbers; values computed on a cross-section move by
   up to about 4e-4 relative (the tutorials' checked values).
 
+Wave ports:
+
+- **Removed `gfem.PortModeProjectionWarning`.** It has not been emitted since
+  0.1.0, when wave-port S became exact on lossy port lines. Delete any
+  warning filter that names it.
+
 ## 0.2.0 (2026-11-23)
 
 - **Native 2D models.** A gmsh file of triangles at one height reads as a
@@ -1314,7 +1320,7 @@ Anisotropic materials and shared port surfaces:
 - **New warnings.** {py:obj}`gfem.SkippedPortModeWarning`: a surface leaves
   out a port mode ranked below a requested one (a lone `mode=2`, or modes 1
   and 3), which the port then partly reflects. A lone `mode=1` never warns.
-  {py:obj}`gfem.PortModeProjectionWarning`: on a shared port surface with
+  `gfem.PortModeProjectionWarning`: on a shared port surface with
   loss in the cross-section, one port's S reads part of another port's mode
   above 1e-3.
 - **New errors at `gfem.Model`.** Two wave ports on one surface that request

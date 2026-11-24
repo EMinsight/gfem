@@ -326,18 +326,6 @@ class FloquetOrderCapWarning(UserWarning):
     """
 
 
-class PortModeProjectionWarning(UserWarning):
-    """No longer emitted: wave-port S is exact on lossy port lines.
-
-    Earlier versions projected the field on each wave port's conjugated
-    mode, exact only for a lossless port line, and warned with this class
-    when a lossy line made S inexact. gfem now projects biorthogonally on
-    the modes, exact lossy or not, and never emits it. The class
-    stays so that filters naming it keep working; it will be removed in a
-    later release.
-    """
-
-
 class DeviceUnavailableError(RuntimeError):
     """``SolverOptions.device`` names a GPU that this machine cannot use.
 

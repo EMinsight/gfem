@@ -958,14 +958,10 @@ def test_a_lone_hybrid_port_correction_is_the_closed_form(hybrid_couplings):
 
 # --- warnings: skipped port modes --------------------------------------------
 
-PORT_MODE_WARNINGS = (gfem.SkippedPortModeWarning, gfem.PortModeProjectionWarning)
-
-
 def _silent(model, problem, options):
-    """Solve with both port mode warnings turned into errors."""
+    """Solve with the skipped port mode warning turned into an error."""
     with warnings.catch_warnings():
-        for category in PORT_MODE_WARNINGS:
-            warnings.simplefilter("error", category)
+        warnings.simplefilter("error", gfem.SkippedPortModeWarning)
         return gfem.solve(model, problem, options=options)
 
 

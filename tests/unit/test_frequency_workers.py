@@ -145,16 +145,13 @@ def test_a_lossy_wave_port_beside_a_lumped_port_over_two_workers(tmp_path):
 
 
 def test_workers_on_shared_port_surfaces_give_the_sequential_sweep(tmp_path):
-    # two shared port surfaces, two workers: the same S as one process, and
-    # no projection warning (the S functional is biorthogonal)
+    # two shared port surfaces, two workers: the same S as one process
     model = hybrid_line(hybrid_mesh(tmp_path))
     grid = (60e9, 70e9)
     options = gfem.SolverOptions(order=2, linear_solver="direct", frequency_workers=2)
     rule = DrivenRule(model, gfem.Driven(grid), options)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", gfem.PortModeProjectionWarning)
-        two, _ = rule.forward(model, keep=False)
-        one, _ = _forward(model, gfem.Driven(grid), order=2, linear_solver="direct")
+    two, _ = rule.forward(model, keep=False)
+    one, _ = _forward(model, gfem.Driven(grid), order=2, linear_solver="direct")
     np.testing.assert_allclose(two["s"], one["s"], rtol=0, atol=1e-12)
     np.testing.assert_allclose(two["port_gamma"], one["port_gamma"], rtol=1e-12)
 
