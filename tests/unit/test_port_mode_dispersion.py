@@ -541,8 +541,11 @@ def test_a_reduced_row_s_dispersion_matches_an_exact_solve(swept):
 # --- the derivative basis and its guard ----------------------------------------------
 
 
-# residuals below this are the rounding of the QR factors, not the basis
-NOISE = 1e-11
+# Both guard residuals are minima over the basis at the sweep's eigenvalue, on
+# scales the basis does not move, so a larger basis can only lower them: up to
+# the rounding of recomputing one on another QR factor, measured at most
+# 3.2e-9 relative and 1.1e-17 absolute on residuals of 1e-9 and above here.
+RELATIVE, ABSOLUTE = 1e-10, 1e-15
 
 
 def _run(slab_mesh, tolerance=1e-6):
@@ -552,21 +555,27 @@ def _run(slab_mesh, tolerance=1e-6):
 
 
 def _not_raised(history):
-    """Each residual pair is at most the one before (up to `NOISE`)."""
+    """Each residual is at most the one before, up to rounding."""
     history = np.array(history)
     before, after = history[:-1], history[1:]
-    return ((after <= before * (1 + 1e-6)) | (before < NOISE)).all()
+    return (after <= before * (1 + RELATIVE) + ABSOLUTE).all()
 
 
-def _residuals(greedy, basis, rows):
-    """Backward error and derivative residual of each reduced row on ``basis``."""
+def _residuals(greedy, basis, rows, modes):
+    """Both guard residuals of each reduced row on ``basis``.
+
+    ``modes`` holds each row's mode on the previous basis, and takes this one's.
+    """
     out = []
     for i in rows:
         row = basis.derivative_row(
             greedy.space.pencil.taylor(greedy.k0[i]),
             greedy.lam[0, i],
             float(greedy.k0[i]),
+            greedy.coords_at(i, 0),
+            prior=modes.get(i),
         )
+        modes[i] = row.y
         out.append((row.eta, row.eta1))
     return np.array(out)
 
@@ -582,12 +591,15 @@ def test_enriching_the_derivative_basis_never_raises_a_row_s_residuals(slab_mesh
     j = int(rows[len(rows) // 2])
     cand = greedy._solve(j)
     derivative = greedy._mode_derivative(j, cand, 0, cand.factor)
-    chain = []
+    chain, modes = [], {}
     for added in ([], samples, [*samples, derivative.x, derivative.x1]):
         basis = sweep._Reduced.on(space, greedy.reduced.v.copy())
         if added:
             basis.add(np.column_stack(added))
-        chain.append(_residuals(greedy, basis, rows))
+        chain.append(_residuals(greedy, basis, rows, modes))
+    # on the sweep's basis alone the mode is no worse than the sweep's row
+    sweep_eta = greedy.residual[0, rows]
+    assert (chain[0][:, 0] <= sweep_eta * (1 + RELATIVE) + ABSOLUTE).all()
     assert chain[1].max() < chain[0].max() * 1e-3  # the derivatives do help
     assert _not_raised(chain)
 
@@ -602,8 +614,8 @@ def test_a_row_past_its_guard_gets_an_exact_solve_for_its_derivative_alone(
     seen = {}
     real = sweep._Reduced.derivative_row
 
-    def spy(self, coefficients, lam, k0):
-        row = real(self, coefficients, lam, k0)
+    def spy(self, coefficients, lam, k0, ref, *, prior=None):
+        row = real(self, coefficients, lam, k0, ref, prior=prior)
         seen.setdefault(round(k0, 12), []).append((row.eta, row.eta1))
         return row
 
@@ -619,12 +631,11 @@ def test_a_row_past_its_guard_gets_an_exact_solve_for_its_derivative_alone(
     assert sorted(i for _, i in greedy.fallbacks) == rows.tolist()
     assert np.isfinite(greedy.dispersion_rows(0)).all()
     # Each fallback leaves every other row's residuals where they were or
-    # lower, up to the shift of the row's own eigenvalue (its Rayleigh
-    # quotient moves as the basis grows): never the cascade of a Galerkin
-    # solve, whose residuals grew by 10^2 to 10^5.
+    # lower: never the cascade of a Galerkin solve, whose residuals grew by
+    # 10^2 to 10^5.
     assert max(len(h) for h in seen.values()) > 2
-    for history in map(np.array, seen.values()):
-        assert (history[1:] <= 2 * history[:-1] + NOISE).all()
+    for history in seen.values():
+        assert _not_raised(history)
 
 
 def test_a_reduced_row_that_fell_back_reports_its_exact_derivative(slab_mesh):

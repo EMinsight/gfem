@@ -983,9 +983,10 @@ class _DerivativeRow:
     Attributes:
         derivative: The row's `ModeDerivative`, on the derivative basis'
             coordinates.
-        eta: Backward error of the mode on the derivative basis.
-        eta1: Relative residual of the mode derivative equation
-            (`gfem._engine.mode_derivative.residual`).
+        eta: Residual of the mode at the sweep's eigenvalue, on the scale
+            of the sweep's own row (`_Reduced.derivative_row`).
+        eta1: Residual of the mode derivative equation relative to its
+            right-hand side.
         y: The mode's coordinates on the derivative basis.
     """
 
@@ -1256,8 +1257,10 @@ class _Greedy:
         The derivative basis is the sweep's reduced basis, unchanged and
         first, then the real and imaginary parts of every sample's mode
         derivative. A reduced row's mode and its derivative are the vectors
-        of that basis that minimize their residuals (`_Reduced.derivative_row`),
-        so adding vectors never raises them. A row passes when both are at
+        of that basis that minimize their residuals at the sweep's eigenvalue,
+        the row keeping its mode across a fallback when that gives the smaller
+        derivative residual (`_Reduced.derivative_row`), so adding vectors
+        never raises them. A row passes when both are at
         most its floor (`_guard_floor`) and its mode still overlaps the
         sweep's own row; the worst failing row gets an exact solve for its
         mode derivative alone, whose mode and derivative join the basis (the
@@ -1275,6 +1278,7 @@ class _Greedy:
         scale = self.space.section.scale
         taylor = {int(i): self.space.pencil.taylor(self.k0[i]) for i in rows}
         extra: list[np.ndarray] = []
+        modes: dict[tuple[int, int], np.ndarray] = {}
         while True:
             basis = self._derivative_basis(extra)
             ratio: dict[tuple[int, int], float] = {}
@@ -1282,11 +1286,17 @@ class _Greedy:
                 for i in map(int, rows):
                     if (k, i) in self.fallbacks:
                         continue
-                    row = basis.derivative_row(taylor[i], self.lam[k, i], self.k0[i])
-                    self._reduced_rows[k][:, i] = row.derivative.dispersion(scale)
-                    ratio[k, i] = _excess(
-                        row, basis.overlap(self.coords_at(i, k), row.y), floor[k, i]
+                    ref = self.coords_at(i, k)
+                    row = basis.derivative_row(
+                        taylor[i],
+                        self.lam[k, i],
+                        self.k0[i],
+                        ref,
+                        prior=modes.get((k, i)),
                     )
+                    modes[k, i] = row.y
+                    self._reduced_rows[k][:, i] = row.derivative.dispersion(scale)
+                    ratio[k, i] = _excess(row, basis.overlap(ref, row.y), floor[k, i])
             if not ratio:
                 return
             (k, i), worst = max(ratio.items(), key=lambda item: item[1])
@@ -1768,24 +1778,45 @@ class _Reduced:
         return float(num / den)
 
     def derivative_row(
-        self, coefficients: np.ndarray, lam: complex, k0: float
+        self,
+        coefficients: np.ndarray,
+        lam: complex,
+        k0: float,
+        ref: np.ndarray,
+        *,
+        prior: np.ndarray | None = None,
     ) -> _DerivativeRow:
         r"""The mode and mode derivative of the pencil at the pieces' ``coefficients``.
 
-        The mode :math:`y` is the right singular vector of the smallest
-        singular value of :math:`A_0 - \lambda B_0` on the basis, at the
-        sweep's ``lam`` (a refined Ritz vector, through the QR factor of the
-        pieces' products, so its residual is minimal over the basis). Its
-        eigenvalue is its Rayleigh quotient, :math:`\lambda'` follows from
-        Hellmann-Feynman and :math:`y'` minimizes the residual of
-        :math:`(A_0 - \lambda B_0)y' = -(A_1 - \lambda'B_0 - \lambda B_1)y`
-        with :math:`y^TB_0y' = 0`. Both residuals fall as the basis grows.
+        Both are taken at the sweep's ``lam``, written :math:`\lambda_s`, and
+        :math:`G = A_0 - \lambda_sB_0`. The mode :math:`y` is the right
+        singular vector of the smallest singular value of :math:`G` on the
+        basis (a refined Ritz vector, through the QR factor of the pieces'
+        products). Its eigenvalue :math:`\lambda` is its Rayleigh quotient and
+        :math:`\lambda'` follows from Hellmann-Feynman. Then :math:`y'`, with
+        :math:`y^TB_0y' = 0`, minimizes :math:`|Gy' + h|`, where
+        :math:`h = (A_1 - \lambda'B_0 - \lambda_sB_1)y`.
+
+        The two residuals the guard reads are those minima over fixed scales:
+        :math:`\eta = |Gy| / s` with :math:`|y| = 1` and
+        :math:`s = (|A_0x_s| + |\lambda_s||B_0x_s|)/|x_s|` of the sweep's own
+        row :math:`x_s` (``ref``), and :math:`\eta' = |Gy' + h| / |h|`. Over the
+        sweep's basis alone :math:`\eta` is at most the sweep's own backward
+        error of the row, and on a larger basis it can only fall. So can
+        :math:`\eta'` for the same :math:`y`, but a sharper :math:`y` moves
+        :math:`h`: given the mode ``prior`` of a basis this one extends, the
+        row keeps that mode, with :math:`y'` minimized anew, whenever the
+        refined vector's :math:`\eta'` would be the larger. Neither residual
+        then rises as the basis grows.
 
         Args:
             coefficients: :math:`c_{jn}` of the pieces, shape (J, 4)
                 (`gfem._engine.port_mode.Pencil.taylor`).
             lam: The sweep's eigenvalue of the row.
             k0: The wavenumber of the row, per local unit.
+            ref: The sweep's coordinates of the row, on a prefix of this
+                basis.
+            prior: The row's mode on a prefix of this basis, if any.
         """
         m = self.size
         pieces = self._pieces
@@ -1804,34 +1835,43 @@ class _Reduced:
         br = [combine(self._red, True, n) for n in range(4)]
 
         norm = np.linalg.norm
-        _, _, vh = np.linalg.svd(ra0 - lam * rb0, full_matrices=False)
-        y = vh[-1].conj()
-        norm0 = y @ br[0] @ y
-        lam = complex((y @ ar[0] @ y) / norm0)
         g = ra0 - lam * rb0
-        lam1 = (y @ ar[1] @ y - lam * (y @ br[1] @ y)) / norm0
-        h = ra1 @ y - (lam1 * rb0 + lam * rb1) @ y
-        # y' orthogonal to B_0 y in the bilinear form: a basis of its complement
-        q, _ = np.linalg.qr(
-            np.column_stack([(br[0] @ y).conj(), np.eye(m)[:, : m - 1]])
-        )
-        free = q[:, 1:]
-        z, *_ = np.linalg.lstsq(g @ free, -h, rcond=None)
-        y1 = free @ z
-        eta = norm(g @ y) / (norm(ra0 @ y) + abs(lam) * norm(rb0 @ y))
-        size = norm(ra1 @ y) + abs(lam1) * norm(rb0 @ y) + abs(lam) * norm(rb1 @ y)
-        eta1 = norm(g @ y1 + h) / (norm(ra0 @ y1) + abs(lam) * norm(rb0 @ y1) + size)
-        series = rayleigh_series(ar, br, y, y1)
-        derivative = ModeDerivative(
-            k0=k0,
-            lam=lam,
-            x=y,
-            x1=y1,
-            taylor=coefficients,
-            lam_taylor=np.array([lam, lam1, series[2], series[3]], dtype=complex),
-            residual=float(eta1),
-        )
-        return _DerivativeRow(derivative, float(eta), float(eta1), y)
+        ref = np.concatenate([ref, np.zeros(m - len(ref))])
+        scale = (norm(ra0 @ ref) + abs(lam) * norm(rb0 @ ref)) / norm(ref)
+
+        def row(y: np.ndarray) -> _DerivativeRow:
+            norm0 = y @ br[0] @ y
+            lam_y = complex((y @ ar[0] @ y) / norm0)
+            lam1 = (y @ ar[1] @ y - lam_y * (y @ br[1] @ y)) / norm0
+            h = ra1 @ y - (lam1 * rb0 + lam * rb1) @ y
+            # y' orthogonal to B_0 y in the bilinear form: a basis of its
+            # complement
+            q, _ = np.linalg.qr(
+                np.column_stack([(br[0] @ y).conj(), np.eye(m)[:, : m - 1]])
+            )
+            free = q[:, 1:]
+            z, *_ = np.linalg.lstsq(g @ free, -h, rcond=None)
+            y1 = free @ z
+            eta1 = norm(g @ y1 + h) / norm(h)
+            series = rayleigh_series(ar, br, y, y1)
+            derivative = ModeDerivative(
+                k0=k0,
+                lam=lam_y,
+                x=y,
+                x1=y1,
+                taylor=coefficients,
+                lam_taylor=np.array([lam_y, lam1, series[2], series[3]], complex),
+                residual=float(eta1),
+            )
+            return _DerivativeRow(derivative, norm(g @ y) / scale, float(eta1), y)
+
+        _, _, vh = np.linalg.svd(g, full_matrices=False)
+        out = row(vh[-1].conj())
+        if prior is not None:
+            kept = row(np.concatenate([prior, np.zeros(m - len(prior))]))
+            if kept.eta1 < out.eta1:
+                return kept
+        return out
 
     def lift(self, y: np.ndarray) -> np.ndarray:
         return self.v @ y
