@@ -245,6 +245,8 @@ class Driven2DRule(DrivenRule):
         self.sources = ()
         self.incident = ()
         self.dipoles = ()
+        self.reciprocal = False
+        self.emitting = ()
         self.columns = tuple(self.excite)
         self.background = None
         self.layers = ()

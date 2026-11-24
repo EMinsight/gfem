@@ -74,7 +74,9 @@ def test_many_dipoles_sweep_matches_the_full_svd_per_column_reference(monkeypatc
         if isinstance(x, dict):
             assert x.keys() == y.keys()
             x, y = np.array(list(x.values())), np.array(list(y.values()))
-        np.testing.assert_allclose(x, y, rtol=1e-12, atol=0)
+        # Relative to the output's largest entry: a near-cancelling S entry of
+        # 4e-3 moves by 4e-15 when threaded assembly reorders the sums.
+        np.testing.assert_allclose(x, y, rtol=1e-12, atol=1e-12 * np.abs(y).max())
     np.testing.assert_allclose(a.sample_errors, b.sample_errors, rtol=1e-6, atol=1e-14)
 
 
