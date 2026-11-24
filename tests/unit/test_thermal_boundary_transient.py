@@ -112,26 +112,45 @@ def test_a_value_the_trace_does_not_read_still_matches_one_sided(meshes):
         )
 
 
-def test_a_heat_out_trace_refuses_boundary_gradients_for_now(meshes):
+@pytest.mark.parametrize(
+    ("scheme", "theta"), [("tr_bdf2", 1.0), ("theta", 1.0), ("theta", 0.5)]
+)
+def test_heat_out_traces_differentiate_in_the_four_values(meshes, scheme, theta):
+    sides = {"out_top": "top", "out_bottom": "bottom", "out_side": "side"}
     problem = gfem.TransientThermal(
         gfem.HeatSource.uniform("a", power_density=1e12),
         duration=DURATION,
         steps=STEPS,
         initial_temperature=295.0,
-        traces={"out": gfem.Trace.heat_out_per_length("top")},
+        traces={k: gfem.Trace.heat_out_per_length(v) for k, v in sides.items()},
     )
+    options = gfem.SolverOptions(
+        order=2, time_scheme=scheme, theta=theta, linear_solver="direct"
+    )
+    weights = np.linspace(1.0, 2.0, STEPS + 1)
 
-    def objective(h):
+    def objective(x):
+        t, h, amb, q = x * REFERENCE
         model = gfem.Model(
             meshes["one"],
             materials={"a": MATERIAL},
             boundaries=[
-                gfem.FixedTemperature("bottom", temperature=300.0),
-                gfem.Convection("top", coefficient=h, ambient=290.0),
+                gfem.FixedTemperature("bottom", temperature=t),
+                gfem.Convection("top", coefficient=h, ambient=amb),
+                gfem.HeatFlux("side", flux=q),
             ],
         )
-        options = gfem.SolverOptions(order=2, linear_solver="direct")
-        return jnp.sum(gfem.solve(model, problem, options=options).traces["out"])
+        result = gfem.solve(model, problem, options=options)
+        total = 0.0
+        for k, name in enumerate(sides):
+            total += (k + 1) * jnp.sum(result.traces[name] * weights)
+        return total / 1e-6
 
-    with pytest.raises(Exception, match="heat-out traces"):
-        jax.grad(objective)(1e5)
+    x = jnp.ones(4)
+    grad = np.asarray(jax.grad(objective)(x))
+    assert np.all(np.abs(grad) > 0)
+    basis = [np.eye(4)[i] for i in range(4)]
+    rng = np.random.default_rng(2)
+    assert_gradient_matches(
+        objective, x, [*basis, *unit_directions(rng, (4,), 2)], step=1e-2, grad=grad
+    )

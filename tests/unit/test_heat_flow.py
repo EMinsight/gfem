@@ -16,6 +16,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 import thermal_cases as tc
+from finite_differences import assert_gradient_matches
 
 import gfem
 
@@ -242,6 +243,51 @@ def test_the_conductivity_gradient_matches_finite_differences(brick, side):
     # central differences of a smooth function: 1e-9 measured
     assert grad == pytest.approx(fd, rel=1e-6)
     assert abs(grad) > 1e-3 * abs(float(_flow_of_k(brick, side, 1.4)))
+
+
+def _flow_of_values(mesh, side, x):
+    t, h, amb, q = x * jnp.asarray([300.0, 1e5, 293.0, 5e6])
+    model = _model(
+        mesh,
+        boundaries=[
+            gfem.FixedTemperature("bottom", temperature=t),
+            gfem.Convection("top", coefficient=h, ambient=amb),
+            gfem.Convection("right", coefficient=0.5 * h, ambient=amb + 3.0),
+            gfem.HeatFlux("left", flux=q),
+        ],
+    )
+    result = gfem.solve(model, gfem.SteadyThermal(_heat(mesh)), options=DIRECT)
+    return gfem.heat_flow(result, side, model=model)
+
+
+@pytest.mark.parametrize("side", ["bottom", "top", "right", "left", ("clad", "heater")])
+def test_the_four_boundary_values_match_finite_differences(brick, side):
+    x = jnp.ones(4)
+
+    def objective(v):
+        return _flow_of_values(brick, side, v) / 1e-4
+
+    grad = np.asarray(jax.grad(objective)(x))
+    for i in range(4):
+        d = np.eye(4)[i]
+        assert_gradient_matches(objective, x, [d], step=1e-2, grad=grad)
+
+
+def test_a_flux_traced_at_zero_still_has_a_flow_gradient(brick):
+    def flow(q):
+        model = _model(
+            brick,
+            boundaries=[
+                gfem.FixedTemperature("bottom", temperature=300.0),
+                gfem.Convection("top", coefficient=1e5, ambient=293.0),
+                gfem.HeatFlux("left", flux=q),
+            ],
+        )
+        result = gfem.solve(model, gfem.SteadyThermal(_heat(brick)), options=DIRECT)
+        return gfem.heat_flow(result, "left", model=model)
+
+    # the flux is the left's flow: dQ/dq is minus the face's area
+    assert float(jax.grad(flow)(0.0)) < 0.0
 
 
 # --- refusals -----------------------------------------------------------------------

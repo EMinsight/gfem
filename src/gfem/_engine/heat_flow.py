@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING, Any
 import ngsolve as ngs
 import numpy as np
 
+from gfem._boundaries import Convection, HeatFlux
 from gfem._engine import quadrature
 from gfem._engine.coefficients import surface_p0
 from gfem._engine.domain import boundary_region
@@ -66,7 +67,16 @@ if TYPE_CHECKING:
     from gfem.mesh import Mesh
     from gfem.model import Model
 
-__all__ = ["Balance", "Side", "balance", "capacity_pair", "side", "stored"]
+__all__ = [
+    "Balance",
+    "BoundaryTerms",
+    "Side",
+    "balance",
+    "boundary_terms",
+    "capacity_pair",
+    "side",
+    "stored",
+]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -350,27 +360,21 @@ def balance(rule: ThermalRule, model: Model, weights: Side) -> Balance:
     conduction = ngs.BilinearForm(space, symmetric=True)
     conduction += k * ngs.grad(u) * ngs.grad(v) * quadrature.dx(order)
     conduction.Assemble()
-    on_faces = surface_p0(built, weights.faces.astype(float))
-    on_outer = surface_p0(built, weights.outer.astype(float))
-    convection = []
-    for surface, h, ambient in rule.boundaries.convection:
-        ds = quadrature.ds(order, definedon=boundary_region(built, (surface,)))
-        parts = []
-        for mask in (on_faces, on_outer):
-            form = ngs.BilinearForm(space, symmetric=True)
-            form += mask * h * scale * u * v * ds
-            form.Assemble()
-            parts.append(form)
-        convection.append((_apply(parts[1], ones) - _apply(parts[0], inner), ambient))
-    loads = {"faces": ngs.LinearForm(space), "outer": ngs.LinearForm(space)}
-    for surface, value in rule.boundaries.flux:
-        ds = quadrature.ds(order, definedon=boundary_region(built, (surface,)))
-        loads["faces"] += on_faces * value * scale * v * ds
-        loads["outer"] += on_outer * value * scale * v * ds
-    for form in loads.values():
-        form.Assemble()
-    flux = inner @ loads["faces"].vec.FV().NumPy()
-    flux -= ones @ loads["outer"].vec.FV().NumPy()
+    masks = _Masks(
+        faces=surface_p0(built, weights.faces.astype(float)),
+        outer=surface_p0(built, weights.outer.astype(float)),
+    )
+    convection = [
+        (_convection_weight(space, built, order, masks, s, h, ones, inner), ambient)
+        for s, h, ambient in rule.boundaries.convection
+    ]
+    flux = sum(
+        (
+            _flux_weight(space, built, order, masks, s, value, ones, inner)
+            for s, value in rule.boundaries.flux
+        ),
+        0.0,
+    )
     weight = ngs.GridFunction(space)
     weight.vec.FV().NumPy()[:] = inner
     source = np.zeros(len(weights.elements))
@@ -396,6 +400,129 @@ def balance(rule: ThermalRule, model: Model, weights: Side) -> Balance:
         face_source=face_source,
         constant=scale * float(flux),
     )
+
+
+@dataclasses.dataclass(frozen=True)
+class BoundaryTerms:
+    r"""A side's flow differentiated in the thermal boundary values, explicitly.
+
+    :math:`Q` is affine in the convection coefficients, the ambients and the
+    flux values, at a fixed temperature :math:`T`:
+
+    .. math::
+
+        \frac{\partial Q}{\partial h_s} = w_s^T (T - T_{\infty,s} 1),\quad
+        \frac{\partial Q}{\partial T_{\infty,s}} = -h_s w_s^T 1,\quad
+        \frac{\partial Q}{\partial q_s} = f_s,
+
+    with :math:`w_s = b_s / h_s` the surface's convection weight at unit
+    coefficient and :math:`f_s` its flux part of `Balance.constant` at unit
+    flux. A fixed temperature enters through :math:`T` alone. They are
+    assembled per unit value, so a flux or a coefficient of 0 has its
+    derivative.
+
+    Attributes:
+        weights: Per `gfem.Convection` (by index in the model's boundaries),
+            :math:`w_s` per DOF, W/K².
+        fluxes: Per `gfem.HeatFlux` (by index), :math:`f_s`, W per (W/m²).
+        ones: The constant 1 per DOF.
+    """
+
+    weights: dict[int, np.ndarray]
+    fluxes: dict[int, float]
+    ones: np.ndarray
+
+    def derivative(self, model: Model, index: int, name: str, t: np.ndarray) -> float:
+        r""":math:`\partial Q / \partial` the ``name`` value of boundary ``index``.
+
+        At the temperature coefficients ``t``; ``"temperature"`` has none.
+        """
+        item = model.boundaries[index]
+        if name == "flux":
+            return self.fluxes[index]
+        if name == "coefficient":
+            ambient = float(np.asarray(item.ambient))
+            return float(self.weights[index] @ (np.asarray(t) - ambient * self.ones))
+        if name == "ambient":
+            h = float(np.asarray(item.coefficient))
+            return -h * float(self.weights[index] @ self.ones)
+        return 0.0
+
+
+def boundary_terms(rule: ThermalRule, model: Model, weights: Side) -> BoundaryTerms:
+    """The explicit boundary-value derivatives of ``weights``' flow on ``model``."""
+    space, built = rule._space(model)  # noqa: SLF001
+    order = rule.options.order
+    ones = np.zeros(space.ndof)
+    ones[vertex_dofs(space)] = 1.0
+    masks = _Masks(
+        faces=surface_p0(built, weights.faces.astype(float)),
+        outer=surface_p0(built, weights.outer.astype(float)),
+    )
+    inner = weights.inner
+    scale = built.scale
+    conv: dict[int, np.ndarray] = {}
+    flux: dict[int, float] = {}
+    for i, item in enumerate(model.boundaries):
+        if isinstance(item, Convection):
+            args = (space, built, order, masks, item.surface)
+            conv[i] = scale * _convection_weight(*args, 1.0, ones, inner)
+        elif isinstance(item, HeatFlux):
+            args = (space, built, order, masks, item.surface)
+            flux[i] = scale * _flux_weight(*args, 1.0, ones, inner)
+    return BoundaryTerms(weights=conv, fluxes=flux, ones=ones)
+
+
+@dataclasses.dataclass(frozen=True)
+class _Masks:
+    """The side's faces and named faces as surface-constant coefficients."""
+
+    faces: Any
+    outer: Any
+
+
+def _convection_weight(  # noqa: PLR0917 - one assembly's inputs
+    space: ngs.FESpace,
+    built: Any,
+    order: int,
+    masks: _Masks,
+    surface: str,
+    h: float,
+    ones: np.ndarray,
+    inner: np.ndarray,
+) -> np.ndarray:
+    """:math:`b_s / s` per DOF of one convection surface at coefficient ``h``."""
+    u, v = space.TnT()
+    ds = quadrature.ds(order, definedon=boundary_region(built, (surface,)))
+    parts = []
+    for mask in (masks.faces, masks.outer):
+        form = ngs.BilinearForm(space, symmetric=True)
+        form += mask * h * built.scale * u * v * ds
+        form.Assemble()
+        parts.append(form)
+    return _apply(parts[1], ones) - _apply(parts[0], inner)
+
+
+def _flux_weight(  # noqa: PLR0917 - one assembly's inputs
+    space: ngs.FESpace,
+    built: Any,
+    order: int,
+    masks: _Masks,
+    surface: str,
+    value: float,
+    ones: np.ndarray,
+    inner: np.ndarray,
+) -> float:
+    """The flow's part from the flux ``value`` on ``surface``, without the scale."""
+    v = space.TestFunction()
+    ds = quadrature.ds(order, definedon=boundary_region(built, (surface,)))
+    out = 0.0
+    for mask, weight, sign in ((masks.faces, inner, 1.0), (masks.outer, ones, -1.0)):
+        form = ngs.LinearForm(space)
+        form += mask * value * built.scale * v * ds
+        form.Assemble()
+        out += sign * float(weight @ form.vec.FV().NumPy())
+    return out
 
 
 def stored(rule: ThermalRule, model: Model, weights: Side) -> np.ndarray:

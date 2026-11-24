@@ -1354,6 +1354,32 @@ class _HeatAdjoint:
             if n == 0:
                 self.change[k] -= after[0] * u
 
+    def boundary(
+        self, rule: TransientThermalRule, model: Model, t0: np.ndarray, kinds: set
+    ) -> dict[tuple, np.ndarray]:
+        r"""The traces' explicit derivatives in the thermal boundary values.
+
+        With :math:`w_s` a convection surface's weight at unit coefficient
+        (`gfem._engine.heat_flow.BoundaryTerms`), the trace reads :math:`h_s`
+        through :math:`a` (on :math:`\sum_n c_n S_n`) and through the
+        source-free flow :math:`Q_0` (on :math:`T_0`); :math:`T_\infty` and
+        the flux through :math:`Q_0` alone, so each is
+        :math:`(\sum_n c_n t_n)` times the flow's derivative at :math:`T_0`.
+        The states' own share comes through the stepping operator and
+        :math:`T_0`.
+        """
+        out = dict.fromkeys(kinds, 0.0)
+        for row, c, s in zip(self.rows, self.c, self.integral, strict=True):
+            terms = heat_flow.boundary_terms(rule, model, row.balance.side)
+            weight = float(c @ self.time)
+            for kind in kinds:
+                _, index, name = kind
+                value = weight * terms.derivative(model, index, name, t0)
+                if name == "coefficient":
+                    value += float(terms.weights[index] @ s)
+                out[kind] += value
+        return {k: np.asarray(v) for k, v in out.items()}
+
     def pairs(
         self, rule: TransientThermalRule, model: Model, t0: np.ndarray, properties: set
     ) -> list[Integrated]:
@@ -1942,11 +1968,6 @@ class TransientThermalRule(ThermalRule):
             if handle is None:
                 entry.handle = PooledKeptHandle(stepper.handle)
             heat = _HeatAdjoint(self._heat_rows(model), ct_tr, stepper, dt, scales)
-            if values and heat.rows:
-                raise NotImplementedError(
-                    "gradients of heat-out traces with respect to thermal boundary "
-                    "values are not available in this version of gfem"
-                )
             masses = {
                 k: self._boundary_mass(built, space, model.boundaries[k[1]].surface)
                 for k in sorted(values)
@@ -1967,7 +1988,7 @@ class TransientThermalRule(ThermalRule):
                 rhs = np.where(free, rhs, 0.0)
                 return self._adjoint(stepper.handle, rhs[:, None], reused=reused)[:, 0]
 
-            states = bool(properties or trace_kinds or masses)
+            states = bool(properties or trace_kinds or masses or (values and heat.rows))
             sweep: Any = (
                 self._reverse(entry, stepper, scales, source)
                 if states
@@ -2066,7 +2087,7 @@ class TransientThermalRule(ThermalRule):
                     if n == steps - 1:
                         summed += np.outer(nxt, ct_tr[steps])
                     summed += np.outer(u, ct_tr[n])
-                if properties and heat.rows:
+                if (properties or values) and heat.rows:
                     heat.accumulate(n, u, stage, nxt)
                 load += scales[n] * d
                 per_step[n] = source @ d + heat.scale(n, density, face_density)
@@ -2106,6 +2127,8 @@ class TransientThermalRule(ThermalRule):
                     self._explicit |= self._boundary_gradients(
                         model, built, space, (ct0, on_fixed), t0, by_h, values
                     )
+                    for kind, grad in heat.boundary(self, model, t0, values).items():
+                        self._explicit[kind] = self._explicit[kind] + grad
             if properties and heat.rows:
                 t0 = entry.fields["source_free"]
                 pairs += heat.pairs(self, model, t0, properties)
