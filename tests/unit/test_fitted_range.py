@@ -41,12 +41,24 @@ def test_the_range_is_validated():
     assert law.frequency_range == (10e12, float(np.float32(200e12)))
     assert type(law.frequency_range) is tuple
     assert all(type(x) is float for x in law.frequency_range)
-    for bad in [(2e12, 1e12), (1e12, 1e12), (0.0, 1e12), (-1e12, 1e12),
-                (1e12, np.inf), (np.nan, 1e12)]:
+    for bad in [
+        (2e12, 1e12),
+        (1e12, 1e12),
+        (0.0, 1e12),
+        (-1e12, 1e12),
+        (1e12, np.inf),
+        (np.nan, 1e12),
+    ]:
         with pytest.raises(ValueError, match="frequency_range"):
             _law(bad)
-    for bad in [np.array([1e12, 2e12]), jnp.array([1e12, 2e12]), 1e12,
-                (1e12, 2e12, 3e12), (1e12, 2e12 + 1j), ("a", "b")]:
+    for bad in [
+        np.array([1e12, 2e12]),
+        jnp.array([1e12, 2e12]),
+        1e12,
+        (1e12, 2e12, 3e12),
+        (1e12, 2e12 + 1j),
+        ("a", "b"),
+    ]:
         with pytest.raises(TypeError, match="frequency_range takes two numbers in Hz"):
             _law(bad)
 
@@ -94,7 +106,8 @@ def test_a_law_without_a_range_writes_today_s_json():
 
 def _stack(tmp_path, law):
     path = sm.write_msh22(
-        tmp_path / "stack.msh", sm.plate(4.0, 3.0, (("oxide", 0.5), ("core", 0.25)), (1, 1, 1))
+        tmp_path / "stack.msh",
+        sm.plate(4.0, 3.0, (("oxide", 0.5), ("core", 0.25)), (1, 1, 1)),
     )
     return gfem.Model(
         gfem.Mesh.from_gmsh(path, length_unit="mm"),
@@ -211,13 +224,17 @@ def test_a_2d_driven_sweep_outside_warns():
         materials={"feed": gfem.Material(), "design": gfem.Material(eps_r=FITTED)},
         ports=(gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")),
     )
-    _, messages = _solve_noting(model, gfem.Driven(frequency=[1 * GHZ, 4 * GHZ], polarization="Ez"))
+    _, messages = _solve_noting(
+        model, gfem.Driven(frequency=[1 * GHZ, 4 * GHZ], polarization="Ez")
+    )
     assert messages == [
-        "region 'design': its permittivity law was fitted over 2-6 GHz, and this "
-        "driven solve reads it at 1 of 2 frequencies, 1 GHz. The law stays passive "
-        "there, but its accuracy is unknown. Narrow the frequencies or fit data "
-        "that cover them, or clear the range with "
-        "dataclasses.replace(law, frequency_range=None) once checked."
+        (
+            "region 'design': its permittivity law was fitted over 2-6 GHz, and "
+            "this driven solve reads it at 1 of 2 frequencies, 1 GHz. The law stays "
+            "passive there, but its accuracy is unknown. Narrow the frequencies or "
+            "fit data that cover them, or clear the range with "
+            "dataclasses.replace(law, frequency_range=None) once checked."
+        )
     ]
 
 
@@ -247,7 +264,8 @@ def test_an_eigenmode_target_and_a_mode_outside_warn_once(tmp_path):
     )
     result, messages = _solve_noting(model, gfem.Eigenmode(target=20 * GHZ, n_modes=2))
     found = np.sort(np.real(np.asarray(result.omega))) / (2 * np.pi)
-    assert found[0] < 19 * GHZ and found[1] > 21 * GHZ
+    assert found[0] < 19 * GHZ
+    assert found[1] > 21 * GHZ
     target, modes = messages
     assert target.startswith(
         "region 'lower': its permittivity law was fitted over 1-10 GHz, and this "
@@ -312,12 +330,14 @@ def test_an_electrostatic_solve_warns_with_the_static_value(tmp_path):
     model = _stack(tmp_path, law)
     _, messages = _solve_noting(model, ELECTROSTATIC)
     assert messages == [
-        "region 'core': its permittivity law was fitted over 50-900 THz, and this "
-        "electrostatic solve reads it at 0 Hz, static permittivity 3.5. The law "
-        "stays passive there, but its accuracy is unknown. Give the region a "
-        "constant gfem.Material(eps_r=<its static permittivity>) in the "
-        "electrostatic model, or clear the range with "
-        "dataclasses.replace(law, frequency_range=None) once checked."
+        (
+            "region 'core': its permittivity law was fitted over 50-900 THz, and "
+            "this electrostatic solve reads it at 0 Hz, static permittivity 3.5. The "
+            "law stays passive there, but its accuracy is unknown. Give the region a "
+            "constant gfem.Material(eps_r=<its static permittivity>) in the "
+            "electrostatic model, or clear the range with "
+            "dataclasses.replace(law, frequency_range=None) once checked."
+        )
     ]
 
     drude = gfem.PermittivityLaw(
@@ -328,3 +348,82 @@ def test_an_electrostatic_solve_warns_with_the_static_value(tmp_path):
         warnings.simplefilter("error", gfem.FittedRangeWarning)
         with pytest.raises(ValueError, match="Drude term"):
             gfem.solve(_stack(tmp_path, drude), ELECTROSTATIC, options=OPTIONS)
+
+
+def test_a_blend_end_with_a_range_warns(line):
+    rho = np.full(len(line.elements("core")), 0.5)
+    blend = gfem.MaterialField.interpolate(
+        jnp.asarray(rho),
+        gfem.Material(eps_r=2.0),
+        gfem.Material(eps_r=FITTED),
+        scheme="index",
+    )
+    _, messages = _solve_noting(
+        _line(line, blend), gfem.Driven(frequency=[1 * GHZ, 4 * GHZ])
+    )
+    (message,) = messages
+    assert message.startswith(
+        "the solid end of the blend in region 'core': its permittivity law was "
+        "fitted over 2-6 GHz, and this driven solve reads it at 1 of 2 "
+        "frequencies, 1 GHz."
+    )
+
+
+def test_probes_and_evaluations_stay_silent(line):
+    material = gfem.Material(eps_r=FITTED, name=NAME)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", gfem.FittedRangeWarning)
+        # the model's construction probes the law at 1 GHz x (1 - 1j)
+        model = _line(line, material)
+        assert model.materials["core"] is material
+        FITTED(100 * GHZ)
+        FITTED(jnp.array([0.0, 1 * GHZ, 50 * GHZ]))
+        material.eps_r(1 * GHZ)
+        jax.grad(lambda f: jnp.real(FITTED(f)))(1 * GHZ)
+
+
+def test_an_edge_within_1e_9_is_inside(line):
+    model = _line(line, gfem.Material(eps_r=FITTED))
+    # the rounding of c / wavelength: a few 1e-16, well inside 1e-9
+    c = 299792458.0
+    edges = [c / (c / (2 * GHZ)), c / (c / (6 * GHZ))]
+    near = [2 * GHZ * (1 - 5e-10), *edges, 6 * GHZ * (1 + 5e-10)]
+    _, messages = _solve_noting(model, gfem.Driven(frequency=near))
+    assert messages == []
+    _, messages = _solve_noting(model, gfem.Driven(frequency=[2 * GHZ * (1 - 2e-9)]))
+    assert len(messages) == 1
+
+
+def test_a_cache_hit_replays_the_warning(tmp_path):
+    model = _stack(tmp_path, FITTED)
+
+    def shown():
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            gfem.solve(model, ELECTROSTATIC, options=OPTIONS, cache=tmp_path / "c")
+        return [(str(w.message), w.filename) for w in _fitted_warnings(caught)]
+
+    miss = shown()
+    hit = shown()
+    # as every warning a solve raises about its inputs: at the caller's line
+    assert [where for _, where in miss] == [__file__]
+    assert hit == miss
+
+
+@pytest.mark.parametrize(
+    "law",
+    [
+        dataclasses.replace(FITTED, frequency_range=None),
+        gfem.PermittivityLaw.djordjevic_sarkar(4.3, 0.02, frequency=1 * GHZ),
+    ],
+    ids=["hand-written", "djordjevic_sarkar"],
+)
+def test_a_law_without_a_range_never_warns(line, tmp_path, law):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", gfem.FittedRangeWarning)
+        gfem.solve(
+            _line(line, gfem.Material(eps_r=law)),
+            gfem.Driven(frequency=[1e6, 1 * GHZ, 30 * GHZ]),
+            options=OPTIONS,
+        )
+        gfem.solve(_stack(tmp_path, law), ELECTROSTATIC, options=OPTIONS)

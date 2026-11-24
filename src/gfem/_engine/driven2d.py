@@ -168,8 +168,10 @@ class Driven2DRule(DrivenRule):
         )
         self.linear = _resolve(model, problem, options)
         self.gauge = _UNGAUGED
-        dispersion.check_frequencies(model, problem.frequency)
-        dispersion.warn_fitted_range(model, problem.frequency, "driven solve", comm=comm)
+        # a lossless pole raises, a law outside its fitted range warns
+        dispersion.check_frequencies(
+            model, problem.frequency, reader="driven solve", comm=comm
+        )
         if not model.ports:
             raise ValueError(
                 "The model has no ports, so a driven problem has nothing to "

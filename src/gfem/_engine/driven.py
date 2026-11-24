@@ -900,9 +900,10 @@ class DrivenRule:
             model, problem, options, comm=comm, gauge=gauge
         )
         # a frequency on a lossless pole, before any assembly or worker
-        dispersion.check_frequencies(model, problem.frequency)
-        # accuracy, not well-posedness: a law read outside its fitted range
-        dispersion.warn_fitted_range(model, problem.frequency, "driven solve", comm=comm)
+        # (and warns for a law read outside its fitted range)
+        dispersion.check_frequencies(
+            model, problem.frequency, reader="driven solve", comm=comm
+        )
         if not model.ports and not problem.sources:
             raise ValueError(
                 "The model has no ports, so a driven problem has nothing to "

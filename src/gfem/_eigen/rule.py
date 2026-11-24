@@ -385,7 +385,7 @@ class EigenmodeRule:
 
     # --- forward -----------------------------------------------------------------
 
-    def forward(
+    def forward(  # noqa: PLR0915 - one search between its target and mode checks
         self, model: Model, *, keep: bool, request: SolveRequest | None = None
     ) -> tuple[dict[str, object], Entry | None]:
         """Find the modes.

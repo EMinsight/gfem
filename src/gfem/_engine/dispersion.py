@@ -659,13 +659,23 @@ def resonance_seeds(model: Model, frequencies: Sequence[float]) -> list[int]:
 
 
 def check_frequencies(
-    model: Model, frequencies: Iterable[float], *, absorbing: bool = True
+    model: Model,
+    frequencies: Iterable[float],
+    *,
+    absorbing: bool = True,
+    reader: str | None = None,
+    comm: Any = None,
 ) -> None:
     """Raise for an output frequency a law region cannot be solved at.
 
     With ``absorbing``, a law region behind a face of an `Absorbing` surface
     must hold a propagating medium (Re eps > 0) at every frequency: its face
     pieces read sqrt(Re eps(omega)), at either order.
+
+    With ``reader`` (the solve in the message, ``"driven solve"``), a law
+    read outside its fitted range then warns once (`warn_fitted_range`,
+    under ``comm``): the rule's construction passes it, the forward, which
+    runs this again on every design, does not.
 
     Static: it reads the laws and the frequencies only, so every rank of a
     distributed solve raises the same error before any collective. A law
@@ -682,6 +692,19 @@ def check_frequencies(
     _check_blend_poles(model, frequencies)
     # a traced law is checked on the host, on its concrete values
     regions = [lr for lr in law_regions(model) if not is_traced(lr.law)]
+    _check_law_frequencies(model, frequencies, regions, absorbing=absorbing)
+    if reader is not None:
+        warn_fitted_range(model, frequencies, reader, comm=comm)
+
+
+def _check_law_frequencies(
+    model: Model,
+    frequencies: list[float],
+    regions: list[LawRegion],
+    *,
+    absorbing: bool,
+) -> None:
+    """`check_frequencies` on the concrete law regions ``regions``."""
     if not regions:
         return
     behind = absorbing_surfaces(model, regions) if absorbing else {}
@@ -725,33 +748,29 @@ FITTED_EDGE = 1e-9
 
 def _fitted_laws(
     model: Model, regions: Collection[str] | None
-) -> list[tuple[str, str, PermittivityLaw]]:
-    """``(key, label, law)`` of each law of ``model`` that has a fitted range.
+) -> list[tuple[str, str, PermittivityLaw, tuple[float, float]]]:
+    """``(key, label, law, range)`` of each law of ``model`` with a fitted range.
 
-    The law regions in ``model.materials`` order, each with the ends of its
-    blend after it; ``regions`` keeps those regions only.
+    The law regions in ``model.materials`` order, a blend's law ends in
+    place of its region; ``regions`` keeps those regions only.
     """
-    out = []
+    found: list[tuple[str, str, object]] = []
     for region, material in model.materials.items():
         if regions is not None and region not in regions:
             continue
         if isinstance(material, Material):
-            law = material.eps_r
-            if isinstance(law, PermittivityLaw) and law.frequency_range is not None:
-                name = f" ({material.name})" if material.name else ""
-                out.append((region, f"region {region!r}{name}", law))
+            name = f" ({material.name})" if material.name else ""
+            found.append((region, f"region {region!r}{name}", material.eps_r))
         elif isinstance(material, MaterialField) and material.blend_ends is not None:
             ends = material.blend_ends
             for which, end in (("void", ends.void), ("solid", ends.solid)):
-                if isinstance(end, PermittivityLaw) and end.frequency_range is not None:
-                    out.append(
-                        (
-                            f"{region}:{which}",
-                            f"the {which} end of the blend in region {region!r}",
-                            end,
-                        )
-                    )
-    return out
+                label = f"the {which} end of the blend in region {region!r}"
+                found.append((f"{region}:{which}", label, end))
+    return [
+        (key, label, law, law.frequency_range)
+        for key, label, law in found
+        if isinstance(law, PermittivityLaw) and law.frequency_range is not None
+    ]
 
 
 def warn_fitted_range(
@@ -794,10 +813,9 @@ def warn_fitted_range(
     freqs = [float(f) for f in frequencies]
     lines = []
     keys = set()
-    for key, label, law in _fitted_laws(model, regions):
+    for key, label, law, (lo, hi) in _fitted_laws(model, regions):
         if key in skip:
             continue
-        lo, hi = law.frequency_range  # ty: ignore[not-iterable]
         outside = [
             f for f in freqs if f < lo * (1 - FITTED_EDGE) or f > hi * (1 + FITTED_EDGE)
         ]
@@ -819,7 +837,9 @@ def warn_fitted_range(
                 span = hertz_band(min(outside), max(outside), 4)
                 where = f"{len(outside)} of {len(freqs)} {noun}, {span}"
             if min(outside) < lo and any(isinstance(t, Drude) for t in law.terms):
-                remedy = "For a metal at RF use gfem.Conductor with its bulk conductivity"
+                remedy = (
+                    "For a metal at RF use gfem.Conductor with its bulk conductivity"
+                )
             else:
                 remedy = "Narrow the frequencies or fit data that cover them"
         lines.append(

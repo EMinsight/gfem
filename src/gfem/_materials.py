@@ -790,9 +790,7 @@ class PermittivityLaw:
                     f"Debye or DjordjevicSarkar, got {term!r}."
                 )
         object.__setattr__(self, "terms", terms)
-        object.__setattr__(
-            self, "frequency_range", _fitted_range(self.frequency_range)
-        )
+        object.__setattr__(self, "frequency_range", _fitted_range(self.frequency_range))
 
     def __call__(self, frequency: Any) -> jax.Array:
         """The complex relative permittivity at ``frequency``.
