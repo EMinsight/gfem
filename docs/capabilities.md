@@ -331,7 +331,8 @@ returning a wrong value:
   node gradients take electric dipoles only. `source_fields=False` takes
   dipoles only and needs a port with a defined wave; it gives no emitted
   power, Purcell factor, kept field or far field of them, and its adaptive
-  gradients are exact at the samples and to the sweep's field error between.
+  gradients are exact at the samples and to the sweep's field error between,
+  with one full-size adjoint per port at each frequency carrying a cotangent.
   Cross sections need a lossless background and a
   {term}`truncation layer` of background only; the far field needs a
   {term}`far-field layer` in one lossless, isotropic exterior medium, and

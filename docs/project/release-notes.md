@@ -232,7 +232,7 @@ Free space:
   reads each point dipole's port waves from the ports' own solutions, one
   point overlap per dipole instead of one solve, so a coupling map over many
   positions costs one solve per port, on uniform and adaptive sweeps, with
-  gradients. Their emitted power, Purcell factor, kept fields and far fields
+  gradients. The dipoles' loads are stored sparse. Their emitted power, Purcell factor, kept fields and far fields
   are not computed, and those readers raise `ValueError`. A job with
   `source_fields=False` does not load in gfem 0.2.0 or earlier
   ({doc}`../recipes/point-dipoles`).

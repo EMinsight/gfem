@@ -1121,7 +1121,10 @@ class DrivenRule:
         _check_skipped_port_modes(model, stacklevel=4, comm=comm)
 
     def _extra_width(self) -> int:
-        """The right-hand sides beyond the excited ports' in one solve (a hint)."""
+        """The right-hand sides beyond the excited ports' in one solve.
+
+        The system builder's ``n_sources``: a width hint for its solves.
+        """
         if self.reciprocal:
             return len(self.wave_ports) + len(self.lumped_loads)
         return len(self.sources)
@@ -2249,13 +2252,8 @@ class DrivenRule:
         if not self.reciprocal:
             flag = _mpi.agree_any(self.comm, flag=bool(load.any()))
             return np.full(load.shape[1], flag)
-        return np.array(
-            [
-                _mpi.agree_any(self.comm, flag=bool(load[:, j].any()))
-                for j in range(load.shape[1])
-            ],
-            bool,
-        )
+        loaded = load.any(axis=0).astype(np.intp)
+        return np.asarray(_mpi.reduce_bcast(self.comm, loaded)) > 0
 
     def _output_loads(
         self,
@@ -2314,7 +2312,7 @@ class DrivenRule:
         laws: bool,
         wanted: frozenset | None = None,
     ) -> list[FieldPair | Integrated]:
-        r"""The backward of an adaptive sweep: frozen-basis adjoints, and full-size ones by reciprocity.
+        r"""The adaptive backward: reduced adjoints, full-size ones for reciprocity.
 
         With the basis V and the sample set held fixed, the reduced solution
         at ω solves ``A_r(ω) y = b_r(ω)``, ``A_r = Vᵀ A(ω) V`` complex
@@ -2374,6 +2372,7 @@ class DrivenRule:
                 if sweep is not None and sources is not None and ct_w is not None:
                     pair = self._reciprocal_adaptive_pair(
                         model,
+                        op,
                         kept,
                         sweep,
                         sources,
@@ -2546,6 +2545,7 @@ class DrivenRule:
     def _reciprocal_adaptive_pair(  # noqa: PLR0917 - one frequency's adjoint
         self,
         model: Model,
+        op: DrivenOperator,
         kept: ReducedKept,
         sweep: SystemSweep,
         sources: SourceColumns,
@@ -2583,9 +2583,7 @@ class DrivenRule:
             self._add_port_wave_nodes(
                 model, sources, omega, solutions=z, weights=ct[rows]
             )
-        return self.operator(model).pair(
-            -np.asarray(y), z, weights=weights, domain=domain
-        )
+        return op.pair(-np.asarray(y), z, weights=weights, domain=domain)
 
     def _add_explicit_nodes(
         self,

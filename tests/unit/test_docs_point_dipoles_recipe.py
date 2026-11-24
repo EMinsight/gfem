@@ -206,9 +206,11 @@ def test_the_reciprocity_formula_is_on_the_page_and_holds(page):
         model, gfem.Driven(f0, excite=(), sources=row), options=options
     )
     b = np.asarray(reciprocal.port_waves)[0, 0]
-    # the page claims the columns' own values
+    # the page claims the solved source fields' own port waves, up to the
+    # linear solve's accuracy: the direct factorization on this small order-3
+    # line leaves about 1e-9 relative (not reciprocity), so the floor is 1e-8
     np.testing.assert_allclose(
-        b, np.asarray(columns.port_waves)[0, 0], rtol=0, atol=1e-9 * abs(b).max()
+        b, np.asarray(columns.port_waves)[0, 0], rtol=0, atol=1e-8 * abs(b).max()
     )
     # and the formula, from the field of port p1 fed 1 W
     fed = gfem.solve(

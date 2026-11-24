@@ -1850,9 +1850,11 @@ class SweepInfo:
             sweep, ``None`` for a uniform one.
         basis_size: The number of reduced basis vectors (0 for uniform).
         iterations: For each sampled frequency (in solve order), the Krylov
-            iterations of each right-hand side's solve (the excited ports',
-            then the port loads' with ``Driven(source_fields=False)``); ``()``
-            for a direct solve on fresh factors.
+            iterations of each right-hand side of the sample's solve (the
+            excited ports' columns, then the sources' columns and the loads
+            the sweep spans, every port's own load with
+            ``Driven(source_fields=False)``); ``()`` for a direct solve on
+            fresh factors.
         preconditioner_reused: For each sampled frequency, whether its
             solve ran on a preconditioner built for another matrix (a BDDC
             or p-multigrid preconditioner built at an earlier frequency, or
@@ -2166,7 +2168,9 @@ class DrivenResult:
                 "field is Hz, read result.h_field(frequency, excite)."
             )
         if excite is not None:
-            self._refuse_unsolved_source(excite, "so no field of it is kept")
+            self._refuse_unsolved_source(
+                excite, "so no field of it is kept", why="its field was not solved"
+            )
         field = self._kept_field(self.e_fields, frequency, excite)
         if part == "total":
             return field
@@ -2181,7 +2185,16 @@ class DrivenResult:
             )
         return _incident_part(field, name, part)
 
-    def _refuse_unsolved_source(self, name: str, consequence: str) -> None:
+    def _refuse_unsolved_source(
+        self,
+        name: str,
+        consequence: str,
+        *,
+        why: str = (
+            "its port waves were read by reciprocity and its own field was not solved"
+        ),
+        remedy: str = "it",
+    ) -> None:
         """Raise for a dipole of a ``source_fields=False`` solve.
 
         Such a dipole is among the sources but has no emitted power: gfem
@@ -2193,10 +2206,9 @@ class DrivenResult:
         source = self.sources.get(name)
         if isinstance(source, DIPOLES) and name not in self.emitted_power:
             raise ValueError(
-                f"{name!r} was solved with Driven(source_fields=False): its port "
-                "waves were read by reciprocity and its own field was not "
-                f"solved, {consequence}. Solve with source_fields=True (the "
-                "default) for it."
+                f"{name!r} was solved with Driven(source_fields=False): {why}, "
+                f"{consequence}. Solve with source_fields=True (the default) "
+                f"for {remedy}."
             )
 
     def h_field(self, frequency: float, excite: str | None = None) -> Field:

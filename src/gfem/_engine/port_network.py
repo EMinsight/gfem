@@ -41,7 +41,7 @@ from __future__ import annotations
 import dataclasses
 import math
 from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -562,6 +562,12 @@ class PortNetwork:
         which a discretization and the system operator hold too.
         """
         return {
-            id(t.vectors): int(getattr(t.vectors, "nbytes", 0))
-            for t in (*self.excitation, *self.outputs)
+            id(t.vectors): _nbytes(t.vectors) for t in (*self.excitation, *self.outputs)
         }
+
+
+def _nbytes(vectors: Any) -> int:
+    """The bytes of a dense array or of a sparse matrix's three buffers."""
+    if hasattr(vectors, "indptr"):
+        return int(vectors.data.nbytes + vectors.indices.nbytes + vectors.indptr.nbytes)
+    return int(getattr(vectors, "nbytes", 0))

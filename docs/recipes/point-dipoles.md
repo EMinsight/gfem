@@ -196,9 +196,9 @@ phase slope -1.0000 k0
 
 - **Cost**: one solve per port with a defined wave, plus one point overlap per
   dipole, whatever the number of positions. gfem pairs each dipole's point
-  load with the port's discrete solution, so the values are the dipoles' own
-  columns (to $10^{-9}$ relative on this wave port, to round-off on a
-  lumped-port line), with the same mesh error.
+  load with the port's discrete solution, so the values are the port waves of
+  the dipoles' solved source fields, up to the linear solve's accuracy (about
+  $10^{-9}$ relative on this line), with the same mesh error.
 - **The physics of this map**: on this line $\mathbf{E}_1$ is the TEM field,
   uniform across the section with phase $e^{-ik_0 z}$. So $|b|^2$ is the same
   at every position, the power the first section's column sent into the port,
@@ -244,7 +244,7 @@ that error.
 - With `source_fields=False` an adaptive sweep's samples come from the port
   solutions alone: its basis does not grow with the number of dipoles, and
   the port waves are read from the reduced model at every grid frequency.
-- The port waves of `source_fields=False` differentiate like the columns'.
+- The port waves of `source_fields=False` differentiate like those of the solved source fields.
   The backward solves one adjoint per port at each frequency carrying a
   cotangent, whatever the number of dipoles. On a uniform sweep the gradients
   are exact. On an adaptive sweep they are exact at the samples and accurate

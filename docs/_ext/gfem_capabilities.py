@@ -202,7 +202,9 @@ ROWS = {
         front=False,
     ),
     "driven_dipole": Row(
-        "Driven, electric dipole", "emitted power and port waves", front=False
+        "Driven, electric dipole",
+        "emitted power and port waves (also by reciprocity)",
+        front=False,
     ),
     "driven_magnetic_dipole": Row(
         "Driven, magnetic dipole", "emitted power and port waves", front=False

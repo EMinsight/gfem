@@ -15,6 +15,7 @@ import eigen_cases as ec
 import numpy as np
 import pytest
 import scipy.sparse as sp
+from adaptive_reference import per_column_extend, reference_next_sample
 from eigen_cases import line_mesh, terminated_line
 
 import gfem
@@ -53,72 +54,14 @@ def _solve():
     return gfem.solve(model, problem, options=options)
 
 
-def _old_next_sample(z, chosen, snapshots, size):
-    columns = []
-    for i, c in zip(chosen, snapshots, strict=True):
-        padded = np.zeros((size, c.shape[1]), complex)
-        padded[: c.shape[0]] = c
-        flat = padded.reshape(-1)
-        columns.append(np.concatenate([flat, 1j * z[i] * flat]))
-    u = np.column_stack(columns)
-    _, sigma, vh = np.linalg.svd(u)
-    sigma = np.concatenate([sigma, np.zeros(len(chosen) - len(sigma))])
-    m = len(chosen) - 1
-    while m > 0 and sigma[m] < adaptive.MRI_RANK * sigma[0]:
-        m -= 1
-    q = vh[m].conj()
-    zs = z[chosen]
-    candidates = np.setdiff1d(np.arange(len(z)), chosen)
-    denominator = np.abs((q[None, :] / (z[candidates, None] - zs[None, :])).sum(axis=1))
-    return int(candidates[np.argmin(denominator)])
-
-
-def _old_extend(self, snapshot):
-    columns = np.stack([snapshot.real, snapshot.imag], axis=2).reshape(
-        snapshot.shape[0], -1
-    )
-    old = self.basis
-    basis = old
-    for column in columns.T:
-        norm = np.linalg.norm(column)
-        if norm == 0:
-            continue
-        w = column.copy()
-        for _ in range(2):
-            w -= basis @ (basis.T @ w)
-        remaining = np.linalg.norm(w)
-        if remaining <= adaptive.DROP * norm:
-            continue
-        basis = np.column_stack([basis, w / remaining])
-    new = basis[:, old.shape[1] :]
-    if not new.shape[1]:
-        return 0
-    for k, reduced in enumerate(self.operators):
-        product = np.asarray(self.system.apply(k, new))
-        top = old.T @ product
-        corner = new.T @ product
-        corner = 0.5 * (corner + corner.T)
-        self.operators[k] = np.block([[reduced, top], [top.T, corner]])
-    self.excitation = [
-        np.vstack([r, new.T @ t.vectors])
-        for r, t in zip(self.excitation, self.system.excitation, strict=True)
-    ]
-    self.outputs = [
-        np.hstack([r, t.project(new)])
-        for r, t in zip(self.outputs, self.system.outputs, strict=True)
-    ]
-    self.corrections = [
-        np.vstack([r, new.T @ t.vectors])
-        for r, t in zip(self.corrections, self.system.corrections, strict=True)
-    ]
-    self.basis = basis
-    return new.shape[1]
-
-
-def test_many_dipoles_sweep_as_the_old_sweep_did(monkeypatch):
+def test_many_dipoles_sweep_matches_the_full_svd_per_column_reference(monkeypatch):
     new = _solve()
-    monkeypatch.setattr(adaptive.ReducedModel, "extend", _old_extend)
-    monkeypatch.setattr(adaptive, "_next_sample", _old_next_sample)
+    monkeypatch.setattr(adaptive.ReducedModel, "extend", per_column_extend)
+    monkeypatch.setattr(
+        adaptive,
+        "_next_sample",
+        lambda *args: reference_next_sample(*args)[0],
+    )
     old = _solve()
     a, b = new.sweep, old.sweep
     assert a.sampled_frequencies == b.sampled_frequencies

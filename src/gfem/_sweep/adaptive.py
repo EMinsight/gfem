@@ -255,9 +255,9 @@ class ReducedModel:
     def coordinates(self, omega: float) -> np.ndarray:
         """Reduced solution at ω, ``(n, n_excitations)``: V y is the field."""
         system = self.system
-        matrix = self.matrix(omega)
         if not system.excitation:
             return np.zeros((self.size, 0), complex)
+        matrix = self.matrix(omega)
         rhs = sum(
             r @ np.asarray(t.coefficients(omega))
             for r, t in zip(self.excitation, system.excitation, strict=True)

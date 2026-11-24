@@ -133,7 +133,7 @@ class PointLoads:
         pairs = projected @ coordinates
         return (pairs * self.coefficients(omega)[:, None]).T
 
-    def weighted(self, omega: float, weights: np.ndarray) -> np.ndarray:
+    def port_wave_loads(self, omega: float, weights: np.ndarray) -> np.ndarray:
         r"""``(N, r)``: :math:`\sum_k w_{jk}\, c_k b_k`, one column per row ``j``.
 
         ``weights`` is ``(r, n)``. The backward of port waves read by
