@@ -42,6 +42,7 @@ from typing import Any
 import ngsolve as ngs
 import numpy as np
 import scipy.constants as const
+import scipy.sparse
 
 from gfem import _mpi
 from gfem._boundaries import (
@@ -79,8 +80,9 @@ class PointLoads:
         names: The dipoles' names, in column order.
         moments: ``(n, 3)`` complex, :math:`p` (C m) or :math:`m` (A m²).
         magnetic: ``(n,)``, whether each dipole is magnetic.
-        vectors: ``(N, n)`` complex, the fixed parts: dipole k's load at ω
-            is ``coefficients(ω)[k] * vectors[:, k]``, zero on fixed DOFs.
+        vectors: ``(N, n)`` complex ``scipy.sparse`` CSC matrix (a column holds
+            the DOFs of one element), the fixed parts: dipole k's load at ω is
+            ``coefficients(ω)[k] * vectors[:, k]``, zero on fixed DOFs.
         located: Each dipole's element and barycentric coordinates.
         scale: The metres per file unit.
         layout: The DOF layout of the loads (``DISTRIBUTED`` columns).
@@ -89,7 +91,7 @@ class PointLoads:
     names: tuple[str, ...]
     moments: np.ndarray
     magnetic: np.ndarray
-    vectors: np.ndarray
+    vectors: scipy.sparse.csc_matrix
     located: Located
     scale: float
     layout: DofLayout = ONE_PROCESS
@@ -100,8 +102,8 @@ class PointLoads:
         return unit * np.where(self.magnetic, -1j * omega, omega**2)
 
     def rhs(self, omega: float) -> np.ndarray:
-        """The loads at ω, ``(N, n)``."""
-        return self.vectors * self.coefficients(omega)[None, :]
+        """The loads at ω, ``(N, n)`` dense."""
+        return (self.vectors @ scipy.sparse.diags(self.coefficients(omega))).toarray()
 
     def __call__(self, omega: float) -> np.ndarray:
         """`rhs`: the loads of a source kind as `SourceColumns` reads them."""
@@ -396,13 +398,10 @@ def point_loads(
     n = len(sources)
     moments = np.array([s.moment for s in sources], complex)
     magnetic = np.array([isinstance(s, MagneticDipole) for s in sources])
-    vectors = np.zeros((probed.width, n), complex)
-    for k in range(n):
-        g = np.zeros((1, n, 3), complex)
-        g[0, k] = moments[k]
-        vectors[:, k] = probed.transpose(g, curl=bool(magnetic[k]))[0]
-    vectors = vectors[: space.ndof]
-    vectors[~free_mask(space.FreeDofs(), space.ndof)] = 0.0
+    # one shape-function pass for all dipoles; a column holds only its element's DOFs
+    vectors = probed.columns(moments, magnetic).astype(complex).tocsr()
+    free = free_mask(space.FreeDofs(), space.ndof)
+    vectors = (scipy.sparse.diags(free.astype(float)) @ vectors[: space.ndof]).tocsc()
     return PointLoads(
         names=tuple(s.name for s in sources),
         moments=moments,

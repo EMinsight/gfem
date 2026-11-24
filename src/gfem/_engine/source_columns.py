@@ -201,7 +201,7 @@ class SourceColumns:
     ) -> np.ndarray:
         """``(n_dipoles,)`` W from the sources' reduced coordinates ``(n, n_sources)``.
 
-        ``projected`` is ``Vᵀ`` `PointLoads.vectors`, ``(n, n_dipoles)``, on
+        ``projected`` is ``Vᵀ`` `PointLoads.vectors` (dense), ``(n, n_dipoles)``, on
         the real basis V.
         """
         found = self.dipoles

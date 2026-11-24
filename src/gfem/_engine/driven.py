@@ -1647,7 +1647,7 @@ class DrivenRule:
         waves = np.reshape(waves, (n_freq, len(self.port_names), len(self.columns)))
         emitted = None
         if sources is not None and sources.dipoles is not None:
-            projected = sweep.basis.T @ sources.dipoles[1].vectors
+            projected = (sources.dipoles[1].vectors.T @ sweep.basis).T
             emitted = np.stack(
                 [
                     sources.reduced_power(2 * np.pi * f, projected, y[:, n_exc:])
@@ -2164,7 +2164,7 @@ class DrivenRule:
             if system is not None and (ct_p is not None or nodes):
                 sources = self._source_columns(model, system)
                 if sources is not None and sources.dipoles is not None:
-                    projected = basis.T @ sources.dipoles[1].vectors
+                    projected = (sources.dipoles[1].vectors.T @ basis).T
             domain = em_region(model, op.built)
             for i, f in enumerate(self.problem.frequency):
                 omega = 2 * math.pi * f

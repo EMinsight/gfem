@@ -486,6 +486,49 @@ class Probe:
         )
         return matrix.tocsr()
 
+    def columns(self, weights: np.ndarray, curl: np.ndarray) -> Any:
+        r"""``(width, n_points)`` sparse: column ``p`` is :math:`\Phi_p^\mathsf{T} w_p`.
+
+        The point-by-point transpose of `transpose` for ``weights`` ``(n_points,
+        dim)``, one vector per point: with ``curl[p]`` the curl evaluation at
+        point ``p`` instead of the value. SI scaling included. The shape
+        functions are evaluated once for all the points, and a column holds
+        only the DOFs of its element. Under ranks a ``DISTRIBUTED`` load, as
+        `transpose`: each rank fills the points it holds.
+        """
+        import scipy.sparse
+
+        w = np.asarray(weights)
+        curl = np.asarray(curl, bool)
+        shape = (self.width, self.n_points)
+        own = self._own
+        if own.size == 0:
+            return scipy.sparse.csc_matrix(shape, dtype=w.dtype)
+        w, curl = w[own], curl[own]
+        # a curl is one length derivative more than the value
+        factors = [(False, self.factor), (True, self.factor / self._built.scale)]
+        data, rows, cols = [], [], []
+        with self._lock:
+            dfes, cont, disc = self._local_dofs()
+            for k in range(cont.shape[1]):
+                unit = np.zeros(dfes.ndof)
+                unit[disc[:, k]] = 1.0
+                entry = np.zeros(own.size, w.dtype)
+                for is_curl, factor in factors:
+                    pick = curl == is_curl
+                    if pick.any():
+                        value = self._evaluate(dfes, unit, curl=is_curl)
+                        pairs = np.einsum("pd,pd->p", value[pick], w[pick])
+                        entry[pick] = pairs * factor
+                data.append(entry)
+                rows.append(cont[:, k])
+                cols.append(own)
+        matrix = scipy.sparse.coo_matrix(
+            (np.concatenate(data), (np.concatenate(rows), np.concatenate(cols))),
+            shape=shape,
+        )
+        return matrix.tocsc()
+
     def transpose(self, cotangent: np.ndarray, *, curl: bool = False) -> np.ndarray:
         """``Phi^T g`` (SI scaling included), ``(m, width)`` for ``(m, n, dim)``.
 
