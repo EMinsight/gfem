@@ -387,6 +387,14 @@ Eigenmode solves:
   returns the modes nearest the target; such results from earlier versions
   should be rerun.
 
+Meshes:
+
+- Fixed: a cross-section meshed periodically in gmsh (`setPeriodic`) pairs
+  under `gfem.Periodic` whatever its node numbering, on any lattice.
+  `gfem.Mesh.from_gmsh_cross_section` now splits the prisms by node
+  coordinates, not node numbers; values computed on a cross-section move by
+  up to about 4e-4 relative (the tutorials' checked values).
+
 ## 0.2.0 (2026-11-23)
 
 - **Native 2D models.** A gmsh file of triangles at one height reads as a
