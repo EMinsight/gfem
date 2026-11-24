@@ -16,7 +16,8 @@ fourth-order central difference to :math:`10^{-6}` relative
   node pass: the plane wave's position-gradient term, and for the
   directivity the radiated power's `gfem.power_flow` node pass), with the
   strip in a margin of air so that the shell around its core is no
-  truncation layer;
+  truncation layer; and :math:`|F|^2` of that wide strip under a morph of
+  its arm on the side around its core, whose layer (the shell) moves;
 - N4: :math:`|F|^2` of an electric dipole under the same morph, whose
   extension moves the dipole's element (its point-transport term);
 - the directivity of the strip under the morph.
@@ -151,6 +152,34 @@ def test_n3_the_far_field_at_fixed_coefficients_by_every_node(wide_strip, side, 
         d[feed] = 0.0
         directions.append(d / np.linalg.norm(d))
     assert_gradient_matches(objective, x0, directions, step=NODE_STEP, rel=KERNEL)
+
+
+def test_n3_far_field_on_a_moving_side_under_a_morph(wide_strip):
+    # the side around the core: in the margin its layer is the shell, which
+    # the morph of the arm moves; this model is large enough for the direct
+    # solver to reuse factors across designs, which the differences refuse
+    morph = boundary_morph(
+        wide_strip,
+        "wire",
+        grows="left",
+        where=lambda x: (
+            (x[:, 2] > (1 / 6 + 1e-3) * fsc.UM) & (x[:, 2] < (2 / 6 + 1e-3) * fsc.UM)
+        ),
+    )
+    mesh = wide_strip.mesh
+    shell = np.unique(np.asarray(mesh.tetrahedra)[mesh.elements("shell")])
+    nodes = np.asarray(morph(jnp.full(morph.n_params, 1e-8)).nodes)
+    moved = (nodes != np.asarray(mesh.nodes)).any(axis=1)
+    assert moved[shell].any()
+    problem = gfem.Driven(fsc.F0, keep_fields=True)
+
+    def power(t):
+        ff = _far(wide_strip.replace(mesh=morph(t)), "p1", problem, side=CORE)
+        return jnp.abs(ff.e_theta[0]) ** 2 + jnp.abs(ff.e_phi[0]) ** 2
+
+    t = jnp.zeros(morph.n_params)
+    directions = unit_directions(np.random.default_rng(0), t.shape, 2)
+    assert_gradient_matches(power, t, directions, step=NODE_STEP)
 
 
 def test_n4_far_field_of_a_dipole_under_a_morph(strip):
