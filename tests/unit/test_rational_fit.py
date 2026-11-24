@@ -351,6 +351,21 @@ def test_weights_leave_an_exact_fit_exact_and_the_error_unweighted():
     assert model.n_poles == 5
 
 
+@pytest.mark.parametrize("seed", range(20))
+def test_spare_poles_go_whatever_round_off_sets_their_residues(seed):
+    # Spare poles' residues are set by round-off, which differs between BLAS
+    # builds; 3e-13 of noise stands in for it. Judged by their own
+    # contribution, seeds 6 and 18 kept a sixth pole (as one Windows BLAS did
+    # on the exact data); judged by the refitted error, every seed gives 5.
+    poles, residues, d = _two_port()
+    s = _rational_s(F20, poles, residues, d)
+    rng = np.random.default_rng(seed)
+    s = s + 3e-13 * (rng.standard_normal(s.shape) + 1j * rng.standard_normal(s.shape))
+    model = _fit(_net(F20, s), tolerance=1e-10, weights=np.linspace(1, 100, 20))
+    assert model.n_poles == 5
+    assert _relative_pole_error(model.poles, poles) <= 1e-6
+
+
 def test_fewer_than_six_frequencies_are_refused():
     s = np.zeros((5, 1, 1))
     with pytest.raises(ValueError, match="at least 6 frequencies"):

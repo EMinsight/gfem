@@ -1184,9 +1184,9 @@ class NetworkParameters:
         real poles and conjugate pairs, a fitted constant :math:`D` and no
         term proportional to frequency. The order rises in steps of 4 poles
         until the largest per-element RMS of :math:`|S_\mathrm{model} -
-        S_\mathrm{data}|` over the data is at most ``tolerance``; poles
-        contributing less than ``tolerance``/10 anywhere in the band are then
-        removed and the residues refitted. A zero-frequency sample in the
+        S_\mathrm{data}|` over the data is at most ``tolerance``; then each
+        pole (or pair) whose removal, with the residues refitted, raises that
+        error by less than ``tolerance``/10 is removed. A zero-frequency sample in the
         network is used like any other; none is added. A long line needs
         about one pole pair per phase wrap in the band (two when reflections
         bounce on it).

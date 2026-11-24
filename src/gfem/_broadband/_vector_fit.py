@@ -419,23 +419,37 @@ def _terms(phi: np.ndarray, c: np.ndarray) -> np.ndarray:
 def _prune(
     x: np.ndarray, h: np.ndarray, w: np.ndarray, fit: _Fit, tolerance: float
 ) -> _Fit:
-    """Drop poles contributing below a tenth of the tolerance in band; refit."""
+    """Drop the poles the data do not need, one real pole or pair at a time.
+
+    A pole goes when the residues refitted without it keep the error within
+    a tenth of the tolerance of the fit's own (and within the tolerance).
+    Candidates are tried from the smallest in-band contribution up. The
+    decision rests on the refitted error, not on the pole's own
+    contribution: the residues of a pole the data do not determine are set
+    by round-off (an exact rational S fitted with spare poles leaves them
+    at 1e-13 or 1e-11 depending on the BLAS), while the refitted error
+    stays at the data's round-off either way.
+    """
     phi = basis(x, fit.poles)
     n_real = fit.poles.real.size
-    threshold = _PRUNE * tolerance
-    groups = [[k] for k in range(n_real)] + [
-        [n_real + 2 * k, n_real + 2 * k + 1] for k in range(fit.poles.pairs.size)
+    groups = [("real", k, [k]) for k in range(n_real)] + [
+        ("pair", k, [n_real + 2 * k, n_real + 2 * k + 1])
+        for k in range(fit.poles.pairs.size)
     ]
-    keep = np.array(
-        [_contribution(phi[:, g], fit.c[:, g]) >= threshold for g in groups], bool
-    )
-    keep_real, keep_pairs = keep[:n_real], keep[n_real:]
-    if keep.all():
-        return fit
-    pruned = _residues(
-        x, h, w, Poles(fit.poles.real[keep_real], fit.poles.pairs[keep_pairs])
-    )
-    return pruned if pruned.error <= tolerance else fit
+    order = sorted(groups, key=lambda g: _contribution(phi[:, g[2]], fit.c[:, g[2]]))
+    bar = min(tolerance, fit.error + _PRUNE * tolerance)
+    keep_real = np.ones(n_real, bool)
+    keep_pairs = np.ones(fit.poles.pairs.size, bool)
+    best = fit
+    for kind, k, _ in order:
+        trial_real, trial_pairs = keep_real.copy(), keep_pairs.copy()
+        (trial_real if kind == "real" else trial_pairs)[k] = False
+        refit = _residues(
+            x, h, w, Poles(fit.poles.real[trial_real], fit.poles.pairs[trial_pairs])
+        )
+        if refit.error <= bar:
+            keep_real, keep_pairs, best = trial_real, trial_pairs, refit
+    return best
 
 
 def _contribution(phi: np.ndarray, c: np.ndarray) -> float:
