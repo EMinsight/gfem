@@ -407,8 +407,8 @@ def test_a_singular_reaction_raises_instead_of_dropping_the_correction(
 
     built = wave_ports.PortSurfaceCoupling
 
-    def vanishing(piece, vectors, reaction, ports):
-        return built(piece, vectors, np.zeros_like(reaction), ports)
+    def vanishing(piece, vectors, reaction, ports, **rest):
+        return built(piece, vectors, np.zeros_like(reaction), ports, **rest)
 
     monkeypatch.setattr(wave_ports, "PortSurfaceCoupling", vanishing)
     cache._DISCRETIZATIONS.clear()  # earlier solves kept the plate's couplings
