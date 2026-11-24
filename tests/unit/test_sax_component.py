@@ -8,6 +8,7 @@ imported here.
 """
 
 import dataclasses
+import gc
 import inspect
 import sys
 import types
@@ -482,6 +483,155 @@ def test_a_traced_design_solves_every_time_and_is_never_kept(mesh, solves):
     assert len(solves) == 4
     component(eps=other)
     assert len(solves) == 5
+
+
+@pytest.fixture
+def backwards(monkeypatch):
+    """Count the host-side backward solves of every differentiated solve."""
+    import gfem._adjoint.solve_vjp  # noqa: F401
+
+    solve_vjp = sys.modules["gfem._adjoint.solve_vjp"]
+    count = []
+    real = solve_vjp._host_backward
+
+    def counted(*args, **kwargs):
+        count.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(solve_vjp, "_host_backward", counted)
+    return count
+
+
+@pytest.fixture
+def forwards(monkeypatch):
+    """Count the host-side forward solves of every differentiated solve."""
+    import gfem._adjoint.solve_vjp  # noqa: F401
+
+    solve_vjp = sys.modules["gfem._adjoint.solve_vjp"]
+    count = []
+    real = solve_vjp._forward
+
+    def counted(*args, **kwargs):
+        count.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(solve_vjp, "_forward", counted)
+    return count
+
+
+def _pair(component):
+    """A figure of merit of two instances fed one design, as a circuit does."""
+
+    def fom(eps):
+        a = component(eps=eps, wl=1.52)["o1", "o2"]
+        b = component(eps=eps, wl=1.58)["o1", "o2"]
+        return jnp.abs(a) ** 2 + 2 * jnp.abs(b) ** 2
+
+    return fom
+
+
+def _unshared(component):
+    """The same figure of merit with the second instance fed another tracer."""
+
+    def fom(eps):
+        a = component(eps=eps, wl=1.52)["o1", "o2"]
+        b = component(eps=eps * 1.0, wl=1.58)["o1", "o2"]
+        return jnp.abs(a) ** 2 + 2 * jnp.abs(b) ** 2
+
+    return fom
+
+
+@pytest.mark.parametrize("staged", [False, True], ids=["grad", "jit-grad"])
+def test_two_instances_fed_one_tracer_share_a_forward_and_a_backward(
+    mesh, solves, backwards, staged
+):
+    component = gfem.SaxComponent(
+        slab_function(mesh),
+        _template(),
+        circuit="optical",
+        ports=PORTS,
+        options=OPTIONS,
+    )
+    eps = jnp.asarray(design_eps(mesh)) * 1.02
+    wrap = jax.jit if staged else (lambda f: f)
+    del solves[:]
+    shared = wrap(jax.grad(_pair(component)))(eps)
+    assert (len(solves), len(backwards)) == (1, 1)
+    del solves[:], backwards[:]
+    apart = wrap(jax.grad(_unshared(component)))(eps)
+    assert (len(solves), len(backwards)) == (2, 2)  # a different tracer: a miss
+    assert np.allclose(shared, apart, rtol=1e-9, atol=0)
+    gc.collect()
+    assert not component._traced  # the entries went with their tracers
+
+
+def test_a_vmapped_gradient_solves_once_per_design(mesh, solves, forwards, backwards):
+    component = gfem.SaxComponent(
+        slab_function(mesh),
+        _template(),
+        circuit="optical",
+        ports=PORTS,
+        options=OPTIONS,
+    )
+    eps = jnp.asarray(design_eps(mesh))
+    designs = jnp.stack([eps * 1.01, eps * 1.03])
+    del solves[:]
+    both = jax.jit(jax.vmap(jax.grad(_pair(component))))(designs)
+    # the two instances share each design's solve: one per design, not two
+    assert (len(forwards), len(backwards)) == (2, 2)
+    one = jax.grad(_pair(component))(designs[0])
+    assert np.allclose(both[0], one, rtol=1e-9, atol=0)
+    gc.collect()
+    assert not component._traced
+
+
+def test_an_adaptive_template_is_frozen_by_the_constructors_greedy_solve(solves):
+    # the 3D line: the adaptive sweep is not available on a 2D mesh
+    line = gfem.Mesh.from_gmsh(LINE, length_unit="mm")
+    n = len(line.elements("design"))
+    ports = [
+        gfem.LumpedPort(name, name.replace("p", "port"), "+z", impedance=62.8)
+        for name in ("p1", "p2")
+    ]
+
+    def line_at(*, eps_sub=4.0):
+        return gfem.Model(
+            line,
+            materials={
+                "feed": gfem.Material(),
+                "design": gfem.MaterialField(eps_r=jnp.full(n, 1.0) * eps_sub),
+            },
+            boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+            ports=ports,
+        )
+
+    band = np.linspace(1e9, 10e9, 31)
+    options = gfem.SolverOptions(order=2, linear_solver="direct", threads=1)
+    template = gfem.Driven(band, sweep="adaptive")
+    component = gfem.SaxComponent(
+        line_at, template, circuit="optical", ports=PORTS, options=options
+    )
+    assert len(solves) == 1  # the greedy solve is the solve at the defaults
+    assert template.samples is None
+    samples = component.problem.samples
+    assert samples is not None
+    assert 2 <= len(samples) < len(band)
+    assert component._solved.samples == samples
+    component()
+    assert len(solves) == 1  # the greedy result is kept under the frozen key
+    # the greedy S is a frozen re-solve's, bit for bit (direct solver, one process)
+    frozen = gfem.solve(
+        line_at(),
+        dataclasses.replace(component.problem, excite=("p1", "p2")),
+        options=options,
+    )
+    kept = component._network({"eps_sub": 4.0})
+    assert len(solves) == 1
+    assert np.array_equal(np.asarray(kept.values), np.asarray(frozen.s.values))
+    # a later design solves with the frozen samples, also under a trace
+    component(eps_sub=3.0)
+    assert len(solves) == 2
+    jax.grad(lambda e: jnp.abs(component(eps_sub=e)["o1", "o2"]))(2.0)
 
 
 def test_the_memo_keeps_the_last_64_designs(mesh, canned):
