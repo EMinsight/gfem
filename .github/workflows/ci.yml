@@ -292,7 +292,10 @@ jobs:
         .venv-sax/bin/python -c "import importlib.metadata as md, sax, klujax, skrf;
         print({p: md.version(p) for p in ('sax', 'klujax', 'jax', 'scikit-rf')})"
     - name: SAX unit tests
-      run: .venv-sax/bin/python -m pytest -rs tests/unit/test_import.py tests/unit/test_to_sdict.py tests/unit/test_to_skrf.py
+      run: >-
+        .venv-sax/bin/python -m pytest -rs tests/unit/test_import.py
+        tests/unit/test_to_sdict.py tests/unit/test_to_skrf.py
+        tests/unit/test_sax_component.py tests/unit/test_sax_circuits.py
 
   build:
     name: build wheel and sdist
