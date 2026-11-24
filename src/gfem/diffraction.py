@@ -9,11 +9,11 @@ from __future__ import annotations
 
 __all__: list[str] = []
 
-from gfem._diffraction.aperture import ApertureField, propagate
+from gfem._diffraction.aperture import ApertureField, propagate  # noqa: E402
 
 __all__ += ["ApertureField", "propagate"]
 
-from gfem._diffraction.outputs import (
+from gfem._diffraction.outputs import (  # noqa: E402
     Efficiencies,
     PowerBalance,
     efficiencies,
