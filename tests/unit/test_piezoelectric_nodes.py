@@ -19,6 +19,7 @@ import jax.numpy as jnp
 import numpy as np
 import piezo_cases as pc
 import pytest
+from piezo_cases import device  # noqa: F401
 
 import gfem
 
@@ -70,14 +71,6 @@ MAPS = {
     "bump": (_bump, (4,), 1e-2),
     "thickness": (_thickness, (1,), 1e-2),
 }
-
-
-@pytest.fixture(scope="module", params=("lines", "meshed"))
-def device(request, tmp_path_factory):
-    variant = request.param
-    path = tmp_path_factory.mktemp(variant) / "idt.msh"
-    mesh = pc.mesh(path, variant)
-    return variant, mesh, pc.model(mesh, variant)
 
 
 def _admittance(model, mesh, node_map, p):

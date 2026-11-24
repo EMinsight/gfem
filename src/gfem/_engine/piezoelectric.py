@@ -52,7 +52,7 @@ displacement is in m per V.
 
 from __future__ import annotations
 
-from collections.abc import Hashable
+from collections.abc import Callable, Hashable
 from typing import Any
 
 import jax
@@ -63,7 +63,7 @@ import scipy.constants
 
 from gfem._boundaries import PEC, Absorbing
 from gfem._engine import quadrature
-from gfem._engine.cache import Entry, discretization
+from gfem._engine.cache import Entry, discretization, retain_budget
 from gfem._engine.coefficients import element_axes, p0, permittivity
 from gfem._engine.domain import boundary_region, em_region, h1_space, region_domain
 from gfem._engine.runtime import task_manager
@@ -194,8 +194,14 @@ class PiezoelectricRule:
         with task_manager(self.options.threads, self.comm):
             system = PiezoelectricSystem(model, problem, self.options, self)
             states: list[np.ndarray] | None = [] if keep else None
+            # the factorizations the backward's field cotangents solve on, within
+            # half the retained bytes (the rest is the entry's fields)
+            factors = KeptFactors(retain_budget(self.options.retain_memory) // 2)
             raw, kept = system.admittance(
-                problem.frequency, problem.kept_frequencies, states
+                problem.frequency,
+                problem.kept_frequencies,
+                states,
+                factors if keep else None,
             )
             capacitance, potential = system.clamped_capacitance()
         admittance = 0.5 * (raw + np.swapaxes(raw, 1, 2))
@@ -218,7 +224,7 @@ class PiezoelectricRule:
             return outputs, None
         fields = {f"x{k}": x for k, x in enumerate(states)}
         fields["phi"] = potential
-        return outputs, Entry("em", fields=fields)
+        return outputs, Entry("em", handle=factors or None, fields=fields)
 
     def result(self, outputs: dict[str, Any]) -> PiezoelectricResult:
         """The public result from the forward outputs."""
@@ -347,6 +353,7 @@ class PiezoelectricRule:
         with task_manager(options.threads, self.comm):
             system = PiezoelectricSystem(model, problem, options, self, assemble=False)
             ndof, offset = system.ndof, system.offset
+            factors = entry.handle
             ct_y = cotangents.get("admittance")
             loads = self._kept_loads(cotangents, ndof, offset)
             for k, f in enumerate(problem.frequency):
@@ -359,7 +366,9 @@ class PiezoelectricRule:
                     left.append(x)
                     right.append(x @ (-1j * omega * g).T)
                 if k in loads:
-                    lam = system.adjoint(f, loads[k])
+                    lam = system.adjoint(
+                        f, loads[k], None if factors is None else factors.get(k)
+                    )
                     left.append(-lam)
                     right.append(x)
                 if left:
@@ -446,52 +455,100 @@ def _terms(rule: PiezoelectricRule, model: Model) -> list[Term]:
     vu = h1_space(model, built, order, tuple(problem.clamped), physics="mechanical")
     vp = h1_space(model, built, order, rule.electrodes.lines, physics="em")
     space = ngs.FESpace([vu, vu, vu, vp])
-    arrays = _element_arrays(model)
+    forms = _weak_forms(
+        _coefficients(model, built, rule.frame), built, order, mech, diel
+    )
+
+    def term(name: str) -> Term:
+        form, dx = forms[name]
+
+        def integrand(u: Any, v: Any) -> Any:
+            return form(_parts(u), _parts(v)) * dx
+
+        return Term(name, "surface", integrand=integrand, space=space)
+
+    return [term(name) for name in forms]
+
+
+def _parts(u: Any) -> tuple[Any, Any, Any, Any]:
+    """The four components of a compound field ``u`` of the system's space."""
+    return tuple(u.components[i] for i in range(4))  # ty: ignore[invalid-return-type]
+
+
+def _permittivity(model: Model, built: Any) -> ngs.CoefficientFunction:
+    r""":math:`\varepsilon_0\varepsilon_r` as a 3x3 coefficient."""
     eps = permittivity(model, built)
     if eps.dim == 1:
         eps = eps * ngs.Id(3)
-    eps = EPS0 * eps
-    c, e = _tensor(built, arrays["c"]), _tensor(built, arrays["e"])
-    rho = p0(built, arrays["rho"])
+    return EPS0 * eps
+
+
+def _plane(g: Any) -> ngs.CoefficientFunction:
+    """A gradient with its out-of-plane component zero."""
+    return ngs.CF((g[0], g[1], 0))
+
+
+def _coefficients(model: Model, built: Any, frame: Any) -> dict[str, Any]:
+    r"""The coefficients of the weak forms, shared by the system and the node pass.
+
+    ``eps`` (F/m), ``c`` and ``e`` (lab frame), ``rho`` and ``loss``: the
+    :math:`1/Q_m` plus, in a damping frame, :math:`\eta r^2`.
+    """
+    arrays = _element_arrays(model)
     loss = p0(built, arrays["loss"])
-    if rule.frame is not None:
-        loss = loss + _frame_depth(model, built, rule.frame)
+    if frame is not None:
+        loss = loss + _frame_depth(model, built, frame)
+    return {
+        "eps": _permittivity(model, built),
+        "c": _tensor(built, arrays["c"]),
+        "e": _tensor(built, arrays["e"]),
+        "rho": p0(built, arrays["rho"]),
+        "loss": loss,
+    }
+
+
+def _weak_forms(
+    co: dict[str, Any], built: Any, order: int, mech: Any, diel: Any
+) -> dict[str, tuple[Callable[[Any, Any], Any], Any]]:
+    """The five pieces of :math:`A`: ``(integrand, measure)`` by name.
+
+    The integrand takes ``(trial, test)`` 4-tuples ``(u_x, u_y, u_z, phi)``.
+    The one place the forms are written: the system assembles them and the
+    node pass differentiates them.
+    """
+    c, e, eps, rho, loss = co["c"], co["e"], co["eps"], co["rho"], co["loss"]
     scale = built.scale
     dx_mech = quadrature.dx(order, definedon=mech)
     dx_diel = quadrature.dx(order, definedon=diel)
 
-    def potential(u: Any) -> Any:
-        g = ngs.grad(u.components[3])
-        return ngs.CF((g[0], g[1], 0))
+    def strain(u: Any) -> Any:
+        return _strain(u[0], u[1], u[2])
+
+    def gradient(u: Any) -> Any:
+        return _plane(ngs.grad(u[3]))
 
     def stiffness(u: Any, v: Any) -> Any:
-        return _strains(v) * (c * _strains(u)) * dx_mech
+        return strain(v) * (c * strain(u))
 
     def damping(u: Any, v: Any) -> Any:
-        return loss * (_strains(v) * (c * _strains(u))) * dx_mech
+        return loss * (strain(v) * (c * strain(u)))
 
     def coupling(u: Any, v: Any) -> Any:
-        return (
-            _strains(v) * (e.trans * potential(u)) + potential(v) * (e * _strains(u))
-        ) * dx_mech
+        return strain(v) * (e.trans * gradient(u)) + gradient(v) * (e * strain(u))
 
     def dielectric(u: Any, v: Any) -> Any:
-        return -(potential(v) * (eps * potential(u))) * dx_diel
+        return -(gradient(v) * (eps * gradient(u)))
 
     def mass(u: Any, v: Any) -> Any:
-        return scale**2 * rho * _displacement_moment(u, v) * dx_mech
+        return scale**2 * rho * (u[0] * v[0] + u[1] * v[1] + u[2] * v[2])
 
-    pieces = {
-        "stiffness": stiffness,
-        "loss": damping,
-        "coupling": coupling,
-        "dielectric": dielectric,
-        "mass": mass,
+    return {
+        "stiffness": (stiffness, dx_mech),
+        "loss": (damping, dx_mech),
+        "coupling": (coupling, dx_mech),
+        "dielectric": (dielectric, dx_diel),
+        "mass": (mass, dx_mech),
     }
-    return [
-        Term(name, "surface", integrand=form, space=space)
-        for name, form in pieces.items()
-    ]
 
 
 # --- the tensor pass ----------------------------------------------------------------
@@ -520,7 +577,7 @@ def _gradient(u: Any) -> ngs.CoefficientFunction:
 def _strain_moment(
     weight: ngs.CoefficientFunction | None,
 ) -> Any:
-    """``(left, right) -> (1/2)(S_I(l) S_J(r) + S_J(l) S_I(r))``, ``I <= J``."""
+    r"""The moment :math:`\frac12 (S_I(l) S_J(r) + S_J(l) S_I(r))`, :math:`I \le J`."""
 
     def entries(left: Any, right: Any) -> ngs.CoefficientFunction:
         sl, sr = _strains(left), _strains(right)
@@ -531,20 +588,20 @@ def _strain_moment(
 
 
 def _coupling_moment(left: Any, right: Any) -> ngs.CoefficientFunction:
-    """``g_a(l) S_I(r) + g_a(r) S_I(l)`` for the gradient ``g`` of the potential."""
+    r""":math:`g_a(l) S_I(r) + g_a(r) S_I(l)`, :math:`g` the potential's gradient."""
     gl, gr = _gradient(left), _gradient(right)
     sl, sr = _strains(left), _strains(right)
     return ngs.CF(tuple(gl[a] * sr[i] + gr[a] * sl[i] for a, i in _COUPLED))
 
 
 def _gradient_moment(left: Any, right: Any) -> ngs.CoefficientFunction:
-    """``(1/2)(g_a(l) g_b(r) + g_b(l) g_a(r))``, ``a <= b``."""
+    r""":math:`\frac12 (g_a(l) g_b(r) + g_b(l) g_a(r))`, :math:`a \le b`."""
     gl, gr = _gradient(left), _gradient(right)
     return ngs.CF(tuple(0.5 * (gl[a] * gr[b] + gl[b] * gr[a]) for a, b in _PLANE))
 
 
 def _displacement_moment(left: Any, right: Any) -> ngs.CoefficientFunction:
-    """``u(l) . u(r)``."""
+    r""":math:`u(l) \cdot u(r)`."""
     return sum(
         (left.components[i] * right.components[i] for i in range(1, 3)),
         left.components[0] * right.components[0],
@@ -560,11 +617,12 @@ def _symmetric(values: np.ndarray, pairs: tuple[tuple[int, int], ...], n: int):
 
 
 def _rotation_rows(shape: tuple[int, int], axes: Any, rotate: Any) -> np.ndarray:
-    """The transpose of the rotation into the lab frame, as a matrix.
+    r"""The transpose of the rotation into the lab frame, as a matrix.
 
     The rotation of a tensor of ``shape`` from the frame of ``axes`` to the lab
-    frame is linear: ``vec(rotate(t)) = L vec(t)``. This is ``L^T``, so a
-    cotangent of the lab-frame tensor maps to the crystal frame as ``L^T g``.
+    frame is linear: :math:`\mathrm{vec}(\mathrm{rotate}(t)) = L\,\mathrm{vec}(t)`.
+    This is :math:`L^T`, so a cotangent of the lab-frame tensor maps to the
+    crystal frame as :math:`L^T g`.
     """
     n = shape[0] * shape[1]
     unit = np.eye(n).reshape(n, *shape)
@@ -975,8 +1033,48 @@ def _frame_depth(model: Model, built: Any, frame: Any) -> ngs.CoefficientFunctio
 # --- the system --------------------------------------------------------------------
 
 
+class KeptFactors:
+    """The factorizations a forward keeps for its backward's field cotangents.
+
+    One per kept frequency, by frequency index, within a byte budget: a
+    factorization that does not fit is freed, and the backward factorizes that
+    frequency again. It is an `Entry`'s handle, so the entry's bytes count
+    them and the cache frees them with it.
+    """
+
+    def __init__(self, budget: int) -> None:
+        """An empty store of at most ``budget`` bytes."""
+        self.budget = budget
+        self._handles: dict[int, DirectHandle] = {}
+
+    def __bool__(self) -> bool:
+        return bool(self._handles)
+
+    @property
+    def nbytes(self) -> int:
+        """Host memory the kept factorizations hold, in bytes."""
+        return sum(int(h.nbytes) for h in self._handles.values())
+
+    def offer(self, index: int, handle: DirectHandle) -> bool:
+        """Keep ``handle`` for frequency ``index`` if it fits the budget."""
+        if self.nbytes + int(handle.nbytes) > self.budget:
+            return False
+        self._handles[index] = handle
+        return True
+
+    def get(self, index: int) -> DirectHandle | None:
+        """The factorization of frequency ``index``, or ``None`` if not kept."""
+        return self._handles.get(index)
+
+    def free(self) -> None:
+        """Free every kept factorization."""
+        for handle in self._handles.values():
+            handle.free()
+        self._handles = {}
+
+
 class PiezoelectricSystem:
-    """The assembled operator, the electrode liftings and the per-frequency solves.
+    r"""The assembled operator, the electrode liftings and the per-frequency solves.
 
     Attributes:
         space: The compound space ``[u_x, u_y, u_z, phi]``.
@@ -985,9 +1083,12 @@ class PiezoelectricSystem:
             ``offset // 3`` DOFs).
         free: Boolean mask of the free DOFs.
         lifts: ``(ndof, n_terminals)`` real liftings.
-        stiffness: The assembled :math:`K` (complex, with the loss).
-        loss_form: The real symmetric matrix :math:`L` with
-            :math:`K = K_r + iL` (the damping and :math:`Q_m` part).
+        free_bits: The free mask as an NGSolve bit array.
+        matrix: The matrix of :math:`A = K - \omega^2 M`, rewritten per
+            frequency (after assembly).
+        loss_matrix: The real symmetric matrix :math:`L` with
+            :math:`K = K_r + iL` (the damping and :math:`Q_m` part),
+            assembled on first use.
     """
 
     def __init__(
@@ -1034,54 +1135,51 @@ class PiezoelectricSystem:
         self.free_bits = ngs.BitArray(self.free.tolist())
 
     def _assemble(self, model: Model, rule: PiezoelectricRule) -> None:
-        """Assemble :math:`K` and :math:`M` (one pattern) and the loss matrix."""
+        """Assemble :math:`K` and :math:`M` (one pattern)."""
         built, space, order = self.built, self.space, self.order
-        mech, diel = self.mech, self.diel
-        arrays = _element_arrays(model)
-        eps = permittivity(model, built)
-        if eps.dim == 1:
-            eps = eps * ngs.Id(3)
-        eps = EPS0 * eps
-        c = _tensor(built, arrays["c"])
-        e = _tensor(built, arrays["e"])
-        rho = p0(built, arrays["rho"])
-        loss = p0(built, arrays["loss"])
-        if rule.frame is not None:
-            loss = loss + _frame_depth(model, built, rule.frame)
-
-        (ux, uy, uz, ph), (vx, vy, vz, ps) = space.TnT()
-        su, sv = _strain(ux, uy, uz), _strain(vx, vy, vz)
-        gp = ngs.CF((ngs.grad(ph)[0], ngs.grad(ph)[1], 0))
-        gq = ngs.CF((ngs.grad(ps)[0], ngs.grad(ps)[1], 0))
-        scale = built.scale
-        dx_mech = quadrature.dx(order, definedon=mech)
-        dx_diel = quadrature.dx(order, definedon=diel)
-        stiff = sv * (c * su)
-        coupling = sv * (e.trans * gp) + gq * (e * su)
+        self._coefficients = _coefficients(model, built, rule.frame)
+        forms = _weak_forms(self._coefficients, built, order, self.mech, self.diel)
+        trial, test = space.TnT()
+        u, v = tuple(trial), tuple(test)
         # one form, switched between K and M by two parameters: the two
         # matrices share one pattern, and neither is a difference of the other
         on, off = ngs.Parameter(1.0), ngs.Parameter(0.0)
-        mass = scale**2 * rho * (ux * vx + uy * vy + uz * vz)
         with ngs.TaskManager():
             k = ngs.BilinearForm(space, symmetric=True)
-            k += on * (1 + 1j * loss) * stiff * dx_mech
-            k += on * coupling * dx_mech
-            k += -on * (gq * (eps * gp)) * dx_diel
-            k += -off * mass * dx_mech
+            for name, switch, factor in (
+                ("stiffness", on, 1.0),
+                ("loss", on, 1j),
+                ("coupling", on, 1.0),
+                ("dielectric", on, 1.0),
+                ("mass", off, -1.0),
+            ):
+                form, dx = forms[name]
+                k += switch * (factor * form(u, v)) * dx
             k.Assemble()
             self._k = k.mat.AsVector().FV().NumPy().copy()
             on.Set(0.0)
             off.Set(-1.0)
             k.Assemble()
             self._m = k.mat.AsVector().FV().NumPy().copy()
-            # the loss part alone, real symmetric: K = K_r + i L
-            on.Set(1.0)
-            off.Set(0.0)
-            loss_form = ngs.BilinearForm(space, symmetric=True)
-            loss_form += loss * stiff * dx_mech
-            loss_form.Assemble()
-        self.loss_matrix = loss_form.mat
         self.matrix = k.mat.CreateMatrix()
+
+    @property
+    def loss_matrix(self) -> ngs.BaseMatrix:
+        r"""The real symmetric :math:`L` with :math:`K = K_r + iL`, assembled on use."""
+        if not hasattr(self, "_loss"):
+            if not hasattr(self, "_coefficients"):
+                self._assemble(self.model, self.rule)
+            forms = _weak_forms(
+                self._coefficients, self.built, self.order, self.mech, self.diel
+            )
+            trial, test = self.space.TnT()
+            with ngs.TaskManager():
+                form = ngs.BilinearForm(self.space, symmetric=True)
+                damping, dx = forms["loss"]
+                form += damping(tuple(trial), tuple(test)) * dx
+                form.Assemble()
+            self._loss = form.mat
+        return self._loss
 
     # --- electrodes ----------------------------------------------------------------
 
@@ -1131,39 +1229,66 @@ class PiezoelectricSystem:
 
     # --- solves --------------------------------------------------------------------
 
-    def _factor(self, frequency: float) -> DirectHandle:
-        r"""The factorization of :math:`A = K - \omega^2 M` at ``frequency``."""
+    def _factor(self, frequency: float, *, own: bool = False) -> DirectHandle:
+        r"""The factorization of :math:`A = K - \omega^2 M` at ``frequency``.
+
+        With ``own`` the handle gets a matrix of its own, to outlive the next
+        factorization.
+        """
         if not hasattr(self, "_k"):
             self._assemble(self.model, self.rule)
         omega = 2 * np.pi * frequency
-        self.matrix.AsVector().FV().NumPy()[:] = self._k - omega**2 * self._m
+        matrix = self.matrix.CreateMatrix() if own else self.matrix
+        matrix.AsVector().FV().NumPy()[:] = self._k - omega**2 * self._m
         return DirectHandle(
-            self.matrix,
+            matrix,
             self.free_bits,
             "complex_symmetric",
             is_complex=True,
             cholesky=True,
         )
 
-    def state(self, frequency: float) -> tuple[np.ndarray, np.ndarray]:
-        """``(x, A x)``: the terminals' states at ``frequency``, ``(ndof, n_t)``."""
-        handle = self._factor(frequency)
+    def state(
+        self,
+        frequency: float,
+        keep: tuple[KeptFactors, int] | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """``(x, A x)``: the terminals' states at ``frequency``, ``(ndof, n_t)``.
+
+        With ``keep = (factors, index)`` the factorization is offered to
+        ``factors`` under ``index`` instead of freed, and freed if it is not kept.
+        """
+        handle = self._factor(frequency, own=keep is not None)
         try:
             lifts = self.lifts.astype(complex)
             x = lifts + handle.solve(-handle.apply(lifts))
-            return x, handle.apply(x)
-        finally:
+            ax = handle.apply(x)
+        except BaseException:
             handle.free()
+            raise
+        if keep is None or not keep[0].offer(keep[1], handle):
+            handle.free()
+        return x, ax
 
-    def adjoint(self, frequency: float, loads: np.ndarray) -> np.ndarray:
+    def adjoint(
+        self,
+        frequency: float,
+        loads: np.ndarray,
+        kept: DirectHandle | None = None,
+    ) -> np.ndarray:
         """:math:`A^{-1} g` on the free DOFs for each column of ``loads``.
 
         :math:`A` is complex symmetric, so the adjoint of a state is solved
-        without a transpose. The result is zero on the fixed DOFs.
+        without a transpose. The result is zero on the fixed DOFs. With
+        ``kept``, the forward's factorization at ``frequency``, nothing is
+        assembled or factorized.
         """
+        rhs = np.where(self.free[:, None], loads, 0.0)
+        if kept is not None:
+            return kept.solve(rhs)
         handle = self._factor(frequency)
         try:
-            return handle.solve(np.where(self.free[:, None], loads, 0.0))
+            return handle.solve(rhs)
         finally:
             handle.free()
 
@@ -1172,10 +1297,13 @@ class PiezoelectricSystem:
         frequencies: tuple[float, ...],
         kept: tuple[float, ...],
         states: list[np.ndarray] | None = None,
+        factors: KeptFactors | None = None,
     ) -> tuple[np.ndarray, dict[tuple[float, str], dict[str, np.ndarray]]]:
         """:math:`Y'` over ``frequencies`` (before symmetrizing) and the kept fields.
 
         With ``states`` a list, each frequency's terminal states are appended.
+        With ``factors``, the factorizations of the kept frequencies are offered
+        to it (`state`).
         """
         nt = self.lifts.shape[1]
         out = np.zeros((len(frequencies), nt, nt), complex)
@@ -1183,7 +1311,9 @@ class PiezoelectricSystem:
         fields: dict[tuple[float, str], dict[str, np.ndarray]] = {}
         nu = self.offset // 3
         for k, f in enumerate(frequencies):
-            x, ax = self.state(f)
+            x, ax = self.state(
+                f, (factors, k) if factors is not None and f in kept else None
+            )
             if states is not None:
                 states.append(x)
             out[k] = -1j * 2 * np.pi * f * (self.lifts.T @ ax)
@@ -1205,13 +1335,9 @@ class PiezoelectricSystem:
         model, built, order = self.model, self.built, self.order
         electrodes = self.rule.electrodes
         vr = h1_space(model, built, order, electrodes.lines, physics="em")
-        eps = permittivity(model, built)
-        if eps.dim == 1:
-            eps = eps * ngs.Id(3)
-        eps = EPS0 * eps
+        eps = _permittivity(model, built)
         p, q = vr.TnT()
-        gp = ngs.CF((ngs.grad(p)[0], ngs.grad(p)[1], 0))
-        gq = ngs.CF((ngs.grad(q)[0], ngs.grad(q)[1], 0))
+        gp, gq = _plane(ngs.grad(p)), _plane(ngs.grad(q))
         with ngs.TaskManager():
             form = ngs.BilinearForm(vr, symmetric=True)
             form += (gq * (eps * gp)) * quadrature.dx(order, definedon=self.diel)

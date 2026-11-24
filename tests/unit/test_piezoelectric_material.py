@@ -3,37 +3,14 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+import piezo_cases as pc
 import pytest
 
 import gfem
 from gfem._materials import piezoelectric_in_frame, stiffness_in_frame
 
-GPa = 1e9
-# Warner's lithium niobate, crystal frame (Pa, C/m^2, kg/m^3)
-_C11, _C12, _C13, _C14, _C33, _C44 = 203, 53, 75, 9, 245, 60
-_C66 = (_C11 - _C12) / 2
-C_LN = GPa * np.array(
-    [
-        [_C11, _C12, _C13, _C14, 0, 0],
-        [_C12, _C11, _C13, -_C14, 0, 0],
-        [_C13, _C13, _C33, 0, 0, 0],
-        [_C14, -_C14, 0, _C44, 0, 0],
-        [0, 0, 0, 0, _C44, _C14],
-        [0, 0, 0, 0, _C14, _C66],
-    ]
-)
-_E15, _E22, _E31, _E33 = 3.7, 2.5, 0.2, 1.3
-E_LN = np.array(
-    [
-        [0, 0, 0, 0, _E15, -_E22],
-        [-_E22, _E22, 0, _E15, 0, 0],
-        [_E31, _E31, _E33, 0, 0, 0],
-    ]
-)
-EPS_LN = (44.0, 44.0, 29.0)
-RHO_LN = 4700.0
-# X-cut, SAW along crystal Y (global x), film normal along crystal X (global y)
-X_CUT = ((0.0, 1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, -1.0))
+X_CUT = pc.AXES  # SAW along crystal Y (global x), film normal along crystal X
+C_LN, E_LN, EPS_LN, RHO_LN, GPa = pc.C_LN, pc.E_LN, pc.EPS_LN, pc.RHO_LN, pc.GPa
 # Voigt order xx, yy, zz, yz, xz, xy
 _VOIGT = ((0, 0), (1, 1), (2, 2), (1, 2), (0, 2), (0, 1))
 
