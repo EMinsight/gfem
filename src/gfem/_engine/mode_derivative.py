@@ -31,7 +31,7 @@ for :math:`x'` differs, so it is passed in (`gmres_on` for a full-space mode).
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import Any, Protocol
 
 import numpy as np
@@ -57,9 +57,25 @@ _CYCLES = 4
 # residual misled it: solve directly instead
 _DIRECT = 100.0
 
-#: ``solve(a0, b0, lam, rhs, x) -> (x1, residual)``: the mode derivative
-#: with :math:`x^TB_0x' = 0`, and its relative residual (`residual`).
-Solve = Callable[[Any, Any, complex, np.ndarray, np.ndarray], tuple[np.ndarray, float]]
+
+class Solve(Protocol):
+    """The solve for a mode derivative (`gmres_on`)."""
+
+    def __call__(
+        self,
+        a0: Any,
+        b0: Any,
+        lam: complex,
+        rhs: np.ndarray,
+        x: np.ndarray,
+        *,
+        size: float,
+    ) -> tuple[np.ndarray, float]:
+        r""":math:`x'` with :math:`x^TB_0x' = 0`, and its relative residual.
+
+        ``size`` is the right-hand side's uncancelled size (`residual`).
+        """
+        ...
 
 
 class Preconditioner(Protocol):
@@ -139,10 +155,12 @@ def mode_derivative(
     """
     a_n = _series(a, coefficients)
     b_n = _series(b, coefficients)
-    bx = b_n[0] @ x
-    lam1 = (x @ (a_n[1] @ x) - lam * (x @ (b_n[1] @ x))) / (x @ bx)
-    rhs = -(a_n[1] @ x - lam1 * bx - lam * (b_n[1] @ x))
-    x1, eta = solve(a_n[0], b_n[0], lam, rhs, x)
+    bx, a1x, b1x = b_n[0] @ x, a_n[1] @ x, b_n[1] @ x
+    lam1 = (x @ a1x - lam * (x @ b1x)) / (x @ bx)
+    rhs = -(a1x - lam1 * bx - lam * b1x)
+    norm = np.linalg.norm
+    size = float(norm(a1x) + abs(lam1) * norm(bx) + abs(lam) * norm(b1x))
+    x1, eta = solve(a_n[0], b_n[0], lam, rhs, x, size=size)
     series = rayleigh_series(a_n, b_n, x, x1)
     return ModeDerivative(
         k0=k0,
@@ -191,8 +209,13 @@ def gmres_on(factor: Preconditioner, rtol: float) -> Solve:
     r"""Solve for :math:`x'` by GMRES preconditioned by the exact solve's factor.
 
     :math:`x'` comes out of GMRES (``rtol``, 4 restarts of 50), less its
-    :math:`x` component so that :math:`x^TB_0x' = 0`. When GMRES does not
-    converge, or the true residual exceeds 100 times ``rtol``, a direct LU of
+    :math:`x` component so that :math:`x^TB_0x' = 0`. The right-hand side
+    loses its :math:`B_0x` component first: it has none in exact arithmetic
+    (Hellmann-Feynman), but where the mode does not change with :math:`k_0`
+    (a homogeneously filled guide, :math:`x' = 0`) it is rounding, and that
+    component would keep the singular system from converging. When GMRES does
+    not converge, or the residual (`residual`) exceeds 100 times ``rtol``, a
+    direct LU of
     :math:`A_0 - \lambda B_0` replaces it (the matrix is singular in
     exact arithmetic only along :math:`x`, which the projection removes).
     Never raises: a factorization that fails keeps the GMRES result.
@@ -203,10 +226,11 @@ def gmres_on(factor: Preconditioner, rtol: float) -> Solve:
     """
 
     def solve(
-        a0: Any, b0: Any, lam: complex, rhs: np.ndarray, x: np.ndarray
+        a0: Any, b0: Any, lam: complex, rhs: np.ndarray, x: np.ndarray, *, size: float
     ) -> tuple[np.ndarray, float]:
         t = sp.csr_matrix(a0 - lam * b0)
         bx = b0 @ x
+        rhs = rhs - bx * ((x @ rhs) / (x @ bx))
         precondition = _FactorOperator(factor, t.shape)
         z, info = spla.gmres(
             t,
@@ -218,7 +242,7 @@ def gmres_on(factor: Preconditioner, rtol: float) -> Solve:
             maxiter=_CYCLES,
         )
         x1 = _orthogonal(z, x, bx)
-        eta = residual(a0, b0, lam, x1, rhs)
+        eta = residual(a0, b0, lam, x1, rhs, size=size)
         if info == 0 and eta <= _DIRECT * rtol:
             return x1, eta
         try:
@@ -226,23 +250,30 @@ def gmres_on(factor: Preconditioner, rtol: float) -> Solve:
         except RuntimeError:  # exactly singular: keep what GMRES gave
             return x1, eta
         x1 = _orthogonal(z, x, bx)
-        return x1, residual(a0, b0, lam, x1, rhs)
+        return x1, residual(a0, b0, lam, x1, rhs, size=size)
 
     return solve
 
 
-def residual(a0: Any, b0: Any, lam: complex, x1: np.ndarray, rhs: np.ndarray) -> float:
+def residual(
+    a0: Any, b0: Any, lam: complex, x1: np.ndarray, rhs: np.ndarray, *, size: float
+) -> float:
     r"""The relative residual of the :math:`x'` equation.
 
     .. math::
 
         \eta' = \frac{\|(A_0 - \lambda B_0)x' - r\|}
-        {\|A_0x'\| + |\lambda|\,\|B_0x'\| + \|r\|},
+        {\|A_0x'\| + |\lambda|\,\|B_0x'\| + s},
 
-    with :math:`r` the right-hand side.
+    with :math:`r = -(A_1 - \lambda'B_0 - \lambda B_1)x` the right-hand side
+    and :math:`s = \|A_1x\| + |\lambda'|\,\|B_0x\| + |\lambda|\,\|B_1x\|`
+    (``size``) its uncancelled size. Not :math:`\|r\|`: where the mode does
+    not change with :math:`k_0` (:math:`x' = 0`), :math:`r` is rounding of
+    those terms, and a residual relative to it would read
+    :math:`10^{-2}`-:math:`10^{-1}` for a mode derivative exact to rounding.
     """
     ax, bx = a0 @ x1, b0 @ x1
-    den = np.linalg.norm(ax) + abs(lam) * np.linalg.norm(bx) + np.linalg.norm(rhs)
+    den = np.linalg.norm(ax) + abs(lam) * np.linalg.norm(bx) + size
     return float(np.linalg.norm(ax - lam * bx - rhs) / den) if den > 0 else 0.0
 
 

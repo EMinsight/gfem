@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import scipy.sparse.linalg as spla
 
 import gfem
 from gfem._engine.mode_derivative import ModeDerivative, gmres_on, mode_derivative
@@ -108,6 +109,19 @@ def test_a_filled_guide_s_dispersion_is_its_closed_form(guide_mesh, fill):
     assert _relative(n_g, beta.c[1]) <= 1e-12
     assert _relative(beta_2, 2 * beta.c[2] * scale / C0**2) <= 1e-10
     assert _relative(beta_3, 6 * beta.c[3] * scale**2 / C0**3) <= 1e-9
+
+
+def test_a_filled_guide_s_mode_derivative_needs_no_direct_solve(
+    guide_mesh, monkeypatch
+):
+    # x' = 0 exactly: the right-hand side is rounding of its uncancelled terms
+    space = _space(guide_mesh, "air", 1.0)
+    k0, factor, lam, x = _fundamental(space, F)
+    direct = []
+    monkeypatch.setattr(spla, "splu", lambda *args: direct.append(args))
+    derivative = _derive(space, k0, lam, x, gmres_on(factor, 1e-10))
+    assert derivative.residual <= 1e-12
+    assert direct == []
 
 
 def test_gmres_that_does_not_converge_falls_back_to_a_direct_solve(slab_mesh):
