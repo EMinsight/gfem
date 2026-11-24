@@ -4887,3 +4887,109 @@ def test_gradient_matrix_em_chain_matches_central_differences(designs):
     assert_gradient_matches(
         objective, p, unit_directions(rng, p.shape, 3), step=EM_CHAIN_STEP, grad=grad
     )
+
+
+# --- a design at the wave port faces on an adaptive sweep ----------------------------
+
+#: The adaptive face cells: the lower layer's per-element property, which both
+#: port faces see, on the frozen samples.
+FACE_ADAPTIVE_CELLS = [
+    Cell("driven_wave", "eps_r", "direct", "adaptive", "face_lossless"),
+    Cell("driven_wave", "eps_r", "direct", "adaptive", "face_lossy"),
+    Cell("driven_wave", "conductivity", "direct", "adaptive", "face_lossy"),
+    Cell("driven_wave", "eps_r", "direct", "adaptive", "face_path"),
+]
+
+
+def _face_adaptive_case(d: Designs, cell: Cell, seed: int) -> Case:
+    """`_face_material` on frozen samples of an adaptive sweep.
+
+    The differences are taken on a uniform sweep of the samples: there the full
+    solution lies in the frozen basis, and the port modes are solved at the
+    rows themselves.
+    """
+    options = _face_options(_options(cell, production=False))
+    mesh = d.wave_mesh
+    model = face_line(mesh, cell.variant)
+    paths = ("p1",) if cell.variant == "face_path" else ()
+    adaptive = gfem.Driven(frequency=GRID, sweep="adaptive", samples=WAVE_SAMPLES)
+    uniform = gfem.Driven(frequency=WAVE_SAMPLES)
+    rows = [GRID.index(f) for f in WAVE_SAMPLES]
+    name = _property(cell.input)
+    n = len(mesh.elements("lo"))
+    values = {"eps_r": ramp(mesh, "lo", 3.5, 4.5)}
+    if cell.variant != "face_lossless":
+        values["tan_delta"] = jnp.full(n, 0.05)
+    if name == "conductivity":
+        values[name] = ramp(mesh, "lo", 0.2, 0.6)
+
+    def objective_on(problem, rows):
+        functional = _face_objective(rows, paths, shared=False)
+
+        def objective(p):
+            field = gfem.MaterialField(**{**values, name: p})
+            m = model.with_material("lo", field)
+            m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+            return functional(gfem.solve(m, problem, options=options))
+
+        return objective
+
+    case = Case(
+        objective_on(adaptive, rows),
+        values[name],
+        np.random.default_rng(seed),
+        step=STEPS[name],
+        taylor=3e-2,
+    )
+    case.reference = objective_on(uniform, list(range(len(rows))))
+    return case
+
+
+@pytest.mark.parametrize("cell", FACE_ADAPTIVE_CELLS, ids=str)
+def test_gradient_matrix_adaptive_face_cells_match_uniform_differences_at_samples(
+    designs, cell
+):
+    case = _face_adaptive_case(designs, cell, 0)
+    grad = jax.grad(case.objective)(case.p)
+    assert_gradient_matches(
+        case.objective,
+        case.p,
+        case.directions(3),
+        step=case.step,
+        reference=case.reference,
+        grad=grad,
+    )
+
+
+def test_gradient_matrix_adaptive_face_gamma_alone_matches_the_uniform_gradient(
+    designs,
+):
+    # a row whose only cotangent is on gamma loads no reduced solve but still
+    # runs the port pass
+    cell = Cell("driven_wave", "eps_r", "direct", "adaptive", "face_lossy")
+    options = _face_options(_options(cell, production=False))
+    mesh = designs.wave_mesh
+    model = face_line(mesh, cell.variant)
+    eps = ramp(mesh, "lo", 3.5, 4.5)
+    tan_delta = jnp.full(len(eps), 0.05)
+    adaptive = gfem.Driven(frequency=GRID, sweep="adaptive", samples=WAVE_SAMPLES)
+    uniform = gfem.Driven(frequency=WAVE_SAMPLES)
+
+    def gamma_gradient(problem):
+        def objective(p):
+            field = gfem.MaterialField(eps_r=p, tan_delta=tan_delta)
+            m = model.with_material("lo", field)
+            m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+            result = gfem.solve(m, problem, options=options)
+            gamma = result.port_modes["p1"].gamma
+            return jnp.imag(gamma[jnp.asarray(rows)]).sum()
+
+        rows = (
+            [GRID.index(f) for f in WAVE_SAMPLES]
+            if problem is adaptive
+            else list(range(len(WAVE_SAMPLES)))
+        )
+        return jax.grad(objective)(eps)
+
+    got, want = gamma_gradient(adaptive), gamma_gradient(uniform)
+    assert _relative_norm(got, want) <= 1e-6

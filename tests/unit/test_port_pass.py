@@ -319,15 +319,15 @@ def test_the_driven_rule_no_longer_refuses_a_port_face_input(line):
     assert not rule.port_design.reads({("material", "core", "eps_r")}, ["p1"])
 
 
-def test_the_adaptive_sweep_holds_the_port_modes(line):
+def test_the_adaptive_sweep_no_longer_refuses_a_port_face_input(line):
     rule = _rule(
         line,
         gfem.Driven(
             frequency=(10e9, 12e9, 14e9, 16e9), sweep="adaptive", samples=(10e9, 16e9)
         ),
     )
-    assert "adaptive sweep holds" in rule.unsupported_input(("material", "lo", "eps_r"))
-    assert rule.unsupported_input(("material", "core", "eps_r")) is None
+    for kind in (("material", "lo", "eps_r"), ("material", "core", "eps_r")):
+        assert rule.unsupported_input(kind) is None
 
 
 def test_the_face_variants_are_wave_line_models():

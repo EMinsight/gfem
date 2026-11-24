@@ -511,12 +511,93 @@ class PortPass:
         ``x`` are the full adjoint and solution columns (excited ports, then
         sources) with the undefined columns NaN.
         """
+        omega = 2 * math.pi * self.rule.problem.frequency[n]
+        safe = np.where(np.isfinite(adjoint), adjoint, 0.0)
+
+        def traces(trace: Any, n_t: int) -> tuple[np.ndarray, np.ndarray]:
+            return trace.gather(safe, n_t), trace.gather(x, n_t)
+
+        self._store(
+            n,
+            omega,
+            adjoint.shape[1],
+            cotangents,
+            outgoing=lambda: self._outgoing(omega, x),
+            traces=traces,
+            live=bool(adjoint.any()),
+        )
+
+    def collect_reduced(
+        self,
+        n: int,
+        basis: np.ndarray,
+        adjoint: np.ndarray | None,
+        *,
+        coordinates: np.ndarray,
+        functional: np.ndarray,
+        cotangents: Mapping[str, np.ndarray],
+    ) -> None:
+        r"""Store frequency ``n``'s traces from a frozen reduced basis.
+
+        The adaptive backward's `collect`: the adjoint and the solution live
+        on the basis :math:`V`, as :math:`\lambda_r` and :math:`y`, so their
+        traces are :math:`(T^\mathsf{T}V)\lambda_r` and :math:`(T^\mathsf{T}V)y`,
+        read from the basis rows on the face, and the outgoing waves are the
+        reduced S functionals on :math:`y`; no full-size vector is formed.
+
+        Args:
+            n: The frequency's index.
+            basis: ``(N, n)`` the reduced basis.
+            adjoint: ``(n, width)`` the reduced adjoint (NaN on an undefined
+                column), or ``None`` for zero.
+            coordinates: ``(n, width)`` the reduced solutions.
+            functional: ``(n_ports, n)`` the reduced S functionals.
+            cotangents: The outputs' cotangents.
+        """
+        omega = 2 * math.pi * self.rule.problem.frequency[n]
+        if adjoint is None:  # no reduced solve: the adjoint is zero
+            adjoint = np.zeros(coordinates.shape, complex)
+        safe = np.where(np.isfinite(adjoint), adjoint, 0.0)
+
+        def outgoing() -> np.ndarray:
+            f = functional @ coordinates
+            for pos, i in enumerate(self.columns):
+                f[i, pos] -= 1.0
+            return f
+
+        def traces(trace: Any, n_t: int) -> tuple[np.ndarray, np.ndarray]:
+            rows = basis[trace.idx3] / trace.writers[trace.idx3, None]
+            a = np.zeros((n_t, safe.shape[1]), complex)
+            u = np.zeros((n_t, coordinates.shape[1]), complex)
+            a[trace.idx2], u[trace.idx2] = rows @ safe, rows @ coordinates
+            return a, u
+
+        self._store(
+            n,
+            omega,
+            adjoint.shape[1],
+            cotangents,
+            outgoing=outgoing,
+            traces=traces,
+            live=bool(adjoint.any()),
+        )
+
+    def _store(
+        self,
+        n: int,
+        omega: float,
+        n_columns: int,
+        cotangents: Mapping[str, np.ndarray],
+        *,
+        outgoing: Any,
+        traces: Any,
+        live: bool,
+    ) -> None:
+        """Keep frequency ``n``'s row: ``traces(trace, n_t)`` of each surface."""
         network, rule = self.network, self.rule
-        omega = 2 * math.pi * rule.problem.frequency[n]
         n_ports = len(rule.port_names)
-        n_columns = adjoint.shape[1]
         ct, ct_gamma, ct_z = self._cotangents(n, n_columns, cotangents)
-        live = bool(ct.any() or ct_gamma.any() or ct_z.any() or adjoint.any())
+        live = live or bool(ct.any() or ct_gamma.any() or ct_z.any())
         if not _mpi.agree_any(self.comm, flag=live):
             return
         d = network.deembedding[n]
@@ -525,7 +606,7 @@ class PortPass:
         # the cotangent of each port's de-embedding factor d_i = exp(gamma_i l_i)
         bar_d = np.zeros(n_ports, complex)
         if ct.any():
-            f = self._outgoing(omega, x)
+            f = outgoing()
             bar_d += np.sum(ct * s[None, :] * f, axis=1)
             for pos, i in enumerate(self.columns):
                 bar_d[i] += np.sum(ct[:, pos] * d * f[:, pos])
@@ -534,19 +615,17 @@ class PortPass:
             outside = ct_gamma[self.waves[c.index]]
             outside += bar_d[c.index] * d[c.index] * c.port.offset
             row_gamma[c.index] = outside / c.scale
-        safe = np.where(np.isfinite(adjoint), adjoint, 0.0)
-        traces = []
+        stored = []
         for face in self.faces:
-            n_t = face.space.n_t
             trace = face.coupling.trace
             if trace is None:  # pragma: no cover - built with its maps
                 raise ValueError("The port surface keeps no face trace maps.")
-            a, u = trace.gather(safe, n_t), trace.gather(x, n_t)
-            traces.append(
+            a, u = traces(trace, face.space.n_t)
+            stored.append(
                 (_mpi.reduce_bcast(self.comm, a), _mpi.reduce_bcast(self.comm, u))
             )
         weights = ct * d[:, None] * s[None, :]
-        self.rows[n] = _Row(omega, traces, weights, row_gamma, ct_z)
+        self.rows[n] = _Row(omega, stored, weights, row_gamma, ct_z)
 
     def _cotangents(
         self, n: int, n_columns: int, cotangents: Mapping[str, np.ndarray]

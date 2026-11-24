@@ -92,6 +92,13 @@ sample as one that excites every port; these run in every adaptive solve,
 under `jax.grad` or not, so a value does not depend on whether its gradient
 is taken.
 
+A design at a wave port's face (the material of a region that touches it) moves
+the port's mode too. The backward then also differentiates each row's mode
+exactly, on the traces of the reduced solution and adjoint, for every row whose
+outputs have a cotangent; it holds the basis and the samples like the rest, so
+the gradient is exact at the samples. The mode's 2D factors are built during the
+backward and freed after it.
+
 ## Re-sample with a tight tolerance
 
 When the design has moved far from where the samples were picked, the

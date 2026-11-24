@@ -1789,8 +1789,7 @@ class DrivenRule:
         An input a wave port's mode reads (the materials of the regions on its
         face, a permittivity law's parameters, a sheet field or `Impedance`
         beside it) is differentiated through the port pass, except under a
-        Bloch wave vector or at a fixed angle, and on an adaptive sweep, whose
-        modes this version holds.
+        Bloch wave vector or at a fixed angle.
 
         The node coordinates cannot be differentiated next to a tensor
         absorbing admittance (`terms.absorbing_shape_unsupported`). A
@@ -1828,13 +1827,6 @@ class DrivenRule:
                 f"the mode of wave port {ports[0]!r} reads it, and gradients with "
                 f"respect to a design at a wave port face are not verified {where} "
                 "in this version. Keep the design away from wave port faces"
-            )
-        if self.adaptive:
-            return (
-                f"the mode of wave port {ports[0]!r} reads it, and the adaptive "
-                "sweep holds the wave ports' modes in this version. Use "
-                "Driven(sweep='uniform'), or keep the design away from wave port "
-                "faces"
             )
         absorbing = self.port_design.absorbing.intersection(ports)
         if kind[0] == "material" and absorbing and self._anisotropic(kind[1]):
@@ -2003,7 +1995,7 @@ class DrivenRule:
             # per surface that reads a wanted input, none elsewhere
             port_pass = PortPass(self, model, system, ports, wanted)
             sources = None
-            if ct_p is not None or nodes:
+            if system is not None and (ct_p is not None or nodes):
                 sources = self._source_columns(model, system)
             domain = em_region(model, op.built)
             omegas = [2 * math.pi * f for f in frequencies]
@@ -2105,7 +2097,7 @@ class DrivenRule:
             )
         return adjoint, load, undefined
 
-    def _backward_adaptive(
+    def _backward_adaptive(  # noqa: PLR0912
         self,
         model: Model,
         entry: Entry,
@@ -2148,8 +2140,10 @@ class DrivenRule:
         with task_manager(self.options.threads):
             op = self.operator(model)
             sources, projected = None, None
-            if ct_p is not None or nodes:
-                system, _ = self.system(model)
+            system, port_pass = self._adaptive_ports(
+                model, wanted, sources=ct_p is not None or nodes
+            )
+            if system is not None and (ct_p is not None or nodes):
                 sources = self._source_columns(model, system)
                 if sources is not None and sources.dipoles is not None:
                     projected = basis.T @ sources.dipoles[1].vectors
@@ -2177,9 +2171,20 @@ class DrivenRule:
                 if ct_c is not None and i in self.kept:
                     k = self.kept.index(i)
                     g += np.asarray(ct_c)[k * width : (k + 1) * width, :n].T
-                if not g.any():
+                # a row whose only cotangents are on gamma or Z_PV loads no
+                # reduced solve, and still runs the port pass
+                adjoint = np.linalg.solve(matrices[i].T, g) if g.any() else None
+                if port_pass is not None:
+                    port_pass.collect_reduced(
+                        i,
+                        basis,
+                        adjoint,
+                        coordinates=coordinates[i],
+                        functional=functionals[i],
+                        cotangents=cotangents,
+                    )
+                if adjoint is None:
                     continue
-                adjoint = np.linalg.solve(matrices[i].T, g)
                 if nodes and sources is not None:
                     self._add_explicit_nodes(
                         model,
@@ -2192,6 +2197,7 @@ class DrivenRule:
                 outer = adjoint @ coordinates[i].T
                 for term, theta in op.weights(omega, laws=laws).items():
                     accumulated[term] = accumulated.get(term, 0) + theta * outer
+            port_terms = self._finish_ports(port_pass)
             pairs = []
             for term, g in accumulated.items():
                 left, right = _factor(g)
@@ -2203,7 +2209,37 @@ class DrivenRule:
                         domain=domain,
                     )
                 )
-        return pairs
+        return [*pairs, *port_terms]
+
+    def _finish_ports(self, port_pass: PortPass | None) -> list[Integrated]:
+        """Run the port pass's 2D work: its material terms; the rest go explicit."""
+        self._explicit_inputs = {}
+        if port_pass is None:
+            return []
+        found = port_pass.finish()
+        self._explicit_inputs = found.explicit
+        return found.integrated
+
+    def _adaptive_ports(
+        self, model: Model, wanted: frozenset | None, *, sources: bool
+    ) -> tuple[SystemOperator | None, PortPass | None]:
+        """The system a frozen-basis backward reads, and its port pass.
+
+        The system (its port couplings come from the kept port state, else a
+        deterministic re-sweep of the port modes) is built only when the
+        sources or a wanted input a wave port's mode reads need it; the pass is
+        ``None`` where no surface reads a wanted input.
+        """
+        reads = (
+            bool(self.port_design.groups)
+            if wanted is None
+            else any(self.port_design.reading(k) for k in wanted)
+        )
+        if not (reads or sources):
+            return None, None
+        system, ports = self.system(model)
+        port_pass = PortPass(self, model, system, ports, wanted) if reads else None
+        return system, (port_pass if port_pass and port_pass.active else None)
 
     def _add_explicit_nodes(
         self,
