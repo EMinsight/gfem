@@ -125,6 +125,13 @@ class AffineSystem:
         adjoint_loads: ``ω -> (N, q)``: loads solved at each sample with the
             excitations (``q`` may be 0), their solutions added to the basis
             (see the module docstring); ``None`` for none.
+        measure_loads: The loads' solutions count as measured columns, like
+            the excitations': in the sample error, in the interpolation
+            snapshots, and with a reduced guess to start from. Without it the
+            sweep only spans them.
+        size: ``N``, the full system's size (read when there is no
+            excitation term: no port is excited and the sources are read by
+            reciprocity).
     """
 
     thetas: Sequence[Callable[[float], complex]]
@@ -134,9 +141,13 @@ class AffineSystem:
     solve: Callable[[float, np.ndarray, np.ndarray | None], np.ndarray]
     corrections: Sequence[AffineTerm] = ()
     adjoint_loads: Callable[[float], np.ndarray] | None = None
+    measure_loads: bool = False
+    size: int = 0
 
     def rhs(self, omega: float) -> np.ndarray:
         """The right-hand sides at ω, ``(N, n_excitations)``."""
+        if not self.excitation:
+            return np.zeros((self.size, 0), complex)
         return sum(
             t.vectors @ np.asarray(t.coefficients(omega)) for t in self.excitation
         )
@@ -148,7 +159,9 @@ class ReducedModel:
     def __init__(self, system: AffineSystem) -> None:
         """An empty model of ``system``."""
         self.system = system
-        n_rows = system.excitation[0].vectors.shape[0]
+        n_rows = (
+            system.excitation[0].vectors.shape[0] if system.excitation else system.size
+        )
         #: The orthonormal basis V, ``(N, n)`` real.
         self.basis = np.zeros((n_rows, 0))
         #: Vᵀ A_k V per piece.
@@ -224,6 +237,10 @@ class ReducedModel:
         self.basis = basis
         return new.shape[1]
 
+    def load_coordinates(self, omega: float, loads: np.ndarray) -> np.ndarray:
+        """Reduced solutions of the full-length ``loads`` ``(N, q)``, ``(n, q)``."""
+        return np.linalg.solve(self.matrix(omega), self.basis.T @ loads)
+
     def matrix(self, omega: float) -> np.ndarray:
         """The reduced operator ``Vᵀ A(ω) V``, ``(n, n)``, low-rank terms included."""
         system = self.system
@@ -239,6 +256,8 @@ class ReducedModel:
         """Reduced solution at ω, ``(n, n_excitations)``: V y is the field."""
         system = self.system
         matrix = self.matrix(omega)
+        if not system.excitation:
+            return np.zeros((self.size, 0), complex)
         rhs = sum(
             r @ np.asarray(t.coefficients(omega))
             for r, t in zip(self.excitation, system.excitation, strict=True)
@@ -326,14 +345,18 @@ def adaptive_sweep(
         guess = None
         if model.size:
             guess = model.basis @ model.coordinates(omega)
-        x, duals = _solve_sample(system, omega, guess)
+        x, duals, load_guess = _solve_sample(system, omega, guess, model)
         error = math.inf
-        if measure and guess is not None:
-            error = _error(x, guess)
+        measured, solved = x, guess
+        if system.measure_loads and duals is not None:
+            measured = np.concatenate([x, duals], axis=1)
+            solved = None if guess is None else np.concatenate([guess, load_guess], 1)
+        if measure and solved is not None:
+            error = _error(measured, solved)
         model.extend(x)
         if duals is not None:
             model.extend(duals)
-        snapshots.append(model.basis.T @ x)
+        snapshots.append(model.basis.T @ (measured if system.measure_loads else x))
         chosen.append(i)
         errors.append(error)
         # an unmeasured sample (no model yet to compare with) shows no error
@@ -398,22 +421,32 @@ def adaptive_sweep(
 
 
 def _solve_sample(
-    system: AffineSystem, omega: float, guess: np.ndarray | None
-) -> tuple[np.ndarray, np.ndarray | None]:
-    """The full solution at ``omega`` from ``guess``, and the adjoint loads' duals."""
+    system: AffineSystem,
+    omega: float,
+    guess: np.ndarray | None,
+    model: ReducedModel,
+) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
+    """The full solution at ``omega`` from ``guess``, the loads' duals and guess.
+
+    The loads' guess is the reduced model's solution of them when the system
+    measures them (``None`` otherwise, and from a zero guess).
+    """
     rhs = system.rhs(omega)
     width = rhs.shape[1]
     loads = None
     if system.adjoint_loads is not None:
         loads = np.asarray(system.adjoint_loads(omega))
     if loads is None or not loads.shape[1]:
-        return np.asarray(system.solve(omega, rhs, guess)), None
-    # one solve: the loads are extra columns, from a zero guess
+        return np.asarray(system.solve(omega, rhs, guess)), None, None
+    # one solve: the loads are extra columns
     x0 = None
+    load_guess = np.zeros(loads.shape, complex)
     if guess is not None:
-        x0 = np.concatenate([guess, np.zeros(loads.shape, complex)], axis=1)
+        if system.measure_loads:
+            load_guess = model.basis @ model.load_coordinates(omega, loads)
+        x0 = np.concatenate([guess, load_guess], axis=1)
     both = np.asarray(system.solve(omega, np.concatenate([rhs, loads], axis=1), x0))
-    return both[:, :width], both[:, width:]
+    return both[:, :width], both[:, width:], load_guess
 
 
 def _error(x: np.ndarray, guess: np.ndarray) -> float:

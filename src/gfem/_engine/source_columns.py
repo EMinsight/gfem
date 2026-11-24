@@ -176,6 +176,21 @@ class SourceColumns:
             out[:, positions] = loads.port_waves(omega, z)
         return out
 
+    def reduced_port_waves(
+        self, omega: float, projected: np.ndarray, coordinates: np.ndarray
+    ) -> np.ndarray:
+        """`port_waves` from the ports' reduced solutions ``(n, n_ports)``.
+
+        ``projected`` is ``Vᵀ`` `PointLoads.vectors` transposed, ``(n_dipoles,
+        n)``, on the real basis V.
+        """
+        out = np.zeros((coordinates.shape[1], len(self.names)), complex)
+        found = self.dipoles
+        if found is not None:
+            positions, loads = found
+            out[:, positions] = loads.reduced_port_waves(omega, projected, coordinates)
+        return out
+
     def emitted_power(self, omega: float, x: np.ndarray) -> np.ndarray:
         """``(n_dipoles,)`` W from the source columns' solutions ``(N, n_sources)``."""
         found = self.dipoles

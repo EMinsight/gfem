@@ -71,8 +71,12 @@ def test_iterations_count_each_right_hand_side(model):
     assert [len(row) for row in result.sweep.iterations] == [2, 2]
 
 
-def test_a_saved_reciprocal_result_still_refuses_source_fields(model):
-    result = _solve(model, excite=(), source_fields=False)
+@pytest.mark.parametrize("sweep", ["uniform", "adaptive"])
+def test_a_saved_reciprocal_result_still_refuses_source_fields(model, sweep):
+    if sweep == "adaptive":
+        result = _adaptive(model, 2)
+    else:
+        result = _solve(model, excite=(), source_fields=False)
     encoder = _codec.Encoder(_codec.Context(Path()))
     doc = json.loads(json.dumps(encoder.encode(result), allow_nan=False))
     back = _codec.Decoder(_codec.Context(Path()), encoder.arrays).decode(doc)
@@ -82,12 +86,80 @@ def test_a_saved_reciprocal_result_still_refuses_source_fields(model):
         gfem.purcell_factor(back, "d0", model=model)
 
 
-def test_an_adaptive_sweep_is_not_available_yet(model):
+ADAPTIVE = gfem.SolverOptions(order=2, linear_solver="direct", adaptive_tolerance=1e-4)
+
+
+def _adaptive(model, n=5, *, excite=(), options=ADAPTIVE, **kwargs):
     problem = gfem.Driven(
-        rc.grid(), sources=rc.dipoles(2), sweep="adaptive", source_fields=False
+        rc.grid(),
+        excite=excite,
+        sources=rc.dipoles(n),
+        sweep="adaptive",
+        source_fields=False,
+        **kwargs,
     )
-    with pytest.raises(NotImplementedError, match="adaptive"):
-        gfem.solve(model, problem, options=rc.ORDER2)
+    return gfem.solve(model, problem, options=options)
+
+
+@pytest.mark.parametrize("excite", [(), ("p1",)])
+def test_an_adaptive_sweep_reads_reciprocal_port_waves(model, excite):
+    result = _adaptive(model, excite=excite)
+    reference = _solve(model, excite=excite)
+    waves = np.asarray(reference.port_waves)
+    # measured 2e-11 relative on this line
+    assert (
+        np.abs(np.asarray(result.port_waves) - waves).max()
+        <= 1e-6 * np.abs(waves).max()
+    )
+    assert result.sweep.converged
+    # with no excited column the error would read 0 without the port loads
+    errors = np.asarray(result.sweep.sample_errors)[2:]
+    assert errors.size
+    assert np.isfinite(errors).all()
+    assert (errors > 0).all()
+    assert result.emitted_power == {}
+
+
+def test_the_adaptive_basis_does_not_grow_with_the_dipoles(model):
+    one = _adaptive(model, 1).sweep
+    many = _adaptive(model, 20).sweep
+    assert many.sampled_frequencies == one.sampled_frequencies
+    assert many.basis_size == one.basis_size
+
+
+def test_frozen_samples_trace_reciprocal_port_waves(model):
+    first = _adaptive(model, excite=("p1",))
+    problem = gfem.Driven(
+        rc.grid(),
+        excite=("p1",),
+        sources=rc.dipoles(5),
+        sweep="adaptive",
+        samples=first.sweep.sampled_frequencies,
+        keep_fields=[rc.grid()[3]],
+        source_fields=False,
+    )
+
+    def objective(m):
+        result = gfem.solve(m, problem, options=ADAPTIVE)
+        return jnp.sum(jnp.abs(result.port_waves) ** 2)
+
+    eager = objective(model)
+    np.testing.assert_allclose(jax.jit(objective)(model), eager, rtol=1e-12)
+    np.testing.assert_allclose(
+        eager, jnp.sum(jnp.abs(first.port_waves) ** 2), rtol=1e-9
+    )
+    # a padded basis of two vectors per sample, excited port and port load
+    n = len(first.sweep.sampled_frequencies)
+    result = gfem.solve(model, problem, options=ADAPTIVE)
+    assert result.e_fields.basis.shape[1] == 2 * n * (1 + 1)
+
+
+def test_adaptive_iterations_count_each_right_hand_side(model):
+    options = gfem.SolverOptions(
+        order=2, linear_solver="bddc_gmres", adaptive_tolerance=1e-3
+    )
+    result = _adaptive(model, 2, excite=("p1",), options=options)
+    assert all(len(row) == 2 for row in result.sweep.iterations)
 
 
 def test_gradients_are_not_available_yet(model):

@@ -121,6 +121,18 @@ class PointLoads:
         pairs = np.asarray(self.layout.pair(self.vectors, z))
         return (pairs * self.coefficients(omega)[:, None]).T
 
+    def reduced_port_waves(
+        self, omega: float, projected: np.ndarray, coordinates: np.ndarray
+    ) -> np.ndarray:
+        r"""``(n_ports, n)``: `port_waves` from the ports' reduced solutions.
+
+        ``projected`` is :math:`B^\mathsf{T} V` (`vectors` on the real basis
+        :math:`V`, dense, read once for all frequencies) and ``coordinates``
+        ``(n_basis, n_ports)`` the ports' solutions on :math:`V`.
+        """
+        pairs = projected @ coordinates
+        return (pairs * self.coefficients(omega)[:, None]).T
+
     def power_scale(self, omega: float) -> float:
         r"""Emitted power per :math:`-\operatorname{Im}(b^H x)`, in W."""
         return 1.0 / (2 * omega * const.mu_0 * self.scale)

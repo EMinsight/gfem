@@ -192,7 +192,7 @@ from gfem._periodic import (
 )
 from gfem._pml import Stretch
 from gfem._sources import DIPOLES, INCIDENT, MagneticDipole
-from gfem._sweep.adaptive import AffineSystem, AffineTerm, adaptive_sweep
+from gfem._sweep.adaptive import AffineSystem, AffineTerm, Sweep, adaptive_sweep
 from gfem._text import hertz
 from gfem.errors import (
     FloquetOrderCapWarning,
@@ -1136,11 +1136,6 @@ class DrivenRule:
         #: Whether the sources' port waves are read from the ports' own
         #: solutions (`gfem.Driven.source_fields` ``False``): no source column.
         self.reciprocal = not problem.source_fields
-        if self.reciprocal and problem.sweep == "adaptive":
-            raise NotImplementedError(
-                "Driven(source_fields=False) on an adaptive sweep is not "
-                "available in this version: use sweep='uniform'."
-            )
         #: The dipoles whose own field is solved: their emitted power.
         self.emitting = () if self.reciprocal else self.dipoles
         #: The labels of the solve's columns: the excited ports, then the
@@ -1637,7 +1632,7 @@ class DrivenRule:
                     thetas=[piece.theta for piece in system.operator.pieces],
                     apply=system.operator.apply,
                     excitation=ports.excitation
-                    if sources is None
+                    if sources is None or self.reciprocal
                     else sources.excitation(ports.excitation, len(self.excite)),
                     outputs=ports.outputs,
                     solve=solve,
@@ -1646,7 +1641,11 @@ class DrivenRule:
                         for c in system.surfaces
                         if isinstance(c, PortSurfaceCoupling)
                     ],
-                    adjoint_loads=_adaptive_loads(ports, sources, size),
+                    adjoint_loads=_adaptive_loads(
+                        ports, None if self.reciprocal else sources, size
+                    ),
+                    measure_loads=self.reciprocal,
+                    size=size,
                 )
                 sweep = adaptive_sweep(
                     affine,
@@ -1681,21 +1680,11 @@ class DrivenRule:
         n_exc, n_freq = len(self.excite), len(frequencies)
         waves = sweep.outputs if ports.outputs else np.zeros((n_freq, 0, 0))
         waves = np.reshape(waves, (n_freq, len(self.port_names), len(self.columns)))
-        emitted = None
-        if sources is not None and sources.dipoles is not None:
-            projected = (sources.dipoles[1].vectors.T @ sweep.basis).T
-            emitted = np.stack(
-                [
-                    sources.reduced_power(2 * np.pi * f, projected, y[:, n_exc:])
-                    for f, y in zip(frequencies, sweep.coordinates, strict=True)
-                ]
-            )
+        port_waves, emitted = self._source_outputs(ports, sources, sweep, waves)
         out = SweepOutputs.adaptive(
             s=ports.scattering(waves[:, :, :n_exc]),
             # (n_freq, 0, n_sources) without ports: the traced outputs' width
-            port_waves=waves[:, :, n_exc:] * ports.deembedding[:, :, None]
-            if self.sources
-            else None,
+            port_waves=port_waves,
             emitted_power=emitted,
             z_ref=ports.z_ref,
             iterations=iterations,
@@ -1723,6 +1712,66 @@ class DrivenRule:
                 coordinates=sweep.coordinates,
             ).entry(self.physics)
         return out.outputs(), entry
+
+    def _source_outputs(
+        self,
+        ports: PortNetwork,
+        sources: SourceColumns | None,
+        sweep: Sweep,
+        waves: np.ndarray,
+    ) -> tuple[np.ndarray | None, np.ndarray | None]:
+        """The adaptive sweep's sources' port waves and emitted powers.
+
+        Read from the reduced solutions of the sources' columns, or, with
+        ``source_fields=False``, from the ports' own reduced solutions.
+        ``waves`` is the sweep's outputs ``(n_freq, n_ports, n_columns)``.
+        """
+        n_exc = len(self.excite)
+        if sources is None:
+            return None, None
+        if self.reciprocal:
+            return self._reciprocal_waves(ports, sources, sweep), None
+        # (n_freq, 0, n_sources) without ports: the traced outputs' width
+        port_waves = waves[:, :, n_exc:] * ports.deembedding[:, :, None]
+        if sources.dipoles is None:
+            return port_waves, None
+        projected = (sources.dipoles[1].vectors.T @ sweep.basis).T
+        emitted = np.stack(
+            [
+                sources.reduced_power(2 * np.pi * f, projected, y[:, n_exc:])
+                for f, y in zip(self.problem.frequency, sweep.coordinates, strict=True)
+            ]
+        )
+        return port_waves, emitted
+
+    def _reciprocal_waves(
+        self, ports: PortNetwork, sources: SourceColumns, sweep: Sweep
+    ) -> np.ndarray:
+        """``(n_freq, n_ports, n_sources)`` port waves read from the reduced solutions.
+
+        Each port's own solution on the basis is the excitation's reduced
+        solution scaled, or the reduced solve of its load; the dipoles' loads
+        are projected on the basis once (`SourceColumns.reduced_port_waves`).
+        """
+        model, basis = sweep.model, sweep.basis
+        found = sources.dipoles
+        assert found is not None  # noqa: S101 - refused otherwise at Driven
+        projected = found[1].vectors.T @ basis
+        out = np.zeros(
+            (len(self.problem.frequency), len(self.port_names), len(self.sources)),
+            complex,
+        )
+        for n, (f, y) in enumerate(
+            zip(self.problem.frequency, sweep.coordinates, strict=True)
+        ):
+            omega = 2 * math.pi * f
+            reading = ports.solution_loads(omega, ports.rhs(omega))
+            zeta = model.load_coordinates(omega, reading.loads)
+            z = reading.solutions(ports.columns, np.concatenate([y, zeta], axis=1))
+            out[n] = ports.deembedding[n][:, None] * sources.reduced_port_waves(
+                omega, projected, z
+            )
+        return out
 
     def _field_shape(self, model: Model) -> tuple[int, int]:
         """``(width, ndof)`` of a kept field: `gfem._engine.fields.dof_shape`.
@@ -1756,7 +1805,10 @@ class DrivenRule:
         """
         samples = self.problem.samples or ()
         loads = len(self.wave_ports) + len(self.lumped_loads)
-        loads += sum(not real_up_to_phase(np.asarray(d.moment)) for d in self.dipoles)
+        if not self.reciprocal:
+            loads += sum(
+                not real_up_to_phase(np.asarray(d.moment)) for d in self.dipoles
+            )
         return 2 * len(samples) * (len(self.columns) + loads)
 
     def output_specs(self, model: Model) -> dict[str, jax.ShapeDtypeStruct]:

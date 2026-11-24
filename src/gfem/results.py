@@ -1836,9 +1836,11 @@ class SweepInfo:
         sample_errors: For each sampled frequency, the relative l2 error of
             the reduced model's field against the full solve there, measured
             before the sample joined the model (the largest over the excited
-            ports); ``inf`` where there was no model to compare with yet
-            (the two band edges the greedy starts from, the first frozen
-            sample, and every frequency of a uniform sweep).
+            ports and, with ``Driven(source_fields=False)``, over the port
+            solutions the port waves are read from); ``inf`` where there was
+            no model to compare with yet (the two band edges the greedy
+            starts from, the first frozen sample, and every frequency of a
+            uniform sweep).
         converged: Whether the last ``SolverOptions.adaptive_memory`` sample
             errors are below the tolerance (or every frequency was solved).
             Always True for a uniform sweep. An adaptive greedy that stops at
@@ -1848,8 +1850,9 @@ class SweepInfo:
             sweep, ``None`` for a uniform one.
         basis_size: The number of reduced basis vectors (0 for uniform).
         iterations: For each sampled frequency (in solve order), the Krylov
-            iterations of each excited port's solve; ``()`` for a direct
-            solve on fresh factors.
+            iterations of each right-hand side's solve (the excited ports',
+            then the port loads' with ``Driven(source_fields=False)``); ``()``
+            for a direct solve on fresh factors.
         preconditioner_reused: For each sampled frequency, whether its
             solve ran on a preconditioner built for another matrix (a BDDC
             or p-multigrid preconditioner built at an earlier frequency, or
