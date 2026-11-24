@@ -105,6 +105,7 @@ from gfem.model import (  # noqa: E402
     WavePort,
     enclosed_by,
     fit_permittivity,
+    isotropic_stiffness,
 )
 from gfem.options import SolverOptions  # noqa: E402
 from gfem.problems import (  # noqa: E402
@@ -287,6 +288,7 @@ __all__ = [
     "heat_flow",
     "heat_flow_per_length",
     "interface_participation",
+    "isotropic_stiffness",
     "joule_heating",
     "load_result",
     "log",

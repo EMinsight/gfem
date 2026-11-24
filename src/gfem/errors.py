@@ -59,39 +59,70 @@ class MeshQualityError(ValueError):
     """
 
 
-#: An example value per thermal property, for `MissingMaterialPropertyError`.
+#: An example value per property, for `MissingMaterialPropertyError`.
 _EXAMPLES = {
     "thermal_conductivity": "1.4",  # silica
     "mass_density": "2200",
     "specific_heat": "700",
+    "stiffness": "gfem.isotropic_stiffness(72e9, 0.17)",
+}
+#: Units of the properties outside the property table.
+_UNITS = {"stiffness": "Pa, 6x6", "piezoelectric_tensor": "C/m^2, 3x6"}
+#: Per physics: the problem that reads the properties, a material that gives
+#: them, and where the region is left out.
+_READERS = {
+    "thermal": (
+        "A thermal problem",
+        (
+            "gfem.Material(thermal_conductivity=1.4, mass_density=2200, "
+            "specific_heat=700) for silica"
+        ),
+        "thermal problems",
+    ),
+    "mechanical": (
+        "A piezoelectric problem",
+        (
+            "gfem.Material(stiffness=gfem.isotropic_stiffness(72e9, 0.17), "
+            "mass_density=2200) for silica"
+        ),
+        "the mechanical domain (the air, for example)",
+    ),
 }
 
 
 class MissingMaterialPropertyError(ValueError):
-    """A thermal problem reads a material property that a region does not give.
+    """A problem reads a material property that a region does not give.
 
     Steady thermal problems read ``thermal_conductivity``; transient ones also
-    read ``mass_density`` and ``specific_heat``. Every volume of the thermal
-    domain needs them; a region with no material lacks them all. The message
-    lists every missing (region, property) pair at once, with each
-    property's unit and an example value, and both remedies: give the
-    property on the region's material, or exclude the region from thermal
-    problems with ``Model(excluded={"thermal": (...)})``.
+    read ``mass_density`` and ``specific_heat``; piezoelectric problems read
+    ``stiffness`` and ``mass_density`` on the mechanical domain. Every volume
+    of the problem's domain needs them; a region with no material lacks them
+    all. The message lists every missing (region, property) pair at once,
+    with each property's unit and an example value where known, and both
+    remedies: give the property on the region's material, or exclude the
+    region from the physics with ``Model(excluded={physics: (...)})``.
 
     Attributes:
         missing: The (region, property) pairs, in the order given.
+        physics: The physics whose domain the regions are in, a key of
+            ``excluded=``.
     """
 
-    def __init__(self, missing: Iterable[tuple[str, str]]) -> None:
+    def __init__(
+        self, missing: Iterable[tuple[str, str]], physics: str = "thermal"
+    ) -> None:
         """Build the message from the missing (region, property) pairs.
 
         Args:
             missing: Each region and the property it does not give; repeats
-                are dropped.
+                are dropped. Any property name.
+            physics: ``"thermal"`` or ``"mechanical"``: the physics whose
+                problem reads the properties.
         """
         from gfem._materials import PROPERTIES
 
-        units = {p.name: p.unit for p in PROPERTIES}
+        units = {p.name: p.unit for p in PROPERTIES} | _UNITS
+        self.physics = physics
         self.missing: tuple[tuple[str, str], ...] = tuple(
             dict.fromkeys((str(r), str(p)) for r, p in missing)
         )
@@ -110,12 +141,12 @@ class MissingMaterialPropertyError(ValueError):
             for region, props in by_region.items()
         )
         regions = tuple(by_region)
+        reader, example, where = _READERS[physics]
         super().__init__(
-            f"A thermal problem needs material properties that are not given: "
+            f"{reader} needs material properties that are not given: "
             f"{listed}. Give each on the region's material (for example "
-            "gfem.Material(thermal_conductivity=1.4, mass_density=2200, "
-            "specific_heat=700) for silica), or leave the region out of "
-            f"thermal problems with Model(excluded={{'thermal': {regions!r}}})."
+            f"{example}), or leave the region out of {where} with "
+            f"Model(excluded={{{physics!r}: {regions!r}}})."
         )
 
 

@@ -59,7 +59,17 @@ ALL_PROPERTIES = {
     "mass_density": 2200.0,
     "specific_heat": 700.0,
     "thermo_optic_coefficient": 1.0e-5,
+    # a solid's constants, unread by every problem below
+    "stiffness": gfem.isotropic_stiffness(72e9, 0.17),
+    "piezoelectric_tensor": np.arange(1.0, 19.0).reshape(3, 6) / 10,
+    "mechanical_quality_factor": 500.0,
 }
+
+
+def _ramped(values, ramp):
+    """``values`` per element, each scaled by ``ramp`` (tensors as a whole)."""
+    return {k: np.multiply.outer(ramp, v) for k, v in values.items()}
+
 
 # (problem name, result leaf, input kind) -> outcome. Input kinds name the
 # model leaf: ("nodes",) or ("material", <region>, <property>).
@@ -80,6 +90,17 @@ EXPECTED = {
         "electrostatic",
         "capacitance",
         ("material", "oxide", "thermo_optic_coefficient"),
+    ): ZERO,
+    ("electrostatic", "capacitance", ("material", "oxide", "stiffness")): ZERO,
+    (
+        "electrostatic",
+        "capacitance",
+        ("material", "oxide", "piezoelectric_tensor"),
+    ): ZERO,
+    (
+        "electrostatic",
+        "capacitance",
+        ("material", "oxide", "mechanical_quality_factor"),
     ): ZERO,
 }
 # Terminal potentials: their coefficients differentiate like the capacitance;
@@ -1069,7 +1090,7 @@ def _field(mesh, region, **overrides):
     n = len(mesh.elements(region))
     ramp = np.linspace(1.0, 1.5, n)
     values = ALL_PROPERTIES | overrides
-    return gfem.MaterialField(**{k: v * ramp for k, v in values.items()})
+    return gfem.MaterialField(**_ramped(values, ramp))
 
 
 @pytest.fixture(scope="module")
@@ -1587,7 +1608,7 @@ def measurement_cases(tmp_path_factory):
         "conductivity": 0.0,
         "thermo_optic_coefficient": 1.86e-4,
     }
-    core = gfem.MaterialField(**{k: v * ramp for k, v in values.items()})
+    core = gfem.MaterialField(**_ramped(values, ramp))
     clad = gfem.Material(
         eps_r=2.085,
         thermal_conductivity=1.38,
