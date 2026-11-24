@@ -34,14 +34,20 @@ def _warnings_are_errors():
 # --- the empty square lattice -------------------------------------------------------
 
 SQUARE_TARGET = 2e9
+#: Seven bands reach $|\mathbf k + \mathbf G| = 1.6\cdot 2\pi/a$, where the band
+#: error grows as $(|\mathbf k + \mathbf G|\,h)^{2p}$: 8x8x1 at order 2 misses
+#: `C2_BAND_RTOL` (7.9e-4 on band 6 next to Γ); 6x6x1 at order 3 is within
+#: 5.5e-5 on every band, at 1.5 times its dofs.
+SQUARE_CELLS = (6, 6, 1)
+SQUARE_ORDER = 3
 
 
 @pytest.fixture(scope="module")
 def square(tmp_path_factory):
-    mesh = pc.c2_square_mesh(tmp_path_factory.mktemp("square"), cells=(8, 8, 1))
+    mesh = pc.c2_square_mesh(tmp_path_factory.mktemp("square"), cells=SQUARE_CELLS)
     model = pc.c2(mesh)
     path = gfem.wave_vector_path(model, ["Γ", "X"], n_points=6)
-    options = gfem.SolverOptions(order=pc.C2_ORDER)
+    options = gfem.SolverOptions(order=SQUARE_ORDER)
     diagram = gfem.band_diagram(
         model, path, target=SQUARE_TARGET, n_bands=7, options=options
     )
