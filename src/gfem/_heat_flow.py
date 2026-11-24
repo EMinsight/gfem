@@ -118,7 +118,14 @@ def _model_role(kind: tuple, rule: SteadyThermalRule) -> Role:
     described = _describe(kind)
     if kind[0] == "nodes":
         return Role("read", NODES_REASON, described)
-    if (kind[0] == "material" or is_thermal_value(kind)) and rule.role(kind) == "read":
+    if is_thermal_value(kind) and rule.role(kind) == "read":
+        # the measured flow reads the boundary values itself, outside the solve
+        reason = (
+            "gradients of a heat flow with respect to thermal boundary values "
+            "are not available in this version of gfem"
+        )
+        return Role("read", reason, described)
+    if kind[0] == "material" and rule.role(kind) == "read":
         return Role("read", unsupported(rule.form, kind), described)
     return Role("unread", None, described)
 

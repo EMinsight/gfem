@@ -214,14 +214,19 @@ def test_a_traced_invalid_value_raises_at_the_forward(mesh, which, bad, message)
 
 
 @pytest.mark.parametrize("which", range(4))
-def test_a_thermal_solve_refuses_a_traced_value_by_name(mesh, which):
-    problem = gfem.SteadyThermal(gfem.HeatSource.uniform("bar", power=1e-3))
+def test_a_transient_solve_refuses_a_traced_value_by_name(mesh, which):
+    problem = gfem.TransientThermal(
+        gfem.HeatSource.uniform("bar", power=1e-3),
+        duration=1e-9,
+        steps=2,
+        traces={"bar": gfem.Trace.mean("bar")},
+    )
 
     def f(v):
         args = list(VALUES)
         args[which] = v
         model = _traced(mesh, *args)
-        return gfem.solve(model, problem, options=DIRECT).power
+        return gfem.solve(model, problem, options=DIRECT).traces["bar"].sum()
 
     with pytest.raises(NonDifferentiableError, match=LEAF_NAMES[which]):
         jax.grad(f)(VALUES[which])

@@ -1012,7 +1012,121 @@ class SteadyThermalRule(ThermalRule):
                     )
             if wanted & LOAD_KINDS:
                 pairs.append(LoadField(space, lam, order, domain, length_power=2))
+            self._explicit = self._boundary_terms(
+                model, built, space, handle, entry, lam, ct_t, wanted
+            )
         return pairs
+
+    def explicit_problem(self) -> dict[tuple, np.ndarray]:
+        """The thermal boundary values' cotangents of the last backward."""
+        return getattr(self, "_explicit", {})
+
+    def _surface_integral(
+        self, built: EngineMesh, space: ngs.FESpace, surface: str, *fields: Any
+    ) -> float:
+        r""":math:`\int_S \prod f\,\mathrm{d}s` of coefficient vectors, file units."""
+        region = boundary_region(built, (surface,))
+        integrand: Any = built.scale
+        for vector in fields:
+            gf = ngs.GridFunction(space)
+            gf.vec.FV().NumPy()[:] = vector
+            integrand = integrand * gf
+        ds = quadrature.ds(self.options.order, definedon=region)
+        return float(ngs.Integrate(integrand * ds, built.mesh))
+
+    def _boundary_terms(  # noqa: PLR0917
+        self,
+        model: Model,
+        built: EngineMesh,
+        space: ngs.FESpace,
+        handle: Handle,
+        entry: Entry,
+        lam: np.ndarray,
+        ct_t: np.ndarray | None,
+        wanted: frozenset,
+    ) -> dict[tuple, np.ndarray]:
+        r"""The wanted thermal boundary values' cotangents.
+
+        With :math:`A = K + \sum_S h_S M_S`, :math:`T = T_0 + \Delta T` and
+        :math:`A\,\Delta T = F` on the free DOFs, :math:`\lambda` the adjoint
+        of the temperature and rise cotangents and :math:`\lambda_0 =
+        A^{-1} c_T` that of the temperature alone (zero on the fixed DOFs):
+
+        .. math::
+
+            \frac{dJ}{dh_S} = -\lambda^T M_S \Delta T
+                - \lambda_0^T M_S (T_0 - T_{\mathrm{amb},S} \mathbf 1),\quad
+            \frac{dJ}{dT_{\mathrm{amb},S}} = h_S \lambda_0^T M_S \mathbf 1,
+
+        .. math::
+
+            \frac{dJ}{dq_S} = \lambda_0^T M_S \mathbf 1,\quad
+            \frac{dJ}{dT_s} = c_T \cdot \chi_s - \lambda_0^T A \chi_s,
+
+        with :math:`\chi_s` the lift of a unit temperature on fixed surface
+        :math:`s`. The rise reads only :math:`h`, so it adds nothing to the
+        other three.
+        """
+        kinds = {k for k in wanted if is_thermal_value(k)}
+        if not kinds:
+            return {}
+        free = free_mask(space.FreeDofs(), space.ndof)
+        rise = entry.fields["rise"]
+        t0 = entry.fields["temperature"] - rise
+        lam0 = np.zeros(space.ndof)
+        direct = None
+        if ct_t is not None and np.any(ct_t):
+            direct = np.asarray(ct_t, dtype=float)
+            load = np.where(free, direct, 0.0)
+            lam0 = self._adjoint(handle, load[:, None], reused=True)[:, 0]
+        ones = self._constant(space, 1.0)
+        out: dict[tuple, np.ndarray] = {}
+        fixed_names = [
+            b.surface for b in model.boundaries if isinstance(b, FixedTemperature)
+        ]
+        for kind in kinds:
+            _, index, name = kind
+            item = model.boundaries[index]
+            if name == "coefficient":
+                ambient = float(np.asarray(item.ambient))
+                value = -self._surface_integral(
+                    built, space, item.surface, lam, rise
+                ) - self._surface_integral(
+                    built, space, item.surface, lam0, t0 - ambient * ones
+                )
+            elif name == "ambient":
+                h = float(np.asarray(item.coefficient))
+                value = h * self._surface_integral(
+                    built, space, item.surface, lam0, ones
+                )
+            elif name == "flux":
+                value = self._surface_integral(built, space, item.surface, lam0, ones)
+            else:
+                value = self._fixed_term(
+                    built, space, handle, item.surface, fixed_names, lam0, direct
+                )
+            out[kind] = np.asarray(value)
+        return out
+
+    def _fixed_term(  # noqa: PLR0917
+        self,
+        built: EngineMesh,
+        space: ngs.FESpace,
+        handle: Handle,
+        surface: str,
+        fixed: list[str],
+        lam0: np.ndarray,
+        direct: np.ndarray | None,
+    ) -> float:
+        r""":math:`c_T \cdot \chi_s - \lambda_0^T A \chi_s` of fixed ``surface``."""
+        values = {name: (1.0 if name == surface else 0.0) for name in fixed}
+        gf = ngs.GridFunction(space)
+        field = built.mesh.BoundaryCF(values, default=ngs.CF(0.0))
+        region = boundary_region(built, self.boundaries.dirichlet)
+        gf.Set(field, ngs.BND, definedon=region)
+        chi = gf.vec.FV().NumPy().copy()
+        read = 0.0 if direct is None else float(direct @ chi)
+        return read - float(lam0 @ handle.apply(chi[:, None])[:, 0])
 
     def result(self, outputs: dict) -> SteadyThermalResult:
         """The public result from the forward outputs."""
