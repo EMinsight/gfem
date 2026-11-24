@@ -270,9 +270,9 @@ def test_principal_participation_covers_the_anisotropic_regions_only(tmp_path):
     pytest.importorskip("xarray")
     ds = result.to_xarray()
     da = ds["principal_participation"]
-    assert da.dims == ("mode", "anisotropic_region", "axis")
+    assert da.dims == ("mode", "anisotropic_region", "principal_axis")
     assert list(ds["anisotropic_region"].values) == ["high"]
-    np.testing.assert_array_equal(ds["axis"], [0, 1, 2])
+    np.testing.assert_array_equal(ds["principal_axis"], [0, 1, 2])
     np.testing.assert_array_equal(da.sel(anisotropic_region="high"), p)
 
 

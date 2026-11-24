@@ -3798,12 +3798,13 @@ def _band_path():
 
 
 def _band_objective(d: Designs, *, independent: bool):
-    """The gap and a weighted sum of the bands of the eigen cell, in its eps.
+    r"""The gap and a weighted sum of the bands of the eigen cell, in its eps.
 
-    ``Re[min_k omega_1 - max_k omega_0] + sum w Re omega`` over the three
-    wave vectors of `_band_path`. With ``independent`` each wave vector is a
-    `gfem.solve` on a fresh discretization (the caches released between them),
-    sorted by hand, with the static band at Γ left out.
+    :math:`\mathrm{Re}[\min_k \omega_1 - \max_k \omega_0]
+    + \sum w\,\mathrm{Re}\,\omega` over the three wave vectors of
+    `_band_path`. With ``independent`` each wave vector is a `gfem.solve` on a
+    fresh discretization (the caches released between them), sorted by hand,
+    with the static band at Γ left out.
     """
     mesh, path = d.eigen_cell, _band_path()
     options = tight("direct")

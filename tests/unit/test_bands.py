@@ -1,7 +1,7 @@
 r"""The reciprocal lattice and the wave vector path of a periodic cell.
 
 `Model.reciprocal_lattice` is dual to the periodic translations,
-$\mathbf b_i \cdot \mathbf a_j = 2\pi\delta_{ij}$. `gfem.wave_vector_path`
+:math:`\mathbf b_i \cdot \mathbf a_j = 2\pi\delta_{ij}`. `gfem.wave_vector_path`
 recognises the lattice from the translations, places its high-symmetry
 points (the hexagonal K as the zone corner, whatever the basis angle) and
 samples straight segments between them with exactly ``n_points`` wave
@@ -384,7 +384,7 @@ def _diagram(model, path, **kwargs):
 
 
 def _independent(model, k, n=3):
-    """The solve a band diagram must equal at ``k``, its modes in order of Re ω."""
+    r"""The solve a band diagram must equal at ``k``, by :math:`\mathrm{Re}\,\omega`."""
     result = gfem.solve(
         model, gfem.Eigenmode(TARGET, n_modes=n, wave_vector=tuple(map(float, k)))
     )
@@ -609,6 +609,13 @@ CONNECTIONS = {
         [0, -1],
         [False, False],
     ),
+    "one rival under the threshold, the other order": (
+        [[0.49, 0.51]],
+        [1.0],
+        [1.0, 2.0],
+        [-1, 0],
+        [False, False],
+    ),
     "two rows wanting one column": (
         [[0.90, 0.10], [0.80, 0.10]],
         [1.0, 2.0],
@@ -756,6 +763,24 @@ def c2_diagram(c2_cell, c2_path):
     return _diagram(c2_cell, c2_path, keep_fields=[1])
 
 
+def test_band_diagram_principal_participation_has_its_own_axis(c2_diagram):
+    # the principal axes follow a material's ``axes`` order, not x, y, z: they
+    # sit on their own dimension, beside the Cartesian ``axis`` of v_g and k
+    shape = np.asarray(c2_diagram.omega).shape
+    bd = dataclasses.replace(
+        c2_diagram, principal_participation={"m": jnp.zeros((*shape, 3))}
+    )
+    ds = bd.to_xarray()
+    assert ds.principal_participation.dims == (
+        "wave_vector",
+        "band",
+        "anisotropic_region",
+        "principal_axis",
+    )
+    assert ds.principal_axis.values.tolist() == [0, 1, 2]
+    assert ds.axis.values.tolist() == ["x", "y", "z"]
+
+
 def test_bands_are_ascending_and_gamma_reports_static_bands(
     c2_cell, c2_path, c2_diagram
 ):
@@ -790,6 +815,7 @@ def test_band_diagram_to_xarray(c2_diagram):
     assert ds.k.attrs["units"] == "rad/m"
     assert ds.label.values.tolist() == ["Γ", "", "X"]
     assert ds.axis.values.tolist() == ["x", "y", "z"]
+    assert ds.k.dims == ("wave_vector", "axis")
     assert ds.bulk_participation.dims == ("wave_vector", "band", "region")
     for name in ("connection", "connection_by_overlap", "static", "lost", "cluster"):
         assert ds[name].dims == ("wave_vector", "band")

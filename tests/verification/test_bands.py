@@ -3,7 +3,7 @@ r"""Band diagrams against closed forms and published values.
 - The empty square-lattice plate (`periodic_cases.c2_square_mesh`): its bands
   along Γ-X are the empty lattice, cross where the lattice says, fill the
   static band at Γ, share one cluster at X, and have the group velocities
-  $(c/n)(\mathbf k + \mathbf G)/|\mathbf k + \mathbf G|$ where a band is alone
+  :math:`(c/n)(\mathbf k + \mathbf G)/|\mathbf k + \mathbf G|` where a band is alone
   and none where bands touch with different slopes.
 - The square lattice of alumina rods of Joannopoulos et al. (chapter 5) on
   the tutorial mesh: the Ez and Hz bands at Γ, X, M, the Ez gap of 31.4 % of
@@ -34,8 +34,8 @@ def _warnings_are_errors():
 # --- the empty square lattice -------------------------------------------------------
 
 SQUARE_TARGET = 2e9
-#: Seven bands reach $|\mathbf k + \mathbf G| = 1.6\cdot 2\pi/a$, where the band
-#: error grows as $(|\mathbf k + \mathbf G|\,h)^{2p}$: 8x8x1 at order 2 misses
+#: Seven bands reach :math:`|\mathbf k + \mathbf G| = 1.6\cdot 2\pi/a`, where the band
+#: error grows as :math:`(|\mathbf k + \mathbf G|\,h)^{2p}`: 8x8x1 at order 2 misses
 #: `C2_BAND_RTOL` (7.9e-4 on band 6 next to Γ); 6x6x1 at order 3 is within
 #: 5.5e-5 on every band, at 1.5 times its dofs.
 SQUARE_CELLS = (6, 6, 1)
@@ -124,7 +124,7 @@ def test_empty_square_lattice_group_velocities_are_the_lattice_slopes(square):
 
 # --- the alumina rod crystal --------------------------------------------------------
 
-#: The frequency of a normalized $\nu$ band value and back.
+#: The frequency of a normalized :math:`\nu` band value and back.
 POLARIZATIONS = ("Ez", "Hz")
 RODS_TARGET = pc.rods_frequency(0.1)
 RODS_BAND_RTOL = 1e-3

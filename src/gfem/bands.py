@@ -597,7 +597,8 @@ class BandDiagram:
         ``error``, ``cluster``, ``v_g`` (m/s, over the ``axis`` too),
         ``connection``, ``connection_by_overlap``, ``static``, ``lost``,
         ``anchored`` (over ``wave_vector``), and the participations over
-        ``port``, ``region``, ``anisotropic_region`` and ``sheet``, as
+        ``port``, ``region``, ``anisotropic_region`` (with ``principal_axis``,
+        0, 1, 2 in each material's ``axes`` order) and ``sheet``, as
         `EigenmodeResult.to_xarray` (NaN where a port has no value). The
         attributes are ``target`` (Hz) and ``lattice``. The fields are not
         exported. Needs the ``xarray`` extra: ``pip install "gfem[xarray]"``.
@@ -657,8 +658,9 @@ class BandDiagram:
                 )
         if self.principal_participation:
             coords["anisotropic_region"] = list(self.principal_participation)
+            coords["principal_axis"] = np.arange(3)
             data["principal_participation"] = _variable(
-                (*d, "anisotropic_region", "axis"),
+                (*d, "anisotropic_region", "principal_axis"),
                 np.stack(
                     [np.asarray(v) for v in self.principal_participation.values()], 2
                 ),
@@ -707,7 +709,7 @@ register_fields(
 
 @dataclasses.dataclass
 class _Found:
-    """One wave vector's solve, its modes in ascending Re ω."""
+    r"""One wave vector's solve, its modes in ascending :math:`\mathrm{Re}\,\omega`."""
 
     omega: jax.Array
     error: jax.Array
@@ -767,7 +769,7 @@ def band_diagram(
     the wave vectors whose fields the result keeps.
 
     Example:
-        The TM bands of a square lattice of rods and the gap between the
+        The Ez bands of a square lattice of rods and the gap between the
         first two, with its gradient with respect to the rod permittivity::
 
             path = gfem.wave_vector_path(cell(8.9), ["Γ", "X", "M", "Γ"], n_points=31)
@@ -908,7 +910,7 @@ def _solve_wave_vector(
 
 
 def _order(result) -> _Found:
-    """``result``'s modes in ascending Re ω, the host values apart."""
+    r"""``result``'s modes by ascending :math:`\mathrm{Re}\,\omega`, host apart."""
     w = np.asarray(jax.lax.stop_gradient(result.omega))
     order = np.argsort(w.real, kind="stable")
     v_g = result.v_g

@@ -2449,7 +2449,9 @@ class EigenmodeResult:
             share one value when their slopes agree (a symmetry doublet at
             a high-symmetry point), and it is NaN when the bands touch with
             different slopes (the frequency is not differentiable there),
-            for a group that ``n_modes`` cuts, and for a defective group.
+            for a group that ``n_modes`` cuts, for a defective group, and
+            (then for every mode) where the expansion's phase template does
+            not stand for the periodic pairs.
             Not differentiable: a gradient through it raises
             `gfem.NonDifferentiableError`. The group index is
             :math:`c / |v_g|`.
@@ -2565,9 +2567,9 @@ class EigenmodeResult:
             )
         if self.principal_participation:
             coords["anisotropic_region"] = list(self.principal_participation)
-            coords["axis"] = np.arange(3)
+            coords["principal_axis"] = np.arange(3)
             data["principal_participation"] = _variable(
-                ("mode", "anisotropic_region", "axis"),
+                ("mode", "anisotropic_region", "principal_axis"),
                 np.stack(
                     [np.asarray(v) for v in self.principal_participation.values()], 1
                 ),
@@ -2579,7 +2581,7 @@ class EigenmodeResult:
                 np.stack([np.asarray(v) for v in self.sheet_participation.values()], 1),
             )
         if self.v_g is not None:
-            coords["axis"] = np.arange(3)
+            coords["axis"] = ["x", "y", "z"]
             data["v_g"] = _variable(("mode", "axis"), self.v_g, "m/s")
         return xr.Dataset(data, coords=coords)
 

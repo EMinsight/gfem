@@ -707,7 +707,7 @@ def _contraction(seed: complex, shift: complex, ritz: np.ndarray) -> float:
 
     ``|seed - shift|`` over the distance from ``shift`` to the nearest other
     Ritz value: the component of that mode grows unless the ratio is below 1.
-    The static fields at $k = 0$ count as a Ritz value.
+    The static fields at :math:`k = 0` count as a Ritz value.
     """
     others = ritz[np.abs(ritz - seed) > _MULTIPLE * abs(seed)]
     # the projection keeps the static fields out of the seed solve, not out

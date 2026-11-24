@@ -211,6 +211,7 @@ def test_v_g_is_none_without_a_wave_vector_and_a_complex_vector_with_one(
     assert isinstance(result.to_xarray(), xarray.Dataset)
     ds = result.to_xarray()
     assert ds["v_g"].dims == ("mode", "axis")
+    assert ds["axis"].values.tolist() == ["x", "y", "z"]
     assert ds["v_g"].attrs["units"] == "m/s"
     # plain periodicity: no wave vector, no group velocity, no variable
     plain = gfem.solve(

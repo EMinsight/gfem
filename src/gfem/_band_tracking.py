@@ -38,8 +38,8 @@ CONTINUES = 0.5
 #: A connection is decided by overlap when it beats every other candidate in
 #: its row and column by at least this.
 MARGIN = 0.05
-#: A wave vector component of ``k . a_j / 2 pi`` this close to an integer is
-#: one (for the Γ test).
+#: A wave vector component :math:`\mathbf k\cdot\mathbf a_j / 2\pi` this close
+#: to an integer is one (for the Γ test).
 GAMMA_ATOL = 1e-9
 
 
@@ -190,8 +190,12 @@ def connect(
         n_pairs = int((link[cols] >= 0).sum())
         by_overlap[cols] = False
         link[cols] = -1
-        rows = sorted(rows_in, key=lambda i: (w_prev[i], i))[:n_pairs]
-        link[cols[:n_pairs]] = rows
+        # only modes reaching the threshold with the other side take part
+        rows_ok = [i for i in rows_in if (overlap[i, cols] >= CONTINUES).any()]
+        cols_ok = [j for j in cols if (overlap[sorted(rows_in), j] >= CONTINUES).any()]
+        rows = sorted(rows_ok, key=lambda i: (w_prev[i], i))[:n_pairs]
+        for j, i in zip(cols_ok, rows, strict=False):
+            link[j] = i
     return link, by_overlap
 
 

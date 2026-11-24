@@ -67,13 +67,16 @@ ETA0 = const.mu_0 * const.c
 C1_S_TOL = 1e-5
 #: Relative error of the 4 lowest C2 bands (real part).
 C2_BAND_RTOL = 3e-4
-#: |E_z(p2) / E_z(p1) - exp(-i k·Δr)| on the C2 band with G = 0.
+#: :math:`|E_z(p_2) / E_z(p_1) - e^{-i\mathbf k\cdot\Delta\mathbf r}|` on the
+#: C2 band with G = 0.
 C2_PHASE_TOL = 1e-2
 #: Relative error of a complex C3 frequency.
 C3_FREQ_RTOL = 2e-6
-#: |v_g - exact| on the C2 bands, as a fraction of c (6e-4 measured, band 4).
+#: :math:`|v_g - v_\mathrm{exact}|` on the C2 bands, as a fraction of c (6e-4
+#: measured, band 4).
 C2_VG_TOL = 3e-3
-#: |v_g - exact| on the C3 bands, as a fraction of c (1.8e-7 measured).
+#: :math:`|v_g - v_\mathrm{exact}|` on the C3 bands, as a fraction of c (1.8e-7
+#: measured).
 C3_VG_TOL = 5e-6
 #: Relative error of the lowest C4 doublet.
 C4_RTOL = 1e-4
@@ -342,10 +345,11 @@ def c3(mesh: gfem.Mesh, tan_delta: float | tuple[float, float] = 0.0) -> gfem.Mo
 def _tmm_dispersion(
     tan_delta: float | tuple[float, float],
 ) -> tuple[Callable, Callable]:
-    """The C3 Rytov function F(k0) of the two layers and its derivative by k0.
+    r"""The C3 Rytov function :math:`F(k_0)` of the two layers and its derivative.
 
     ``tan_delta``: the loss tangent of both layers, or of (low, high). The
-    band is F(k0) = cos(k a), with n = sqrt(eps (1 - i tan_delta)).
+    band is :math:`F(k_0) = \cos(k a)`, with
+    :math:`n = \sqrt{\varepsilon (1 - i\tan\delta)}`.
     """
     a, d1 = C3_A * MM, C3_D1 * MM
     d2 = a - d1
@@ -380,11 +384,12 @@ def _tmm_dispersion(
 def tmm_frequency(
     k: float, guess: complex, tan_delta: float | tuple[float, float] = 0.0
 ) -> complex:
-    """The C3 band frequency (Hz, complex when lossy) nearest ``guess`` at k (rad/m).
+    r"""The C3 band frequency (Hz, complex when lossy) nearest ``guess`` at k (rad/m).
 
     The root of the transfer-matrix (Rytov) dispersion relation of the two
-    layers, cos(n1 k0 d1) cos(n2 k0 d2) - (n1/n2 + n2/n1)/2 sin(n1 k0 d1)
-    sin(n2 k0 d2) = cos(k a), with n = sqrt(eps (1 - i tan_delta)); a pair
+    layers, :math:`\cos(n_1 k_0 d_1)\cos(n_2 k_0 d_2) - \tfrac12 (n_1/n_2 +
+    n_2/n_1)\sin(n_1 k_0 d_1)\sin(n_2 k_0 d_2) = \cos(k a)`, with
+    :math:`n = \sqrt{\varepsilon (1 - i\tan\delta)}`; a pair
     ``tan_delta`` is the loss of (low, high).
     """
     value, _ = _tmm_dispersion(tan_delta)
@@ -401,11 +406,12 @@ def tmm_frequency(
 def tmm_group_velocity(
     k: float, frequency: complex, tan_delta: float | tuple[float, float] = 0.0
 ) -> complex:
-    """The C3 band's d omega / dk (m/s, complex when lossy) at the root ``frequency``.
+    r"""The C3 band's :math:`\mathrm d\omega/\mathrm dk` (m/s, complex when lossy).
 
-    By implicit differentiation of the Rytov relation of `tmm_frequency`:
-    F'(k0) dk0 = -a sin(k a) dk, with omega = c k0 and ``frequency`` (Hz) the
-    root at k (rad/m) it returns.
+    At the root ``frequency``, by implicit differentiation of the Rytov relation
+    of `tmm_frequency`: :math:`F'(k_0)\,\mathrm dk_0 = -a\sin(k a)\,\mathrm dk`,
+    with :math:`\omega = c k_0` and ``frequency`` (Hz) the root at :math:`k`
+    (rad/m) it returns.
     """
     _, slope = _tmm_dispersion(tan_delta)
     k0 = 2 * math.pi * frequency / C0
@@ -699,7 +705,7 @@ def coordinate_classes(
 ROD_A = rods_gmsh.CELL  # lattice constant, mm
 ROD_R = rods_gmsh.RADIUS  # rod radius (0.2 ROD_A), mm
 ROD_EPS = 8.9  # alumina
-#: Converged bands of the rod crystal as $\nu = \omega a / 2\pi c$: polarization
+#: Converged bands of the rod crystal as :math:`\nu = \omega a / 2\pi c`: polarization
 #: ("Ez", E along the rods, PEC front and back faces; "Hz", H along the rods,
 #: natural faces) -> point -> the four lowest bands, a degenerate pair written
 #: twice. Band 1 at Γ is the static field, 0 here and dropped by gfem's static
@@ -719,11 +725,11 @@ ROD_BANDS = {
     },
 }
 #: Band group velocities of the rod crystal at the segment midpoints of
-#: Γ-X-M-Γ, $v_g \cdot \hat t / c$ along each segment's direction $\hat t$
-#: (Γ-X at $(1/4, 0)$ along +x, X-M at $(1/2, 1/4)$ along +y, M-Γ at
-#: $(1/4, 1/4)$ along $-(1, 1)/\sqrt 2$, reduced coordinates), bands 1-4 as
+#: Γ-X-M-Γ, :math:`v_g \cdot \hat t / c`` along each segment's direction :math:`\hat t`
+#: (Γ-X at :math:`(1/4, 0)` along +x, X-M at :math:`(1/2, 1/4)` along +y, M-Γ at
+#: :math:`(1/4, 1/4)` along :math:`-(1, 1)/\sqrt 2`, reduced coordinates), bands 1-4 as
 #: in `ROD_BANDS`; central differences of the same 2D FEM with
-#: $\delta\kappa = 10^{-4}$.
+#: :math:`\delta\kappa = 10^{-4}`.
 ROD_V_G = {
     "Ez": {
         "Γ-X": (0.63165, -0.37635, 0.02559, 0.31346),
@@ -787,7 +793,7 @@ def rods_mesh(directory: Path, cells: int = 8) -> gfem.Mesh:
 def rods(mesh: gfem.Mesh, *, tan_delta: float = 0.0, tm: bool = True) -> gfem.Model:
     """`rods_mesh`'s cell: periodic in x and y, loss tangent ``tan_delta`` in the rod.
 
-    PEC z faces leave the z-uniform modes with $E$ along z, the 2D TM
+    PEC z faces leave the z-uniform modes with :math:`E` along z, the 2D TM
     problem; PMC z faces (``tm=False``) leave the TE one.
     """
     wall = gfem.PEC if tm else gfem.PMC
@@ -807,7 +813,7 @@ def rods(mesh: gfem.Mesh, *, tan_delta: float = 0.0, tm: bool = True) -> gfem.Mo
 
 
 def rods_frequency(nu: float) -> float:
-    r"""The frequency, Hz, of the normalized frequency $\nu = \omega a / 2\pi c$."""
+    r"""The frequency, Hz, of the normalized :math:`\nu = \omega a / 2\pi c`."""
     return nu * C0 / (ROD_A * MM)
 
 
