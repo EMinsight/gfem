@@ -29,12 +29,13 @@ AXIAL = gfem.PlaneWave("z", theta=0.0, phi=0.0, polarization="TM")
 VOLUME_GATE = 1e-3
 #: The two routes differ by the discretization of the far-field layer, so the
 #: mesh is finer than the free-space default (maxh 0.4, sphere 0.2): measured
-#: 2.6e-3 there, 6.6e-4 at maxh 0.25, 2.4e-4 here.
+#: 2.6e-3 there, 6.6e-4 at maxh 0.25, 2.4e-4 here. That solve takes minutes, so
+#: both tests on it run in the reference tier.
 MAXH, SPHERE_MAXH = 0.2, 0.1
 
 
 @pytest.fixture(scope="module")
-def lossy_sphere(tmp_path_factory):
+def fine_lossy_sphere(tmp_path_factory):
     mesh, _ = fsc.sphere(
         tmp_path_factory.mktemp("mp") / "sphere.msh",
         maxh=MAXH,
@@ -46,8 +47,9 @@ def lossy_sphere(tmp_path_factory):
     return model, gfem.solve(model, problem, options=OPTIONS)
 
 
-def test_v6_the_volume_route_gives_the_projections_degree_one(lossy_sphere):
-    model, result = lossy_sphere
+@pytest.mark.reference
+def test_v6_the_volume_route_gives_the_projections_degree_one(fine_lossy_sphere):
+    model, result = fine_lossy_sphere
     mp = gfem.multipoles(result, "z", model=model)
     volume = mpm._volume_coefficients(result, "z", model=model, lmax=mp.lmax)
     one = slice(0, 3)
@@ -61,8 +63,11 @@ def test_v6_the_volume_route_gives_the_projections_degree_one(lossy_sphere):
     assert error <= VOLUME_GATE
 
 
-def test_v7_the_toroidal_correction_improves_the_long_wavelength_dipole(lossy_sphere):
-    model, result = lossy_sphere
+@pytest.mark.reference
+def test_v7_the_toroidal_correction_improves_the_long_wavelength_dipole(
+    fine_lossy_sphere,
+):
+    model, result = fine_lossy_sphere
     mp = gfem.multipoles(result, "z", model=model)
     cm = gfem.current_moments(result, "z", model=model)
     p = np.asarray(mp.electric_dipole)[0]
