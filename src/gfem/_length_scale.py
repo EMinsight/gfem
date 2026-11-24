@@ -44,10 +44,10 @@ class LengthScaleValues(NamedTuple):
     inequality constraint takes.
 
     Attributes:
-        solid: At most 0 when the printed lines are at least ``min_width``
-            wide.
-        void: At most 0 when the printed spaces are at least ``min_spacing``
-            wide.
+        solid: At most 0 when the drawn design's lines are at least
+            ``min_width`` wide.
+        void: At most 0 when the drawn design's spaces are at least
+            ``min_spacing`` wide.
     """
 
     solid: jax.Array
@@ -59,13 +59,14 @@ class LengthScaleConstraints:
 
     Call it on the filtered density (``rules(blur(rho))``);
     `length_scale_constraints` builds it. It returns
-    ``LengthScaleValues(solid, void)``, each at most 0 when the printed
-    pattern, the contour of the filtered density at ``eta``, keeps its rule.
+    ``LengthScaleValues(solid, void)``, each at most 0 when the drawn
+    design's pattern, where the filtered density reaches ``eta``, keeps its
+    rule.
 
     Attributes:
-        min_width: The minimum width of a printed line (m).
-        min_spacing: The minimum width of a printed space (m).
-        eta: The threshold the pattern is printed at.
+        min_width: The minimum width of a line of the drawn design (m).
+        min_spacing: The minimum width of a space of the drawn design (m).
+        eta: The threshold of the drawn design's pattern.
         radius: The filter radius (m).
         eta_solid: :math:`\eta_e`, the lowest filtered value a line of width
             ``min_width`` keeps along its middle.
@@ -98,7 +99,7 @@ class LengthScaleConstraints:
         n_sampled = int(np.sum(grid.sampled))
         area = n_sampled * grid.pitch**2
         # One critical feature as long as the design is wide: the value of a
-        # line printed exactly at its rule (Arrieta, Romano and Johnson 2025,
+        # line exactly at its rule (Arrieta, Romano and Johnson 2025,
         # Eq. 55), with the curvature of the filtered profile across it.
         scale = (
             radius
@@ -190,9 +191,9 @@ def length_scale_constraints(
 ) -> LengthScaleConstraints:
     r"""Minimum width and spacing rules as two differentiable constraints.
 
-    The printed pattern is the contour of the filtered density
-    :math:`\tilde\rho` at ``eta``. A line printed at least ``min_width``
-    wide keeps :math:`\tilde\rho \ge \eta_e` along its middle, where
+    The drawn design's pattern is where the filtered density
+    :math:`\tilde\rho` reaches ``eta``. A line at least ``min_width`` wide
+    keeps :math:`\tilde\rho \ge \eta_e` along its middle, where
     :math:`\tilde\rho` is flat; a space at least ``min_spacing`` wide keeps
     :math:`\tilde\rho \le \eta_d`. The constraints measure the shortfall
     there (Zhou, Lazarov, Wang and Sigmund 2015):
@@ -225,9 +226,9 @@ def length_scale_constraints(
     :math:`|\Omega|` the area of the grid's sampled pixels (the means run
     over them only; unsampled pixels are not part of the device).
 
-    What :math:`g \le 0` guarantees: straight lines and spaces print at
-    least about 0.97 of their rule (0.94 at ``eta`` other than 1/2); a
-    compact feature (a dot, a hole) must print about 1.1 times it. After an
+    What :math:`g \le 0` guarantees: straight lines and spaces are at least
+    about 0.97 of their rule (0.94 at ``eta`` other than 1/2); a compact
+    feature (a dot, a hole) must be about 1.1 times it. After an
     optimization a few percent of a phase's area can still sit below the
     rule: to clear a foundry rule, constrain about 10 % above it and confirm
     on the pattern with `LayerPattern.check`.
@@ -254,12 +255,12 @@ def length_scale_constraints(
     Args:
         blur: The filter the design is filtered with, built on a `LayerGrid`
             by `helmholtz_filter`.
-        min_width: The minimum width of a printed line (m), > 0, at most
-            1.25 times the filter radius.
-        min_spacing: The minimum width of a printed space (m), > 0, at most
-            1.25 times the filter radius.
-        eta: The threshold the pattern is printed at, in (0, 1), the same as
-            the pattern's.
+        min_width: The minimum width of a line of the drawn design (m),
+            > 0, at most 1.25 times the filter radius.
+        min_spacing: The minimum width of a space of the drawn design (m),
+            > 0, at most 1.25 times the filter radius.
+        eta: The threshold of the drawn design's pattern, in (0, 1), the
+            same as the pattern's.
 
     Returns:
         The constraints, a fixed callable on the filtered density.
@@ -306,7 +307,7 @@ def length_scale_constraints(
         raise ValueError(
             f"{where}: the grid's pitch {grid.pitch:g} m is coarser than a third "
             f"of the filter radius (radius / 3 = {coarsest:g} m), where the "
-            "constraints stop measuring the printed width. Lay a finer grid "
+            "constraints stop measuring the pattern's width. Lay a finer grid "
             f"(pitch <= {coarsest:g} m) or raise the filter radius to at least "
             f"{_PITCHES_PER_RADIUS * grid.pitch:g} m."
         )
@@ -332,9 +333,9 @@ def radius_for_length_scale(length: float, *, delta: float, eta: float = 0.5) ->
     r"""The filter radius whose robust triple holds a minimum length.
 
     With `robust` at thresholds :math:`\eta \pm \delta`, a line whose eroded
-    design survives prints at least :math:`\ell` wide in the nominal design,
-    and a space whose dilated design stays open prints at least
-    :math:`\ell`, when the filter radius is
+    design survives is at least :math:`\ell` wide in the nominal design,
+    and a space whose dilated design stays open is at least :math:`\ell`
+    wide, when the filter radius is
 
     .. math::
 

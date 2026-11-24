@@ -8,14 +8,14 @@ two feed guides. Its filtered density is the design the optimizer would end at.
 
 - V1: the pattern of that design (its :math:`\eta = 0.5` contour) is solved
   back as area fractions of the 50 nm pixels. Its :math:`T = |S_{21}|^2`
-  matches the binary layout drawn on a 6.25 nm grid on the same mesh, and the
+  matches the binary pattern drawn on a 6.25 nm grid on the same mesh, and the
   :math:`\beta = 32` projection the optimizer solves, to 0.02.
 - V2: the gradient of a worst-case loss over the three printed designs of a
   fabrication model (filter, projection, Gaussian blur and threshold at three
   edge biases, then a solve each) matches a fourth-order difference.
 
 V3 needs no solve: a 64 x 64 design matched by Adam to a target whose bars,
-gaps and bridge are 0.3 to 0.7 :math:`\ell` wide (below the rule
+slots and bridge are 0.3 to 0.7 :math:`\ell` wide (below the rule
 :math:`\ell`), first unconstrained, then with the length-scale constraints
 asked at :math:`1.1\ell` as a quadratic penalty. The penalty brings the
 pattern's narrowest width and spacing up to about the rule.
@@ -90,13 +90,13 @@ def bilinear(rho, grid, x, y):
     )
 
 
-def test_v1_the_pattern_solved_back_transmits_as_the_layout(bend):
+def test_v1_the_pattern_solved_back_transmits_as_the_fine_pattern(bend):
     mesh, model, grid, arc = bend
     filtered = np.asarray(design.helmholtz_filter(grid, radius=RADIUS)(arc))
     raster = grid.area_fraction(grid.pattern(filtered, eta=0.5))
     t_raster = float(transmission(model, grid, raster))
 
-    # The layout itself, independent of the contouring: where the bilinear
+    # The pattern itself, independent of the contouring: where the bilinear
     # field reaches 0.5, on pixels an eighth of the pitch (unsampled ones warn).
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", gfem.UnsampledPixelsWarning)

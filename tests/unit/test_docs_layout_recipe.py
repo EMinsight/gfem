@@ -1,4 +1,4 @@
-"""The "Export a fabricable layout" recipe runs and writes the file it describes.
+"""The "Export a design's layer pattern to GDS" recipe runs and writes its file.
 
 docs/recipes/fabricable-layout.md runs nothing at docs build time. This runs
 its blocks in order, as a reader does, on the repository's own

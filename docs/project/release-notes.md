@@ -195,8 +195,8 @@ Design:
   `gfem.design.length_scale_constraints(blur, min_width=..., min_spacing=...)`
   turns a layer grid's minimum line width and minimum spacing into two
   differentiable constraints on the filtered density, each at most 0 when the
-  printed pattern keeps its rule, for an optimizer's inequality constraints or
-  a penalty. `gfem.design.radius_for_length_scale` gives the filter radius
+  drawn design's pattern keeps its rule, for an optimizer's inequality
+  constraints or a penalty. `gfem.design.radius_for_length_scale` gives the filter radius
   whose robust triple holds a minimum length.
 
 - **Layer patterns.** `LayerGrid.pattern(rho, eta=0.5)` draws a layer-grid
@@ -239,7 +239,7 @@ Design:
   against an example width and spacing rule, written to a GDS file and solved
   again, within 0.02 of the optimizer's last $|S_{21}|^2$; its numbers after
   the optimization are now those of the pattern. A new recipe, "Export a
-  fabricable layout", and the robust optimization recipe, now "Optimize a
+  design's layer pattern to GDS", and the robust optimization recipe, now "Optimize a
   design for fabrication: etch, blur and minimum features", cover the
   fabrication model, minimum width and spacing constraints, fixed neighbours
   and acceptance checks; the glossary gains five terms.

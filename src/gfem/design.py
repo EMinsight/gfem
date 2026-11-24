@@ -414,9 +414,9 @@ class LayerGrid:
         at the projection threshold, read through the grid's own bilinear
         map, the field a solve samples. The edge is the
         :math:`\beta \to \infty` limit of ``project(filtered, beta, eta)``,
-        the design that is fabricated, placed between pixel centres to a few
-        hundredths of a pixel. A projected or binary design works too, but
-        only to about half a pixel (its values saturate at the centres).
+        the drawn design, placed between pixel centres to a few hundredths
+        of a pixel. A projected or binary design works too, but only to
+        about half a pixel (its values saturate at the centres).
         Solid is ``rho >= eta``; a saddle cell joins its two solid corners
         when the mean of its four corners reaches ``eta``.
 
@@ -456,9 +456,9 @@ class LayerGrid:
     def area_fraction(self, pattern: LayerPattern) -> np.ndarray:
         """Each pixel's share of its area inside the footprint that the pattern covers.
 
-        Exact coverage (no point sampling): the pattern's edges are split at
-        the pixel lines and each piece's area accumulated in its pixel. The
-        denominator is the pixel's area inside `bounds`, so a fully solid
+        The exact area fraction (no point sampling): the pattern's edges
+        are split at the pixel lines and each piece's area accumulated in its
+        pixel. The denominator is the pixel's area inside `bounds`, so a fully solid
         pattern gives 1 in the pixels overhanging the footprint too, and
         polygons reaching past the footprint (guides drawn long) are clipped.
         Uses: re-solving a pattern (``grid.to_elements(grid.area_fraction(

@@ -138,7 +138,8 @@ The worst of the three variants is a maximum, not smooth where two tie.
 ## Minimum width and spacing
 
 A foundry's minimum width and spacing become two differentiable constraints on
-the filtered density, each at most 0 when the printed pattern keeps its rule:
+the filtered density, each at most 0 when the drawn design's pattern keeps its
+rule:
 
 ```python
 rules = design.length_scale_constraints(blur, min_width=165e-9, min_spacing=165e-9)
@@ -153,8 +154,8 @@ Run them in two stages:
 1. Optimize without the constraints, raising $\beta$ up to 32, until the
    topology has formed.
 2. Switch the constraints on at that $\beta$ (16 or more), never from a grey
-   start: they measure printed lines and spaces, and a grey design has none
-   yet.
+   start: they measure the drawn design's lines and spaces, and a grey design
+   has none yet.
 
 A quadratic penalty with Adam is the plain path, its weight raised in steps:
 
@@ -204,17 +205,17 @@ opt = nlopt.opt(nlopt.LD_CCSAQ, rho.size)
 opt.set_lower_bounds(0.0)
 opt.set_upper_bounds(1.0)
 opt.set_min_objective(objective)
-opt.add_inequality_mconstraint(rule_values, [1e-4, 1e-4])
+opt.add_inequality_mconstraint(rule_values, [1e-3, 1e-3])
 opt.set_maxeval(100)
 rho = opt.optimize(np.ravel(rho)).reshape(grid.shape)
 ```
 
-- **What $g \le 0$ guarantees.** Straight lines and spaces print at least about
-  0.97 of their rule; compact features (a dot, a hole) are held stricter, to
-  about 1.1 times it. After an optimization a few percent of a phase's area can
-  still sit below the rule: constrain about 10 % above the foundry rule (165 nm
-  here for a 150 nm rule), then confirm on the pattern with
-  `LayerPattern.check` (see "Accept the design" below).
+- **What $g \le 0$ guarantees.** Straight lines and spaces of the drawn design
+  are at least about 0.97 of their rule; compact features (a dot, a hole) are
+  held stricter, to about 1.1 times it. After an optimization a few percent of
+  a phase's area can still sit below the rule: constrain about 10 % above the
+  foundry rule (165 nm here for a 150 nm rule), then confirm on the pattern
+  with `LayerPattern.check` (see "Accept the design" below).
 - **Range.** A rule above $1.25R$ or a pitch above $R/3$ is refused: beyond
   them the constraints let lines narrower than the rule pass. Raise the filter
   radius or refine the grid.
@@ -269,7 +270,7 @@ fractions of the drawn pattern (edges to about 0.015 pixel, against about 0.2
 pixel from a $\beta = 32$ projection):
 
 ```python
-drawn_pattern = grid.pattern(blur(rho), eta=0.5)  # the drawn layout, to GDS
+drawn_pattern = grid.pattern(blur(rho), eta=0.5)  # the drawn pattern, to GDS
 drawn = grid.area_fraction(drawn_pattern)  # the drawn design, exact, as pixels
 eroded = fab.pattern(drawn, bias=fab.bias - 10e-9)
 dilated = fab.pattern(drawn, bias=fab.bias + 10e-9)

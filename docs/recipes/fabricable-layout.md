@@ -1,4 +1,4 @@
-# Export a fabricable layout
+# Export a design's layer pattern to GDS
 
 An optimized layer-grid design is a pixel image. A foundry takes polygons: the
 {term}`layer pattern` where the layer is solid, kept above its
@@ -232,7 +232,7 @@ pattern of the optimized design transmits 0.9762 against 0.9777 for the last
 iterate at $\beta = 32$. The two differ because the iterate is a finite-$\beta$
 projection, not a sharp edge, and the solve reads the pattern's pixels
 bilinearly, so the permittivity stays fractional along the edges; on this bend
-such gaps stay within 0.02. A larger gap means the chain from pixels to polygons
+such differences stay within 0.02. A larger difference means the chain from pixels to polygons
 and back is broken. To confirm the third digit, solve on a finer mesh or a finer
 grid.
 
@@ -243,10 +243,10 @@ grid.
   (`jnp.where(grid.sampled, rho, 0.0)`); where solid meets the real outline the
   pattern can still reach past it by a fraction of the filter radius, so draw such
   a region only where nothing fixed lies beyond it, or clip it in the layout tool.
-- On a 2D model the pattern is a layout when the model's plane is the wafer's, as
-  for this bend. On a cross-section model it is the profile of the cross-section.
-- On a patterned metal sheet the pattern is the film's layout: take it from the
-  pixels before `to_faces`.
+- On a 2D model the pattern is the wafer's layer pattern when the model's plane
+  is the wafer's, as for this bend. On a cross-section model it is the profile of the cross-section.
+- On a patterned metal sheet the pattern is the film's layer pattern: take it
+  from the pixels before `to_faces`.
 
 ## Next
 

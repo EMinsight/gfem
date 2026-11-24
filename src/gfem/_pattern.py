@@ -2,9 +2,9 @@ r"""Layer patterns: the polygons of a layer-grid design, and their area fraction
 
 A layer pattern is the part of a layer grid's footprint where the filtered
 density reaches the projection threshold :math:`\eta`: the
-:math:`\beta \to \infty` limit of ``project(filtered, beta, eta)``, the design
-that is fabricated. `LayerGrid.pattern` draws it as polygons with sub-pixel
-edges, `LayerPattern.from_polygons` builds one from user polygons (feed guides,
+:math:`\beta \to \infty` limit of ``project(filtered, beta, eta)``, the drawn
+design. `LayerGrid.pattern` draws it as polygons with sub-pixel edges,
+`LayerPattern.from_polygons` builds one from user polygons (feed guides,
 hand-drawn designs), and `LayerGrid.area_fraction` rasterizes one exactly back
 onto the pixels.
 """
@@ -365,10 +365,10 @@ def _distinct(ring: np.ndarray) -> np.ndarray:
 def area_fraction(grid: LayerGrid, pattern: LayerPattern) -> np.ndarray:
     r"""Each pixel's share of its in-footprint area covered by the pattern.
 
-    Exact coverage: the rings' edges are split at the pixel lines (clipped to
-    the footprint) and each piece adds its signed trapezoid, the area between
-    it and the pixel's lower edge, to its pixel and a full column height to
-    the pixels below it (Green's theorem, area :math:`-\oint y\,dx` per
+    The exact area fraction: the rings' edges are split at the pixel lines
+    (clipped to the footprint) and each piece adds its signed trapezoid, the
+    area between it and the pixel's lower edge, to its pixel and a full column
+    height to the pixels below it (Green's theorem, area :math:`-\oint y\,dx` per
     column).
     """
     if not isinstance(pattern, LayerPattern):

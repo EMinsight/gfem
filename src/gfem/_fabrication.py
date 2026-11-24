@@ -273,7 +273,7 @@ class FabricationModel:
         return self._eta(b)
 
     def pattern(self, rho: Any, *, bias: Any = None) -> LayerPattern:
-        r"""The printed layer pattern: the contour of the image at :math:`\eta(b)`.
+        r"""The printed pattern: the layer pattern of the image at :math:`\eta(b)`.
 
         ``grid.pattern(fab.image(rho), eta=fab.threshold(bias))``: the
         prediction of what the process prints, for review, feature checks
