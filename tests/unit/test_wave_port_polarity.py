@@ -14,6 +14,7 @@ import numpy as np
 import pml_cases
 import pytest
 import structured_meshes as sm
+from wave_port_cases import CASE_A, ported_guide, ported_model
 
 import gfem
 
@@ -271,3 +272,25 @@ def test_the_port_mode_problem_drops_the_polarity_for_another_mode(slabs):
     problem = gfem.PortMode(port="p1", frequency=F, mode=2, polarization="Ez")
     other = _solve(model, problem)
     assert other.mode == 2
+
+
+# --- the eigenmode problem -------------------------------------------------------
+
+
+def test_an_eigenmode_solve_ignores_the_polarity(tmp_path):
+    # wave port case A (WR-90, port at z = 15 mm): 1 um from the side wall the
+    # TE10 field is about 1e-4 of its peak, below the guard
+    mesh = ported_guide(tmp_path / "a.msh", CASE_A, left_port=False)
+    arrow = gfem.WavePort("p1", "port", polarity=((1e-6, 5.08e-3, 15e-3), "+y"))
+    with pytest.raises(gfem.PortModeError, match=r"'p1'.*polarity"):
+        gfem.solve(
+            ported_model(mesh, CASE_A, [arrow]),
+            gfem.PortMode("p1", (11.67e9,)),
+            options=OPTIONS,
+        )
+    problem = gfem.Eigenmode(target=11.67e9, n_modes=1)
+    plain, polar = (
+        gfem.solve(ported_model(mesh, CASE_A, [port]), problem, options=OPTIONS)
+        for port in (gfem.WavePort("p1", "port"), arrow)
+    )
+    np.testing.assert_array_equal(np.asarray(polar.omega), np.asarray(plain.omega))
