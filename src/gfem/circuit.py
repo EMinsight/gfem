@@ -143,7 +143,9 @@ class SaxComponent:
     concrete entry. With an adaptive template (``sweep="adaptive"``)
     without ``samples``, the constructor's solve is the greedy sweep: its
     sampled frequencies are frozen into `problem`, so every later solve,
-    traced ones included, uses them.
+    traced ones included, uses them. Its S serves the defaults; a frozen
+    solve at the defaults (under a transformation) agrees with it to
+    round-off.
 
     Build the circuit once, outside the transformed function, and pass
     designs as instance settings.

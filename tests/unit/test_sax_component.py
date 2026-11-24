@@ -781,15 +781,23 @@ def test_an_adaptive_template_is_frozen_by_the_constructors_greedy_solve(solves)
     assert component._solved.samples == samples
     component()
     assert len(solves) == 1  # the greedy result is kept under the frozen key
-    # the greedy S is a frozen re-solve's, bit for bit (direct solver, one process)
+    # The kept greedy S stands for a frozen solve at the defaults. A frozen re-solve
+    # samples the same frequencies and so builds the same reduced model, but it is
+    # a second floating-point computation of it: on Linux the two agree bit for
+    # bit, on the macOS py3.12 runner's BLAS only to round-off. 1e-12 on |S| <= 1
+    # is the bound gfem's own frozen-versus-greedy sweep test holds on every runner.
     frozen = gfem.solve(
         line_at(),
         dataclasses.replace(component.problem, excite=("p1", "p2")),
         options=options,
     )
+    assert frozen.sweep is not None
+    assert frozen.sweep.sampled_frequencies == samples
     kept = component._network({"eps_sub": 4.0})
-    assert len(solves) == 1
-    assert np.array_equal(np.asarray(kept.values), np.asarray(frozen.s.values))
+    assert len(solves) == 1  # read from the memo, not solved again
+    np.testing.assert_allclose(
+        np.asarray(kept.values), np.asarray(frozen.s.values), rtol=0, atol=1e-12
+    )
     # a later design solves with the frozen samples, also under a trace
     component(eps_sub=3.0)
     assert len(solves) == 2
