@@ -35,9 +35,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import scipy.sparse as sp
-from jax.scipy import fft
 
-from gfem import _morph, _mpi, _sparse
+from gfem import _morph, _mpi, _sparse, _spectral
 from gfem._checks import is_traced, static_float
 from gfem._dim2 import refuse_entry
 from gfem._materials import PixelGeometry
@@ -552,8 +551,11 @@ def _bilinear(
 
 # --- Helmholtz filter ---------------------------------------------------------------
 
-#: PDE length per filter radius: a cone (linear hat) filter of radius R and the
-#: Helmholtz filter of length R / (2 sqrt(3)) have the same second moment.
+#: PDE length per filter radius: the 1D hat filter of radius :math:`R` and the 1D
+#: Helmholtz filter of length :math:`R/(2\sqrt3)` have the same second moment,
+#: :math:`R^2/6` (the convention of Lazarov and Sigmund 2011). In 2D the Helmholtz
+#: filter is a little wider than a cone of the same radius:
+#: :math:`\langle r^2\rangle = R^2/3` against :math:`0.3R^2`.
 PDE_LENGTH_PER_RADIUS = 1 / (2 * math.sqrt(3))
 
 
@@ -606,10 +608,11 @@ def helmholtz_filter(
 
     The filtered density :math:`u` solves :math:`-r^2 \nabla^2 u + u = \rho`
     with zero-flux (Neumann) edges, :math:`r` = ``radius`` /
-    :math:`(2\sqrt{3})`: the filter has
-    the second moment of a cone filter of radius ``radius``, and features
-    much smaller than ``radius`` are smoothed away. Constants pass unchanged
-    and the (volume-weighted) total density is kept.
+    :math:`(2\sqrt{3})`: ``radius`` is that of the 1D hat (linear) filter
+    with the same second moment; in 2D the Helmholtz filter is slightly wider
+    than a cone filter of that radius. Features much smaller than ``radius``
+    are smoothed away. Constants pass unchanged and the (volume-weighted)
+    total density is kept.
 
     - On a `LayerGrid`, the filter acts on the pixel array (a 2D screened
       Poisson solve with second differences, by cosine transforms). Along a
@@ -662,36 +665,11 @@ def helmholtz_filter(
 
 
 def _grid_filter(grid: LayerGrid, length: float) -> Callable:
-    # The second-difference Laplacian with reflecting (Neumann) edges is
-    # diagonal in the orthonormal type-II cosine transform; with periodic
-    # (wrapped) edges, in the discrete Fourier transform. The transforms act on
-    # separate axes, so they commute.
-    h = grid.pitch
+    # The screened-Poisson solve is a gain per mode of the second differences.
     wrap = (grid.periodic[1], grid.periodic[0])  # array axes (y, x)
-    ky, kx = (
-        (2 / h * np.sin(np.pi * np.arange(n) / (n if w else 2 * n))) ** 2
-        for n, w in zip(grid.shape, wrap, strict=True)
-    )
+    ky, kx = _spectral.laplacian_eigenvalues(grid.shape, grid.pitch, wrap)
     gain = jnp.asarray(1 / (1 + length**2 * (ky[:, None] + kx[None, :])))
-    if not any(wrap):
-
-        def apply(rho: jax.Array) -> jax.Array:
-            return fft.idctn(gain * fft.dctn(rho, type=2, norm="ortho"), norm="ortho")
-
-        return apply
-    cosine = tuple(a for a in (0, 1) if not wrap[a])
-    fourier = tuple(a for a in (0, 1) if wrap[a])
-
-    def apply_wrapped(rho: jax.Array) -> jax.Array:
-        if cosine:
-            rho = fft.dctn(rho, type=2, norm="ortho", axes=cosine)
-        # The gain is even in the wavenumber, so the result is real.
-        rho = jnp.fft.ifftn(gain * jnp.fft.fftn(rho, axes=fourier), axes=fourier).real
-        if cosine:
-            rho = fft.idctn(rho, type=2, norm="ortho", axes=cosine)
-        return rho
-
-    return apply_wrapped
+    return _spectral.diagonal_map(gain, wrap)
 
 
 def _mesh_filter(mesh: Mesh, region: str, length: float) -> tuple[Callable, int]:
