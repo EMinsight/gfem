@@ -326,5 +326,19 @@ def test_probe_node_and_point_gradients_raise(mode):
     assert not np.asarray(g).any()
 
 
+def test_a_3d_h1_reading_still_refuses_node_gradients(cap):
+    """Only a 2D H1 field has a node derivative at a fixed point."""
+    field = cap.potential["mid"]
+    topology = field.mesh._topology
+    point = jnp.asarray([2e-6, 1e-6, 0.3e-6])
+
+    def moved(nodes):
+        scaled = gfem.Field(**{**_kwargs(field), "mesh": gfem.Mesh(nodes, topology)})
+        return scaled.at(point)
+
+    with pytest.raises(gfem.NonDifferentiableError, match="node coordinates"):
+        jax.grad(moved)(field.mesh.nodes)
+
+
 def _kwargs(field):
     return {f.name: getattr(field, f.name) for f in dataclasses.fields(field)}

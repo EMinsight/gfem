@@ -201,9 +201,12 @@ class Field:
 
         A JAX function of the coefficients: under `jax.grad` the gradient
         flows back into the solve that made the field (material-field
-        gradients of a probed driven field, for example). The points and
-        the mesh node coordinates are fixed: perturbing them raises
-        `gfem.NonDifferentiableError`. Works under `jax.jit` and `jax.vmap`.
+        gradients of a probed driven field, for example). The points are
+        fixed: perturbing them raises `gfem.NonDifferentiableError`. So does
+        perturbing the mesh node coordinates, except for an H1 field of a 2D
+        mesh: the point stays where it is while the elements move under it,
+        and the reading's derivative includes that transport. Works under
+        `jax.jit` and `jax.vmap`.
 
         A point inside a tetrahedron gets that tetrahedron's value, the same on
         any number of ranks. A point on a face, to round-off, gets the value from

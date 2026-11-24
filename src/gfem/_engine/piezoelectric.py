@@ -67,13 +67,14 @@ from gfem._engine.cache import Entry, discretization
 from gfem._engine.coefficients import element_axes, p0, permittivity
 from gfem._engine.domain import boundary_region, em_region, h1_space, region_domain
 from gfem._engine.runtime import task_manager
-from gfem._engine.sensitivity import FieldPair, MomentBlock, Tensors
+from gfem._engine.sensitivity import FieldPair, MomentBlock, Tensors, Term
 from gfem._engine.solve_request import SolveRequest
 from gfem._field import FieldMap
 from gfem._linalg.base import free_mask
 from gfem._linalg.direct import DirectHandle
 from gfem._materials import piezoelectric_in_frame, stiffness_in_frame
 from gfem.errors import MissingMaterialPropertyError
+from gfem.mesh import Mesh
 from gfem.model import Model
 from gfem.options import SolverOptions
 from gfem.problems import Piezoelectric
@@ -277,9 +278,12 @@ class PiezoelectricRule:
         nf, nt = len(problem.frequency), len(problem.terminals)
         nu = nphi = 0
         if self.kept:
+            # the sizes depend on the topology only: traced nodes are not read
+            mesh = model.mesh
+            fixed = model.replace(mesh=Mesh(mesh.imported_nodes, mesh._topology))  # noqa: SLF001
             with task_manager(self.options.threads, self.comm):
                 system = PiezoelectricSystem(
-                    model, problem, self.options, self, assemble=False
+                    fixed, problem, self.options, self, assemble=False
                 )
             nu, nphi = system.offset // 3, system.ndof - system.offset
         nk = len(self.kept)
@@ -306,11 +310,6 @@ class PiezoelectricRule:
 
     def unsupported_input(self, kind: tuple) -> str | None:
         """Why input ``kind`` cannot be differentiated, or ``None``."""
-        if kind[0] == "nodes":
-            return (
-                "node gradients of a Piezoelectric solve are not available yet "
-                "(its materials are)"
-            )
         if kind[0] == "law":
             return (
                 "a permittivity law's parameters are not design inputs of a "
@@ -412,6 +411,16 @@ class PiezoelectricRule:
             load[:, names.index(name)] = g
         return loads
 
+    def terms(self, model: Model, *, nodes: bool) -> list[Term]:  # noqa: ARG002
+        r"""The five pieces of :math:`A` for the node pass, as Lagrangian terms.
+
+        Each term is the integral of its real-coefficient form on the pinned
+        rule, so ``DiffShape`` at the integral level carries the measure, the
+        gradients and the position-dependent loss (read from the imported
+        coordinates, which ride with the material).
+        """
+        return _terms(self, model)
+
     def tensors(self, model: Model, wanted: frozenset) -> Tensors:
         """The tensor pass of the wanted material leaves (see `Tensors`)."""
         return _tensors(self, model, wanted)
@@ -426,6 +435,63 @@ def _weights(omega: float) -> dict[str, complex]:
         "dielectric": 1.0,
         "mass": -(omega**2),
     }
+
+
+def _terms(rule: PiezoelectricRule, model: Model) -> list[Term]:
+    """The node pass's terms: stiffness, loss, coupling, dielectric and mass."""
+    problem, order = rule.problem, rule.options.order
+    built = discretization(model.mesh).built
+    mech = em_region(model, built, "mechanical")
+    diel = em_region(model, built, "em")
+    vu = h1_space(model, built, order, tuple(problem.clamped), physics="mechanical")
+    vp = h1_space(model, built, order, rule.electrodes.lines, physics="em")
+    space = ngs.FESpace([vu, vu, vu, vp])
+    arrays = _element_arrays(model)
+    eps = permittivity(model, built)
+    if eps.dim == 1:
+        eps = eps * ngs.Id(3)
+    eps = EPS0 * eps
+    c, e = _tensor(built, arrays["c"]), _tensor(built, arrays["e"])
+    rho = p0(built, arrays["rho"])
+    loss = p0(built, arrays["loss"])
+    if rule.frame is not None:
+        loss = loss + _frame_depth(model, built, rule.frame)
+    scale = built.scale
+    dx_mech = quadrature.dx(order, definedon=mech)
+    dx_diel = quadrature.dx(order, definedon=diel)
+
+    def potential(u: Any) -> Any:
+        g = ngs.grad(u.components[3])
+        return ngs.CF((g[0], g[1], 0))
+
+    def stiffness(u: Any, v: Any) -> Any:
+        return _strains(v) * (c * _strains(u)) * dx_mech
+
+    def damping(u: Any, v: Any) -> Any:
+        return loss * (_strains(v) * (c * _strains(u))) * dx_mech
+
+    def coupling(u: Any, v: Any) -> Any:
+        return (
+            _strains(v) * (e.trans * potential(u)) + potential(v) * (e * _strains(u))
+        ) * dx_mech
+
+    def dielectric(u: Any, v: Any) -> Any:
+        return -(potential(v) * (eps * potential(u))) * dx_diel
+
+    def mass(u: Any, v: Any) -> Any:
+        return scale**2 * rho * _displacement_moment(u, v) * dx_mech
+
+    pieces = {
+        "stiffness": stiffness,
+        "loss": damping,
+        "coupling": coupling,
+        "dielectric": dielectric,
+        "mass": mass,
+    }
+    return [
+        Term(name, "surface", integrand=form, space=space)
+        for name, form in pieces.items()
+    ]
 
 
 # --- the tensor pass ----------------------------------------------------------------

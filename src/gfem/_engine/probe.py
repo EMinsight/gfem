@@ -327,6 +327,7 @@ class Probe:
         """
         self.layout = layout
         self.comm = comm
+        self.located = located
         built, fes, _ = fe_space(
             mesh, layout.support, layout.excluded, layout.space, layout.order, comm=comm
         )
@@ -534,6 +535,25 @@ class GradientProbe(Probe):
         super().__init__(mesh, layout, located, comm)
         # d/dx of the engine's scaled coordinates
         self.factor = 1.0 / self._built.scale
+
+    def hessians(self, coefficients: np.ndarray) -> np.ndarray:
+        """The Hessian of one field at the points, ``(n_points, dim, dim)`` per m^2.
+
+        Complex coefficients give complex Hessians. One process only.
+        """
+        c = np.asarray(coefficients)[: self.ndof]
+        dim = self.located.barycentric.shape[1] - 1
+        out = np.zeros((self.n_points, dim, dim), dtype=c.dtype)
+        if self._mips is None:
+            return out
+        parts = [(1.0, np.real(c))] + ([(1j, np.imag(c))] if np.iscomplexobj(c) else [])
+        with self._lock:
+            for unit, part in parts:
+                gf = ngs.GridFunction(self._fes)
+                gf.vec.FV().NumPy()[:] = part
+                h = np.asarray(gf.Operator("hesse")(self._mips))
+                out[self._own] += unit * h.reshape(self._own.size, dim, dim)
+        return out / self._built.scale**2
 
     def _evaluate(
         self, fes: ngs.FESpace, values: np.ndarray, *, curl: bool = False

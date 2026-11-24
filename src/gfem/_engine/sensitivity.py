@@ -567,7 +567,7 @@ def energy_term(
 
 
 #: Operator families whose rules' terms the node pass reads.
-SHAPE_FORMS = frozenset({"electrostatic", "driven", "eigenmode"})
+SHAPE_FORMS = frozenset({"electrostatic", "driven", "eigenmode", "piezoelectric"})
 #: Operator families whose pairs carry the sheet pieces' weights (by name).
 SHEET_FORMS = frozenset({"driven", "eigenmode"})
 #: Operator families whose pairs carry the lumped pieces' weights (by name).
@@ -1378,9 +1378,11 @@ def _surface_shape(
 def _node_pass(
     model: Model, pairs: list[FieldPair], terms: Sequence[Term], comm: Any = None
 ) -> np.ndarray:
-    """``sum_pairs sum_t theta_t d a_t(left, right) / dX``, (n_nodes, 3), per m.
+    """``sum_pairs sum_t theta_t d a_t(left, right) / dX``, (n_nodes, dim), per m.
 
-    The form holds a load: a rank's part at each of its vertices, shared ones too.
+    A 2D mesh gives only ``"surface"`` terms, whose ``DiffShape`` carries the
+    whole transport. The form holds a load: a rank's part at each of its
+    vertices, shared ones too.
     """
     built = discretization(model.mesh, model._periodic, comm).built  # noqa: SLF001
     n_nodes = len(model.mesh.imported_nodes)
@@ -1414,12 +1416,13 @@ def _node_pass(
             if part is not None:
                 form += part
                 empty = False
-    out = np.zeros((n_nodes, 3))
+    dim = model.mesh.dim
+    out = np.zeros((n_nodes, dim))
     if empty:
         return out
     form.Assemble()
     # a rank with no elements has no vertices: its count is not to be inferred
-    values = form.vec.FV().NumPy().reshape(3, space.ndof // 3).T
+    values = form.vec.FV().NumPy().reshape(dim, space.ndof // dim).T
     np.add.at(out, built.node_order, values[: len(built.node_order)])
     # per metre: the engine mesh is in file units of `scale` metres
     return out / built.scale
