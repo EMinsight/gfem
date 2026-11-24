@@ -16,6 +16,7 @@ import numpy as np
 import periodic_cases as pc
 import pytest
 import structured_meshes as sm
+from polarization_reference import circular_unitary, mueller_measured
 
 import gfem
 from gfem import diffraction as dif
@@ -671,9 +672,6 @@ def test_floquet_ports_messages(model):
 
 # --- Jones, circular and Mueller ---------------------------------------------------
 
-#: The Stokes vectors of the four probe beams in the beam's own (theta, phi)
-#: frame: horizontal (theta), vertical (phi), diagonal, right-circular.
-_PROBES = ("H", "V", "D", "RCP")
 #: The surfaces and the (h_out, h_in) of the four blocks of the two-face cell.
 BLOCKS = (
     (TOP, TOP, 1, -1),  # reflection from the top
@@ -683,36 +681,6 @@ BLOCKS = (
 )
 SURFACES = tuple(b[:2] for b in BLOCKS)
 PAULI_SWAP = np.array([[0.0, 1.0], [1.0, 0.0]])
-
-
-def _u(h):
-    """Columns RCP, LCP; rows TM, TE (the convention, written out again)."""
-    return np.array([[1.0, 1.0], [-1j * h, 1j * h]]) / math.sqrt(2)
-
-
-def _stokes(b, h):
-    """Stokes vector of a beam with (TM, TE) components ``b`` and direction ``h``."""
-    b_theta, b_phi = h * b[0], b[1]
-    cross = b_theta * np.conj(b_phi)
-    return np.array(
-        [
-            abs(b_theta) ** 2 + abs(b_phi) ** 2,
-            abs(b_theta) ** 2 - abs(b_phi) ** 2,
-            2 * cross.real,
-            2 * cross.imag,
-        ]
-    )
-
-
-def _probe(name, h):
-    """The (TM, TE) components of a probe beam of direction ``h``."""
-    r = math.sqrt(0.5)
-    return {
-        "H": np.array([h, 0.0]),
-        "V": np.array([0.0, 1.0]),
-        "D": np.array([h * r, r]),
-        "RCP": _u(h)[:, 0],
-    }[name]
 
 
 @pytest.mark.parametrize(("out", "inc", "h_out", "h_in"), BLOCKS)
@@ -764,12 +732,8 @@ def test_c3_mueller_is_the_stokes_measured_matrix(cell, out, inc, h_out, h_in):
     assert m.shape == (2, 4, 4)
     assert m.dtype.kind == "f"
     for i in range(values.shape[0]):
-        s_in = np.stack([_stokes(_probe(n, h_in), h_in) for n in _PROBES], axis=1)
-        s_out = np.stack(
-            [_stokes(values[i] @ _probe(n, h_in), h_out) for n in _PROBES], axis=1
-        )
         np.testing.assert_allclose(
-            m[i], s_out @ np.linalg.inv(s_in), rtol=0, atol=1e-13
+            m[i], mueller_measured(values[i], h_out, h_in), rtol=0, atol=1e-13
         )
         np.testing.assert_allclose(
             m[i, 0, 0], 0.5 * np.sum(np.abs(values[i]) ** 2), rtol=0, atol=1e-13
@@ -991,7 +955,7 @@ def test_jones_circular_and_mueller_follow_the_direction_signs():
     for h_out, h_in in ((1, -1), (-1, -1), (1, 1), (-1, 1)):
         j = dif.Jones(values=values, direction=(h_out, h_in), **base)
         for i in range(2):
-            ref = _u(h_out).conj().T @ values[i] @ _u(h_in)
+            ref = circular_unitary(h_out).conj().T @ values[i] @ circular_unitary(h_in)
             np.testing.assert_allclose(j.circular[i], ref, rtol=0, atol=EXACT)
             assert j.mueller[i].shape == (4, 4)
     j = dif.Jones(values=jnp.asarray(values), direction=(1, -1), **base)
