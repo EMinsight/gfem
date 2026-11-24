@@ -42,7 +42,7 @@ from gfem._floquet import (
     surface_lead,
     wavenumber,
 )
-from gfem._law_fit import PermittivityFit, fit_permittivity
+from gfem._permittivity_fit import PermittivityFit, fit_permittivity
 from gfem._materials import (
     Debye,
     DjordjevicSarkar,

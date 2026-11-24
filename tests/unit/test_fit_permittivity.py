@@ -363,7 +363,7 @@ def test_unusable_input_is_refused_before_fitting(case, monkeypatch):
     def no_fit(*_, **__):
         raise AssertionError("fitting started")
 
-    monkeypatch.setattr("gfem._law_fit._greedy", no_fit)
+    monkeypatch.setattr("gfem._permittivity_fit._greedy", no_fit)
     with pytest.raises(error, match=match) as info:
         gfem.fit_permittivity(*args, **kwargs)
     assert str(info.value).startswith("fit_permittivity")
