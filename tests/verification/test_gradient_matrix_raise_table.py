@@ -927,8 +927,9 @@ EXPECTED |= {
 #: The thermal boundary values of the thermal and DC cases (a fixed
 #: temperature, a convection's coefficient and ambient). Steady thermal reads
 #: them (the temperature reads all three, the rise only the coefficient); DC
-#: conduction does not read them (exact zeros); transient thermal still
-#: refuses them by name.
+#: conduction does not read them (exact zeros); transient thermal reads them
+#: as steady does (the rises only the coefficient, the source-free temperature
+#: all three).
 THERMAL_VALUE_KINDS = [
     ("boundary", 1, "temperature"),
     ("boundary", 2, "coefficient"),
@@ -961,9 +962,9 @@ THERMAL_READS = {
     },
     "transient_thermal": {
         "time": set(),
-        "traces.upper": {_K, *_RHO_CP, AMOUNT, SCALES},
-        "_rises": {_K, *_RHO_CP, AMOUNT, SCALES},
-        "_source_free.coefficients": {_K},
+        "traces.upper": {_K, *_RHO_CP, AMOUNT, SCALES, _T_FIXED, _H, _T_AMBIENT},
+        "_rises": {_K, *_RHO_CP, AMOUNT, SCALES, _H},
+        "_source_free.coefficients": {_K, _T_FIXED, _H, _T_AMBIENT},
         "_source_free.mesh.nodes": set(),
         "power": {AMOUNT},
     },
@@ -981,12 +982,7 @@ _PROBLEM_KINDS = {
 }
 EXPECTED |= {
     (name, out, kind): (
-        RAISES
-        if kind == ("nodes",)
-        or (name == "transient_thermal" and kind in THERMAL_VALUE_KINDS)
-        else GRADIENT
-        if kind in reads
-        else ZERO
+        RAISES if kind == ("nodes",) else GRADIENT if kind in reads else ZERO
     )
     for name, leaves in THERMAL_READS.items()
     for out, reads in leaves.items()
