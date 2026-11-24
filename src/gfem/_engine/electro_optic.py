@@ -106,8 +106,15 @@ class GradientProbe(_probe.Probe):
             out = np.asarray(gf.Operator("hesse")(self._mips))
         return out.reshape(self._own.size, 3, 3) * self.factor**2
 
-    def _evaluate(self, fes: ngs.FESpace, values: np.ndarray) -> np.ndarray:
-        """Gradients at this rank's points, ``(its points, 3)``."""
+    def _evaluate(
+        self, fes: ngs.FESpace, values: np.ndarray, *, curl: bool = False
+    ) -> np.ndarray:
+        """Gradients at this rank's points, ``(its points, 3)``.
+
+        The potential's gradient has no curl to read, so ``curl`` must stay off.
+        """
+        if curl:
+            raise ValueError("The static potential's gradient probe reads no curl.")
         if self._mips is None:
             return np.zeros((0, 3))
         gf = ngs.GridFunction(fes)
