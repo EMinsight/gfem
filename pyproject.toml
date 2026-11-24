@@ -69,6 +69,13 @@ mkl = [
 mpi = [
   "mpi4py>=4.1.2,<5; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
+# SAX, to place solves in SAX circuits. gfem never imports it: a component
+# returns a plain dictionary. Floored at the last SAX that does not cap JAX
+# below 0.10, so the lock keeps the newest JAX.
+sax = ["sax>=0.16.14"]
+# scikit-rf, for the S-parameter export. Floored at SAX's own floor; uncapped,
+# as gfem uses only its public constructor.
+skrf = ["scikit-rf>=1.8"]
 viz = ["pyvista"]
 xarray = ["xarray>=2024.10"]
 
@@ -106,7 +113,7 @@ site = [
   "trame-pyvista",
   "trame-vtk",
 ]
-test = ["gdstk>=0.9.61", "pytest>=8.3", "pytest-cov>=6.0", "rich>=14.2", "xarray>=2024.10"]
+test = ["gdstk>=0.9.61", "gfem[sax,skrf]", "pytest>=8.3", "pytest-cov>=6.0", "rich>=14.2", "xarray>=2024.10"]
 
 [build-system]
 requires = ["uv_build>=0.13,<0.14"]
