@@ -947,16 +947,19 @@ class Driven:
             `gfem.Conductor` or `gfem.LumpedPort` face, or above
             :math:`10^{-3}` of its peak where a scatterer meets the layer or
             an absorbing face, on a wave port face, or across an exterior
-            PEC or PMC wall (`gfem.conventions`, Incident fields).
+            PEC or PMC wall (`gfem.conventions`, Incident fields). With
+            ``frequency_workers`` above 1, it raises it before spawning any
+            worker for a `gfem.IncidentField` whose function a spawned
+            worker cannot load (a lambda, a closure, or a function of a
+            notebook or REPL).
         NotImplementedError: ``sources`` with a ``wave_vector`` or a 2D
             ``polarization``, or an incident field with
             ``sweep="adaptive"`` (dipoles are accepted). `gfem.solve` raises
             it for ``wave_vector`` with ``sweep="adaptive"`` or a GPU
             ``device``; solve a uniform sweep on the CPU; for
-            ``sources`` on a model with a `gfem.Periodic` pair; and for an
-            incident field that is a `gfem.GaussianBeam`, in a layered or a
-            lossy background (a `gfem.PlaneWave`), across ranks or over
-            frequency workers.
+            ``sources`` on a model with a `gfem.Periodic` pair; and for a
+            `gfem.GaussianBeam` in a layered or a lossy background or a
+            `gfem.PlaneWave` from a lossy layer.
         NonDifferentiableError: ``frequency``, ``samples``, ``keep_fields``,
             ``wave_vector`` or ``wave_vector_frequency`` is computed inside
             `jax.grad`, `jax.jit` or `jax.vmap` from their arguments; pass a
