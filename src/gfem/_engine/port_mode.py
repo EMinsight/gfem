@@ -759,6 +759,17 @@ class SectionReduction:
         self._g, self._t = w.T @ (g_form @ w), w.T @ (t_form @ w)
         ln, lt = space.gauge_forms
         self._ln, self._lt = ln @ w, lt @ w
+        # coordinate k of the field is pencil coordinate `source[k]`, over
+        # gamma where `tangential`
+        self.source = np.concatenate([np.arange(m), np.arange(m)])
+        self.tangential = np.arange(2 * m) < m
+
+    def forms(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """The power forms ``G`` and ``T`` and the gauge ``l_n`` and ``l_t``.
+
+        On the field coordinates (``w^T G w`` and so on).
+        """
+        return self._g, self._t, self._ln, self._lt
 
     def coords(self, y: np.ndarray, gamma: complex) -> np.ndarray:
         """The field's coordinates ``(y / gamma, y)`` of a pencil vector's."""

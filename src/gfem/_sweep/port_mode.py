@@ -65,6 +65,7 @@ from gfem._dim2 import refuse_anisotropic
 from gfem._engine import dispersion
 from gfem._engine.line_mode import ModeSpace, mode_space
 from gfem._engine.port_mode import PortModeSpace
+from gfem._engine.port_mode_normalization import normalize_rows
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import is_thermal_value
 from gfem._engine.solve_request import SolveRequest
@@ -973,58 +974,38 @@ class _Greedy:
         voltage = np.full((n_modes, n), complex(math.nan, math.nan))
         phase = np.ones((n_modes, n), complex)
         gamma = 1j * np.sqrt(-self.lam + 0j)
+        omega = 2 * math.pi * self.f
         for k, (rule, arrow) in enumerate(zip(rules, arrows, strict=True)):
             volts = (
                 None
                 if rule is None
                 else _voltage_functional(planar(space), basis, rule)
             )
-            polar = (
-                None if arrow is None else _polarity_functionals(space, basis, arrow)
+            y = np.array([self.coords_at(i, k) for i in range(n)])
+            polar = None
+            if arrow is not None:
+                polar, peak = _polarity_functionals(space, basis, arrow)
+                for i in range(n):
+                    self._check_polarity(
+                        k, i, fields.coords(y[i], gamma[k, i]), polar, peak
+                    )
+            rows = normalize_rows(
+                fields, mass, y, gamma[k], omega, volts=volts, polarity=polar
             )
-            for i in range(n):
-                y = self.coords_at(i, k)
-                z = fields.coords(y, gamma[k, i])
-                omega = 2 * math.pi * self.f[i]
-                power = fields.power(z, gamma[k, i], omega)
-                z /= math.sqrt(abs(power))
-                phase[k, i] = power / abs(power)
-                if polar is not None:
-                    # the field at the point along the arrow is real and
-                    # positive, at every frequency on its own
-                    a = self._polarity_value(k, i, z, polar)
-                    z *= abs(a) / a
-                elif i == 0:
-                    g = fields.gauge(z, gamma[k, i], omega)
-                    c = w @ z
-                    if abs(g) > 1e-12 * np.abs(c).max():
-                        z *= abs(g) / g
-                    else:
-                        e = largest_entry(c)
-                        z *= abs(c[e]) / c[e]
-                else:
-                    o = coords[k, i - 1].conj() @ mass @ z
-                    z *= abs(o) / o
-                if volts is not None:
-                    voltage[k, i] = volts @ z
-                    if voltage[k, i].real < 0:
-                        z, voltage[k, i] = -z, -voltage[k, i]
-                coords[k, i] = z
+            coords[k], voltage[k], phase[k] = rows.z, rows.voltage, rows.phase
         return basis, coords, gamma / space.section.scale, voltage, phase
 
-    def _polarity_value(
-        self,
-        k: int,
-        i: int,
-        z: np.ndarray,
-        functionals: tuple[np.ndarray, np.ndarray],
-    ) -> complex:
-        """Mode ``k``'s field at its polarity point along the arrow, at ``f[i]``.
+    def _check_polarity(
+        self, k: int, i: int, z: np.ndarray, at: np.ndarray, peak: np.ndarray
+    ) -> None:
+        """Mode ``k``'s field at its polarity point along the arrow fixes a sign.
+
+        The reading's ratio to the port's peak does not depend on the scale or
+        the phase of ``z`` (the coordinates at ``f[i]``).
 
         Raises:
             PortModeError: It is below `_POLARITY_GUARD` of the port's peak.
         """
-        at, peak = functionals
         a = complex(at @ z)
         top = float(np.linalg.norm(np.einsum("k,kpc->pc", z, peak), axis=1).max())
         ratio = abs(a) / top if top > 0 else 0.0
@@ -1039,7 +1020,6 @@ class _Greedy:
                 "direction is across the field). Move the point towards the "
                 "field's maximum, or turn the direction along the field."
             )
-        return a
 
     # --- errors -------------------------------------------------------------------
 
