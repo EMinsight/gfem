@@ -22,8 +22,33 @@ over the norm of the reference expansion; the leak is the same norm of the
 type fails on a coefficient that is nearly zero (the anapole's
 :math:`a_1`); this does not.
 
-Measured floors (order 3, the default free-space sphere and the prototype
-meshes) are recorded here as the verification tests measure them.
+Measured floors (order 3; the gates of `tests/verification/test_multipoles.py`
+are at least three times these, except where noted). The lossy sphere L at
+sphere maxh 0.1 (maxh 0.25, about 60k unknowns); on the default free-space
+sphere (sphere maxh 0.2) :math:`E_1 = 9.9\times10^{-3}` and the partial
+cross sections are 1 % off, three times above the caps, so the case moved to
+maxh 0.1:
+
+- :math:`E_1, E_2, E_3`: 4.8e-3, 1.6e-3, 7e-4; leak 1.1e-3; exact
+  :math:`p_x` and :math:`m_y` against the Mie closed form 6.0e-3, 3.0e-3.
+- Sum of the partial cross sections against `gfem.cross_sections`: +1.0e-3
+  (z), +2.5e-4 (te), +8.6e-4 (tm).
+- Partial cross sections against Mie at 30 degrees, where at least 1 % of
+  the total: up to 7.4e-3 (about 2.7 times the cap `fsc.TOLERANCE`; finer
+  spheres, maxh 0.07, do not improve it, 9e-3).
+- Complex amplitude against the real one: 1.3e-14. Wide beam against the
+  axial wave: :math:`E_1` 1.8e-5, sum -1.4e-3.
+- Origin shift (30, -20, 50) nm: total 4e-13 at the default degree; the
+  electric and magnetic dipole shares move by -12 % and +22 %.
+- PEC sphere: :math:`E_1, E_2` 5.7e-3, 3.1e-3, leak 2.3e-3, sum 1.1e-3.
+  :math:`\varepsilon_r = \mu_r = 2`: 6.7e-3, 1.7e-3, 8.0e-4, 9.4e-4.
+- Dipoles in the box of 6 cells per um, layer 1/3 um, order 3: moments back
+  1.0e-4 (p), 3.4e-4 (m) in vacuum, 2.5e-4, 8.1e-4 in
+  :math:`\varepsilon_b = 2, \mu_b = 3`; content of degree 2 and above 1.1e-3
+  to 1.9e-3 (3.4e-3 in the medium); total power about the shifted origin
+  2e-8; against the far field's radiated power -1e-4 (2e-3 in the medium).
+- Kerker sphere C (maxh 0.25, sphere 0.05): :math:`E_1, E_2` 7.2e-3,
+  5.8e-4, leak 1.8e-3, sum 1.6e-3, :math:`|p_x - m_y/c|/|p_x|` 5.2e-3.
 
 - Induced-current route against the projection, lossy sphere, degree 1, both
   types over the degree-1 norm: 2.6e-3 on the free-space default mesh
