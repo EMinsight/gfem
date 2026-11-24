@@ -587,7 +587,7 @@ def _second(term: object, f: complex) -> complex:
 
 
 def _third(term: object, f: complex) -> complex:
-    """``d^3 chi / d f^3`` of one term at ``f`` (Hz)."""
+    r""":math:`d^3\chi/df^3` of one term at ``f`` (Hz)."""
     if isinstance(term, Drude):
         fp, g = float(term.plasma_frequency), float(term.damping)
         den, slope = f * (f - 1j * g), 2 * f - 1j * g
@@ -618,8 +618,8 @@ def _third(term: object, f: complex) -> complex:
 def susceptibility_taylor(law: PermittivityLaw, omega: float) -> np.ndarray:
     r""":math:`\chi^{(n)}(\omega)/n!` for :math:`n \le 3` at real ``omega`` (rad/s).
 
-    The real-axis Taylor coefficients of `susceptibility` in ω, shape (4,).
-    Non-finite (never raising) on a lossless pole.
+    The real-axis Taylor coefficients of `susceptibility` in :math:`\omega`,
+    shape (4,). Non-finite (never raising) on a lossless pole.
     """
     f = omega / _TWO_PI
     with np.errstate(all="ignore"):
@@ -629,7 +629,7 @@ def susceptibility_taylor(law: PermittivityLaw, omega: float) -> np.ndarray:
             third = sum(_third(t, f) for t in law.terms)
         except ZeroDivisionError:
             return np.full(4, complex(math.nan, math.nan))
-    # d^n / d omega^n = (2 pi)^{-n} d^n / d f^n
+    # :math:`d^n/d\omega^n = (2\pi)^{-n}\,d^n/df^n`
     return np.array(
         [
             sum(chi for chi, _ in pairs),

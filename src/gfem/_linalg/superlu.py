@@ -20,7 +20,7 @@ EIGS_TOLERANCE = 1e-10
 
 
 class ShiftInvert(spla.LinearOperator):
-    """``x -> (A - sigma B)^-1 B x`` with ``A - sigma B`` factored by SuperLU.
+    r"""The operator :math:`(A - \sigma B)^{-1}B`, factored by SuperLU.
 
     One factor serves ARPACK (`eigs`) and, through `solve`, any further
     solve near the shift, such as a preconditioner.
@@ -34,7 +34,7 @@ class ShiftInvert(spla.LinearOperator):
 
     @classmethod
     def factor(cls, a: sp.csr_matrix, b: sp.csr_matrix, sigma: complex) -> ShiftInvert:
-        """Factor ``A - sigma B``; a real shift keeps a real pencil real."""
+        r"""Factor :math:`A - \sigma B`; a real shift keeps a real pencil real."""
         shift = complex(sigma)
         sigma = shift.real if shift.imag == 0 else shift
         dtype = np.result_type(a.dtype, b.dtype, type(sigma))
@@ -61,7 +61,7 @@ class ShiftInvert(spla.LinearOperator):
         return self.sigma + 1 / theta[keep], vecs[:, keep]
 
     def solve(self, r: np.ndarray) -> np.ndarray:
-        """``(A - sigma B)^-1 r``; a complex ``r`` on a real factor by parts."""
+        r""":math:`(A - \sigma B)^{-1}r`; a complex ``r`` on a real factor by parts."""
         if np.iscomplexobj(r) and not np.iscomplexobj(self._b):
             return self._lu.solve(np.ascontiguousarray(r.real)) + 1j * self._lu.solve(
                 np.ascontiguousarray(r.imag)

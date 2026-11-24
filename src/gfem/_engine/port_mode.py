@@ -248,7 +248,7 @@ class LawEdgeScalar:
 
 @dataclasses.dataclass(frozen=True)
 class ConductorScalar:
-    """``i k0 eta0 / Z_s(omega)`` of a conductor edge group.
+    r""":math:`ik_0\eta_0/Z_s(\omega)` of a conductor edge group.
 
     Attributes:
         sigma: Conductivity, S/m.
