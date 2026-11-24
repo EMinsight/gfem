@@ -76,7 +76,9 @@ beyond it on every side. The section's end face `"front"` carries the wave
 port.
 
 ```python
-url = "https://raw.githubusercontent.com/benvial/gfem/main/docs/recipes/strip_section.py"
+url = (
+    "https://raw.githubusercontent.com/benvial/gfem/main/docs/recipes/strip_section.py"
+)
 urllib.request.urlretrieve(url, "strip_section.py")
 from strip_section import strip_section  # noqa: E402
 
@@ -176,7 +178,9 @@ d = []
 for width in widths:
     m = at_1550(width)
     d.append(m.D[0].real)
-    print(f"{width * 1e9:.0f} nm: n_g {m.n_g[0].real:.4f}, D {d[-1] * 1e6:+.1f} ps/(nm km)")
+    print(
+        f"{width * 1e9:.0f} nm: n_g {m.n_g[0].real:.4f}, D {d[-1] * 1e6:+.1f} ps/(nm km)"
+    )
 zeros = [
     scipy.optimize.brentq(
         lambda w: at_1550(w).D[0].real, widths[i], widths[i + 1], xtol=2e-9
