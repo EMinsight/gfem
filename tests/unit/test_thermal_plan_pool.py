@@ -24,8 +24,12 @@ from gfem._linalg.pardiso import PardisoFactors
 LOGGER = "gfem.solver"
 W, D = 2.0, 1.0
 LAYERS = (("clad", 2.0), ("core", 1.0))
-DIRECT = gfem.SolverOptions(order=2, linear_solver="direct")
-NO_POOL = gfem.SolverOptions(order=2, linear_solver="direct", retain_memory=0)
+# One solve thread: threaded assembly and reductions sum in a varying order, so
+# the pooled-versus-plain comparisons below hold to the last bit only on one.
+DIRECT = gfem.SolverOptions(order=2, linear_solver="direct", threads=1)
+NO_POOL = gfem.SolverOptions(
+    order=2, linear_solver="direct", retain_memory=0, threads=1
+)
 
 
 @pytest.fixture(scope="module")
