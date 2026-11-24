@@ -20,7 +20,6 @@ from pathlib import Path
 
 import ngsolve as ngs
 import numpy as np
-import pytest
 import thermal_cases as tc
 from scipy import constants
 
@@ -107,18 +106,6 @@ def mesh(path: Path, variant: str = "lines", maxh: float = 1.2) -> gfem.Mesh:
     path = Path(path)
     tc._write_section(path, nodes, tris, lines)
     return gfem.Mesh.from_gmsh(path, length_unit="um")
-
-
-VARIANTS = ("lines", "meshed")
-
-
-@pytest.fixture(scope="module", params=VARIANTS)
-def device(request, tmp_path_factory):
-    """``(variant, mesh, model)`` of the transducer section, each electrode variant."""
-    variant = request.param
-    path = tmp_path_factory.mktemp(variant) / "idt.msh"
-    section = mesh(path, variant)
-    return variant, section, model(section, variant)
 
 
 def lithium_niobate(axes=AXES, *, quality=QM, piezoelectric=True) -> gfem.Material:

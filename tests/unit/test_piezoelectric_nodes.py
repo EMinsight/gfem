@@ -19,7 +19,6 @@ import jax.numpy as jnp
 import numpy as np
 import piezo_cases as pc
 import pytest
-from piezo_cases import device  # noqa: F401
 
 import gfem
 
