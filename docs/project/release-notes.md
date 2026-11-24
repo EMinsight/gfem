@@ -235,6 +235,15 @@ Design:
   `Robust` tuple of `gfem.design.robust`, and `fab.pattern(drawn)` the
   printed layer pattern.
 
+- **Documentation.** The bend tutorial now ends at its drawn pattern: checked
+  against an example width and spacing rule, written to a GDS file and solved
+  again, within 0.02 of the optimizer's last $|S_{21}|^2$; its numbers after
+  the optimization are now those of the pattern. A new recipe, "Export a
+  fabricable layout", and the robust optimization recipe, now "Optimize a
+  design for fabrication: etch, blur and minimum features", cover the
+  fabrication model, minimum width and spacing constraints, fixed neighbours
+  and acceptance checks; the glossary gains five terms.
+
 ## 0.2.0 (2026-11-23)
 
 - **Native 2D models.** A gmsh file of triangles at one height reads as a

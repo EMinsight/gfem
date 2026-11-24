@@ -522,6 +522,38 @@ Tests: [driven](https://github.com/benvial/gfem/blob/main/tests/unit/test_driven
 
 Tests: [sheets](https://github.com/benvial/gfem/blob/main/tests/verification/test_sheet_gradient.py).
 
+## Layer patterns and GDS
+
+- A disk's pattern follows its circle to within 0.05 pixel, with its area and its
+  perimeter (to 0.5 %); a bar keeps its width to within 0.05 pixel. Area
+  fractions of a pattern add up to its area to round-off.
+- On a dumbbell bridge, two bars, a notch, an annulus and a small disk, the width
+  and spacing check finds one violation at the true distance (0.05 pixel, 0.1 on
+  the faceted disk), and agrees with an independent layout checker's projection
+  metric to 1.5 database units.
+- An independent GDS reader (gdstk) reads the file back: units, cell, layers and
+  datatypes, polygon counts, the area per layer to within the perimeter times
+  the database unit.
+- The fabrication model moves a straight edge by the edge bias to $0.02\sigma$
+  from $-1.5\sigma$ to $1.5\sigma$; it and the length-scale constraints pass
+  second-order gradient checks. A bar or slot printed at $0.9$ of the rule
+  breaks its constraint and one at $1.1$ keeps it.
+- On the 2D bend, the arc's pattern solved back as area fractions transmits as
+  the same layout drawn on 6.25 nm pixels, and as the $\beta = 32$ projection
+  the optimizer solves, to 0.02 in $|S_{21}|^2$; the gradient through the
+  fabrication model's three printed designs matches a finite difference.
+- A toy design whose target holds bars, gaps and a bridge of 0.3 to 0.7 of the
+  rule fails the check unconstrained (narrowest 0.47 and 0.24 of the rule); with
+  the constraints asked 10 % above the rule as a penalty, its narrowest width
+  and spacing reach 1.051 and 0.906 of the rule.
+
+Tests: [patterns](https://github.com/benvial/gfem/blob/main/tests/unit/test_pattern.py),
+[checks](https://github.com/benvial/gfem/blob/main/tests/unit/test_feature_check.py),
+[GDS](https://github.com/benvial/gfem/blob/main/tests/unit/test_gds.py),
+[fabrication model](https://github.com/benvial/gfem/blob/main/tests/unit/test_fabrication_model.py),
+[constraints](https://github.com/benvial/gfem/blob/main/tests/unit/test_length_scale.py),
+[end to end](https://github.com/benvial/gfem/blob/main/tests/verification/test_layer_patterns.py).
+
 ## Quantum metrics
 
 - **Participations.** A junction's participation equals

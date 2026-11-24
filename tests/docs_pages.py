@@ -42,6 +42,7 @@ MESHES = {
     MESH_URL.replace("line.msh", "gold_mcpeak2015.csv"): MESH.with_name(
         "gold_mcpeak2015.csv"
     ),
+    MESH_URL.replace("line.msh", "bend2d.msh"): MESH.with_name("bend2d.msh"),
     MESH_URL.replace("data/line.msh", "tfln_section.py"): DOCS
     / "tutorials"
     / "tfln_section.py",
