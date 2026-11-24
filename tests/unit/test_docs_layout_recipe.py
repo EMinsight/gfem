@@ -54,7 +54,8 @@ def _prose(text: str) -> str:
 def test_the_page_downloads_the_bend_mesh():
     first = dp.examples(PAGE.read_text(encoding="utf-8"))[0]
     assert "bend2d.msh" in first.code
-    assert f'url = "{dp.MESH_URL.replace("line.msh", "bend2d.msh")}"' in first.code
+    # Matched on the quoted address alone: ruff wraps the long assignment.
+    assert f'"{dp.MESH_URL.replace("line.msh", "bend2d.msh")}"' in first.code
 
 
 def test_every_output_block_is_what_the_code_prints(ran):

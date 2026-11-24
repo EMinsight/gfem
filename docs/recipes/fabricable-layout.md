@@ -23,7 +23,9 @@ import numpy as np
 import gfem
 from gfem import design
 
-url = "https://raw.githubusercontent.com/benvial/gfem/main/docs/tutorials/data/bend2d.msh"
+url = (
+    "https://raw.githubusercontent.com/benvial/gfem/main/docs/tutorials/data/bend2d.msh"
+)
 urllib.request.urlretrieve(url, "bend2d.msh")
 mesh = gfem.Mesh.from_gmsh("bend2d.msh", length_unit="um")
 um = 1e-6
