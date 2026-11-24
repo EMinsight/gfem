@@ -92,7 +92,7 @@ class NormalizationCotangents:
     pairs: list[FormPair]
 
 
-def normalize_rows(  # noqa: PLR0913
+def normalize_rows(
     fields: Any,
     mass: np.ndarray,
     y: np.ndarray,
@@ -103,7 +103,7 @@ def normalize_rows(  # noqa: PLR0913
     polarity: np.ndarray | None = None,
     reference: np.ndarray | None = None,
 ) -> Normalized:
-    """The normalized coordinates of one mode's rows.
+    r"""The normalized coordinates of one mode's rows.
 
     Args:
         fields: The space's reduction on the sweep's basis
@@ -159,7 +159,7 @@ def normalize_rows(  # noqa: PLR0913
     return Normalized(z, voltage, phase, rows)
 
 
-def normalize_vjp(  # noqa: PLR0913, PLR0915
+def normalize_vjp(  # noqa: PLR0915, PLR0917
     fields: Any,
     mass: np.ndarray,
     norm: Normalized,
@@ -218,7 +218,8 @@ def normalize_vjp(  # noqa: PLR0913, PLR0915
         elif row.kind == "polarity":
             zb1 = zb1 + g_bar * polarity
         else:
-            previous = reference if i == 0 else norm.z[i - 1]
+            previous = norm.z[i - 1] if i else reference
+            assert previous is not None  # noqa: S101 - an overlap row has one
             zb1 = zb1 + g_bar * (mass.T @ previous.conj())
             lower = np.conj(g_bar * (mass @ row.z1))
             if i == 0:
@@ -232,7 +233,9 @@ def normalize_vjp(  # noqa: PLR0913, PLR0915
         slope = -0.5 * modulus**-1.5 * float((zb1 @ row.z0).real)
         p_bar = slope * direction.conjugate()
         p_bar += phase_bar[i] / modulus
-        p_bar -= float((phase_bar[i] * direction).real) * direction.conjugate() / modulus
+        p_bar -= (
+            float((phase_bar[i] * direction).real) * direction.conjugate() / modulus
+        )
         pref = 0.5 * scale * 1j / (omega[i] * mu0)
         z0 = row.z0
         zc = z0.conj()
@@ -244,7 +247,7 @@ def normalize_vjp(  # noqa: PLR0913, PLR0915
         lifted0 = w @ z0
         pairs.append(FormPair("power_g", lifted0, lifted0.conj(), p_bar * pref))
         pairs.append(FormPair("power_t", lifted0, lifted0.conj(), p_bar * pref * gc))
-        # z0 = (y_t / gamma, y_n)
+        # the coordinates are (y_t / gamma, y_n)
         np.add.at(y_bar[i], src, np.where(tangential, zb0 / gam, zb0))
         gamma_bar[i] += -np.sum(zb0[tangential] * y[i][src[tangential]]) / gam**2
     return NormalizationCotangents(y_bar, gamma_bar, reference_bar, pairs)

@@ -69,8 +69,15 @@ class Factor(Protocol):
 class Pieces(Protocol):
     """The affine pieces of a pencil (`gfem._engine.port_mode.Pencil`)."""
 
-    a: tuple[sp.csr_matrix, ...]
-    b: tuple[sp.csr_matrix, ...]
+    @property
+    def a(self) -> tuple[sp.csr_matrix, ...]:
+        """The matrices of ``A``."""
+        ...
+
+    @property
+    def b(self) -> tuple[sp.csr_matrix, ...]:
+        """The matrices of ``B``."""
+        ...
 
 
 @dataclasses.dataclass(frozen=True)

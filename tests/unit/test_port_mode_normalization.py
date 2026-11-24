@@ -88,9 +88,7 @@ def _probes(case, seed=0):
 def _check(case, *, volts=None, polarity=None, h=1e-6):
     a, b, c = probes = _probes(case)
     kw = {"volts": volts, "polarity": polarity}
-    base = normalize_rows(
-        case.fields, case.mass, case.y, case.gamma, case.omega, **kw
-    )
+    base = normalize_rows(case.fields, case.mass, case.y, case.gamma, case.omega, **kw)
     cot = normalize_vjp(
         case.fields,
         case.mass,
@@ -109,7 +107,12 @@ def _check(case, *, volts=None, polarity=None, h=1e-6):
 
     def value(t):
         norm = normalize_rows(
-            case.fields, case.mass, case.y + t * dy, case.gamma + t * dg, case.omega, **kw
+            case.fields,
+            case.mass,
+            case.y + t * dy,
+            case.gamma + t * dg,
+            case.omega,
+            **kw,
         )
         if volts is None:
             norm.voltage[:] = 0
@@ -230,16 +233,16 @@ def test_the_form_pairs_carry_the_explicit_form_dependence(case):
 
     def value(t):
         f = fields
-        saved = f._g, f._t, f._ln, f._lt  # noqa: SLF001
+        saved = f._g, f._t, f._ln, f._lt
         w = f.w
-        f._g = saved[0] + t * (w.T @ (dg @ w))  # noqa: SLF001
-        f._t = saved[1] + t * (w.T @ (dt @ w))  # noqa: SLF001
-        f._ln = saved[2] + t * (dln @ w)  # noqa: SLF001
-        f._lt = saved[3] + t * (dlt @ w)  # noqa: SLF001
+        f._g = saved[0] + t * (w.T @ (dg @ w))
+        f._t = saved[1] + t * (w.T @ (dt @ w))
+        f._ln = saved[2] + t * (dln @ w)
+        f._lt = saved[3] + t * (dlt @ w)
         try:
             norm = normalize_rows(f, case.mass, case.y, case.gamma, case.omega)
         finally:
-            f._g, f._t, f._ln, f._lt = saved  # noqa: SLF001
+            f._g, f._t, f._ln, f._lt = saved
         norm.voltage[:] = 0
         return _objective(norm, (probes[0], np.zeros(3), probes[2]))
 

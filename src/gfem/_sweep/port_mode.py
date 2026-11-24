@@ -73,7 +73,6 @@ from gfem._linalg import report
 from gfem._linalg.superlu import backward_error, shift_invert_eigs
 from gfem._line_section import LineSection
 from gfem._port_section import PLANE_RTOL, PortSection, port_section
-from gfem._sign import largest_entry
 from gfem._text import hertz, hertz_band
 from gfem.errors import LayerClearanceWarning, PortModeError, PortModeTrackingWarning
 from gfem.model import Model
