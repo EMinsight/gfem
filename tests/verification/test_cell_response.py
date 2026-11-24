@@ -50,8 +50,8 @@ def test_r8_hermite_interpolation_matches_held_out_solves(ridge):
     coarse = dataclasses.replace(
         response,
         parameter=response.parameter[keep],
-        values=response.values[keep],
-        derivative=response.derivative[keep],
+        values=np.asarray(response.values)[keep],
+        derivative=np.asarray(response.derivative)[keep],
     )
     problem = gfem.Driven([pc.RIDGE_FREQUENCY], excite=EXCITE)
     err, err3 = 0.0, 0.0
