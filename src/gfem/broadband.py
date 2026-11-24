@@ -438,7 +438,7 @@ class RationalModel:
         step = self.d[None] + np.einsum("tn,nij->tij", grow, scaled).real
         values = np.where(after[:, None, None], step, 0.0)
         return TimeResponse(
-            time=t,
+            time=tuple(t.tolist()),
             values=jnp.asarray(values),
             z_ref=jnp.asarray(self._response_z_ref()),
             ports=self.ports,

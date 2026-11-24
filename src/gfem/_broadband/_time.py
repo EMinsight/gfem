@@ -21,7 +21,7 @@ impedance flow through `jax.numpy` only, so the responses differentiate.
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import jax
 import jax.numpy as jnp
@@ -77,7 +77,11 @@ def step_response(
 
 
 def _low_pass(
-    net: NetworkParameters, kind: str, beta: float, n_time: Any, z0: Any
+    net: NetworkParameters,
+    kind: Literal["impulse", "step"],
+    beta: float,
+    n_time: Any,
+    z0: Any,
 ) -> TimeResponse:
     zero, positive, df = _harmonic_grid(net.frequency, kind)
     n = _n_time(n_time, len(positive), f"{kind}_response")
@@ -103,7 +107,7 @@ def _low_pass(
         z_ref=z_ref,
         ports=net.ports,
         excited=excited,
-        kind=kind,  # ty: ignore[invalid-argument-type]
+        kind=kind,
         mode="low_pass",
     )
 

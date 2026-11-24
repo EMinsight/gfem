@@ -14,6 +14,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import scipy.constants
+from numpy.typing import ArrayLike
 
 from gfem import _objective
 from gfem._checks import is_traced, static_float
@@ -1172,7 +1173,7 @@ class NetworkParameters:
         *,
         tolerance: float = 1e-3,
         max_poles: int | None = None,
-        weights: Any = None,
+        weights: ArrayLike | None = None,
         enforce_passivity: bool = True,
         z0: float | Sequence[float] | None = None,
     ) -> RationalModel:
