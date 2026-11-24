@@ -28,7 +28,7 @@ from gfem.mesh import Mesh
 if TYPE_CHECKING:
     from gfem._field import Field
 
-__all__ = ["COMPONENTS", "engine", "evaluate", "field_at", "layout"]
+__all__ = ["COMPONENTS", "engine", "evaluate", "field_at", "gradient_at", "layout"]
 
 NODES_REASON = (
     "moving the mesh nodes moves the elements a measurement integrates or "
@@ -178,3 +178,53 @@ def field_at(field: Field, points: Any) -> jax.Array:
     if n_comp == 1:
         values = values[:, 0]
     return values[0] if single else values
+
+
+class _GradientKernel(_PointKernel):
+    """Gradients of a scalar H1 field at points: ``G c`` and its transpose."""
+
+    name = "a field gradient probe"
+
+    def _probe(self, values: dict[str, np.ndarray]) -> Any:
+        probe = engine()
+        mesh = Mesh(values["nodes"], self.topology)
+        located = self.located
+        if located is None:
+            located = probe.locate(mesh, self.layout, values["points"], self.comm)
+        return probe.GradientProbe(mesh, self.layout, located, self.comm)
+
+
+def gradient_at(field: Field, points: Any) -> jax.Array:
+    """The gradient of a scalar H1 ``field`` at ``points``, ``(n, dim)`` per metre.
+
+    A JAX function of the coefficients, with the rules of `field_at`.
+    """
+    p = points if is_traced(points) else np.asarray(points, float)
+    mesh = field.mesh
+    dim = mesh.dim
+    if p.shape[-1:] != (dim,) or p.ndim not in (1, 2):
+        raise ValueError(
+            f"points must be one {dim}-vector or an (n, {dim}) array in m, got "
+            f"shape {np.shape(points)}."
+        )
+    p = p.reshape(-1, dim)
+    where = layout(field)
+    c = field.coefficients
+    comm = field._communicator  # noqa: SLF001
+    located = None
+    if not is_traced((mesh.nodes, p)):
+        with _mpi.section(comm):
+            _mpi.check_call(comm, "gradient_at", {"the points": np.asarray(p)})
+            located = engine().locate(mesh, where, np.asarray(p), comm)
+    kernel = _GradientKernel(
+        mesh._topology,  # noqa: SLF001
+        where,
+        (p.shape[0], dim),
+        c.dtype,
+        located,
+        comm=comm,
+    )
+    inputs = {"coefficients": c, "nodes": mesh.nodes}
+    if located is None:
+        inputs["points"] = p
+    return measure(kernel, inputs)["values"]

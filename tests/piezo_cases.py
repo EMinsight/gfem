@@ -18,8 +18,10 @@ from __future__ import annotations
 import itertools
 from pathlib import Path
 
+import ngsolve as ngs
 import numpy as np
 import thermal_cases as tc
+from scipy import constants
 
 import gfem
 
@@ -46,7 +48,7 @@ E_LN = np.array(
 EPS_LN = (44.0, 44.0, 29.0)
 RHO_LN = 4700.0
 AXES = ((0.0, 1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, -1.0))
-EPS0 = 8.8541878128e-12
+EPS0 = constants.epsilon_0
 QM = 200.0
 E_AL, NU_AL, RHO_AL = 70e9, 0.35, 2700.0
 
@@ -157,4 +159,235 @@ def problem(
         if frame
         else None,
         **kwargs,
+    )
+
+
+# --- plates and arrays with closed forms (verification tier) -------------------
+
+#: A 6mm (hexagonal) test crystal with lithium-niobate-like magnitudes: stiffness
+#: ``c11 c12 c13 c33 c44`` (Pa), stress constants ``e15 e31 e33`` (C/m^2), relative
+#: permittivities ``eps11`` and ``eps33``, density.
+HEX = {
+    "c11": 203e9,
+    "c12": 53e9,
+    "c13": 75e9,
+    "c33": 245e9,
+    "c44": 60e9,
+    "e15": 3.7,
+    "e31": 0.2,
+    "e33": 1.3,
+    "eps11": 44.0,
+    "eps33": 29.0,
+    "rho": 4700.0,
+}
+#: Plate width and thickness, micrometres.
+PLATE_WIDTH, PLATE_THICKNESS = 2.0, 1.0
+#: The crystal's x, y, z in the lab frame (rows): the c axis along lab y (``TE``;
+#: lab x, y, z are crystal y, z, x) or along lab z (``TS``).
+PLATE_AXES = {
+    "TE": ((0.0, 0.0, 1.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+    "TS": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+}
+
+
+def hexagonal(kind: str):
+    """``(c, e, eps_r)`` of the plate's crystal in its own frame.
+
+    The thickness-extensional plate has :math:`c_{13} = e_{31} = 0`, so that the
+    one-dimensional thickness solution leaves its free side edges traction-free.
+    """
+    h = HEX
+    c13, e31 = (0.0, 0.0) if kind == "TE" else (h["c13"], h["e31"])
+    c = np.array(
+        [
+            [h["c11"], h["c12"], c13, 0, 0, 0],
+            [h["c12"], h["c11"], c13, 0, 0, 0],
+            [c13, c13, h["c33"], 0, 0, 0],
+            [0, 0, 0, h["c44"], 0, 0],
+            [0, 0, 0, 0, h["c44"], 0],
+            [0, 0, 0, 0, 0, (h["c11"] - h["c12"]) / 2],
+        ]
+    )
+    e = np.array(
+        [
+            [0, 0, 0, 0, h["e15"], 0],
+            [0, 0, 0, h["e15"], 0, 0],
+            [e31, e31, h["e33"], 0, 0, 0],
+        ]
+    )
+    return c, e, (h["eps11"], h["eps11"], h["eps33"])
+
+
+def plate_mesh(path: Path, maxh: float) -> gfem.Mesh:
+    """The plate's rectangle: region ``pz``, lines ``bot`` (y = 0) and ``top``."""
+    w, t = PLATE_WIDTH, PLATE_THICKNESS
+    edges: list[tc.Namer] = [
+        (lambda p: abs(p[1]) < 1e-9, "bot"),
+        (lambda p: abs(p[1] - t) < 1e-9, "top"),
+    ]
+    nodes, tris, lines = tc._mesh2d([(0.0, 0.0, w, t, "pz", None)], maxh, edges)
+    path = Path(path)
+    tc._write_section(path, nodes, tris, lines)
+    return gfem.Mesh.from_gmsh(path, length_unit="um")
+
+
+def plate_model(mesh: gfem.Mesh, kind: str, *, quality=None) -> gfem.Model:
+    """The plate of crystal ``kind`` (``"TE"`` or ``"TS"``) with free side edges."""
+    c, e, eps = hexagonal(kind)
+    material = gfem.Material(
+        eps_r=eps,
+        axes=PLATE_AXES[kind],
+        stiffness=c,
+        piezoelectric_tensor=e,
+        mass_density=HEX["rho"],
+        mechanical_quality_factor=quality,
+    )
+    return gfem.Model(mesh, materials={"pz": material})
+
+
+def plate_problem(frequency, **kwargs) -> gfem.Piezoelectric:
+    """The plate driven between its ``top`` (1 V) and ``bot`` (ground) electrodes."""
+    return gfem.Piezoelectric(frequency, terminals=["top"], ground=["bot"], **kwargs)
+
+
+def plate_form(kind: str, quality=None) -> dict:
+    r"""The closed form's constants of the plate of crystal ``kind``.
+
+    With :math:`c` (:math:`c_{33}` for ``"TE"``, :math:`c_{44}` for ``"TS"``)
+    carrying the loss :math:`1 + i/Q_m`, :math:`e` and :math:`\varepsilon` (F/m)
+    the coupling and permittivity of that direction: ``cbar`` is
+    :math:`\bar c = c + e^2/\varepsilon`, ``v`` :math:`\sqrt{\bar c/\rho}`,
+    ``k2`` :math:`k^2 = e^2/(\varepsilon\bar c)` (complex with the loss) and
+    ``c0`` :math:`C_0 = \varepsilon w/h` per metre along :math:`z`; ``e`` and
+    ``eps`` are returned as they are.
+    """
+    h = HEX
+    c, e, eps = (
+        (h["c33"], h["e33"], h["eps33"])
+        if kind == "TE"
+        else (h["c44"], h["e15"], h["eps11"])
+    )
+    eps = eps * EPS0
+    cbar = c * (1 + (0.0 if quality is None else 1j / quality)) + e**2 / eps
+    return {
+        "cbar": cbar,
+        "e": e,
+        "eps": eps,
+        "c0": eps * PLATE_WIDTH / PLATE_THICKNESS,
+        "v": np.sqrt(cbar / h["rho"]),
+        "k2": e**2 / (eps * cbar),
+    }
+
+
+def finger_array_mesh(
+    path: Path, n: int, eta: float = 0.5, *, hedge: float = 0.02, maxh: float = 0.5
+) -> gfem.Mesh:
+    """``n`` zero-thickness fingers of pitch 1 micrometre on a dielectric under air.
+
+    The air ``a`` (above ``y = 0``) and the dielectric ``b`` are 6 micrometres
+    deep with 6 micrometre margins, graded toward the finger edges (size
+    ``hedge``). The lines ``hot`` (even fingers) and ``gnd`` (odd) alternate.
+    """
+    from netgen import occ
+
+    depth, margin, pitch = 6.0, 6.0, 1.0
+    width = (n - 1) * pitch + 2 * margin
+    air = occ.WorkPlane().MoveTo(0, 0).Rectangle(width, depth).Face()
+    air.name = "a"
+    solid = occ.WorkPlane().MoveTo(0, -depth).Rectangle(width, depth).Face()
+    solid.name = "b"
+    segments = []
+    for k in range(n):
+        xc = margin + k * pitch
+        segment = occ.Segment(
+            occ.Pnt(xc - eta * pitch / 2, 0, 0), occ.Pnt(xc + eta * pitch / 2, 0, 0)
+        )
+        segment.name = "hot" if k % 2 == 0 else "gnd"
+        segments.append(segment)
+    shape = occ.Glue([air, solid, *segments])
+    for vertex in shape.vertices:
+        if abs(vertex.p.y) < 1e-12 and margin - 0.6 < vertex.p.x < width - margin + 0.6:
+            vertex.maxh = hedge
+    netgen_mesh = ngs.Mesh(
+        occ.OCCGeometry(shape, dim=2).GenerateMesh(maxh=maxh, grading=0.25)
+    )
+    nodes = np.array([v.point for v in netgen_mesh.vertices])
+    tris = [
+        (el.mat, [v.nr for v in el.vertices]) for el in netgen_mesh.Elements(ngs.VOL)
+    ]
+    lines = [
+        (el.mat, [v.nr for v in el.vertices])
+        for el in netgen_mesh.Elements(ngs.BND)
+        if el.mat in ("hot", "gnd")
+    ]
+    path = Path(path)
+    tc._write_section(path, nodes, tris, lines)
+    return gfem.Mesh.from_gmsh(path, length_unit="um")
+
+
+def finger_array_model(mesh: gfem.Mesh, eps_a: float, eps_b: float) -> gfem.Model:
+    """Air ``a`` and an elastic dielectric ``b`` (a valid solid with no coupling)."""
+    solid = gfem.Material(
+        eps_r=eps_b,
+        stiffness=gfem.isotropic_stiffness(E_AL, NU_AL),
+        mass_density=RHO_AL,
+    )
+    return gfem.Model(
+        mesh,
+        materials={"a": gfem.Material(eps_r=eps_a), "b": solid},
+        excluded={"mechanical": ["a"]},
+    )
+
+
+#: A y-uniform shear-wave strip: a piezoelectric source block, a passive
+#: elastic strip and a damping frame, driven at ``STRIP_FREQUENCY``.
+STRIP_FREQUENCY = 0.855e9
+STRIP_SHEAR_SPEED, STRIP_DENSITY, STRIP_POISSON = 3763.0, 2200.0, 0.17
+STRIP_SOURCE = 1.0
+
+
+def strip_wavelength() -> float:
+    """The strip's shear wavelength, micrometres."""
+    return STRIP_SHEAR_SPEED / STRIP_FREQUENCY * 1e6
+
+
+def strip_mesh(path: Path, frame: float, *, per_wavelength: float = 20.0) -> gfem.Mesh:
+    """The strip with a frame of ``frame`` wavelengths, free on every outer edge.
+
+    A quarter wavelength high. Regions ``src`` (the first micrometre, with the
+    lines ``top`` and ``bot`` its electrodes), ``pass`` (three wavelengths
+    of passive solid) and ``frame``.
+    """
+    lam = strip_wavelength()
+    height, x1 = lam / 4, STRIP_SOURCE + 3 * lam
+    rects = [
+        (0.0, 0.0, STRIP_SOURCE, height, "src", None),
+        (STRIP_SOURCE, 0.0, x1, height, "pass", None),
+        (x1, 0.0, x1 + frame * lam, height, "frame", None),
+    ]
+    edges: list[tc.Namer] = [
+        (lambda p: abs(p[1] - height) < 1e-9 and p[0] < STRIP_SOURCE + 1e-9, "top"),
+        (lambda p: abs(p[1]) < 1e-9 and p[0] < STRIP_SOURCE + 1e-9, "bot"),
+    ]
+    nodes, tris, lines = tc._mesh2d(rects, lam / per_wavelength, edges)
+    path = Path(path)
+    tc._write_section(path, nodes, tris, lines)
+    return gfem.Mesh.from_gmsh(path, length_unit="um")
+
+
+def strip_model(mesh: gfem.Mesh) -> gfem.Model:
+    """A thickness-shear source block, then isotropic solid (shear speed 3763 m/s)."""
+    c, e, eps = hexagonal("TS")
+    source = gfem.Material(
+        eps_r=eps, stiffness=c, piezoelectric_tensor=e, mass_density=HEX["rho"]
+    )
+    shear = STRIP_DENSITY * STRIP_SHEAR_SPEED**2
+    passive = gfem.Material(
+        stiffness=gfem.isotropic_stiffness(
+            2 * shear * (1 + STRIP_POISSON), STRIP_POISSON
+        ),
+        mass_density=STRIP_DENSITY,
+    )
+    return gfem.Model(
+        mesh, materials={"src": source, "pass": passive, "frame": passive}
     )

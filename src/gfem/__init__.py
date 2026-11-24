@@ -81,6 +81,7 @@ from gfem.measurements import (  # noqa: E402
     power_flow,
     purcell_factor,
     region_mean,
+    strain,
 )
 from gfem.mesh import Mesh, Region  # noqa: E402
 from gfem.model import (  # noqa: E402
@@ -309,6 +310,7 @@ __all__ = [
     "route_phase",
     "shape",
     "solve",
+    "strain",
     "thermo_optic_shift",
     "time_constant",
 ]

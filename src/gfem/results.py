@@ -1636,6 +1636,21 @@ def _port_selection(ports: Sequence[str] | None, names: tuple[str, ...]) -> tupl
     return chosen
 
 
+def _per_terminal(
+    value: Any, n: int, name: str, terminals: tuple[str, ...]
+) -> jax.Array:
+    """``value`` as one entry per terminal: a scalar is repeated."""
+    arr = jnp.asarray(value)
+    if arr.ndim == 0:
+        return jnp.broadcast_to(arr, (n,))
+    if arr.shape != (n,):
+        raise ValueError(
+            f"{name} takes one value or one per terminal ({n} terminals: "
+            f"{', '.join(map(repr, terminals))}); got shape {arr.shape}."
+        )
+    return arr
+
+
 def _touchstone_z0(z0: object) -> float:
     """``to_touchstone``'s ``z0``, checked: one real value > 0."""
     if (
@@ -2707,6 +2722,89 @@ class PiezoelectricResult:
         raise ValueError(
             f"No field kept at {frequency:g} Hz; the kept frequencies are {listed} "
             "Hz (Piezoelectric.keep_fields)."
+        )
+
+    def network_parameters(
+        self,
+        aperture: Any,
+        *,
+        series_resistance: Any = 0.0,
+        reference_impedance: Any = 50.0,
+    ) -> NetworkParameters:
+        r"""The device's scattering parameters on a reference impedance.
+
+        The admittance of an aperture :math:`W` is :math:`Y = W Y'`. A series
+        resistance :math:`R = \mathrm{diag}(R_s)` in each terminal's lead
+        gives :math:`Y_t = Y (I + R Y)^{-1}`, which needs no inverse of
+        :math:`Y`. The scattering matrix is that of :math:`Y_t` on
+        ``reference_impedance`` (pseudo-waves, `gfem.conventions`); for one
+        terminal on a real :math:`Z_0` it is :math:`S_{11} = (Z_L - Z_0) /
+        (Z_L + Z_0)` with :math:`Z_L = 1/Y + R_s`. Written in `jax.numpy`, so
+        it differentiates in all three arguments and in the result, and the
+        returned `NetworkParameters` writes a Touchstone file, renormalizes
+        and converts to Y and Z. The series resistance does not change the
+        field solve, so it is an argument here and not of the problem; its
+        dependence on the aperture is the caller's.
+
+        Args:
+            aperture: The device's length along :math:`z`, in m (> 0).
+            series_resistance: The lead resistance in ohm (>= 0): one value or
+                one per terminal in `terminals` order.
+            reference_impedance: The reference impedance in ohm, with a positive
+                real part: one value or one per terminal.
+
+        Returns:
+            `NetworkParameters` with ``ports`` and ``excited`` the `terminals`
+            and ``z_ref`` of shape ``(n_frequencies, n_terminals)``.
+
+        Raises:
+            ValueError: ``aperture`` is not positive, a resistance is negative,
+                or a value has the wrong shape or a non-positive real part.
+        """
+        n = len(self.terminals)
+        n_f = len(self.frequencies)
+        if not is_traced(aperture) and not (np.isfinite(aperture) and aperture > 0):
+            raise ValueError(
+                f"aperture must be a positive length in m, got {aperture!r}."
+            )
+        r = _per_terminal(series_resistance, n, "series_resistance", self.terminals)
+        if not is_traced(series_resistance) and not (np.real(np.asarray(r)) >= 0).all():
+            raise ValueError(
+                f"series_resistance must be >= 0 ohm, got {series_resistance!r}."
+            )
+        z0 = _per_terminal(
+            reference_impedance, n, "reference_impedance", self.terminals
+        )
+        if (
+            not is_traced(reference_impedance)
+            and not (np.real(np.asarray(z0)) > 0).all()
+        ):
+            raise ValueError(
+                "reference_impedance needs a positive real part (a resistance), "
+                f"got {reference_impedance!r}."
+            )
+        y = aperture * jnp.asarray(self.admittance_per_length, dtype=complex)
+        eye = jnp.eye(n)
+        # Y (I + R Y)^-1 = (I + Y R)^-1 Y
+        yt = jnp.linalg.solve(eye + y * r[None, None, :], y)
+        z_ref = jnp.broadcast_to(z0, (n_f, n))
+        g = jnp.asarray(z_ref, dtype=complex)
+        k = _pseudo(g)
+        # K Y K^-1 has entries Y_ij k_i / k_j; S = (I - G N)(I + G N)^-1
+        gn = g[:, :, None] * yt * k[:, :, None] / k[:, None, :]
+        s = jnp.swapaxes(
+            jnp.linalg.solve(
+                jnp.swapaxes(eye + gn, 1, 2), jnp.swapaxes(eye - gn, 1, 2)
+            ),
+            1,
+            2,
+        )
+        return NetworkParameters(
+            values=s,
+            z_ref=z_ref,
+            frequency=self.frequencies,
+            ports=self.terminals,
+            excited=self.terminals,
         )
 
     def to_xarray(self) -> xarray.Dataset:
