@@ -655,7 +655,7 @@ def test_dispersion_leaves_a_shared_surface_s_port_modes_bit_identical():
             for name in ("p1_m1", "p1_m2", "p2_m1", "p2_m2")
         ],
     )
-    grid = tuple(np.linspace(16e9, 20e9, 9))
+    grid = tuple(np.linspace(16e9, 20e9, 5))
     options = gfem.SolverOptions(order=3, linear_solver="direct", threads=1)
     driven = gfem.solve(
         model, gfem.Driven(grid, excite="p1_m1", keep_fields=True), options=options

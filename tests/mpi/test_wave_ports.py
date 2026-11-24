@@ -508,7 +508,21 @@ def _port_mode(case, directory):
         "residual": np.asarray(result.residual),
         "solved": np.asarray(result.solved),
         "e_field": np.asarray(result.e_field.at(points)),
+        "n_g": np.asarray(result.n_g),
+        "beta_2": np.asarray(result.beta_2),
+        "beta_3": np.asarray(result.beta_3),
     }
+
+
+#: Rank gate of each compared output (relative to its largest entry): the
+#: dispersion's higher orders amplify the assembly's rounding.
+PORT_MODE_GATES = {
+    "gamma": 1e-8,
+    "e_field": 1e-8,
+    "n_g": 1e-8,
+    "beta_2": 1e-8,
+    "beta_3": 1e-7,
+}
 
 
 @pytest.mark.parametrize("case", ["slab", "hybrid"])
@@ -516,10 +530,10 @@ def _port_mode(case, directory):
 def test_a_port_mode_solve_agrees_with_one_process(tmp_path, case, ranks):
     one = _port_mode(case, tmp_path)
     row, *_ = on_ranks(_port_mode, case, tmp_path, ranks=ranks, limit=180)
-    for name in ("gamma", "e_field"):
+    for name, gate in PORT_MODE_GATES.items():
         error = np.abs(row[name] - one[name]).max() / np.abs(one[name]).max()
         print(f"{case} ranks={ranks} {name} error={error:.3g}")  # noqa: T201
-        assert error < 1e-8, name
+        assert error < gate, name
     np.testing.assert_array_equal(row["solved"], one["solved"])
 
 
