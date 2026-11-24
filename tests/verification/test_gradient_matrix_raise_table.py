@@ -3197,6 +3197,31 @@ def _out_eigenmode_band_group_velocity(request):
     jax.make_jaxpr(jax.grad(objective))(jnp.full(n, pc.C3_EPS_LOW))
 
 
+def _out_band_diagram_staged(request):
+    # a band diagram orders and connects the bands from concrete values: it
+    # runs under jax.grad, and raises at the trace inside jax.jit
+    model = request.getfixturevalue("bragg_cell")
+    n = len(model.mesh.elements("low"))
+    path = np.array([[math.pi / (pc.C3_A * pc.MM), 0.0, 0.0]])
+
+    def objective(e):
+        m = model.with_material("low", gfem.MaterialField(eps_r=e))
+        return gfem.band_diagram(m, path, target=5e9, n_bands=1).frequency[0, 0]
+
+    jax.make_jaxpr(objective)(jnp.full(n, pc.C3_EPS_LOW))
+
+
+def _out_band_diagram_wave_vectors(request):
+    # the wave vectors and the target are fixed numbers, never a leaf
+    model = request.getfixturevalue("bragg_cell")
+
+    def objective(kx):
+        path = jnp.stack([kx, 0.0, 0.0])[None]
+        return gfem.band_diagram(model, path, target=5e9, n_bands=1).frequency[0, 0]
+
+    jax.make_jaxpr(jax.grad(objective))(math.pi / (pc.C3_A * pc.MM))
+
+
 def _out_bloch_eigenmode_on_bddc(request):
     # two-sided refinement solves the transposed system on the shift's
     # factors: a Bloch eigenmode solve refuses BDDC + GMRES before assembly
@@ -3925,6 +3950,18 @@ OUT_OF_SCOPE = [
         _out_eigenmode_band_group_velocity,
         gfem.NonDifferentiableError,
         "'v_g'",
+    ),
+    (
+        "band_diagram inside jax.jit or jax.vmap",
+        _out_band_diagram_staged,
+        gfem.NonDifferentiableError,
+        "not inside jax.jit or jax.vmap",
+    ),
+    (
+        "band_diagram x wave vectors or target",
+        _out_band_diagram_wave_vectors,
+        gfem.NonDifferentiableError,
+        "must be fixed numbers",
     ),
     # eigenmode mode-field outputs
     (

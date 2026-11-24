@@ -208,6 +208,22 @@ def _refined_then_a_collective(directory):
     raise AssertionError("mesh refinement ran")
 
 
+def _band_diagram_then_a_collective(directory):
+    world = _world()
+    model = mpi_cases._cell(Path(directory))
+    path = np.array([mpi_cases.pc.C1_K, (0.0, 0.0, 0.0)])
+    try:
+        gfem.band_diagram(model, path, target=mpi_cases.FREQUENCY, n_bands=1)
+    except gfem.DistributedUnsupportedError as err:
+        return err.feature, world.allreduce(world.rank)
+    raise AssertionError("a band diagram ran")
+
+
+def test_every_rank_refuses_band_diagram_and_a_later_collective_runs(tmp_path):
+    values = on_ranks(_band_diagram_then_a_collective, tmp_path, ranks=3, limit=120)
+    assert values[0] == (mpi_cases.feature("bloch"), 0 + 1 + 2)
+
+
 def test_every_rank_refuses_mesh_refinement_and_a_later_collective_runs(tmp_path):
     values = on_ranks(_refined_then_a_collective, tmp_path, ranks=3, limit=120)
     assert values[0] == (mpi_cases.feature("mesh_refinement"), 0 + 1 + 2)

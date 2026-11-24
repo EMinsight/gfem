@@ -746,6 +746,28 @@ def rods_tutorial_mesh(name: str = "rods.msh") -> gfem.Mesh:
     return gfem.Mesh.from_gmsh_cross_section(path, length_unit="mm")
 
 
+def rods_slab(mesh: gfem.Mesh, *, ez: bool = True) -> gfem.Model:
+    """The tutorial's rod cell (`rods_tutorial_mesh`) as a slab of the 2D crystal.
+
+    Periodic in x and y. PEC "front" and "back" faces leave the Ez bands (E
+    along the rods); natural faces (``ez=False``) the Hz bands.
+    """
+    boundaries = [
+        gfem.Periodic(("x_min", "x_max")),
+        gfem.Periodic(("y_min", "y_max")),
+    ]
+    if ez:
+        boundaries += [gfem.PEC("front"), gfem.PEC("back")]
+    return gfem.Model(
+        mesh,
+        materials={
+            "rod": gfem.Material(eps_r=ROD_EPS),
+            "air": gfem.Material(eps_r=1.0),
+        },
+        boundaries=boundaries,
+    )
+
+
 def rods_mesh(directory: Path, cells: int = 8) -> gfem.Mesh:
     """The rod cell staircased on a ``cells`` x ``cells`` x 1 grid, one element thick.
 

@@ -3783,6 +3783,74 @@ def test_gradient_matrix_bloch_at_zero_wave_vector_equals_plain(designs, name):
     assert np.linalg.norm(got - want) <= 1e-8 * np.linalg.norm(want)
 
 
+# --- the band diagram sweep over the eigen cell --------------------------------------
+
+#: A target below half the lowest frequency found along the path (1.5-15 GHz).
+BAND_TARGET = 0.5e9
+#: The weights of every band's frequency in the band objective, wave vector by band.
+BAND_WEIGHTS = np.array([[0.3, 1.0], [0.7, 0.4], [0.5, 0.9]])
+
+
+def _band_path():
+    """Γ, half way and X along x: the eigen cell's raw path of three wave vectors."""
+    x = np.pi / (EG_A * MM)
+    return np.array([[0.0, 0.0, 0.0], [0.5 * x, 0.0, 0.0], [x, 0.0, 0.0]])
+
+
+def _band_objective(d: Designs, *, independent: bool):
+    """The gap and a weighted sum of the bands of the eigen cell, in its eps.
+
+    ``Re[min_k omega_1 - max_k omega_0] + sum w Re omega`` over the three
+    wave vectors of `_band_path`. With ``independent`` each wave vector is a
+    `gfem.solve` on a fresh discretization (the caches released between them),
+    sorted by hand, with the static band at Γ left out.
+    """
+    mesh, path = d.eigen_cell, _band_path()
+    options = tight("direct")
+
+    def sweep(eps):
+        model = eigen_cell(mesh, eps, tan_delta=EG_TAN_DELTA)
+        if not independent:
+            bd = gfem.band_diagram(
+                model, path, target=BAND_TARGET, n_bands=2, options=options
+            )
+            return bd.omega
+        rows = []
+        for k in path:
+            gfem.release_memory()
+            problem = gfem.Eigenmode(BAND_TARGET, n_modes=2, wave_vector=tuple(k))
+            omega = gfem.solve(model, problem, options=options).omega
+            order = np.argsort(np.asarray(jax.lax.stop_gradient(omega)).real)
+            rows.append(omega[order])
+        # Γ drops its static band: the band diagram fills it in at 0
+        rows[0] = jnp.concatenate([jnp.zeros(1, complex), rows[0][:1]])
+        return jnp.stack(rows)
+
+    def objective(eps):
+        w = jnp.real(sweep(eps) * OMEGA_WEIGHT)
+        return w[:, 1].min() - w[:, 0].max() + jnp.sum(BAND_WEIGHTS * w)
+
+    return objective
+
+
+def test_gradient_matrix_band_diagram_matches_central_differences(designs):
+    objective = _band_objective(designs, independent=False)
+    eps = jnp.asarray(eigen_cell_design(designs.eigen_cell)["eps"])
+    rng = np.random.default_rng(5)
+    directions = unit_directions(rng, eps.shape, 3)
+    assert_gradient_matches(objective, eps, directions, step=STEPS["eps_r"])
+
+
+def test_gradient_matrix_band_diagram_equals_independent_gradients(designs):
+    eps = jnp.asarray(eigen_cell_design(designs.eigen_cell)["eps"])
+    swept = jax.grad(_band_objective(designs, independent=False))(eps)
+    apart = jax.grad(_band_objective(designs, independent=True))(eps)
+    assert np.abs(np.asarray(apart)).max() > 0
+    np.testing.assert_allclose(
+        np.asarray(swept), np.asarray(apart), rtol=1e-9, atol=1e-9 * np.abs(apart).max()
+    )
+
+
 def _periodic_nodes_objective(model):
     """The Bloch S objective of ``model`` as a function of its raw node coordinates."""
     problem = gfem.Driven(frequency=pc.G_FREQUENCIES, wave_vector=pc.G_K)
