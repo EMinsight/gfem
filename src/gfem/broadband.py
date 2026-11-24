@@ -99,16 +99,25 @@ class TimeResponse:
             KeyError: ``to`` is not a port, or ``from`` is not an excited port.
         """
         to, source = key
-        if to not in self.ports:
-            raise KeyError(
-                f"No port {to!r}; the ports are {', '.join(map(repr, self.ports))}."
-            )
+        i = self._port(to)
         if source not in self.excited:
             raise KeyError(
                 f"Port {source!r} was not excited; the excited ports are "
                 f"{', '.join(map(repr, self.excited))} (see Driven.excite)."
             )
-        return self.values[:, self.ports.index(to), self.excited.index(source)]
+        return self.values[:, i, self.excited.index(source)]
+
+    def _port(self, port: str) -> int:
+        """The row of ``port`` in `values`.
+
+        Raises:
+            KeyError: ``port`` is not a port.
+        """
+        if port not in self.ports:
+            raise KeyError(
+                f"No port {port!r}; the ports are {', '.join(map(repr, self.ports))}."
+            )
+        return self.ports.index(port)
 
     def impedance(self, port: str) -> jax.Array:
         r"""The impedance profile seen from ``port`` over `time`, ohm, ``(n_time,)``.
@@ -127,10 +136,7 @@ class TimeResponse:
             ValueError: The response is not a step, ``port`` was not
                 excited, or it has no reference impedance (NaN `z_ref`).
         """
-        if port not in self.ports:
-            raise KeyError(
-                f"No port {port!r}; the ports are {', '.join(map(repr, self.ports))}."
-            )
+        i = self._port(port)
         if self.kind != "step":
             raise ValueError(
                 f"The impedance profile is read from a step response, not an "
@@ -143,7 +149,6 @@ class TimeResponse:
                 f"{', '.join(map(repr, self.excited))}). Solve with "
                 "Driven(excite=...) including it."
             )
-        i = self.ports.index(port)
         if not is_traced(self.z_ref) and np.isnan(np.asarray(self.z_ref)[i]):
             raise ValueError(
                 f"Port {port!r} has no reference impedance (z_ref is NaN: a "
@@ -263,12 +268,10 @@ class RationalModel:
 
     def __post_init__(self) -> None:
         """Check the shapes, the poles' stability and pairing, and `z_ref`."""
-        if is_traced((self.poles, self.residues, self.d, self.z_ref)):
-            raise NonDifferentiableError(
-                "RationalModel is a NumPy model and gfem does not differentiate "
-                "it; build it from concrete values, outside jax.grad, jax.jit "
-                "or jax.vmap."
-            )
+        _concrete(
+            (self.poles, self.residues, self.d, self.z_ref),
+            "RationalModel needs concrete poles, residues, d and z_ref",
+        )
         ports = tuple(self.ports)
         if not all(isinstance(p, str) for p in ports) or len(set(ports)) != len(ports):
             raise ValueError(
@@ -368,12 +371,7 @@ class RationalModel:
             ValueError: A frequency is negative, not finite or above the
                 fitted range (the model never extrapolates above its data).
         """
-        if is_traced(frequency):
-            raise NonDifferentiableError(
-                "RationalModel.network needs concrete frequencies: the model is "
-                "a NumPy object, not differentiated by JAX. Evaluate it outside "
-                "jax.grad, jax.jit or jax.vmap."
-            )
+        _concrete(frequency, "RationalModel.network needs concrete frequencies")
         f = np.asarray(frequency, dtype=float).reshape(-1)
         if not (np.isfinite(f).all() and (f >= 0).all()):
             raise ValueError(
@@ -392,10 +390,9 @@ class RationalModel:
         terms = 1 / (s[:, None] - self.poles[None, :])
         values = self.d[None] + np.einsum("fn,nij->fij", terms, self.residues)
         n = len(self.ports)
-        z = np.full(n, np.nan) if self.nominal_reference else self.z_ref
         return NetworkParameters(
             values=jnp.asarray(values),
-            z_ref=jnp.asarray(np.broadcast_to(z, (f.size, n))),
+            z_ref=jnp.asarray(np.broadcast_to(self._response_z_ref(), (f.size, n))),
             frequency=tuple(float(x) for x in f),
             ports=self.ports,
             excited=self.ports,
@@ -428,12 +425,7 @@ class RationalModel:
             NonDifferentiableError: ``time`` is traced by JAX.
             ValueError: A time is not finite.
         """
-        if is_traced(time):
-            raise NonDifferentiableError(
-                "RationalModel.step_response needs concrete times: the model is "
-                "a NumPy object, not differentiated by JAX. Evaluate it outside "
-                "jax.grad, jax.jit or jax.vmap."
-            )
+        _concrete(time, "RationalModel.step_response needs concrete times")
         t = np.asarray(time, dtype=float).reshape(-1)
         if not np.isfinite(t).all():
             raise ValueError(
@@ -445,17 +437,21 @@ class RationalModel:
         scaled = self.residues / self.poles[:, None, None]
         step = self.d[None] + np.einsum("tn,nij->tij", grow, scaled).real
         values = np.where(after[:, None, None], step, 0.0)
-        n = len(self.ports)
-        z = np.full(n, np.nan) if self.nominal_reference else self.z_ref
         return TimeResponse(
             time=t,
             values=jnp.asarray(values),
-            z_ref=jnp.asarray(z),
+            z_ref=jnp.asarray(self._response_z_ref()),
             ports=self.ports,
             excited=self.ports,
             kind="step",
             mode="closed_form",
         )
+
+    def _response_z_ref(self) -> np.ndarray:
+        """The reference of the model's responses: NaN when `z_ref` is a label."""
+        if self.nominal_reference:
+            return np.full(len(self.ports), np.nan)
+        return self.z_ref
 
     def to_spice(self, path: str | Path, *, name: str | None = None) -> Path:
         r"""Write the model as a SPICE subcircuit that reproduces its S.
@@ -559,6 +555,19 @@ class RationalModel:
         return (
             f"RationalModel(ports={list(self.ports)}, n_poles={self.n_poles}, "
             f"{band}, error={self.error:.3g}, passive={self.passive})"
+        )
+
+
+def _concrete(value: Any, what: str) -> None:
+    """Refuse a JAX tracer where the NumPy model needs a value.
+
+    Raises:
+        NonDifferentiableError: ``value`` is traced by JAX.
+    """
+    if is_traced(value):
+        raise NonDifferentiableError(
+            f"{what}: the model is a NumPy object, not differentiated by JAX. "
+            "Use it outside jax.grad, jax.jit or jax.vmap."
         )
 
 
