@@ -81,7 +81,8 @@ mesh here:
   sphere at 0.1 (the mesh V6 uses; gate 1e-3). The difference is the far-field
   layer's discretization, not the volume integral.
 - Toroidal correction, same sphere: :math:`|p_0 - ikT - p| / |p_0 - p| =
-  0.066`, gate 0.2.
+  0.066` (0.070 on the default sphere, under 3x below the gate, so the
+  reference tier alone runs it), gate 0.2.
 - Anapole D' (maxh 0.25, sphere 0.05, order 3): exact dipole 2.3e-3 of the
   norm; :math:`p_{0,x}` 0.28661 and :math:`-ikT_x` -0.30678 against 0.287088
   and -0.306525; :math:`|p_0 - ikT| / |p_0| = 0.070`. Gates 1e-2.

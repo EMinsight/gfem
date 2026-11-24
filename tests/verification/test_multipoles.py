@@ -344,16 +344,6 @@ def test_rm1_the_kerker_sphere(tmp_path):
     assert abs(p - m / C0) < RM1_GATES["kerker"] * abs(p)
 
 
-def test_v7_the_toroidal_correction_improves_the_dipole_on_the_default_sphere(lossy):
-    mp = lossy.multipoles("z")
-    cm = gfem.current_moments(lossy.result, "z", model=lossy.model)
-    p = np.asarray(mp.electric_dipole)[0]
-    p0 = np.asarray(cm.long_wavelength_dipole)[0]
-    kt = 1j * cm.wavenumber[0] * np.asarray(cm.toroidal_dipole)[0]
-    print("V7RATIO", np.linalg.norm(p0 - kt - p) / np.linalg.norm(p0 - p))  # noqa: T201
-    assert np.linalg.norm(p0 - kt - p) <= np.linalg.norm(p0 - p) / 5
-
-
 #: Degree-1 error of the volume route against the projection (both types, over
 #: the projection's degree-1 norm), above 3x the measured 2.4e-4 and under the
 #: 1e-3 cap.
@@ -394,6 +384,8 @@ def test_v6_the_volume_route_gives_the_projections_degree_one(fine_lossy_sphere)
     assert error <= VOLUME_GATE
 
 
+#: Measured |p0 - ikT - p| / |p0 - p| 0.070 on this fine mesh and 0.070 on the
+#: default sphere: the 1/5 gate is under 3x that, so only this tier runs it.
 @pytest.mark.reference
 def test_v7_the_toroidal_correction_improves_the_long_wavelength_dipole(
     fine_lossy_sphere,
