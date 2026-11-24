@@ -28,6 +28,9 @@ Thermal:
   `incident_power_per_length=`. A perfectly matched layer, absorbing faces,
   ports and lumped port loads give no heat
   ({doc}`../recipes/electromagnetic-heating`).
+- **Heat of a law blend.** `gfem.dissipated_power` and
+  `gfem.electromagnetic_heating` accept a metal-dielectric blend with a
+  permittivity law, and their gradients flow to the blend's density.
 - **Dissipated power.** `gfem.dissipated_power(field, model=)` gives a
   driven field's loss per volume region and per sheet, in W per 1 W
   incident. With real port references it sums to

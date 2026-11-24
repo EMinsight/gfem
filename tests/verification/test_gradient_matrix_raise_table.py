@@ -1096,9 +1096,14 @@ _HEATING_READS = _EM_READS | set(DRIVE_KINDS)
 #: ``dissipated_power_law``: the upper half a permittivity law (`TABLE_LAW`).
 HEAT_LAW_KINDS = [("law", "upper", *k[2:]) for k in LAW_KINDS]
 _LAW_READS = _EM_READS | set(HEAT_LAW_KINDS)
+#: ``dissipated_power_blend``: the upper half an index blend of a constant end
+#: and `TABLE_LAW`; its density moves the loss.
+HEAT_BLEND_KINDS = [("material", "upper", p) for p in ("mu_r", "conductivity", "blend")]
+_BLEND_READS = _EM_READS | set(HEAT_BLEND_KINDS)
 HEAT_READS = {
     "dissipated_power": {"lower": _EM_READS, "upper": set(), "sheet": _EM_READS},
     "dissipated_power_law": dict.fromkeys(("lower", "upper", "sheet"), _LAW_READS),
+    "dissipated_power_blend": dict.fromkeys(("lower", "upper", "sheet"), _BLEND_READS),
     "electromagnetic_heating": {
         "temperature.coefficients": _HEATING_READS | {_K},
         "temperature.mesh.nodes": set(),
@@ -1120,6 +1125,7 @@ EXPECTED |= {
         *HEAT_KINDS,
         *(DRIVE_KINDS if name == "electromagnetic_heating" else ()),
         *(HEAT_LAW_KINDS if name == "dissipated_power_law" else ()),
+        *(HEAT_BLEND_KINDS if name == "dissipated_power_blend" else ()),
     ]
 }
 
@@ -1844,9 +1850,20 @@ def heat_cases(sheet_mesh):
     law = model.with_material(
         "upper", gfem.Material(eps_r=TABLE_LAW, thermal_conductivity=1.0)
     )
+    n_upper = len(sheet_mesh.elements("upper"))
+    blend = model.with_material(
+        "upper",
+        gfem.MaterialField.interpolate(
+            jnp.linspace(0.3, 0.7, n_upper),
+            gfem.Material(eps_r=2.0),
+            gfem.Material(eps_r=TABLE_LAW),
+            scheme="index",
+        ),
+    )
     return {
         "dissipated_power": (model, lost),
         "dissipated_power_law": (law, lost),
+        "dissipated_power_blend": (blend, lost),
         "electromagnetic_heating": (model, heated),
     }
 

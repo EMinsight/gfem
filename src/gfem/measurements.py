@@ -1019,8 +1019,7 @@ def dissipated_power(field: Field, *, model: Model) -> dict[str, jax.Array]:
             coefficients), or was not solved on ``model``; or a name is
             both a volume region and a sheet surface.
         NotImplementedError: A region has a complex ``mu_r`` (magnetic loss
-            is not heat in this version), the model holds a
-            metal-dielectric blend with a permittivity law, or the model is
+            is not heat in this version), or the model is
             2D (pose the driven solve on the slab of
             `gfem.Mesh.from_gmsh_cross_section`).
         gfem.MeshRefinementUnsupportedError: Called while an objective is
@@ -1063,11 +1062,10 @@ def check_heat_field(field: Any, model: Any, who: str) -> None:
             `gfem.Model`.
         ValueError: Not a driven electric field, or a name that is both a
             volume region and a sheet surface.
-        NotImplementedError: A 2D model, or a law blend.
+        NotImplementedError: A 2D model.
         gfem.MeshRefinementUnsupportedError: Under the refinement recorder.
         gfem.DistributedUnsupportedError: A field across ranks.
     """
-    from gfem._engine.dispersion import refuse_blends
     from gfem._engine.heat import sheet_surfaces
     from gfem._field import Field
     from gfem.model import Model
@@ -1086,7 +1084,6 @@ def check_heat_field(field: Any, model: Any, who: str) -> None:
             "this version: refine on the S-parameters or on gfem.power_flow "
             "instead.",
         )
-    refuse_blends(model, f"gfem.{who}")
     _check_time_harmonic(field, who, static="solve a gfem.Driven problem")
     if jnp.iscomplexobj(field.omega):
         raise ValueError(

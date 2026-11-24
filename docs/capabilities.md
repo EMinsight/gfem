@@ -360,8 +360,7 @@ returning a wrong value:
   properties: no temperature-dependent conductivity, no radiation, no
   thermal contact resistance, and the heat does not change the current or
   the electromagnetic loss. Electromagnetic heat comes from electric and
-  sheet loss only: no magnetic loss, no metal-dielectric blend with a
-  permittivity law, no eigenmode, port mode or 2D model. A
+  sheet loss only: no magnetic loss, no eigenmode, port mode or 2D model. A
   transient runs on a uniform time grid with sources switched at grid
   times. A cross-section is a slice of an infinitely long device. The
   thermo-optic shift and the route phase are first order in the rise, with

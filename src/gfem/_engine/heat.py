@@ -78,7 +78,9 @@ __all__ = [
 ]
 
 #: The material properties the heat reads directly: its explicit term.
-LOSSY_PROPERTIES = frozenset({"eps_r", "tan_delta", "conductivity"})
+#: A law blend's density scales its susceptibility parts' coefficients, so
+#: the density moves the loss.
+LOSSY_PROPERTIES = frozenset({"eps_r", "tan_delta", "conductivity", "blend"})
 #: The volume pieces whose loss is heat, by name or name prefix.
 _VOLUME_NAMES = ("mass", "conductivity")
 _VOLUME_PREFIXES = ("susceptibility ", "blend ")

@@ -16,8 +16,8 @@ and the model's leaves:
 - the node coordinates and ``omega``: read, not differentiable;
 - the permittivity, loss tangent and conductivity of a region with heated
   elements, its permittivity law's parameters, the fill of a `Conductor`
-  or `Impedance` sheet and an `Impedance`'s resistance: read and
-  differentiable (the explicit term, linear in each);
+  or `Impedance` sheet, an `Impedance`'s resistance and a law blend's
+  density: read and differentiable (the explicit term, linear in each);
 - every other leaf (a real ``mu_r``, an `Impedance`'s inductance or
   capacitance, a lumped port's values, thermal properties): unread, an
   exact zero here; its influence arrives through the fields.

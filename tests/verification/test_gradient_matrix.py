@@ -622,6 +622,10 @@ def _heat_cells() -> list[Cell]:
     ]
     cells.append(Cell("dissipated_power", "conductivity", "bddc_gmres"))
     cells += [
+        Cell("dissipated_power", "blend", "direct", variant=scheme)
+        for scheme in ("index", "linear")
+    ]
+    cells += [
         Cell("electromagnetic_heating", name, "direct")
         for name in ("eps_r", "conductivity", "lumped", "drive", "thermal_conductivity")
     ]
@@ -3099,6 +3103,27 @@ def _heat_law(d: Designs, _cell: Cell, options, seed: int) -> Case:
     return _law_case(objective, law, seed)
 
 
+def _heat_blend(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """The strip line's core loss in its blend's density (the scheme the variant)."""
+    mesh = d.dispersive
+    rng = np.random.default_rng(seed)
+    rho = jnp.asarray(rng.uniform(0.2, 0.8, len(mesh.elements("core"))))
+    problem = gfem.Driven(frequency=BLEND_FREQUENCIES, excite="p1", keep_fields=True)
+
+    def objective(p):
+        core = gfem.MaterialField.interpolate(
+            p, BLEND_DIELECTRIC, BLEND_METAL, scheme=cell.variant
+        )
+        model = dispersive_line(mesh, BLEND_DIELECTRIC.eps_r).with_material(
+            "core", core
+        )
+        return _loss(
+            model, gfem.solve(model, problem, options=options), BLEND_FREQUENCIES
+        )
+
+    return Case(objective, rho, rng, step=STEPS["blend"], taylor=3e-2)
+
+
 #: The heat-flow cells' top convection, W/(m^2 K): the top takes about half
 #: the heat, so the flows move with k by tens of %. At the slab cells' 1e4 it
 #: takes 1 %, and a flow's derivative sinks to 1e-4 of the flow, where the
@@ -3248,6 +3273,7 @@ BUILDERS = {
     ("dissipated_power", "fill"): _heat_fill,
     ("dissipated_power", "lumped"): _heat_lumped,
     ("dissipated_power", "law"): _heat_law,
+    ("dissipated_power", "blend"): _heat_blend,
     **{
         ("electromagnetic_heating", name): _heat_material
         for name in ("eps_r", "conductivity", "drive", "thermal_conductivity")

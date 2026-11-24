@@ -815,7 +815,7 @@ def electromagnetic_heating(
             is not a mapping.
         NotImplementedError: A `gfem.PortModeResult`, a 2D model (pose the
             driven solve on the slab), or what `gfem.dissipated_power`
-            refuses (complex ``mu_r``, a law blend).
+            refuses (complex ``mu_r``).
         ValueError: No excited port, not exactly one drive, the wrong one for
             the mesh, a number for several excited ports, a negative power, or
             no field kept at ``frequency``.

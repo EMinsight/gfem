@@ -20,7 +20,7 @@ or 1, where the clamp's derivative is zero and a difference is not.
 With the design square all gold (a plain law material, no blend), the heat
 it dissipates is the power the field brings into it: `gfem.dissipated_power`
 against `gfem.power_flow`. The absorbing outer boundary keeps S out of this
-identity, and the blended bend is the dissipated power's refusal case.
+identity; the mirror-blended bend holds it too.
 """
 
 from pathlib import Path
@@ -143,3 +143,22 @@ def test_a_gold_design_dissipates_what_power_flow_says_enters_it(bend):
     # gate 1e-12 (9e-15 measured)
     assert float(lost["design"]) == pytest.approx(entering, rel=1e-12)
     assert float(lost["core"]) == 0.0
+
+
+def test_a_blended_bend_dissipates_what_power_flow_says_enters_it(bend):
+    # the design square the mirror's blend of cladding and gold: the heat
+    # kernel reads the blend's susceptibility pieces at the frequency
+    model, grid, mirror, _ = bend
+    blended = model.with_material(
+        "design",
+        gfem.MaterialField.interpolate(
+            grid.to_elements(jnp.asarray(mirror)), CLADDING, GOLD, scheme="index"
+        ),
+    )
+    problem = gfem.Driven(frequency=FREQUENCIES[1], excite="p1", keep_fields=True)
+    result = gfem.solve(blended, problem, options=OPTIONS)
+    field = result.e_field(FREQUENCIES[1], "p1")
+    lost = gfem.dissipated_power(field, model=blended)
+    entering = -float(gfem.power_flow(field, "design", model=blended))
+    assert entering > 1e-3
+    assert float(lost["design"]) == pytest.approx(entering, rel=1e-12)
