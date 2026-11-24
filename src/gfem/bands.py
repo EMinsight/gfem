@@ -43,7 +43,7 @@ _GAMMA = "Γ"
 _ALIASES = {"G": _GAMMA, "Gamma": _GAMMA}
 #: Relative tolerance on the lengths and angles of the translations when the
 #: lattice is recognised.
-LATTICE_RTOL = 1e-6
+_LATTICE_RTOL = 1e-6
 #: The named points of each lattice besides Γ, in reduced coordinates; X lies
 #: along the first pair. The hexagonal K depends on the basis angle and is
 #: placed by `_named_points`.
@@ -69,7 +69,7 @@ class WaveVectorPath:
         wave_vectors: ``(n_k, 3)`` Cartesian Bloch wave vectors, rad/m
             (read-only).
         labels: The high-symmetry points' names in path order (a name may
-            repeat: Γ … Γ).
+            repeat: Γ … Γ); ``"G"`` and ``"Gamma"`` are stored as ``"Γ"``.
         label_index: The wave-vector index of each label.
         lattice: ``"line"``, ``"square"``, ``"rectangular"``,
             ``"hexagonal"``, ``"cubic"`` or ``"other"`` (the default, also
@@ -77,6 +77,13 @@ class WaveVectorPath:
         distance: ``(n_k,)`` cumulative path length
             :math:`\sum\lvert\Delta\mathbf k\rvert` from 0, rad/m: the
             abscissa of a band diagram (read-only).
+
+    Raises:
+        ValueError: The wave vectors are not finite numbers of shape
+            ``(n_k, 3)`` with ``n_k`` ≥ 1, ``labels`` and ``label_index``
+            differ in length, or ``lattice`` is not one of the names above.
+        TypeError: A label is not a string.
+        IndexError: A label's index is outside the path.
     """
 
     wave_vectors: np.ndarray
@@ -92,9 +99,9 @@ class WaveVectorPath:
                 "WaveVectorPath: the wave vectors must be finite numbers of shape "
                 f"(n_k, 3) in rad/m with n_k ≥ 1, got shape {k.shape}."
             )
-        labels = tuple(self.labels)
-        if not all(isinstance(name, str) for name in labels):
-            raise TypeError(f"WaveVectorPath: labels are names, got {labels!r}.")
+        if not all(isinstance(name, str) for name in self.labels):
+            raise TypeError(f"WaveVectorPath: labels are names, got {self.labels!r}.")
+        labels = tuple(_canonical(name) for name in self.labels)
         index = tuple(operator.index(i) for i in self.label_index)
         if len(index) != len(labels):
             raise ValueError(
@@ -169,7 +176,7 @@ def wave_vector_path(
     r"""The Bloch wave vectors along straight segments between high-symmetry points.
 
     The lattice is recognised from the model's `gfem.Model.periodic_translations`
-    (lengths and angles to a relative ``LATTICE_RTOL``), and names its
+    (lengths and angles to a relative :math:`10^{-6}`), and names its
     high-symmetry points in reduced coordinates :math:`c_i` of
     :math:`\mathbf k = \sum_i c_i \mathbf b_i`, the :math:`\mathbf b_i` of
     `gfem.Model.reciprocal_lattice`. Besides Γ:
@@ -308,7 +315,7 @@ def _lattice(a: np.ndarray) -> str:
     if len(a) == 1:
         return "line"
     lengths = np.linalg.norm(a, axis=1)
-    equal = np.ptp(lengths) <= LATTICE_RTOL * lengths.max()
+    equal = np.ptp(lengths) <= _LATTICE_RTOL * lengths.max()
     angles = [
         math.acos(np.clip(a[i] @ a[j] / (lengths[i] * lengths[j]), -1.0, 1.0))
         for i in range(len(a))
@@ -317,7 +324,7 @@ def _lattice(a: np.ndarray) -> str:
 
     def at(angle: float, degrees: float) -> bool:
         target = math.radians(degrees)
-        return abs(angle - target) <= LATTICE_RTOL * target
+        return abs(angle - target) <= _LATTICE_RTOL * target
 
     orthogonal = all(at(t, 90) for t in angles)
     if len(a) == 3:

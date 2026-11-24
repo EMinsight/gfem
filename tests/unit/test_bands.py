@@ -205,8 +205,9 @@ def test_named_points_add_and_override(models):
 
 def test_a_path_of_given_wave_vectors_computes_its_distance():
     k = [(0.0, 0.0, 0.0), (3.0, 4.0, 0.0), (3.0, 4.0, 12.0)]
-    path = gfem.WaveVectorPath(k, labels=("Γ", "Z"), label_index=(0, 2))
+    path = gfem.WaveVectorPath(k, labels=("Gamma", "Z"), label_index=(0, 2))
     np.testing.assert_array_equal(path.distance, [0.0, 5.0, 17.0])
+    assert path.labels == ("Γ", "Z")
     assert path.lattice == "other"
     assert path.index("Z") == 2
     assert repr(path) == "WaveVectorPath(Γ-Z, 3 wave vectors, other lattice)"
