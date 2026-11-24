@@ -29,6 +29,7 @@ does (it starts with a letter), so they never collide with a pin.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import re
 from importlib.metadata import version
@@ -39,8 +40,6 @@ import numpy as np
 from gfem._text import hertz_band
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
-
     from gfem.broadband import RationalModel
 
 #: Verilog-AMS reserved words (lower case), refused as pin or module names.
@@ -120,16 +119,71 @@ def number(x: float) -> str:
     return f"{x:.16e}"
 
 
-def _sections(model: RationalModel) -> Iterator[tuple[int, complex, np.ndarray]]:
-    """``(k, pole, residue)``: each real pole and one pole of each pair."""
+@dataclasses.dataclass(frozen=True)
+class _Input:
+    """The states of one pole driven by the incident wave at one port.
+
+    Attributes:
+        port: The driving port, counted from 1.
+        states: The state nodes: one for a real pole, the real and
+            imaginary parts for a pair.
+        gains: ``(state, tag, column)``: the state's gain onto each
+            reflected wave ``b_i`` (``column[i]``), and the tag that names
+            its elements.
+    """
+
+    port: int
+    states: tuple[str, ...]
+    gains: tuple[tuple[str, str, np.ndarray], ...]
+
+
+@dataclasses.dataclass(frozen=True)
+class _Section:
+    """A real pole, or one pole of a pair, and its states for every port."""
+
+    k: int
+    pole: complex
+    inputs: tuple[_Input, ...]
+
+
+@dataclasses.dataclass(frozen=True)
+class _Realization:
+    """The state-space realization both formats write."""
+
+    pins: list[tuple[str, str]]
+    sections: tuple[_Section, ...]
+
+
+def _realize(model: RationalModel) -> _Realization:
+    """The pins and the pole states of ``model``, with their output gains."""
+    n = len(model.ports)
+    sections = []
     k = 0
     for p, r in zip(model.poles, model.residues, strict=True):
-        if p.imag >= 0:
-            k += 1
-            yield k, complex(p), r
+        if p.imag < 0:  # the second pole of a pair: its states are the first's
+            continue
+        k += 1
+        ap = abs(p)
+        inputs = []
+        for j in range(1, n + 1):
+            column = r[:, j - 1]
+            if p.imag == 0:
+                x = f"_x{k}_{j}"
+                inputs.append(_Input(j, (x,), ((x, f"{k}_", column.real / ap),)))
+            else:
+                xr, xi = f"_x{k}r_{j}", f"_x{k}i_{j}"
+                gains = (
+                    (xr, f"{k}r_", 2 * column.real / ap),
+                    (xi, f"{k}i_", -2 * column.imag / ap),
+                )
+                inputs.append(_Input(j, (xr, xi), gains))
+        sections.append(_Section(k, complex(p), tuple(inputs)))
+    return _Realization(pins(model.ports), tuple(sections))
 
 
-def _header(model: RationalModel, name: str) -> list[str]:
+def _header(
+    model: RationalModel, name: str, pin_pairs: list[tuple[str, str]]
+) -> list[str]:
     """The header comment lines, without the comment mark."""
     n = len(model.ports)
     band = (
@@ -151,9 +205,7 @@ def _header(model: RationalModel, name: str) -> list[str]:
         f"Fitted frequency range: {band}; error: {error}",
         "Pins <port> <port>_ref in port order; tie each *_ref pin to its return",
     ]
-    for port, (pin, ref), z in zip(
-        model.ports, pins(model.ports), model.z_ref, strict=True
-    ):
+    for port, (pin, ref), z in zip(model.ports, pin_pairs, model.z_ref, strict=True):
         lines.append(f"  {pin} {ref}: port {port!r}, z_ref {z:.12g} ohm")
     if model.nominal_reference:
         lines.append(
@@ -177,10 +229,10 @@ def _wrap(head: str, words: list[str], width: int = 78) -> list[str]:
 def spice(model: RationalModel, name: str) -> str:
     """The SPICE subcircuit ``name``: R, C, V, G and F cards only."""
     n = len(model.ports)
-    pin_pairs = pins(model.ports)
-    lines = [f"* {line}" if line else "*" for line in _header(model, name)]
-    lines += _wrap(f".subckt {name}", [p for pair in pin_pairs for p in pair])
-    for j, ((pin, ref), z) in enumerate(zip(pin_pairs, model.z_ref, strict=True)):
+    real = _realize(model)
+    lines = [f"* {line}" if line else "*" for line in _header(model, name, real.pins)]
+    lines += _wrap(f".subckt {name}", [p for pair in real.pins for p in pair])
+    for j, ((pin, ref), z) in enumerate(zip(real.pins, model.z_ref, strict=True)):
         k, sz = j + 1, math.sqrt(z)
         lines += [
             f"* port {k}: sense the pin current, Norton source, incident wave",
@@ -199,37 +251,34 @@ def spice(model: RationalModel, name: str) -> str:
                 lines.append(
                     f"gd{i + 1}_{j + 1} 0 _b{i + 1} _a{j + 1} 0 {number(model.d[i, j])}"
                 )
-    for k, p, r in _sections(model):
+    for section in real.sections:
+        k, p = section.k, section.pole
         ap, sig, om = abs(p), p.real, p.imag
         lines.append(f"* pole {k}: {number(sig)} {number(om)}j rad/s")
-        for j in range(n):
+        for inp in section.inputs:
+            j = inp.port
             if om == 0:
-                x = f"_x{k}_{j + 1}"
+                (x,) = inp.states
                 lines += [
-                    f"cx{k}_{j + 1} {x} 0 {number(1 / ap)}",
-                    f"rx{k}_{j + 1} {x} 0 {number(ap / -sig)}",
-                    f"gx{k}_{j + 1} 0 {x} _a{j + 1} 0 {number(1.0)}",
+                    f"cx{k}_{j} {x} 0 {number(1 / ap)}",
+                    f"rx{k}_{j} {x} 0 {number(ap / -sig)}",
+                    f"gx{k}_{j} 0 {x} _a{j} 0 {number(1.0)}",
                 ]
-                gains = [(x, f"{k}_", r[:, j].real / ap)]
             else:
-                xr, xi = f"_x{k}r_{j + 1}", f"_x{k}i_{j + 1}"
+                xr, xi = inp.states
                 lines += [
-                    f"cx{k}r_{j + 1} {xr} 0 {number(1 / ap)}",
-                    f"rx{k}r_{j + 1} {xr} 0 {number(ap / -sig)}",
-                    f"gx{k}r_{j + 1} 0 {xr} _a{j + 1} 0 {number(1.0)}",
-                    f"gw{k}r_{j + 1} 0 {xr} {xi} 0 {number(-om / ap)}",
-                    f"cx{k}i_{j + 1} {xi} 0 {number(1 / ap)}",
-                    f"rx{k}i_{j + 1} {xi} 0 {number(ap / -sig)}",
-                    f"gw{k}i_{j + 1} 0 {xi} {xr} 0 {number(om / ap)}",
+                    f"cx{k}r_{j} {xr} 0 {number(1 / ap)}",
+                    f"rx{k}r_{j} {xr} 0 {number(ap / -sig)}",
+                    f"gx{k}r_{j} 0 {xr} _a{j} 0 {number(1.0)}",
+                    f"gw{k}r_{j} 0 {xr} {xi} 0 {number(-om / ap)}",
+                    f"cx{k}i_{j} {xi} 0 {number(1 / ap)}",
+                    f"rx{k}i_{j} {xi} 0 {number(ap / -sig)}",
+                    f"gw{k}i_{j} 0 {xi} {xr} 0 {number(om / ap)}",
                 ]
-                gains = [
-                    (xr, f"{k}r_", 2 * r[:, j].real / ap),
-                    (xi, f"{k}i_", -2 * r[:, j].imag / ap),
-                ]
-            for x, tag, column in gains:
+            for x, tag, column in inp.gains:
                 for i in range(n):
                     if column[i] != 0:
-                        element = f"gc{tag}{i + 1}_{j + 1}"
+                        element = f"gc{tag}{i + 1}_{j}"
                         lines.append(f"{element} 0 _b{i + 1} {x} 0 {number(column[i])}")
     lines.append(f".ends {name}")
     return "\n".join(lines) + "\n"
@@ -260,7 +309,8 @@ def verilog_keywords(
 def verilog_a(model: RationalModel, name: str) -> str:
     """The Verilog-A module ``name``: explicit ``ddt`` states, scalar code."""
     n = len(model.ports)
-    pin_pairs = pins(model.ports)
+    real = _realize(model)
+    pin_pairs = real.pins
     verilog_keywords(pin_pairs, model.ports, name)
     flat = [p for pair in pin_pairs for p in pair]
     internal = [f"_a{j + 1}" for j in range(n)]
@@ -273,34 +323,32 @@ def verilog_a(model: RationalModel, name: str) -> str:
         ]
         for i in range(n)
     ]
-    for k, p, r in _sections(model):
+    for section in real.sections:
+        p = section.pole
         ap, sig, om = abs(p), p.real, p.imag
         c, g, w = number(1 / ap), number(-sig / ap), om / ap
-        for j in range(n):
-            a = f"V(_a{j + 1})"
+        for inp in section.inputs:
+            a = f"V(_a{inp.port})"
+            internal += inp.states
             if om == 0:
-                x = f"_x{k}_{j + 1}"
-                internal.append(x)
+                (x,) = inp.states
                 states += [
                     f"    I({x}) <+ ddt({c} * V({x}));",
                     f"    I({x}) <+ {g} * V({x}) - {a};",
                 ]
-                gains = [(x, r[:, j].real / ap)]
             else:
-                xr, xi = f"_x{k}r_{j + 1}", f"_x{k}i_{j + 1}"
-                internal += [xr, xi]
+                xr, xi = inp.states
                 states += [
                     f"    I({xr}) <+ ddt({c} * V({xr}));",
                     f"    I({xr}) <+ {g} * V({xr}) + {number(w)} * V({xi}) - {a};",
                     f"    I({xi}) <+ ddt({c} * V({xi}));",
                     f"    I({xi}) <+ {g} * V({xi}) - {number(w)} * V({xr});",
                 ]
-                gains = [(xr, 2 * r[:, j].real / ap), (xi, -2 * r[:, j].imag / ap)]
-            for x, column in gains:
+            for x, _, column in inp.gains:
                 for i in range(n):
                     if column[i] != 0:
                         outputs[i].append(f"{number(column[i])} * V({x})")
-    lines = [f"// {line}" for line in _header(model, name)]
+    lines = [f"// {line}" for line in _header(model, name, pin_pairs)]
     lines += [
         '`include "disciplines.vams"',
         "",
