@@ -21,6 +21,7 @@ from circuit_cases import (
     BAND,
     C0,
     OPTIONS,
+    count_solves,
     design_eps,
     slab,
     slab_function,
@@ -57,16 +58,7 @@ def component(mesh):
 
 @pytest.fixture
 def solves(monkeypatch):
-    """Count the component's solves, which still run."""
-    count = []
-    real = gfem.solve
-
-    def counted(*args, **kwargs):
-        count.append(1)
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr("gfem.circuit.solve", counted)
-    return count
+    return count_solves(monkeypatch)
 
 
 @pytest.fixture

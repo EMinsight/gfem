@@ -28,6 +28,22 @@ OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct", threads=1)
 BAND = C0 / (np.linspace(1.50, 1.60, 5) * 1e-6)
 
 
+def count_solves(monkeypatch) -> list:
+    """Count the solves of every `gfem.SaxComponent`, which still run.
+
+    One entry per call of the component's solve entry point.
+    """
+    count = []
+    real = gfem.solve
+
+    def counted(*args, **kwargs):
+        count.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr("gfem.circuit.solve", counted)
+    return count
+
+
 def slab_mesh(path: Path) -> gfem.Mesh:
     """Write and read the slab mesh (um)."""
     xs = np.linspace(0.0, L, round(L / H) + 1)
