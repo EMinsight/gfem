@@ -51,7 +51,7 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.sparse import csgraph
 
-from gfem._linalg import report
+from gfem._linalg import KRYLOV_KINDS, report
 from gfem._linalg.base import free_mask
 from gfem._linalg.pieces import _positions
 from gfem._pytree import readonly
@@ -715,10 +715,8 @@ def _out_of_scope(
     with a periodic pair).
     """
     solver: tuple[str, str | None] | None = None
-    if kind == "bddc_gmres":
-        chose = (
-            "'auto' chose 'bddc_gmres'" if linear_solver == "auto" else "'bddc_gmres'"
-        )
+    if kind in KRYLOV_KINDS:
+        chose = f"'auto' chose {kind!r}" if linear_solver == "auto" else repr(kind)
         solver = f"linear_solver={chose}", "linear_solver='direct'"
     elif kind != "direct":
         solver = f"linear_solver={kind!r}", None
@@ -783,11 +781,11 @@ def _refusal(
             f"ungauged). Use device='cpu', {_OR_AUTO} on the GPU."
         )
     if reason.startswith("linear_solver="):
-        if linear_solver == "auto" and kind == "bddc_gmres":
+        if linear_solver == "auto" and kind in KRYLOV_KINDS:
             numbers = "" if auto_reason is None else f" ({auto_reason})"
             return (
                 "gauge='tree_cotree' needs the direct solver, but "
-                f"linear_solver='auto' chose 'bddc_gmres'{numbers}. Set "
+                f"linear_solver='auto' chose {kind!r}{numbers}. Set "
                 "linear_solver='direct' to lift that memory guard, "
                 f"{_OR_AUTO}."
             )
