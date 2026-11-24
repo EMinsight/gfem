@@ -21,12 +21,6 @@ from gfem._materials import (  # noqa: E402
     Lorentz,
     PermittivityLaw,
 )
-from gfem.broadband import RationalModel, TimeResponse  # noqa: E402
-from gfem.circuit import SaxComponent  # noqa: E402
-
-
-from gfem.bands import WaveVectorPath, wave_vector_path  # noqa: E402
-
 from gfem.bands import (  # noqa: E402
     BandDiagram,
     WaveVectorPath,
@@ -34,6 +28,7 @@ from gfem.bands import (  # noqa: E402
     wave_vector_path,
 )
 from gfem.broadband import RationalModel, TimeResponse  # noqa: E402
+from gfem.circuit import SaxComponent  # noqa: E402
 from gfem.electro_optic import ElectroOpticShift, electro_optic_shift  # noqa: E402
 from gfem.errors import (  # noqa: E402
     AntiBoundRootWarning,
