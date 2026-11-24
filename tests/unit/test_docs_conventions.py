@@ -157,7 +157,7 @@ def test_a_flat_interface_reflects_n1_minus_n2_over_their_sum_in_both_polarizati
 def test_an_order_that_does_not_propagate_reads_zero_and_has_no_reference_impedance(
     ran,
 ):
-    (example,) = [e for e in ran if e.section == "Floquet ports"][2:3]
+    (example,) = [e for e in ran if e.section == "Floquet ports"][3:4]
     lines = example.printed.splitlines()
     kx, ky, kz = dp.numbers(lines[0])
     assert (kx, ky, kz) == pytest.approx((-2 * np.pi / 2.0234e-6, 0, 0), rel=1e-4)
@@ -170,7 +170,7 @@ def test_an_order_that_does_not_propagate_reads_zero_and_has_no_reference_impeda
 
 
 def test_an_empty_cell_delays_the_phase_by_its_thickness(ran):
-    s_re, s_im, airy_re, airy_im = _floquet(ran, 3)
+    s_re, s_im, airy_re, airy_im = _floquet(ran, 4)
     assert complex(airy_re, airy_im) == pytest.approx(
         np.exp(-2j * np.pi * 1.7 / 3.1), rel=1e-12
     )
