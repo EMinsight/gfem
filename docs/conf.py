@@ -225,8 +225,10 @@ nitpick_ignore = [
     ("py:obj", "_PointDipole"),
     ("py:obj", "Blend"),
     ("py:class", "Blend"),
-    # JAX documents ArrayLike as data (a type alias), so a class reference misses.
+    # JAX and NumPy document ArrayLike as data (a type alias), so a class
+    # reference misses.
     ("py:class", "jax.typing.ArrayLike"),
+    ("py:class", "numpy.typing.ArrayLike"),
     # meshio publishes no objects.inv.
     ("py:class", "meshio.Mesh"),
     ("py:obj", "meshio.Mesh"),
