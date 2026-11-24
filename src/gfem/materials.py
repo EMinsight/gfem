@@ -205,8 +205,13 @@ def _frequency(frequency: Any, owner: str) -> float:
     return f
 
 
-def _warn_outside(source: _Source, tag: str, frequency: float, owner: str) -> None:
-    """Warn `FittedRangeWarning` when ``frequency`` lies outside the source's range."""
+def _warn_outside(
+    source: _Source, tag: str, frequency: float, owner: str, stacklevel: int
+) -> None:
+    """Warn `FittedRangeWarning` when ``frequency`` lies outside the source's range.
+
+    ``stacklevel`` points the warning at the user's call of the entry.
+    """
     lo, hi = source.fitted_range
     if lo * (1 - FITTED_EDGE) <= frequency <= hi * (1 + FITTED_EDGE):
         return
@@ -217,7 +222,7 @@ def _warn_outside(source: _Source, tag: str, frequency: float, owner: str) -> No
         "unknown accuracy. Choose a frequency inside the range, or give the "
         "region a constant gfem.Material(eps_r=...) from data that cover it.",
         FittedRangeWarning,
-        stacklevel=3,
+        stacklevel=stacklevel,
     )
 
 
@@ -230,7 +235,7 @@ def _dielectric(source: _Source, frequency: Any, owner: str) -> Material:
     if frequency is None:
         return Material(eps_r=source.law(), name=source.tag)
     f = _frequency(frequency, owner)
-    _warn_outside(source, source.tag, f, owner)
+    _warn_outside(source, source.tag, f, owner, stacklevel=4)
     return Material(eps_r=_real_value(source, f), name=source.tag)
 
 
@@ -280,7 +285,7 @@ def lithium_niobate(*, frequency: float, axes: Any) -> Material:
     """Congruent lithium niobate at one optical frequency."""
     owner = "lithium_niobate"
     f = _frequency(frequency, owner)
-    _warn_outside(_ZELMON_O, _LITHIUM_NIOBATE_TAG, f, owner)
+    _warn_outside(_ZELMON_O, _LITHIUM_NIOBATE_TAG, f, owner, stacklevel=3)
     n_o2, n_e2 = _real_value(_ZELMON_O, f), _real_value(_ZELMON_E, f)
     return Material(
         eps_r=(n_o2, n_o2, n_e2),
