@@ -36,10 +36,11 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.sparse as sp
 
-from gfem import _morph, _mpi, _sparse, _spectral
+from gfem import _morph, _mpi, _pattern, _sparse, _spectral
 from gfem._checks import is_traced, static_float
 from gfem._dim2 import refuse_entry
 from gfem._materials import PixelGeometry
+from gfem._pattern import LayerPattern, Polygon
 from gfem._pytree import register_fields
 from gfem.errors import UnsampledPixelsWarning
 from gfem.mesh import Mesh
@@ -48,6 +49,8 @@ __all__ = [
     "HelmholtzFilter",
     "LayerDensity",
     "LayerGrid",
+    "LayerPattern",
+    "Polygon",
     "Robust",
     "helmholtz_filter",
     "project",
@@ -386,6 +389,82 @@ class LayerGrid:
                 "map a layer design to its elements with grid.to_elements(rho)."
             )
         return self._interpolate(rho, "to_faces")
+
+    def pattern(self, rho: Any, *, eta: float = 0.5) -> LayerPattern:
+        r"""The layer pattern: the polygons where the filtered density reaches ``eta``.
+
+        Contours the **filtered** density (``blur(rho)``, before `project`)
+        at the projection threshold, read through the grid's own bilinear
+        map, the field a solve samples. The edge is the
+        :math:`\beta \to \infty` limit of ``project(filtered, beta, eta)``,
+        the design that is fabricated, placed between pixel centres to a few
+        hundredths of a pixel. A projected or binary design works too, but
+        only to about half a pixel (its values saturate at the centres).
+        Solid is ``rho >= eta``; a saddle cell joins its two solid corners
+        when the mean of its four corners reaches ``eta``.
+
+        Solid touching the footprint closes exactly along `bounds`, and a
+        grid overhanging the footprint is clipped to it. A periodic axis
+        gives one period, cut at the seam with matching vertices on both
+        sides. `sampled` is ignored: set pixels outside a non-rectangular
+        footprint void before the filter (``jnp.where(grid.sampled, rho,
+        0.0)``). The same on a volume, a sheet and a 2D model. Not
+        differentiable: call it on the final design, outside `jax.grad`.
+
+        Args:
+            rho: Filtered pixel densities, shape `shape` (on a 2D model the
+                pixel array, not the `LayerDensity`).
+            eta: Projection threshold, in (0, 1), as given to `project`;
+                ``eta + delta`` and ``eta - delta`` give the eroded and
+                dilated patterns of `robust`.
+
+        Returns:
+            The pattern, with this grid's `region`, `bounds` and `periodic`.
+
+        Raises:
+            TypeError: ``rho`` is a `LayerDensity` (pass ``density.pixels``).
+            ValueError: ``rho`` has the wrong shape, holds NaN, or is
+                computed inside `jax.grad`, `jax.jit` or `jax.vmap`; ``eta``
+                outside (0, 1).
+        """
+        return _pattern.contour(
+            self,
+            rho,
+            eta,
+            lambda points: _bilinear(
+                points, self.origin, self.pitch, self.shape, self.periodic
+            ),
+        )
+
+    def area_fraction(self, pattern: LayerPattern) -> np.ndarray:
+        """Each pixel's share of its area inside the footprint that the pattern covers.
+
+        Exact coverage (no point sampling): the pattern's edges are split at
+        the pixel lines and each piece's area accumulated in its pixel. The
+        denominator is the pixel's area inside `bounds`, so a fully solid
+        pattern gives 1 in the pixels overhanging the footprint too, and
+        polygons reaching past the footprint (guides drawn long) are clipped.
+        Uses: re-solving a pattern (``grid.to_elements(grid.area_fraction(
+        pattern))``), hand-drawn designs, and fixed neighbours pinned in a
+        margin band of the grid::
+
+            fixed = grid.area_fraction(design.LayerPattern.from_polygons(guides))
+            rho = jnp.where(in_margin, fixed, rho)
+
+        Args:
+            pattern: A layer pattern in metres, from any grid or
+                `LayerPattern.from_polygons`.
+
+        Returns:
+            ``(ny, nx)`` float64 values in [0, 1], a plain array (not
+            differentiable in the pattern).
+
+        Raises:
+            TypeError: ``pattern`` is not a `LayerPattern`.
+            ValueError: The pattern has polygons but none overlaps the
+                footprint (lengths are in metres).
+        """
+        return _pattern.area_fraction(self, pattern)
 
     def _pixels(self, rho: jax.Array, name: str) -> jax.Array:
         """``rho`` as an array, or raise for a wrong shape."""

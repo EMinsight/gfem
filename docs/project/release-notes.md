@@ -189,6 +189,18 @@ Material data:
   tutorial takes lithium niobate's clamped constants from `gfem.materials`:
   its push-pull $V_\pi L$ moves from 1.61 to 1.62 V·cm.
 
+Designs:
+
+- **Layer patterns.** `LayerGrid.pattern(rho, eta=0.5)` draws a layer-grid
+  design as polygons (`gfem.design.LayerPattern` of `gfem.design.Polygon`):
+  the region where the filtered density reaches the projection threshold,
+  the $\beta \to \infty$ design, with sub-pixel edges, closed along the
+  footprint and cut at a periodic seam. `LayerPattern.from_polygons` builds
+  and validates one from your own polygons (feed guides, hand-drawn designs),
+  and `LayerGrid.area_fraction(pattern)` rasterizes one exactly back onto the
+  pixels, to re-solve a pattern or pin fixed neighbours. contourpy is now a
+  dependency.
+
 ## 0.2.0 (2026-11-23)
 
 - **Native 2D models.** A gmsh file of triangles at one height reads as a
