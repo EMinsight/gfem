@@ -293,3 +293,119 @@ def test_a_rank_deficient_interpolation_warns_with_its_own_class():
     assert issubclass(gfem.SweepRankDeficientWarning, UserWarning)
     assert not issubclass(gfem.SweepRankDeficientWarning, gfem.SweepNotConvergedWarning)
     assert issubclass(gfem.UnsampledPixelsWarning, UserWarning)
+
+
+def _old_next_sample(z, chosen, snapshots, size):
+    """The full-matrices SVD choice, kept as the reference for the thin one."""
+    columns = []
+    for i, c in zip(chosen, snapshots, strict=True):
+        padded = np.zeros((size, c.shape[1]), complex)
+        padded[: c.shape[0]] = c
+        flat = padded.reshape(-1)
+        columns.append(np.concatenate([flat, 1j * z[i] * flat]))
+    u = np.column_stack(columns)
+    _, sigma, vh = np.linalg.svd(u)
+    sigma = np.concatenate([sigma, np.zeros(len(chosen) - len(sigma))])
+    m = len(chosen) - 1
+    while m > 0 and sigma[m] < 1e-12 * sigma[0]:
+        m -= 1
+    deficient = m < len(chosen) - 1
+    q = vh[m].conj()
+    zs = z[chosen]
+    candidates = np.setdiff1d(np.arange(len(z)), chosen)
+    denominator = np.abs((q[None, :] / (z[candidates, None] - zs[None, :])).sum(axis=1))
+    return int(candidates[np.argmin(denominator)]), deficient
+
+
+@pytest.mark.parametrize(
+    ("rows", "chosen"),
+    [(40, [0, 50, 100, 150, 200]), (2, [0, 40, 80, 120, 160, 200])],
+    ids=["wide", "narrow"],
+)
+def test_the_next_sample_is_the_full_svd_s_choice(rows, chosen):
+    # wide: rows 2np far above the samples; narrow: fewer rows than samples, so
+    # the thin V^H has fewer rows and the padded sigma path runs
+    import warnings
+
+    rng = np.random.default_rng(3)
+    z = 1j * GRID
+    snapshots = [
+        rng.standard_normal((rows, 2)) + 1j * rng.standard_normal((rows, 2))
+        for _ in chosen
+    ]
+    expected, deficient = _old_next_sample(z, chosen, snapshots, rows)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        got = _next_sample(z, chosen, snapshots, rows)
+    warned = any(issubclass(w.category, gfem.SweepRankDeficientWarning) for w in caught)
+    assert got == expected
+    assert warned == deficient
+
+
+def _old_extend(model, snapshot):
+    """The one-column-at-a-time ``ReducedModel.extend``, as it was."""
+    from gfem._sweep.adaptive import DROP
+
+    columns = np.stack([snapshot.real, snapshot.imag], axis=2).reshape(
+        snapshot.shape[0], -1
+    )
+    old = model.basis
+    basis = old
+    for column in columns.T:
+        norm = np.linalg.norm(column)
+        if norm == 0:
+            continue
+        w = column.copy()
+        for _ in range(2):
+            w -= basis @ (basis.T @ w)
+        remaining = np.linalg.norm(w)
+        if remaining <= DROP * norm:
+            continue
+        basis = np.column_stack([basis, w / remaining])
+    new = basis[:, old.shape[1] :]
+    if not new.shape[1]:
+        return 0
+    for k, reduced in enumerate(model.operators):
+        product = np.asarray(model.system.apply(k, new))
+        top = old.T @ product
+        corner = new.T @ product
+        corner = 0.5 * (corner + corner.T)
+        model.operators[k] = np.block([[reduced, top], [top.T, corner]])
+    model.excitation = [
+        np.vstack([r, new.T @ t.vectors])
+        for r, t in zip(model.excitation, model.system.excitation, strict=True)
+    ]
+    model.outputs = [
+        np.hstack([r, t.project(new)])
+        for r, t in zip(model.outputs, model.system.outputs, strict=True)
+    ]
+    model.corrections = [
+        np.vstack([r, new.T @ t.vectors])
+        for r, t in zip(model.corrections, model.system.corrections, strict=True)
+    ]
+    model.basis = basis
+    return new.shape[1]
+
+
+def test_a_block_extend_builds_the_per_column_basis():
+    system, _, _ = _system(correction=True)
+    rng = np.random.default_rng(5)
+    first = rng.standard_normal((N, 2)) + 1j * rng.standard_normal((N, 2))
+    # an exact duplicate column, a column inside DROP of the span, a zero
+    # column and independent columns
+    second = np.zeros((N, 5), complex)
+    second[:, 0] = first[:, 0]
+    second[:, 1] = first[:, 1] + 1e-13 * rng.standard_normal(N)
+    second[:, 3] = rng.standard_normal(N) + 1j * rng.standard_normal(N)
+    second[:, 4] = rng.standard_normal(N)
+    new, ref = ReducedModel(system), ReducedModel(system)
+    for snapshot in (first, second):
+        assert new.extend(snapshot) == _old_extend(ref, snapshot)
+    assert new.size == ref.size
+    scale = lambda a: np.abs(a).max()  # noqa: E731
+    pairs = [(new.basis, ref.basis)]
+    for name in ("operators", "excitation", "outputs", "corrections"):
+        pairs += list(zip(getattr(new, name), getattr(ref, name), strict=True))
+    for a, b in pairs:
+        assert a.shape == b.shape
+        assert scale(a - b) <= 1e-13 * scale(b)

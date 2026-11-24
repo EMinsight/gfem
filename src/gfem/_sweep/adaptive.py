@@ -176,21 +176,28 @@ class ReducedModel:
             snapshot.shape[0], -1
         )
         old = self.basis
-        basis = old
+        n_old = old.shape[1]
+        # one buffer for the snapshot's columns, so the basis is rebuilt once
+        # instead of once per kept column
+        buffer = np.empty((old.shape[0], n_old + columns.shape[1]))
+        buffer[:, :n_old] = old
+        count = n_old
         for column in columns.T:
             norm = np.linalg.norm(column)
             if norm == 0:
                 continue
             w = column.copy()
             for _ in range(2):
-                w -= basis @ (basis.T @ w)
+                w -= buffer[:, :count] @ (buffer[:, :count].T @ w)
             remaining = np.linalg.norm(w)
             if remaining <= DROP * norm:
                 continue
-            basis = np.column_stack([basis, w / remaining])
-        new = basis[:, old.shape[1] :]
-        if not new.shape[1]:
+            buffer[:, count] = w / remaining
+            count += 1
+        if count == n_old:
             return 0
+        basis = buffer[:, :count].copy()
+        new = basis[:, n_old:]
         for k, reduced in enumerate(self.operators):
             product = np.asarray(self.system.apply(k, new))
             top = old.T @ product
@@ -425,7 +432,9 @@ def _next_sample(
         flat = padded.reshape(-1)
         columns.append(np.concatenate([flat, 1j * z[i] * flat]))
     u = np.column_stack(columns)
-    _, sigma, vh = np.linalg.svd(u)
+    # thin factors: the full left factor is a dense square of the stacked height
+    # (one column per source), and only the right one is read
+    _, sigma, vh = np.linalg.svd(u, full_matrices=False)
     sigma = np.concatenate([sigma, np.zeros(len(chosen) - len(sigma))])
     m = len(chosen) - 1
     while m > 0 and sigma[m] < MRI_RANK * sigma[0]:

@@ -1,15 +1,21 @@
-"""Many point dipoles: their loads are built in one pass and stored sparse.
+"""Many dipole sources: adaptive sweeps' thin SVD and block extend, sparse loads.
 
-The line is the order-2 strip line of `eigen_cases` (1214 DOFs), whose
-dielectric holds every dipole.
+Many point sources add snapshot columns to every sample of the adaptive sweep,
+which makes the rational-interpolation step's matrix tall; its full left
+factor would be a dense square of that height. The sweep keeps the thin factor
+and appends each sample's snapshot to the basis in one block, with the same
+samples and outputs as the one-column-at-a-time build.
 """
 
+import tempfile
 import tracemalloc
+from pathlib import Path
 
 import eigen_cases as ec
 import numpy as np
 import pytest
 import scipy.sparse as sp
+from eigen_cases import line_mesh, terminated_line
 
 import gfem
 from gfem._engine import probe as probe_module
@@ -17,10 +23,134 @@ from gfem._engine.dipoles import point_loads
 from gfem._engine.driven import driven_operator
 from gfem._engine.probe import Layout, probe
 from gfem._linalg.base import free_mask
+from gfem._sweep import adaptive
+
+M = 10
+GRID = tuple(np.linspace(4e9, 11e9, 201))
+
+
+def _positions(m):
+    rng = np.random.default_rng(0)
+    return list(
+        zip(
+            rng.uniform(0.3e-3, 9.7e-3, m),
+            rng.uniform(0.2e-3, 1.8e-3, m),
+            rng.uniform(0.2e-3, 0.8e-3, m),
+            strict=True,
+        )
+    )
+
+
+def _solve():
+    mesh = line_mesh(Path(tempfile.mkdtemp()), (20, 1, 1))
+    model = terminated_line(mesh, 25.0)
+    sources = [
+        gfem.ElectricDipole(f"d{i}", position=p, moment=(0, 0, 1e-15))
+        for i, p in enumerate(_positions(M))
+    ]
+    problem = gfem.Driven(GRID, sweep="adaptive", sources=sources)
+    options = gfem.SolverOptions(order=2, adaptive_tolerance=1e-4)
+    return gfem.solve(model, problem, options=options)
+
+
+def _old_next_sample(z, chosen, snapshots, size):
+    columns = []
+    for i, c in zip(chosen, snapshots, strict=True):
+        padded = np.zeros((size, c.shape[1]), complex)
+        padded[: c.shape[0]] = c
+        flat = padded.reshape(-1)
+        columns.append(np.concatenate([flat, 1j * z[i] * flat]))
+    u = np.column_stack(columns)
+    _, sigma, vh = np.linalg.svd(u)
+    sigma = np.concatenate([sigma, np.zeros(len(chosen) - len(sigma))])
+    m = len(chosen) - 1
+    while m > 0 and sigma[m] < adaptive.MRI_RANK * sigma[0]:
+        m -= 1
+    q = vh[m].conj()
+    zs = z[chosen]
+    candidates = np.setdiff1d(np.arange(len(z)), chosen)
+    denominator = np.abs((q[None, :] / (z[candidates, None] - zs[None, :])).sum(axis=1))
+    return int(candidates[np.argmin(denominator)])
+
+
+def _old_extend(self, snapshot):
+    columns = np.stack([snapshot.real, snapshot.imag], axis=2).reshape(
+        snapshot.shape[0], -1
+    )
+    old = self.basis
+    basis = old
+    for column in columns.T:
+        norm = np.linalg.norm(column)
+        if norm == 0:
+            continue
+        w = column.copy()
+        for _ in range(2):
+            w -= basis @ (basis.T @ w)
+        remaining = np.linalg.norm(w)
+        if remaining <= adaptive.DROP * norm:
+            continue
+        basis = np.column_stack([basis, w / remaining])
+    new = basis[:, old.shape[1] :]
+    if not new.shape[1]:
+        return 0
+    for k, reduced in enumerate(self.operators):
+        product = np.asarray(self.system.apply(k, new))
+        top = old.T @ product
+        corner = new.T @ product
+        corner = 0.5 * (corner + corner.T)
+        self.operators[k] = np.block([[reduced, top], [top.T, corner]])
+    self.excitation = [
+        np.vstack([r, new.T @ t.vectors])
+        for r, t in zip(self.excitation, self.system.excitation, strict=True)
+    ]
+    self.outputs = [
+        np.hstack([r, t.project(new)])
+        for r, t in zip(self.outputs, self.system.outputs, strict=True)
+    ]
+    self.corrections = [
+        np.vstack([r, new.T @ t.vectors])
+        for r, t in zip(self.corrections, self.system.corrections, strict=True)
+    ]
+    self.basis = basis
+    return new.shape[1]
+
+
+def test_many_dipoles_sweep_as_the_old_sweep_did(monkeypatch):
+    new = _solve()
+    monkeypatch.setattr(adaptive.ReducedModel, "extend", _old_extend)
+    monkeypatch.setattr(adaptive, "_next_sample", _old_next_sample)
+    old = _solve()
+    a, b = new.sweep, old.sweep
+    assert a.sampled_frequencies == b.sampled_frequencies
+    assert a.basis_size == b.basis_size
+    assert a.converged == b.converged
+    for name in ("s", "port_waves", "emitted_power"):
+        x, y = getattr(new, name), getattr(old, name)
+        if name == "s":
+            x, y = x.values, y.values
+        if isinstance(x, dict):
+            assert x.keys() == y.keys()
+            x, y = np.array(list(x.values())), np.array(list(y.values()))
+        np.testing.assert_allclose(x, y, rtol=1e-12, atol=0)
+    np.testing.assert_allclose(a.sample_errors, b.sample_errors, rtol=1e-6, atol=1e-14)
+
+
+def test_a_many_dipole_adaptive_sweep_never_holds_the_full_svd_factor():
+    tracemalloc.start()
+    try:
+        result = _solve()
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    n, p = result.sweep.basis_size, 2 + M
+    assert peak <= 0.5 * (2 * n * p) ** 2 * 16
+
+
+# --- point loads built in one pass, stored sparse ---
 
 
 @pytest.fixture(scope="module")
-def line(tmp_path_factory):
+def loads_line(tmp_path_factory):
     mesh = ec.line_mesh(tmp_path_factory.mktemp("many_dipoles"), (20, 1, 1))
     model = ec.terminated_line(mesh, 25.0)
     op = driven_operator(model, 2)
@@ -28,7 +158,7 @@ def line(tmp_path_factory):
     return model, op.space, layout
 
 
-def _dipoles(m, *, magnetic=0):
+def _seeded_dipoles(m, *, magnetic=0):
     """``m`` seeded dipoles inside the line, the last ``magnetic`` magnetic."""
     rng = np.random.default_rng(3)
     x = rng.uniform(0.3e-3, 9.7e-3, m)
@@ -56,9 +186,9 @@ def _per_dipole(model, space, layout, sources, loads):
     return out
 
 
-def test_sparse_point_loads_equal_the_per_dipole_transpose(line):
-    model, space, layout = line
-    sources = _dipoles(20, magnetic=5)
+def test_sparse_point_loads_equal_the_per_dipole_transpose(loads_line):
+    model, space, layout = loads_line
+    sources = _seeded_dipoles(20, magnetic=5)
     loads = point_loads(model, sources, layout, space, (5e9,))
     assert sp.issparse(loads.vectors)
     assert loads.vectors.shape == (space.ndof, 20)
@@ -70,10 +200,10 @@ def test_sparse_point_loads_equal_the_per_dipole_transpose(line):
     assert not dense[fixed].any()
 
 
-def test_point_loads_evaluate_the_shape_functions_once_for_all_dipoles(
-    line, monkeypatch
+def test_point_loads_evaluate_the_shape_functions_once_for_all_seeded_dipoles(
+    loads_line, monkeypatch
 ):
-    model, space, layout = line
+    model, space, layout = loads_line
     calls = []
     evaluate = probe_module.Probe._evaluate
 
@@ -85,14 +215,14 @@ def test_point_loads_evaluate_the_shape_functions_once_for_all_dipoles(
     counts = []
     for m in (5, 50):
         calls.clear()
-        point_loads(model, _dipoles(m, magnetic=1), layout, space, (5e9,))
+        point_loads(model, _seeded_dipoles(m, magnetic=1), layout, space, (5e9,))
         counts.append(len(calls))
     assert counts[0] == counts[1] > 0
 
 
-def test_the_loads_of_many_dipoles_take_no_dense_array(line):
-    model, space, layout = line
-    sources = _dipoles(1000)
+def test_the_loads_of_many_dipoles_take_no_dense_array(loads_line):
+    model, space, layout = loads_line
+    sources = _seeded_dipoles(1000)
     tracemalloc.start()
     try:
         point_loads(model, sources, layout, space, (5e9,))
