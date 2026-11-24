@@ -16,7 +16,12 @@ import gfem
 from gfem._engine.port_mode import PortModeSpace
 from gfem._engine.port_mode_normalization import normalize_rows, normalize_vjp
 from gfem._port_section import port_section
-from gfem._sweep.port_mode import _Greedy
+from gfem._sweep.port_mode import (
+    _Greedy,
+    _polarity_functionals,
+    _polarity_row,
+    _polarity_rule,
+)
 
 DATA = Path(__file__).parent / "data"
 FREQS = np.array([11e9, 12.5e9, 14e9])
@@ -143,6 +148,32 @@ def test_a_polarity_functional_fixes_every_row_without_a_chain(case):
     n = case.fields.w.shape[1]
     polarity = rng.standard_normal(n) + 1j * rng.standard_normal(n)
     got, fd, _, _ = _check(case, polarity=polarity)
+    assert got == pytest.approx(fd, rel=1e-9)
+
+
+def test_a_polarity_point_fixes_every_row_and_pulls_back(case):
+    # the WR-90 face's E_y at a point off the centre, read along -y: the sign
+    # it fixes disagrees with the default phase
+    port = gfem.WavePort("p1", "port1", polarity=((8e-3, 4e-3, 0.0), "-y"))
+    space = case.greedy.space
+    arrow = _polarity_rule(space, port.name, port.polarity)
+    w = case.fields.w
+    basis = np.zeros((space.space.ndof, w.shape[1]))
+    basis[space.free] = w
+    at, _ = _polarity_functionals(space, basis, arrow)
+    # the backward's reading on the free DOFs is the sweep's on the basis
+    np.testing.assert_allclose(_polarity_row(space, arrow) @ w, at, rtol=1e-12)
+    _, coords, _, _, _ = case.greedy.normalized([None], [arrow])
+    rows = normalize_rows(
+        case.fields, case.mass, case.y, case.gamma, case.omega, polarity=at
+    )
+    np.testing.assert_array_equal(rows.z, coords[0])
+    reading = coords[0] @ at
+    assert (reading.real > 0).all()
+    np.testing.assert_allclose(reading.imag, 0, atol=1e-12 * np.abs(reading).max())
+    default = normalize_rows(case.fields, case.mass, case.y, case.gamma, case.omega)
+    assert ((default.z @ at).real < 0).all()
+    got, fd, _, _ = _check(case, polarity=at)
     assert got == pytest.approx(fd, rel=1e-9)
 
 

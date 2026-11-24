@@ -248,6 +248,7 @@ def line_normalize_vjp(  # noqa: PLR0915, PLR0917
     omega: np.ndarray,
     *,
     z_bar: np.ndarray,
+    polarity: np.ndarray | None = None,
     reference: np.ndarray | None = None,
 ) -> NormalizationCotangents:
     r"""The reverse mode of `normalize_rows` at the rows it returned, on a line.
@@ -287,6 +288,8 @@ def line_normalize_vjp(  # noqa: PLR0915, PLR0917
         elif row.kind == "largest":
             zb1 = zb1.copy()
             zb1[row.entry] += g_bar
+        elif row.kind == "polarity":
+            zb1 = zb1 + g_bar * polarity
         else:
             previous = norm.z[i - 1] if i else reference
             assert previous is not None  # noqa: S101 - an overlap row has one

@@ -125,6 +125,7 @@ from gradient_cases import (  # the port mode cells
     MIRRORED_TARGET,
     OMEGA_WEIGHT,
     PORT_MODE_FREQUENCIES,
+    PORT_MODE_POLARITY,
     RESONATOR_TARGET,
     SHEETS,
     STACK_PROBLEM,
@@ -806,6 +807,8 @@ def _port_mode_cells() -> list[Cell]:
         # a hybrid mode of a shared port surface, a layer cutting the face
         Cell("port_mode", "eps_r", "direct", variant="shared"),
         Cell("port_mode", "eps_r", "direct", variant="pml"),
+        # a polarity reference fixes the phase at every frequency on its own
+        Cell("port_mode", "eps_r", "direct", variant="polarity"),
         # the face stretches in its plane; the strip's nodes inside the layer
         Cell("port_mode", "nodes", "direct"),
         Cell("port_mode", "nodes", "direct", variant="pml"),
@@ -3920,9 +3923,12 @@ def _port_mode_lower(d: Designs, cell: Cell, options, seed: int) -> Case:
         if name == "conductivity":
             others["eps_r"] = 4.0 * ones
 
+    # a polarity reference replaces the voltage path: the two cannot combine
+    polarity = PORT_MODE_POLARITY if cell.variant == "polarity" else None
+
     def objective(p):
         field = gfem.MaterialField(**{**others, name: p}, axes=axes)
-        model = port_mode_line(mesh, field)
+        model = port_mode_line(mesh, field, path=polarity is None, polarity=polarity)
         result = gfem.solve(model, problem, options=options)
         return port_mode_functional(result, PORT_MODE_FREQUENCIES)
 

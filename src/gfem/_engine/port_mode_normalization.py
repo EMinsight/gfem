@@ -115,8 +115,9 @@ def normalize_rows(
         gamma: ``(n,)`` the propagation constants, per local unit.
         omega: ``(n,)`` the angular frequencies, rad/s.
         volts: ``(nz,)`` the voltage functional of a mode with a path.
-        polarity: ``(nz,)`` a polarity functional: each row's phase is made
-            :math:`r\\cdot z` real and positive on its own, with no chain.
+        polarity: ``(nz,)`` a polarity functional :math:`r` (the field at a
+            polarity reference's point along its arrow): each row's phase is
+            made :math:`r\cdot z` real and positive on its own, with no chain.
         reference: The previous row's coordinates, to continue a grid; the
             first row is fixed by the quadrant gauge without it.
     """

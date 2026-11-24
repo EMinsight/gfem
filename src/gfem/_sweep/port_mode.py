@@ -497,15 +497,20 @@ class PortModeRule:
         nodes: bool = False,
     ) -> list:
         sweeps = entry.sweeps  # ty: ignore[unresolved-attribute]
-        sweep = sweeps[self._ports.index(self.port)]
+        sweep = sweeps[self._index]
+        # the port as swept: another mode than its own has no polarity
+        port = self._ports[self._index]
         space = sweep.space
         section = space.section
         rule = (
             None
-            if self.port.voltage_path is None
-            else _voltage_rule(
-                section, np.asarray(self.port.voltage_path, float), self.port.name
-            )
+            if port.voltage_path is None
+            else _voltage_rule(section, np.asarray(port.voltage_path, float), port.name)
+        )
+        polarity = (
+            None
+            if port.polarity is None
+            else _polarity_row(space, _polarity_rule(space, port.name, port.polarity))
         )
         done = port_mode_pass.mode_pass(
             space,
@@ -516,6 +521,7 @@ class PortModeRule:
             solved=sweep.solved,
             wavenumbers=lambda f: _wavenumbers(section, f),
             volts=None if rule is None else _voltage_row(space, rule),
+            polarity=polarity,
             ct_gamma=cotangents.get("gamma"),
             ct_z_pv=cotangents.get("Z_PV"),
             ct_field=cotangents.get("field"),
@@ -1765,6 +1771,24 @@ def _polarity_functionals(
         return at, space.evaluate(basis.T, nodes)[:, :, :2]
     at = space.evaluate(basis.T, local)[:, 0] * weights[0]
     return at, space.evaluate(basis.T, nodes)[:, :, None]
+
+
+def _polarity_row(space: ModeSpace, arrow: tuple[np.ndarray, np.ndarray]) -> np.ndarray:
+    """The arrow's reading as a vector on the free DOFs (`_polarity_functionals`'s).
+
+    The field at the point is linear in the DOF vector and reads no
+    material, so a material's derivative reaches it only through the mode.
+    """
+    local, weights = arrow
+    dofs, columns = space.point_columns(local)
+    reads = (
+        np.einsum("ck,c->k", columns[0, :2], weights)
+        if isinstance(space, PortModeSpace)
+        else columns[0] * weights[0]
+    )
+    row = np.zeros(space.space.ndof, complex)
+    np.add.at(row, dofs[0], reads)
+    return row[space.free]
 
 
 def _voltage_row(

@@ -1191,13 +1191,18 @@ PORT_MODE_POINTS = np.array(
 )
 #: The field's scale at 1 W through the line's 2 x 1 mm face (V/m).
 PORT_MODE_E0 = 1e4
+#: A polarity reference of port p1 (m): the mode's E_z at a point of the lower
+#: layer, read along -z so that it disagrees with the default phase.
+PORT_MODE_POLARITY = ((0.0, 0.9e-3, 0.25e-3), "-z")
 
 
-def port_mode_line(mesh: gfem.Mesh, lower, *, path: bool = True) -> gfem.Model:
+def port_mode_line(
+    mesh: gfem.Mesh, lower, *, path: bool = True, polarity=None
+) -> gfem.Model:
     """The wave line with a design ``lower`` on the leads' lower layer "lo".
 
     ``lo`` touches both port faces. Wave ports with ``path`` a voltage path on
-    p1; "hi" and the core are constants.
+    p1, or else its ``polarity``; "hi" and the core are constants.
     """
     return gfem.Model(
         mesh,
@@ -1208,7 +1213,12 @@ def port_mode_line(mesh: gfem.Mesh, lower, *, path: bool = True) -> gfem.Model:
         },
         boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
         ports=[
-            gfem.WavePort("p1", "port1", voltage_path=PORT_MODE_PATH if path else None),
+            gfem.WavePort(
+                "p1",
+                "port1",
+                voltage_path=PORT_MODE_PATH if path else None,
+                polarity=polarity,
+            ),
             gfem.WavePort("p2", "port2"),
         ],
     )

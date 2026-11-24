@@ -8,7 +8,9 @@ differences of gfem's own solves at 1e-6:
 - the port mode's :math:`\gamma` and normalized profile at two frequencies,
 - a driven S functional for a design at the excited port and at the
   measuring one,
-- a per-element field, and an absorbing end of the line.
+- a per-element field, and an absorbing end of the line,
+- the profile of a port with a polarity reference, which fixes each
+  frequency's phase on its own.
 """
 
 import jax.numpy as jnp
@@ -78,6 +80,33 @@ def test_a_line_port_modes_gamma_and_profile_differentiate(
         )
 
     check(objective, jnp.asarray(E1), 1)
+
+
+@pytest.mark.parametrize(("polarization", "tan_delta"), CASES[1::2], ids=IDS[1::2])
+def test_a_line_port_polarity_reference_pulls_back_the_profile(
+    mesh, polarization, tan_delta
+):
+    # the solved field at the line's middle, read along -z: each frequency's
+    # phase is fixed on its own, against the default sign
+    points = np.stack([np.zeros_like(PROFILE), PROFILE], axis=1)
+    rng = np.random.default_rng(6)
+    weights = jnp.asarray(rng.standard_normal((2, len(PROFILE))))
+    port = gfem.WavePort("p1", "port1", polarity=((0.0, 2e-3), "-z"))
+
+    def objective(p):
+        model = guide(mesh, p, E2, tan_delta=tan_delta)
+        model = model.replace(ports=[port, model.ports[1]])
+        mode = gfem.solve(
+            model,
+            gfem.PortMode("p1", FREQUENCIES, polarization=polarization),
+            options=OPTIONS,
+        )
+        field = mode.h_field if polarization == "Hz" else mode.e_field
+        u = field.at(points)
+        assert (jnp.real(field.at(np.array([[0.0, 2e-3]]))) < 0).all()
+        return jnp.real(jnp.sum(weights * u)) + jnp.imag(jnp.sum(weights * u**2))
+
+    check(objective, jnp.asarray(E1), 3)
 
 
 @pytest.mark.parametrize("region", ["core1", "core2"])

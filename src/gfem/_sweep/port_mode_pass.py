@@ -81,6 +81,7 @@ def mode_pass(  # noqa: PLR0912, PLR0915
     solved: np.ndarray,
     wavenumbers: Callable[[float], tuple[float, float, float]],
     volts: np.ndarray | None,
+    polarity: np.ndarray | None = None,
     ct_gamma: np.ndarray | None,
     ct_z_pv: np.ndarray | None,
     ct_field: np.ndarray | None,
@@ -100,6 +101,10 @@ def mode_pass(  # noqa: PLR0912, PLR0915
         wavenumbers: ``frequency -> (k0, k_max, shift)`` per local unit.
         volts: The voltage functional on the free DOFs, ``None`` without a
             voltage path.
+        polarity: The polarity reference's reading on the free DOFs (the
+            field at its point along its arrow), ``None`` without one: it
+            fixes each row's phase on its own, in the backward as in the
+            sweep.
         ct_gamma: ``(n,)`` the cotangent of :math:`\gamma` in 1/m, or ``None``.
         ct_z_pv: ``(n,)`` the cotangent of :math:`Z_{PV}`, or ``None``.
         ct_field: ``(n, n_dof)`` the cotangent of the field vector, or ``None``.
@@ -166,7 +171,9 @@ def mode_pass(  # noqa: PLR0912, PLR0915
         fields: Any = full_line_reduction(space) if line else FullReduction(space)
         mass = space.mass
         gamma = 1j * np.sqrt(-lam_r + 0j)
-        norm_rows = normalize_rows(fields, mass, x, gamma, omega, volts=volts)
+        norm_rows = normalize_rows(
+            fields, mass, x, gamma, omega, volts=volts, polarity=polarity
+        )
         z_bar = np.zeros(norm_rows.z.shape, complex)
         if ct_field is not None:
             z_bar = np.asarray(ct_field, complex)[order][:, space.free]
@@ -182,7 +189,14 @@ def mode_pass(  # noqa: PLR0912, PLR0915
         pulled: Any
         if line:
             pulled = line_normalize_vjp(
-                fields, mass, norm_rows, x, gamma, omega, z_bar=z_bar
+                fields,
+                mass,
+                norm_rows,
+                x,
+                gamma,
+                omega,
+                z_bar=z_bar,
+                polarity=polarity,
             )
         else:
             pulled = normalize_vjp(
@@ -196,6 +210,7 @@ def mode_pass(  # noqa: PLR0912, PLR0915
                 voltage_bar=v_bar,
                 phase_bar=p_bar,
                 volts=volts,
+                polarity=polarity,
             )
         pairs_forms = pulled.pairs
         x_bar = pulled.y
