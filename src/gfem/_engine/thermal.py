@@ -2235,7 +2235,7 @@ class TransientThermalRule(ThermalRule):
                     reaction,
                 )
             finally:
-                handle.free()
+                release(handle)
             return out
         return self._boundary_values(
             items, built, space, lam, full_cotangent, t0, stepping, values, None
