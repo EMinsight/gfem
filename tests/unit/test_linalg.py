@@ -700,6 +700,59 @@ def test_a_bddc_handle_names_each_steps_action_and_reason(built, monkeypatch):
     handle.free()
 
 
+def test_a_chain_of_reused_steps_ends_when_the_last_reaches_the_mean_cost():
+    # the setup counts SETUP_ITERATIONS plus its own iterations; each reused
+    # step adds its iterations; the chain ends at the first reused step whose
+    # iterations reach the mean cost per step (a creeping fine sweep)
+    steps = [48, 18, 20, 22, 22, 24, 26]
+    ended = [
+        krylov_handle._chain_ended(steps[:n]) for n in range(1, len(steps) + 1)
+    ]
+    assert ended == [False] * 6 + [True]
+    # a step on the fresh preconditioner alone never ends a chain, and a
+    # three-point sweep at 1 % (setup, then two steps of about the same cost)
+    assert not krylov_handle._chain_ended([46, 20])
+    assert not krylov_handle._chain_ended([46, 20, 21])
+
+
+def test_a_bddc_handle_sets_up_before_a_step_an_octave_from_its_setup(
+    built, monkeypatch
+):
+    def operator(shift, frequency):
+        op, _ = _laplace(built, complex_valued=True, shift=shift, order=4)
+        return dataclasses.replace(op, frequency=frequency)
+
+    def step(handle):
+        return handle.last_action, handle.last_reason
+
+    builds = count_preconditioners(monkeypatch)
+    handle = prepare(
+        operator(1 - 2j, 10e9), symmetry="complex_symmetric", kind="bddc_gmres"
+    )
+    rng = np.random.default_rng(31)
+    B = rng.standard_normal((handle.ndof, 2)) + 0j
+    previous = handle.solve(B)
+    # under an octave in either direction: reused
+    for frequency in (15e9, 6e9):
+        handle.refactorize(operator(1.05 - 2j, frequency), sweep=True)
+        assert step(handle) == ("reused", None)
+        previous = handle.solve(B, x0=previous)
+    assert len(builds) == 1
+    # an octave up (and not a step toward it): set up before the solve
+    handle.refactorize(operator(1.1 - 2j, 20e9), sweep=True)
+    assert step(handle) == ("factorized", "octave")
+    assert len(builds) == 2
+    previous = handle.solve(B, x0=previous)
+    # and an octave down from that setup
+    handle.refactorize(operator(1.1 - 2j, 10e9), sweep=True)
+    assert step(handle) == ("factorized", "octave")
+    # a step outside a sweep (an eigen reshift) never reads frequencies
+    handle.solve(B, x0=previous)
+    handle.refactorize(operator(1.1 - 2j, 100e9))
+    assert step(handle)[1] != "octave"
+    handle.free()
+
+
 @pytest.mark.parametrize("kind", [*PLANNED, "bddc_gmres"])
 def test_a_refactorization_checks_the_handle_under_its_lock(built, kind):
     # a handle freed while a refactorization waits for the lock is not

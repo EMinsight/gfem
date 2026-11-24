@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+Solvers:
+
+- **Fewer stale iterations across a frequency sweep.** A reused BDDC or
+  p-multigrid preconditioner is now set up again before a step an octave from
+  the frequency it was set up at, and when a reused step costs as much as the
+  mean per step since the setup, instead of after one slow step.
+
 Jobs and results:
 
 - **A refused value names both versions.** A job or result bundle written by
