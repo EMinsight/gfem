@@ -58,8 +58,9 @@ class TimeResponse:
     arrays that differentiate with respect to S and the reference.
 
     Attributes:
-        time: The sample times in s, ``(n_time,)``, increasing; negative
-            times hold the window's pre-response.
+        time: The sample times in s, ``(n_time,)``: increasing for the
+            windowed responses, whose negative times hold the window's
+            pre-response; as given for a rational model's closed form.
         values: The responses, real, ``(n_time, n_ports, n_excited)``.
         z_ref: The real reference impedance of each port in ohm,
             ``(n_ports,)``; NaN for every port of a network without
@@ -384,6 +385,62 @@ class RationalModel:
             frequency=tuple(float(x) for x in f),
             ports=self.ports,
             excited=self.ports,
+        )
+
+    def step_response(self, time: ArrayLike) -> TimeResponse:
+        r"""The model's exact step response, a `gfem.TimeResponse`.
+
+        The inverse Laplace transform of :math:`S(s)/s`,
+
+        .. math::
+
+            D + \sum_n \frac{R_n}{p_n} \left(e^{p_n t} - 1\right)
+
+        for :math:`t \ge 0`, and 0 before: it jumps to :math:`D` at
+        :math:`t = 0` and settles at the DC value ``network([0.0])``. This is
+        the response a transient simulation of the model's netlist must
+        reproduce; unlike `gfem.NetworkParameters.step_response` it is not
+        band-limited, so it includes the model's behaviour outside the fitted
+        band.
+
+        Args:
+            time: Times in s, any order; flattened to ``(n_time,)``.
+
+        Returns:
+            The step with every port excited, ``mode="closed_form"``; `z_ref`
+            is NaN when the model's reference is a nominal label.
+
+        Raises:
+            NonDifferentiableError: ``time`` is traced by JAX.
+            ValueError: A time is not finite.
+        """
+        if is_traced(time):
+            raise NonDifferentiableError(
+                "RationalModel.step_response needs concrete times: the model is "
+                "a NumPy object, not differentiated by JAX. Evaluate it outside "
+                "jax.grad, jax.jit or jax.vmap."
+            )
+        t = np.asarray(time, dtype=float).reshape(-1)
+        if not np.isfinite(t).all():
+            raise ValueError(
+                f"RationalModel.step_response takes finite times, got {t.tolist()}."
+            )
+        after = t >= 0
+        # e^{p t} - 1 only where t >= 0: before the edge it would grow
+        grow = np.expm1(np.where(after, t, 0.0)[:, None] * self.poles[None, :])
+        scaled = self.residues / self.poles[:, None, None]
+        step = self.d[None] + np.einsum("tn,nij->tij", grow, scaled).real
+        values = np.where(after[:, None, None], step, 0.0)
+        n = len(self.ports)
+        z = np.full(n, np.nan) if self.nominal_reference else self.z_ref
+        return TimeResponse(
+            time=t,
+            values=jnp.asarray(values),
+            z_ref=jnp.asarray(z),
+            ports=self.ports,
+            excited=self.ports,
+            kind="step",
+            mode="closed_form",
         )
 
     def __repr__(self) -> str:
