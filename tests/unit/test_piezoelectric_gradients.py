@@ -194,16 +194,3 @@ def test_an_unread_property_has_an_exact_zero_gradient(device):
         return result.clamped_capacitance_per_length[0, 0]
 
     assert float(jax.grad(objective)(1.0)) == 0.0
-
-
-def test_traced_node_coordinates_raise_until_node_gradients_exist(device):
-    variant, mesh = device
-    model = pc.model(mesh, variant)
-
-    def objective(scale):
-        moved = mesh.with_nodes(mesh.nodes * scale)
-        result = gfem.solve(model.replace(mesh=moved), pc.problem())
-        return result.clamped_capacitance_per_length[0, 0]
-
-    with pytest.raises(gfem.NonDifferentiableError, match="not available yet"):
-        jax.grad(objective)(1.0)

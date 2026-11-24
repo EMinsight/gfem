@@ -1381,7 +1381,8 @@ def _node_pass(
     """``sum_pairs sum_t theta_t d a_t(left, right) / dX``, (n_nodes, dim), per m.
 
     A 2D mesh gives only ``"surface"`` terms, whose ``DiffShape`` carries the
-    whole transport. The form holds a load: a rank's part at each of its vertices, shared ones too.
+    whole transport. The form holds a load: a rank's part at each of its
+    vertices, shared ones too.
     """
     built = discretization(model.mesh, model._periodic, comm).built  # noqa: SLF001
     n_nodes = len(model.mesh.imported_nodes)
