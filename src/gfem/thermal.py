@@ -579,9 +579,17 @@ def _incident(value: Any, excited: tuple[str, ...], name: str) -> dict[str, Any]
 
     Raises:
         KeyError: A port that is not excited.
-        ValueError: A number with several excited ports, or a negative power.
+        ValueError: No excited port, a number with several excited ports, or
+            a negative power.
         TypeError: A value that is not a real scalar.
     """
+    if not excited:
+        # a result of sources alone: its columns are lit by no port power
+        raise ValueError(
+            f"{_EM_HEATING}: the result has no excited port, so no port drive "
+            "to heat with. A source column's loss is "
+            "gfem.dissipated_power(result.e_field(frequency, source), model=)."
+        )
     powers = _per_name(
         value,
         excited,
@@ -808,9 +816,9 @@ def electromagnetic_heating(
         NotImplementedError: A `gfem.PortModeResult`, a 2D model (pose the
             driven solve on the slab), or what `gfem.dissipated_power`
             refuses (complex ``mu_r``, a law blend).
-        ValueError: Not exactly one drive, the wrong one for the mesh, a
-            number for several excited ports, a negative power, or no field
-            kept at ``frequency``.
+        ValueError: No excited port, not exactly one drive, the wrong one for
+            the mesh, a number for several excited ports, a negative power, or
+            no field kept at ``frequency``.
         KeyError: A port that was not excited, or a phase for a port the
             drive does not feed.
         NonDifferentiableError: ``frequency`` is traced; or what

@@ -283,6 +283,23 @@ def test_power_flow_refuses_a_side_in_the_layer_of_an_incident_column(lossy):
         gfem.power_flow(total, lambda c: c[:, 0] > 0.9e-6, model=model)
 
 
+def test_the_dissipated_power_of_an_incident_column_is_its_absorbed_power(lossy):
+    model, result = lossy
+    for name in ("te", "tm"):
+        xs = gfem.cross_sections(result, name, model=model)
+        lost = gfem.dissipated_power(result.e_field(F, name), model=model)
+        total = sum(_value(v) for v in lost.values())
+        assert total == pytest.approx(xs.absorption[0] * xs.intensity[0], rel=1e-8)
+
+
+def test_electromagnetic_heating_refuses_a_result_with_no_excited_port(lossy):
+    model, result = lossy
+    with pytest.raises(ValueError, match=r"no excited port.*dissipated_power"):
+        gfem.electromagnetic_heating(
+            result, model=model, frequency=F, incident_power=1.0
+        )
+
+
 def _port_walls(c):
     """A wave port patch on the x = 0 wall, the x walls, the y walls."""
     if abs(c[0]) < 1e-9 and 0.25 < c[1] < 0.75 and 0.25 < c[2] < 0.75:
