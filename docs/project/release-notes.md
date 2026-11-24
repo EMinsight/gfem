@@ -216,6 +216,15 @@ Design:
   1 nm), holes as keyhole cuts, large polygons split to stay within what
   strict readers accept. The same arguments give the same bytes.
 
+- **Minimum width and spacing checks.** `LayerPattern.check(min_width=...,
+  min_spacing=...)` measures a layer pattern against a foundry's minimum width
+  and spacing by its facing polygon edges, perpendicular to an edge, and
+  returns a `gfem.design.PatternCheck`: the narrowest width and spacing (the
+  margin, also when it passes), `passed`, and each `gfem.design.Violation`
+  (kind, distance, location and markers to plot), narrowest first. Edges on
+  the footprint are not measured; periodic patterns are measured across the
+  seam. It is a pre-check, not foundry sign-off.
+
 - **A fabrication model in the gradient.**
   `gfem.design.FabricationModel(grid, sigma=..., bias=...)` predicts the
   printed design of a drawn (projected) design: a Gaussian blur of standard

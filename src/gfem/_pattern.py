@@ -21,6 +21,7 @@ import numpy as np
 from gfem._checks import is_traced
 
 if TYPE_CHECKING:
+    from gfem._feature_check import PatternCheck
     from gfem.design import LayerGrid
 
 __all__ = ["LayerPattern", "Polygon"]
@@ -156,6 +157,57 @@ class LayerPattern:
         _check_nesting(polygons_)
         return cls(polygons_, box, periodic)
 
+    def check(
+        self, *, min_width: float | None = None, min_spacing: float | None = None
+    ) -> PatternCheck:
+        r"""Measure the pattern against a minimum width and a minimum spacing.
+
+        Finds the places where solid (a width) or void (a spacing) is
+        narrower than the rule, by the facing edges of the polygons, as a
+        foundry's width and space rules do: two edges that run opposite ways
+        with solid between them (or void), at a distance measured
+        perpendicular to one of them. Two edges meeting at a corner of 90° or
+        more are never measured against each other; an acute corner is. A
+        distance strictly below the rule is a violation, and too-narrow edge
+        pairs within one rule of each other are one violation. A notch is a
+        spacing. The narrowest width and spacing are reported even when the
+        check passes, as the margin::
+
+            check = pattern.check(min_width=150e-9, min_spacing=150e-9)
+            print(check)
+            if check.passed:
+                gfem.design.write_gds("design.gds", {(1, 0): pattern})
+
+        The check is exact on the polygons, which follow the
+        :math:`\beta \to \infty` design's edge to a small fraction of the
+        pitch. Edges on the footprint rectangle are not measured: what lies
+        beyond is the rest of the layout, so a sliver along the footprint
+        facing void outside is left to the assembled layout's checks (pin a
+        margin band of the real neighbours inside the grid to measure it).
+        On a periodic axis features are measured across the seam. To check a
+        robust design, check the eroded pattern's width and the dilated
+        pattern's spacing. A foundry's checks may measure differently (along
+        the shortest line on Manhattan layouts), and GDS snapping moves a
+        distance by up to :math:`\sqrt2` database units: this is a pre-check,
+        not foundry sign-off.
+
+        Args:
+            min_width: The minimum width (m), > 0, or ``None`` to skip it.
+            min_spacing: The minimum spacing (m), > 0, or ``None`` to skip it.
+
+        Returns:
+            A `PatternCheck`: the narrowest width and spacing, the violations
+            (narrowest first, each with markers to plot) and ``passed``.
+
+        Raises:
+            TypeError: A rule is not a real number (``bool`` included).
+            ValueError: Neither rule given, or a rule not finite or not > 0.
+        """
+        # imported here: the check is a module of its own, loaded when used
+        from gfem._feature_check import check
+
+        return check(self, min_width=min_width, min_spacing=min_spacing)
+
     @property
     def area(self) -> float:
         """The solid area (m²): the outer rings' areas minus the holes'."""
@@ -282,12 +334,23 @@ def _nodes(centres: np.ndarray, lo: float, hi: float) -> np.ndarray:
 def _clean(ring: np.ndarray, tolerance: float) -> np.ndarray | None:
     """A closed ring without repeated or collinear vertices; ``None`` if degenerate."""
     ring = _distinct(np.asarray(ring, dtype=np.float64))
-    previous, following = np.roll(ring, 1, axis=0), np.roll(ring, -1, axis=0)
-    a, b = ring - previous, following - ring
-    ring = ring[np.abs(a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]) > tolerance]
-    if len(ring) < 3:
-        return None
-    return np.concatenate([ring, ring[:1]])
+    while len(ring) >= 3:
+        previous, following = np.roll(ring, 1, axis=0), np.roll(ring, -1, axis=0)
+        a, b = ring - previous, following - ring
+        flat = np.abs(a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]) <= tolerance
+        if not flat.any():
+            return np.concatenate([ring, ring[:1]])
+        if flat.all():
+            return None
+        # Drop every other vertex of each run of flat ones, then look again:
+        # two copies of a corner one rounding apart both read flat, and
+        # dropping both at once would cut the corner off.
+        start = int(np.argmin(flat))  # a vertex that stays
+        run = np.roll(flat, -start)
+        index = np.arange(len(run))
+        position = index - np.maximum.accumulate(np.where(run, 0, index))
+        ring = ring[~np.roll(run & (position % 2 == 1), start)]
+    return None
 
 
 def _distinct(ring: np.ndarray) -> np.ndarray:

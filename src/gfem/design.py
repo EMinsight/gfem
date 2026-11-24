@@ -40,6 +40,7 @@ from gfem import _morph, _mpi, _pattern, _sparse, _spectral
 from gfem._checks import is_traced, static_float
 from gfem._dim2 import refuse_entry
 from gfem._fabrication import FabricationModel
+from gfem._feature_check import PatternCheck, Violation
 from gfem._gds import write_gds
 from gfem._length_scale import (
     LengthScaleConstraints,
@@ -61,8 +62,10 @@ __all__ = [
     "LayerPattern",
     "LengthScaleConstraints",
     "LengthScaleValues",
+    "PatternCheck",
     "Polygon",
     "Robust",
+    "Violation",
     "helmholtz_filter",
     "length_scale_constraints",
     "project",
