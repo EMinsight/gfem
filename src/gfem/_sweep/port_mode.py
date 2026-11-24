@@ -537,7 +537,8 @@ def swept_once(
         arrays |= {"basis": first.basis, "solved": first.solved}
         return arrays | (derived(first.basis) if derived is not None else {})
 
-    # ValueError: a voltage path off the port, on replicated inputs
+    # ValueError: a voltage path or a polarity point off the port, on replicated
+    # inputs
     arrays = _mpi.on_root(comm, compute, results=(PortModeError, ValueError))
     return sweeps_on(space, frequency, arrays), arrays
 
