@@ -84,6 +84,12 @@ docs = [
   "pyvista>=0.44",
 ]
 lint = ["ruff>=0.14", "ty==0.0.85"]
+# Test only, never shipped or in a default group: the circuit simulators that
+# run the exported netlists (tests marked `netlist`, skipped without them).
+# sedes (MIT) bundles ngspice 45 with OSDI; vacask-bin (GPL-3.0/AGPL-3.0,
+# about 94 MB) bundles the openvaf-r Verilog-A compiler and VACASK. Exact
+# pins: vacask-bin is a pre-release.
+netlist = ["sedes==0.1.10", "vacask-bin==0.3.4.dev7"]
 # Building the docs site (docs/conf.py), on top of `docs`. Python >= 3.13 only
 # ([tool.uv.dependency-groups] below): Sphinx 9.2 does not support 3.12.
 site = [
@@ -121,6 +127,7 @@ markers = [
   "mpi: launched under ranks from a one-process pytest, needs mpi4py and Open MPI; skipped without them (tests/mpi, deselected by default)",
   "petsc: needs complex petsc4py built as the PETSc and SLEPc recipe describes; skipped without it (run alone with -m petsc)",
   "slepc: needs slepc4py on that PETSc; skipped without it",
+  "netlist: runs the exported netlists in ngspice and VACASK; needs the netlist group (uv sync --group netlist), skipped without it",
   "bitwise: needs repeatable direct solves (last bits, tight convergence); one solve thread without PARDISO",
 ]
 pythonpath = ["tools", "tests", "."]  # "." imports the benchmarks package

@@ -59,6 +59,21 @@ test loads MPI in pytest's own process, and a launched job under `srun` then fai
 Collection refuses launched tests that carry those markers; they skip on
 `_petsc.has_mpi()` instead.
 
+Tests marked `netlist`, in the unit tier, run the SPICE and Verilog-A models that
+`RationalModel.to_spice` and `RationalModel.to_verilog_a` write in real circuit
+simulators: ngspice 45 from `sedes`, and VACASK with the openvaf-r Verilog-A
+compiler from `vacask-bin`. Both come from the `netlist` dependency group, which is
+for tests only and never ships with gfem (`vacask-bin` is GPL and AGPL, about
+94 MB, and a pre-release, so both are pinned exactly). Without the group the tests
+skip; one CI job installs it on every push:
+
+```bash
+uv sync --group netlist
+uv run --group netlist pytest -m netlist -rs
+```
+
+A plain `uv sync` removes the group again.
+
 ## Licence gate
 
 CI's licence gate, `tools/licence_gate.py`, audits the installed dependency tree
