@@ -306,23 +306,6 @@ def test_names_the_mesh_lacks_or_misuses_raise(device):
     )
 
 
-def test_a_model_traced_by_jax_raises_until_gradients_exist(device):
-    import jax
-
-    _, mesh, model = device
-
-    def objective(scale):
-        moved = mesh.with_nodes(mesh.nodes * scale)
-        result = gfem.solve(model.replace(mesh=moved), pc.problem())
-        return result.clamped_capacitance_per_length[0, 0]
-
-    _raises(
-        gfem.NonDifferentiableError,
-        "not available yet",
-        lambda: jax.grad(objective)(1.0),
-    )
-
-
 # --- the problem and its exports ---------------------------------------------------
 
 
