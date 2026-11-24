@@ -723,6 +723,122 @@ wavenumber :math:`k = n\omega/c` and wave impedance :math:`\eta =
 - Bistatic radar cross section of a `gfem.PlaneWave` column, in m²:
   :math:`\sigma(\hat r) = 4\pi|F(\hat r)|^2/|E_0|^2`.
 
+Multipoles
+----------
+``gfem.Multipoles`` expands the scattered field of an incident-field column
+about an origin :math:`r_o` (default the model origin), outside a sphere
+that holds every source, in the background's outgoing vector spherical
+waves, of wavenumber :math:`k`, impedance :math:`\eta`, permittivity
+:math:`\varepsilon` and :math:`v = \omega/k` (all real).
+
+- Basis: Condon-Shortley :math:`Y_{lm}` (``scipy.special.sph_harm_y``),
+  Jackson's :math:`X_{lm} = L Y_{lm}/\sqrt{l(l+1)}` with :math:`L = -i\,r\times\nabla`,
+  :math:`M^{(2)}_{lm} = h^{(2)}_l(kr)X_{lm}` and :math:`N^{(2)}_{lm} =
+  k^{-1}\nabla\times M^{(2)}_{lm}`; :math:`h^{(2)}_l \sim i^{l+1}e^{-ix}/x`
+  is outgoing under :math:`e^{+i\omega t}`, like the far field's
+  :math:`e^{-ikr}/r`.
+- Expansion and normalization:
+
+  .. math::
+
+      E_s = E_\mathrm{inc}\sum_{l\ge1}\sum_{m=-l}^{l}
+      \big[\alpha_{lm}N^{(2)}_{lm} + \beta_{lm}M^{(2)}_{lm}\big],
+      \qquad
+      \sigma_\mathrm{sca} = \frac1{k^2}\sum_{lm}
+      \big(|\alpha_{lm}|^2 + |\beta_{lm}|^2\big),
+
+  with no :math:`i^l` or :math:`\sqrt{\pi(2l+1)}` in the expansion, so
+  :math:`\alpha_{lm}` and :math:`\beta_{lm}` are dimensionless and the
+  partial scattering cross section of the electric (magnetic) multipole of
+  degree :math:`l` is :math:`k^{-2}\sum_m|\alpha_{lm}|^2`
+  (:math:`k^{-2}\sum_m|\beta_{lm}|^2`), in m², over the incident intensity
+  :math:`I = |E_\mathrm{inc}|^2/(2\eta)` of `gfem.cross_sections`.
+- Incident amplitude :math:`E_\mathrm{inc}`, V/m, complex: a
+  `gfem.PlaneWave`'s ``amplitude`` (the phase at the model origin, not at
+  the multipole origin); a `gfem.GaussianBeam`'s focal field
+  :math:`\sqrt{2\eta I_0}` (real, positive); :math:`\sqrt{2\eta I}` for a
+  `gfem.IncidentField` with ``intensity=``. This is not
+  ``gfem.FarField.incident_amplitude``, the real :math:`|E_0|` of a plane
+  wave (``None`` for a beam): the two share a name, not a meaning.
+- Storage: :math:`\alpha, \beta` are ``(n_freq, lmax * (lmax + 2))``,
+  :math:`l`-major with :math:`m` ascending, flat index
+  :math:`j = l^2 + l + m - 1`; the degree-1 entries are the first three
+  whatever ``lmax``. The default ``lmax`` is Wiscombe's
+  :math:`\max(2, \lceil x + 4x^{1/3} + 2\rceil)`, :math:`x = kR_s` at the
+  highest kept frequency and :math:`R_s` the scatterer's circumradius about
+  the origin; ``lmax`` is at least 2 so every result carries the
+  quadrupoles.
+- Mie map. For a sphere at the origin under
+  ``PlaneWave(theta=0, phi=0, polarization="TM")``
+  (:math:`E_0\hat x e^{-ikz}`), with :math:`\bar a_l, \bar b_l` the
+  conjugates of Bohren and Huffman's coefficients (gfem's
+  :math:`\varepsilon` is the conjugate of theirs),
+
+  .. math::
+
+      \alpha_{l,\pm1} = \pm(-i)^l\sqrt{\pi(2l+1)}\,\bar a_l,\qquad
+      \beta_{l,\pm1} = -(-i)^l\sqrt{\pi(2l+1)}\,\bar b_l,
+
+  and every other :math:`m` is zero, so :math:`\sigma^E_l = 2\pi(2l+1)
+  |a_l|^2/k^2`. A sphere centred at :math:`r_o` has these times
+  :math:`e^{-ik\hat k\cdot r_o}`.
+- Exact moments, fixed linear maps of the :math:`l\le2` coefficients, in the
+  model's :math:`x, y, z`, with :math:`\hat e_{\pm1} = \mp(\hat x \pm
+  i\hat y)/\sqrt2`, :math:`\hat e_0 = \hat z` and :math:`T_{2M}` the
+  orthonormal symmetric traceless rank-2 tensors built from them:
+
+  - :math:`p = -\sqrt{6\pi}\,\varepsilon E_\mathrm{inc}k^{-3}
+    \sum_m\alpha_{1m}\hat e_m`, C·m;
+  - :math:`m = -i\sqrt{6\pi}\,E_\mathrm{inc}(k^3\eta)^{-1}
+    \sum_m\beta_{1m}\hat e_m`, A·m²;
+  - :math:`Q^e = -12\sqrt{5\pi}\,\varepsilon E_\mathrm{inc}k^{-4}
+    \sum_M\alpha_{2M}T_{2M}`, C·m²;
+  - :math:`Q^m = -12\sqrt{5\pi}\,i\,E_\mathrm{inc}(k^4\eta)^{-1}
+    \sum_M\beta_{2M}T_{2M}`, A·m³.
+
+  A point `gfem.ElectricDipole` or `gfem.MagneticDipole` of moment
+  :math:`p` or :math:`m` at the origin gives back exactly that moment and
+  only :math:`l = 1`. The partial cross sections of the four moments are the
+  degree-1 and degree-2 partials, :math:`\sigma_p = k^4|p|^2/(6\pi
+  \varepsilon^2|E_\mathrm{inc}|^2)` and so on. :math:`Q^e` has Jackson's
+  long-wavelength limit :math:`\int\rho\,(3r_\alpha r_\beta -
+  r^2\delta_{\alpha\beta})\,dV`; :math:`Q^m` has
+  :math:`\int[r_\alpha(r\times J)_\beta + r_\beta(r\times J)_\alpha]\,dV`.
+  Two factor-3 traps: Evlyukhin's and the anapole review's :math:`Q^m` is
+  :math:`\tfrac13` of this one (their :math:`\sigma_{Q^m}` has
+  :math:`1/(80\pi)` where this has :math:`1/(720\pi)`), and a Landau-style
+  :math:`Q^e = \int\rho\,(r_\alpha r_\beta - \tfrac13r^2\delta_{\alpha\beta})\,dV`
+  is :math:`\tfrac13` of this one.
+- Long-wavelength moments, ``gfem.CurrentMoments``, from the induced current
+  :math:`J = +i\omega\varepsilon_0(\varepsilon_r - \varepsilon_b)E` of the
+  total field over the scatterer, :math:`r` from the origin:
+
+  .. math::
+
+      p_0 = \frac1{i\omega}\int J\,dV,\qquad
+      T = \frac1{10v}\int\big[(r\cdot J)\,r - 2r^2J\big]\,dV,\qquad
+      p \approx p_0 - ikT,
+
+  in C·m and C·m². The literature's :math:`p \approx p_0 + ikT`
+  (:math:`e^{-i\omega t}`) becomes this one. The anapole review's
+  :math:`T` in A·m³ is :math:`vT`. The long-wavelength anapole condition is
+  :math:`p_0 = ikT`; the exact one is :math:`p = 0` (:math:`\alpha_{1m} = 0`),
+  and the two differ by several percent of :math:`|p_0|` for a sphere. The
+  first Kerker condition, for :math:`\hat k = \hat z`, is
+  :math:`\alpha_{1,\pm1}` against :math:`\beta_{1,\pm1}` as the Mie map has
+  them, equivalently :math:`p_x = m_y/v`.
+- Reading a paper in :math:`e^{-i\omega t}`: conjugate every phasor and
+  material, and because :math:`\overline{Y_{lm}} = (-1)^mY_{l,-m}` and
+  :math:`\overline{X_{lm}} = (-1)^{m+1}X_{l,-m}`, a coefficient defined with
+  :math:`Y_{lm}^*` maps to the conjugate with :math:`m \to -m` and a sign.
+  Bohren and Huffman's :math:`a_l, b_l` are conjugated and enter through
+  the Mie map; Grahn's :math:`a_E(l,m)` is
+  :math:`\alpha_{lm} = -(-1)^m(-i)^l\sqrt{\pi(2l+1)}\,\overline{a_E(l,-m)}`
+  and likewise :math:`\beta`; Jackson's :math:`a_E(l,m)` (A, absolute) is
+  :math:`E_\mathrm{inc}\alpha_{lm} = iZ_0(-1)^m\overline{a_E(l,-m)}` and
+  :math:`E_\mathrm{inc}\beta_{lm} = -(-1)^mZ_0\overline{a_M(l,-m)}`; Alaee's
+  moments are gfem's with the kernels :math:`-1/(i\omega) \to +1/(i\omega)`.
+
 Port waves and beam coupling
 ----------------------------
 A source column's port waves (``DrivenResult.port_waves``) and
