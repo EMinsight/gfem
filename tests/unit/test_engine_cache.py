@@ -1,23 +1,35 @@
 """Engine caches, the pinned quadrature rule, and kept forward solves."""
 
+import dataclasses
 from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
 import ngsolve as ngs
 import numpy as np
+import periodic_cases as pc
 import pytest
+import scipy.sparse
 import structured_meshes as sm
 
 import gfem
 from gfem._engine import cache, quadrature
 from gfem._engine.cache import Entry, EntryCache, discretization
+from gfem._engine.domain import (
+    h1_space,
+    hcurl_space,
+    pec_surfaces,
+    potential_surfaces,
+)
+from gfem._engine.driven import EXPANSION_FLOOR, driven_operator, expansion_matrix
+from gfem._engine.eigen import projector
 from gfem._engine.electrostatic import ElectrostaticRule
 from gfem._engine.mesh import to_ngsolve
 from gfem._linalg import Operator, report
 from gfem._linalg.direct import DirectHandle
 from gfem._linalg.pardiso import pardiso_available
 from gfem._linalg.pieces import KeptParts
+from gfem._periodic import bloch_phases
 
 
 @pytest.fixture(scope="module")
@@ -648,3 +660,156 @@ def test_unkept_solve_returns_no_entry(model):
     _, entry = rule.forward(model, keep=False)
     assert entry is None
     assert rule.reads == {"eps_r"}
+
+
+# --- the Bloch phase template ------------------------------------------------------
+
+
+def _template_model(directory, name):
+    cells = {
+        "C3": lambda: pc.c3(pc.c3_mesh(directory)),
+        "C2-4x4x1": lambda: pc.c2(pc.c2_mesh(directory, cells=(4, 4, 1))),
+        "C2-2x2x1": lambda: pc.c2(pc.c2_mesh(directory, cells=(2, 2, 1))),
+        "C4-3x3x3": lambda: pc.c4(pc.c4_mesh(directory)),
+        "C4-2x2x2": lambda: pc.c4(pc.c4_mesh(directory, cells=(2, 2, 2))),
+    }
+    return cells[name]()
+
+
+def _wave_vector(model, fractions):
+    """The wave vector sum_j f_j b_j over the reciprocal vectors of the pairs."""
+    a = np.asarray(model.periodic_translations, dtype=float)
+    b = 2 * np.pi * np.linalg.pinv(a).T
+    return tuple(float(v) for v in np.asarray(fractions[: len(a)]) @ b)
+
+
+def _direct(model, order, wave_vector):
+    """P and G from NGSolve's conversion on fresh spaces, G floored as P is."""
+    built = discretization(model.mesh, model._periodic).built
+    phases = bloch_phases(model, wave_vector)
+    pec = pec_surfaces(model)
+    fixed = potential_surfaces(model)
+    unpaired = hcurl_space(model, built, order, dirichlet=pec)
+    hcurl = hcurl_space(
+        model, built, order, dirichlet=pec, periodic=True, phases=phases
+    )
+    h1 = h1_space(model, built, order, fixed, periodic=True, phases=phases)
+    p = expansion_matrix(hcurl, unpaired, real=False)
+    rows, cols, values = ngs.ConvertOperator(
+        h1, hcurl, trial_proxy=ngs.grad(h1.TrialFunction())
+    ).COO()
+    g = scipy.sparse.csr_matrix(
+        (np.asarray(values), (np.asarray(rows), np.asarray(cols))),
+        shape=(hcurl.ndof, h1.ndof),
+    )
+    g.data[np.abs(g.data) < EXPANSION_FLOOR] = 0
+    g.eliminate_zeros()
+    return p, g
+
+
+def _engine(model, order, wave_vector):
+    """P and G as a Bloch eigen solve builds them."""
+    op = driven_operator(model, order, wave_vector=wave_vector)
+    return op.expansion.matrix, projector(model, op, wave_vector)._g
+
+
+def _same(built, direct, tol):
+    built, direct = built.tocsr(), direct.tocsr()
+    built.sort_indices()
+    direct.sort_indices()
+    assert np.array_equal(built.indptr, direct.indptr)
+    assert np.array_equal(built.indices, direct.indices)
+    gap = np.abs(built.data - direct.data).max() / np.abs(direct.data).max()
+    assert gap <= tol, gap
+
+
+#: Wave vectors of the template tests, as fractions of the reciprocal vectors.
+TEMPLATE_POINTS = {
+    "Gamma": (0.0, 0.0, 0.0),
+    "X": (0.5, 0.0, 0.0),
+    "M": (0.5, 0.5, 0.0),
+    "generic": (0.37, -0.21, 0.13),
+}
+#: Two phase sets that build the template before the tested ones.
+TEMPLATE_WARMUP = ((0.11, 0.29, 0.43), (-0.23, 0.17, 0.31))
+
+
+@pytest.mark.parametrize(
+    ("cell", "order"),
+    [
+        ("C3", 3),
+        ("C2-4x4x1", 2),
+        ("C2-4x4x1", 3),
+        ("C2-2x2x1", 3),
+        ("C4-3x3x3", 2),
+        ("C4-2x2x2", 3),
+    ],
+    ids=[
+        "C3p3",
+        "C2-4x4x1-p2",
+        "C2-4x4x1-p3",
+        "C2-2x2x1-p3",
+        "C4-3x3x3-p2",
+        "C4-2x2x2-p3",
+    ],
+)
+def test_bloch_phase_template_equals_the_conversion(tmp_path, cell, order):
+    # at order 3 with two or more pairs some rows of P mix lattice vectors;
+    # every entry still carries one
+    model = _template_model(tmp_path, cell)
+    with ngs.TaskManager():
+        for fractions in TEMPLATE_WARMUP:
+            _engine(model, order, _wave_vector(model, fractions))
+        disc = discretization(model.mesh, model._periodic)
+        assert [t.serves for t in disc.templates.values()] == [True, True]
+        for fractions in TEMPLATE_POINTS.values():
+            k = _wave_vector(model, fractions)
+            p, g = _engine(model, order, k)
+            direct_p, direct_g = _direct(model, order, k)
+            _same(p, direct_p, 1e-14)
+            _same(g, direct_g, 1e-14)
+
+
+def test_the_template_is_built_at_the_second_phase_set(tmp_path):
+    # a loop at one wave vector never decodes: the 8 phase sets serve it
+    model = _template_model(tmp_path, "C2-4x4x1")
+    disc = discretization(model.mesh, model._periodic)
+    first, second = (_wave_vector(model, f) for f in TEMPLATE_WARMUP)
+    with ngs.TaskManager():
+        _engine(model, 2, first)
+        _engine(model, 2, first)
+        assert len(disc.templates) == 2
+        assert all(t.template is None for t in disc.templates.values())
+        assert all(t.serves is None for t in disc.templates.values())
+        _engine(model, 2, second)
+    assert all(t.template is not None for t in disc.templates.values())
+    assert all(t.serves for t in disc.templates.values())
+
+
+def test_a_template_that_fails_its_check_falls_back_to_conversion(
+    tmp_path, monkeypatch
+):
+    decode = cache.PhaseTemplate.decode
+    decoded = []
+
+    def corrupted(matrix, angles):
+        template = decode(matrix, angles)
+        coefficients = template.coefficients.copy()
+        coefficients[0] *= 1 + 1e-9
+        decoded.append(template)
+        return dataclasses.replace(template, coefficients=coefficients)
+
+    monkeypatch.setattr(cache.PhaseTemplate, "decode", corrupted)
+    model = _template_model(tmp_path, "C2-4x4x1")
+    disc = discretization(model.mesh, model._periodic)
+    with ngs.TaskManager():
+        for fractions in TEMPLATE_WARMUP:
+            _engine(model, 2, _wave_vector(model, fractions))
+        assert [t.serves for t in disc.templates.values()] == [False, False]
+        k = _wave_vector(model, TEMPLATE_POINTS["generic"])
+        p, g = _engine(model, 2, k)
+        direct_p, direct_g = _direct(model, 2, k)
+    # decoded once each, at the second phase set; the third converts
+    assert len(decoded) == 2
+    _same(p, direct_p, 1e-15)
+    _same(g, direct_g, 1e-15)

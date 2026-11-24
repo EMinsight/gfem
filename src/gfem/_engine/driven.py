@@ -104,6 +104,8 @@ from gfem._domain import nedelec_unknowns
 from gfem._engine import dispersion, sweep_outputs, terms
 from gfem._engine.cache import (
     ENTRIES,
+    TEMPLATE_TOL,
+    Discretization,
     Entry,
     default_retain_memory,
     discretization,
@@ -253,11 +255,29 @@ class Expansion:
             element uses (`gfem._engine.domain.element_dofs`): the plain
             mesh's field layout, in its order, so results keep ``P x`` on
             those rows. ``None`` on one process: every row.
+        lattice: Builds `lattice_vectors`; ``None`` without a Bloch phase
+            and under ranks.
     """
 
     matrix: scipy.sparse.csr_matrix
     space: ngs.FESpace
     field_rows: np.ndarray | None = None
+    lattice: Callable[[], np.ndarray | None] | None = None
+
+    @functools.cached_property
+    def lattice_vectors(self) -> np.ndarray | None:
+        r"""The lattice vector :math:`\mathbf{m}` of each stored entry of P, (nnz, 3).
+
+        In metres, in ``matrix``'s CSR order: the entry is :math:`g\,
+        e^{-i\,\mathbf{m}\cdot\mathbf{k}}` with :math:`g` real, so
+        :math:`\partial P/\partial k_d = -i\,m_d \circ P` entry by entry.
+        From the discretization's phase template of P
+        (`gfem._engine.cache.Discretization.phase_template`: one more
+        conversion the first time a mesh needs it). ``None`` without a
+        Bloch phase, under ranks, and where the template does not stand for
+        ``matrix`` (`gfem._engine.cache.TEMPLATE_TOL`).
+        """
+        return None if self.lattice is None else self.lattice()
 
     @functools.cached_property
     def field(self) -> scipy.sparse.csr_matrix:
@@ -502,18 +522,35 @@ def driven_operator(
             group=phases,
             swept=swept,
         )
-        matrix = disc.space(
-            (*key, "expansion"),
-            lambda: expansion_matrix(space, unpaired, real=phases is None, comm=comm),
-            group=phases,
-            swept=swept,
-        )
+
+        def direct() -> scipy.sparse.csr_matrix:
+            return expansion_matrix(space, unpaired, real=phases is None, comm=comm)
+
+        template_key, convert = _expansion_template(model, built, order, unpaired)
+
+        def build() -> scipy.sparse.csr_matrix:
+            if phases is None or comm is not None:
+                return direct()
+            return disc.phased(template_key, phases, direct, convert)
+
+        matrix = disc.space((*key, "expansion"), build, group=phases, swept=swept)
         rows = None
         if comm is not None:
             rows = disc.space(
                 (*unpaired_key, "field rows"), lambda: element_dofs(unpaired)
             )
-        expansion = Expansion(matrix, unpaired, rows)
+        lattice = None
+        if phases is not None and comm is None:
+            lattice = functools.partial(
+                _lattice_vectors,
+                disc,
+                template_key,
+                convert,
+                matrix=matrix,
+                phases=phases,
+                translations=tuple(p.translation for p in built.pairs),
+            )
+        expansion = Expansion(matrix, unpaired, rows, lattice)
     ports = terms.lumped_ports(model, built.scale)
     pieces, latent = terms.pieces(
         model, built, order, ports, elements=elements, faces=faces, stretch=stretch
@@ -555,6 +592,43 @@ def driven_operator(
         latent=latent,
         cells=None if comm is not None else _solve_cells(model, built),
     )
+
+
+def _expansion_template(
+    model: Model, built: EngineMesh, order: int, unpaired: ngs.FESpace
+) -> tuple[tuple, Callable[[tuple[complex, ...]], scipy.sparse.csr_matrix]]:
+    """The key of the periodic expansion's phase template, and its conversion.
+
+    The conversion takes any Bloch phases, on a periodic space of its own:
+    the probe phase set never enters the discretization's phase sets
+    (`gfem._engine.cache.Discretization.phased`).
+    """
+    pec = pec_surfaces(model)
+
+    def convert(phases: tuple[complex, ...]) -> scipy.sparse.csr_matrix:
+        space = hcurl_space(
+            model, built, order, dirichlet=pec, periodic=True, phases=phases
+        )
+        return expansion_matrix(space, unpaired, real=False)
+
+    key = (*space_key(model, "hcurl", order, periodic=True), "expansion template")
+    return key, convert
+
+
+def _lattice_vectors(
+    disc: Discretization,
+    key: tuple,
+    convert: Callable[[tuple[complex, ...]], scipy.sparse.csr_matrix],
+    *,
+    matrix: scipy.sparse.csr_matrix,
+    phases: tuple[complex, ...],
+    translations: tuple[tuple[float, float, float], ...],
+) -> np.ndarray | None:
+    """`Expansion.lattice_vectors` of ``matrix``, P at ``phases``."""
+    template = disc.phase_template(key, convert)
+    if max(template.fit, template.gap(matrix, phases)) > TEMPLATE_TOL:
+        return None
+    return template.lattice_vectors(translations)
 
 
 def _solve_cells(model: Model, built: EngineMesh) -> Callable[[], Cells]:

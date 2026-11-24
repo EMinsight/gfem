@@ -57,7 +57,7 @@ from gfem._engine.domain import (
     potential_surfaces,
     space_key,
 )
-from gfem._engine.driven import DrivenOperator, real_space
+from gfem._engine.driven import EXPANSION_FLOOR, DrivenOperator, real_space
 from gfem._engine.port_term import PortTerm, port_terms
 from gfem._engine.stretch import pml_tensor
 from gfem._linalg import Handle, Operator, ResolvedLinearSolver, Symmetry
@@ -456,6 +456,7 @@ def projector(
             )
         else:
             hcurl = op.space
+    gradient = _bloch_gradient(model, op, h1, wave_vector, stretched=False)
     eps = coefficient(built, real_eps(model))
     nodes = np.asarray(model.mesh.nodes) / built.scale
     diameter = float(np.linalg.norm(np.ptp(nodes, axis=0)))
@@ -471,7 +472,74 @@ def projector(
         layout=op.layout,
         h1_layout=h1_layout,
         periodic=bool(periodic),
+        gradient=gradient,
     )
+
+
+def gradient_embedding(h1: ngs.FESpace, hcurl: ngs.FESpace) -> sp.csr_matrix:
+    """G, the embedding of the gradients of ``h1`` into ``hcurl`` (one process).
+
+    NGSolve's conversion, with entries below `EXPANSION_FLOOR` dropped as
+    the periodic expansion's are: between Bloch-phased spaces most stored
+    entries are round-off, below 1e-14 of the largest, with no meaningful
+    phase.
+    """
+    rows, cols, values = ngs.ConvertOperator(
+        h1, hcurl, trial_proxy=ngs.grad(h1.TrialFunction())
+    ).COO()
+    g = sp.csr_matrix(
+        (np.asarray(values), (np.asarray(rows), np.asarray(cols))),
+        shape=(hcurl.ndof, h1.ndof),
+    )
+    g.data[np.abs(g.data) < EXPANSION_FLOOR] = 0
+    g.eliminate_zeros()
+    return g
+
+
+def _bloch_gradient(
+    model: Model,
+    op: DrivenOperator,
+    h1: ngs.FESpace,
+    wave_vector: tuple[float, float, float] | None,
+    *,
+    stretched: bool,
+) -> sp.csr_matrix | None:
+    """The projector's G under a Bloch phase on one process, else ``None``.
+
+    G from the discretization's phase template once the mesh met a second
+    phase set (`gfem._engine.cache.Discretization.phased`), NGSolve's
+    floored conversion before (`gradient_embedding`). ``h1`` is the
+    projector's H1 space (complex, ``stretched`` for a layer's).
+    """
+    periodic = model._periodic  # noqa: SLF001
+    phases = bloch_phases(model, wave_vector) if periodic else None
+    if phases is None or op.layout is not None:
+        return None
+    built, order = op.built, op.order
+    disc = discretization(model.mesh, periodic, built.comm)
+    pec, fixed = pec_surfaces(model), potential_surfaces(model)
+
+    def convert(probe: tuple[complex, ...]) -> sp.csr_matrix:
+        hcurl = hcurl_space(
+            model, built, order, dirichlet=pec, periodic=True, phases=probe
+        )
+        h1 = h1_space(
+            model,
+            built,
+            order,
+            fixed,
+            periodic=True,
+            phases=probe,
+            complex_valued=stretched,
+        )
+        return gradient_embedding(h1, hcurl)
+
+    key = (
+        *space_key(model, "h1", order, periodic=True, fixed=fixed),
+        *(("complex",) if stretched else ()),
+        "gradient template",
+    )
+    return disc.phased(key, phases, lambda: gradient_embedding(h1, op.space), convert)
 
 
 def _stretched_projector(
@@ -505,6 +573,7 @@ def _stretched_projector(
         ),
         group=phases,
     )
+    gradient = _bloch_gradient(model, op, h1, wave_vector, stretched=True)
     lam = pml_tensor(stretch, built.scale)[0]
     weight = coefficient(built, real_eps(model)) * lam
     nodes = np.asarray(model.mesh.nodes) / built.scale
@@ -523,6 +592,7 @@ def _stretched_projector(
         periodic=bool(periodic),
         symmetry="complex_symmetric" if phases is None else "general",
         energy_weight=coefficient(built, _physical_eps(model)),
+        gradient=gradient,
     )
 
 
@@ -803,6 +873,8 @@ class DivFreeProjector:
         energy_weight: The weight of `energy`'s form when it is not
             ``eps`` (a layer's: the physical regions' ``Re(eps_r)``),
             ``None`` to read the projection's own form.
+        gradient: ``G`` as the caller built it, on one process (a Bloch
+            phase's, `projector`), ``None`` for NGSolve's conversion here.
     """
 
     def __init__(
@@ -818,6 +890,7 @@ class DivFreeProjector:
         periodic: bool = False,
         symmetry: Symmetry = "hermitian",
         energy_weight: ngs.CoefficientFunction | None = None,
+        gradient: sp.csr_matrix | None = None,
     ) -> None:
         """Build ``G``, ``M0`` and factorize the H1 form."""
         dx = quadrature.dx(order)
@@ -842,24 +915,30 @@ class DivFreeProjector:
         self.mass = self._weight if energy_weight is None else mass_form(energy_weight)
         phi = h1.TrialFunction()
         local = layout is not None and periodic
-        if local:
-            g = ngs.ConvertOperator(
-                h1, hcurl, trial_proxy=ngs.grad(phi), localop=True, parmat=False
-            )
-        else:
-            g = ngs.ConvertOperator(h1, hcurl, trial_proxy=ngs.grad(phi))
         #: NGSolve's G under ranks between plain spaces, a ``ParallelMatrix``;
         #: ``None`` on one process and between periodic spaces.
-        self._parallel_g: Any = g if layout is not None and not local else None
+        self._parallel_g: Any = None
         #: Whether ``_g`` is a rank's local G (periodic spaces under ranks).
         self._local_g = local
+        if gradient is not None:
+            self._g = gradient
+        else:
+            if local:
+                g = ngs.ConvertOperator(
+                    h1, hcurl, trial_proxy=ngs.grad(phi), localop=True, parmat=False
+                )
+            else:
+                g = ngs.ConvertOperator(h1, hcurl, trial_proxy=ngs.grad(phi))
+            if layout is not None and not local:
+                self._parallel_g = g
+            else:
+                rows, cols, values = g.COO()
+                self._g = sp.csr_matrix(
+                    (np.asarray(values), (np.asarray(rows), np.asarray(cols))),
+                    shape=(g.height, g.width),
+                )
+                self._g.eliminate_zeros()
         if self._parallel_g is None:
-            rows, cols, values = g.COO()
-            self._g = sp.csr_matrix(
-                (np.asarray(values), (np.asarray(rows), np.asarray(cols))),
-                shape=(g.height, g.width),
-            )
-            self._g.eliminate_zeros()
             # G^H as CSR, so a product with it runs row by row like G's
             self._gh = self._g.conj().T.tocsr()
         phi, psi = h1.TnT()
