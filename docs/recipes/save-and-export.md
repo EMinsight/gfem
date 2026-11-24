@@ -1,7 +1,7 @@
 # Save and export results
 
 Take a result out of Python: hand S to a circuit simulator as a Touchstone
-file, label it for analysis with xarray, open a field in ParaView, and write
+file, label it for analysis with xarray, hand it to scikit-rf, open a field in ParaView, and write
 the whole run as a {term}`job` file that solves again on another machine and
 leaves a {term}`result bundle` to read back. The device is the line of
 {doc}`solve-a-device`; every value is in SI units and every phase follows
@@ -11,6 +11,8 @@ $\exp(+i\omega t)$ ({doc}`../conventions`).
 | --- | --- | --- |
 | a circuit simulator | `s.to_touchstone("line.s2p")` | any Touchstone reader |
 | an analysis in Python | `s.to_xarray()` | xarray |
+| scikit-rf | `s.to_skrf(name="line")` | scikit-rf |
+| a SAX circuit | `s.to_sdict(circuit="rf")` | SAX ({doc}`sax-circuit`) |
 | ParaView or PyVista | `field.to_vtu("line_e.vtu")` | ParaView, meshio, PyVista |
 | a run on another machine | `gfem.Job(...).to_json("job.json")` | `python -m gfem run`, then `gfem.load_result` |
 
@@ -111,6 +113,32 @@ Hz ohm
   {py:obj}`gfem.ElectrostaticResult.to_xarray` and
   {py:obj}`gfem.PortModeResult.to_xarray` label the other problem types the
   same way.
+
+## S to scikit-rf
+
+`s.to_skrf()` gives a [scikit-rf](https://scikit-rf.org) network of the same
+S on the ports' own reference impedances, for scikit-rf's cascades, plots and
+conversions. It needs the `skrf` extra (`pip install "gfem[skrf]"`).
+
+```python
+nw = s.to_skrf(name="line")
+print(nw.s_def, round(float(nw.z0[0, 0].real), 4))
+nw.renormalize(50.0)  # scikit-rf's own renormalization, in place
+print(abs(nw.s - np.asarray(s.renormalize(50.0).values)).max() < 1e-12)
+```
+
+```text
+pseudo 62.7883
+True
+```
+
+- The network holds pseudo-waves on a reference per port and frequency
+  (`s_def="pseudo"`), so S and the references pass unchanged and its `z`, `y`
+  and `renormalize` are exact. Frequencies are in increasing order.
+- scikit-rf's ABCD matrix (`nw.a`) assumes power waves: renormalize to a real
+  reference first.
+- It is not differentiable: it copies S to NumPy. For a block of a SAX circuit
+  use `s.to_sdict(circuit="rf")` ({doc}`sax-circuit`).
 
 ## Fields to ParaView or PyVista
 
