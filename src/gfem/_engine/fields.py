@@ -46,6 +46,7 @@ __all__ = [
     "support_region",
     "surface_triangles",
     "tetrahedron_face_keys",
+    "vertex_dofs",
 ]
 
 LENGTH_POWER = {"h1": 0, "l2": 0, "hcurl": -1, "hdiv": -2}
@@ -139,6 +140,26 @@ def dirichlet_h1(
 
     key = ((physics, regions, excluded), "h1", order, fixed)
     return disc.space(key, build), built
+
+
+def vertex_dofs(space: ngs.FESpace, built: EngineMesh | None = None) -> np.ndarray:
+    """The vertex DOFs of the H1 ``space``; with ``built``, per gfem node (-1 off it).
+
+    NGSolve's H1 basis is hierarchical: the vertex hats are its partition of
+    unity, and a constant is its value on the vertex DOFs and zero on the
+    edge, face and cell DOFs.
+    """
+    n = space.mesh.nv
+    dofs = np.full(n, -1, dtype=np.int64)
+    for i in range(n):
+        numbers = space.GetDofNrs(ngs.NodeId(ngs.VERTEX, i))
+        if numbers and numbers[0] >= 0:
+            dofs[i] = numbers[0]
+    if built is None:
+        return dofs[dofs >= 0]
+    out = np.full(int(built.node_order.max()) + 1, -1, dtype=np.int64)
+    out[built.node_order] = dofs
+    return out
 
 
 def face_keys(faces: np.ndarray, n: int) -> np.ndarray:

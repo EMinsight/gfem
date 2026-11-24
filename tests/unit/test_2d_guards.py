@@ -230,6 +230,19 @@ ENTRIES = {
         lambda model: gfem.electric_energy(field_on(model.mesh), model=model),
         rf"electric_energy.*{SLAB}",
     ),
+    "dissipated_power": (
+        lambda model: gfem.dissipated_power(field_on(model.mesh), model=model),
+        r"dissipated_power.*from_gmsh_cross_section.*thermal problem",
+    ),
+    "electromagnetic_heating": (
+        lambda model: gfem.electromagnetic_heating(
+            object.__new__(gfem.DrivenResult),
+            model=model,
+            frequency=F,
+            incident_power=1.0,
+        ),
+        r"electromagnetic_heating.*from_gmsh_cross_section.*incident_power_per",
+    ),
     "electro_optic_shift": (
         lambda model: gfem.electro_optic_shift(
             model, field_on(model.mesh), port="p", frequency=F

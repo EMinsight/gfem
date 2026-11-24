@@ -55,6 +55,9 @@ t1 = 1 / (jnp.real(modes.omega) * inverse_q)  # s, per mode
 - Build objectives from sums of `1 / Q` terms, never from `q` or `q_port`
   themselves: both are infinite for a lossless mode or a port the mode does
   not reach.
+- A driven device's loss split by region and metal surface, in W per 1 W
+  incident, is {py:obj}`gfem.dissipated_power` ({doc}`measurements`); the
+  $1/Q$ budget of a mode stays the eigenmode terms above.
 
 ## T1 limits
 

@@ -827,7 +827,16 @@ def test_every_refusal_key_is_snake_case():
     assert all(re.fullmatch(r"[a-z0-9_]+", key) for key in _mpi._REFUSALS)
 
 
-@pytest.mark.parametrize("key", ["power_flow", "region_mean", "electric_energy"])
+@pytest.mark.parametrize(
+    "key",
+    [
+        "power_flow",
+        "region_mean",
+        "electric_energy",
+        "dissipated_power",
+        "electromagnetic_heating",
+    ],
+)
 def test_a_refused_measurement_names_the_route_through_a_saved_result(key):
     text = _mpi._REFUSALS[key]
     assert "Job.run(out=)" in text

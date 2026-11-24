@@ -152,7 +152,9 @@ program, because every gfem solve needs it.
   TiN strip: the power for a $\pi$ phase shift, the crosstalk to a neighbouring
   guide, and how fast the phase follows the current. The
   {doc}`3D heater <tutorials/heater3d>` tutorial heats a whole waveguide spiral
-  in 3D and shows how its phase is shared between the passes. The
+  in 3D and shows how its phase is shared between the passes, and
+  {doc}`recipes/electromagnetic-heating` adds heat from a driven solve's
+  electromagnetic loss. The
   {doc}`modulator <tutorials/modulator>` tutorial computes the voltage a
   lithium niobate push-pull modulator needs for a $\pi$ phase shift, and
   co-designs its electrode gap and ridge width.

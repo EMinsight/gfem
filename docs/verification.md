@@ -32,7 +32,11 @@ capacitance and the electric energy of each region, driven S on lumped ports, on
 shared port surface, driven S on periodic and Bloch cells,
 eigenfrequency and Q, and, on the direct solver, the participation ratios,
 port Q and mode field of an isolated mode and the dispersive shift and
-anharmonicity of a junction's dressed modes.
+anharmonicity of a junction's dressed modes. The heat cells differentiate a
+driven field's dissipated power and the temperature its heat gives, with
+respect to the lossy materials, a sheet's fill and resistance, the drive and
+the thermal conductivity, and the steady heat flow and the transient heat
+out, with respect to the thermal properties and the heat.
 
 An exact zero is checked to be zero. Each "raises" mark, and each row of
 "Gradients that raise", is a call that must raise the named error. Both the
@@ -411,9 +415,11 @@ and the dispersive-shift cells of the
 
 ## Thermal
 
-Thermal and DC conduction solves are checked against closed forms, against
-each other, and against two independent codes, gsim and femwell, on the same
-heater. Each check runs on every change to gfem.
+Thermal and DC conduction solves, and the electromagnetic heat and heat
+flow measured on them, are checked against closed forms, against identities
+of the discrete balance, against each other, and against two independent
+codes, gsim and femwell, on the same heater. Each check runs on every change
+to gfem.
 
 - **Exact in the discrete space.** Layered slabs, in series, under
   convection and with a convection-only bottom, give their hand temperatures,
@@ -444,12 +450,50 @@ heater. Each check runs on every change to gfem.
   (22.39 mW) and femwell's published 22.6 mW, and the heater's resistance
   matches gsim's. Driven at P_π with the backward Euler scheme on gsim's time
   grid, the rise time and the time constant match gsim's.
-- **Gradients.** Every thermal gradient of the matrix on
-  {doc}`capabilities`, and one chain from the heater's conductivity, every
-  element's thermal conductivity, the core's thermo-optic coefficient and
-  the drive current through DC conduction, Joule heating, the steady and the
-  transient temperature to the phase, matches fourth-order central
-  differences, on the direct and BDDC + GMRES solvers.
+- **Electromagnetic heat.** The power a driven field dissipates in a region
+  equals the power the field brings into it, measured as the flow of the
+  same field through the region's surface, for a loss tangent, a
+  conductivity, a principal-axis tensor, a complex material field, a
+  permittivity law (a gold bend, among others) and a blend. On a closed
+  device whose ports have real references and sit on uniform stretches of
+  line, solved at element order 3, the losses of every region and metal
+  sheet add up to $1 - \sum_j |S_{j1}|^2$ to $10^{-9}$ (at order 2, S read
+  on a lumped port's faces is about $10^{-6}$ off, and a port on a
+  nonuniform stretch about $10^{-5}$); a perfectly matched layer,
+  an absorbing face and a lumped port's load dissipate exactly nothing. The
+  heat of a drive is the incident power times that loss, and two ports fed
+  together heat as their superposed field. Against transmission-line closed
+  forms: a lossy section of a parallel-plate line, a metal wall ending a
+  line, as a surface conductor and as a volume whose skin depth the mesh
+  resolves. A cross-section slab heats per length as the 2D model loses, in
+  both polarizations, and as the closed form. A heater made of the metal
+  wall rises as its absorbed power conducts to the sink, and a convection
+  wall keeps its share.
+- **Heat flow.** The heat out of every boundary surface adds up to the
+  source power, with convection touching a fixed surface, a heat flux, and
+  sheet heat on a fixed face; a set of elements gives minus its complement,
+  and heat on a face lying on the cut belongs to neither. Layered slabs in
+  series and under convection give their hand fluxes. Sheet heat on a
+  slab's top goes all to the sink under an insulated top, splits by the
+  conductances under convection, and leaves at once through a fixed top. A
+  side with no heat sink measures its source power, with a conductivity
+  gradient of exactly zero. The sink of a strip heater takes its whole
+  heat. In a transient run, the heat out of the sinks plus the heat stored
+  equals the heat put in at every time, under every time scheme; the heat
+  out of a slab's sink matches its series solution, and after ten time
+  constants its step-average flow is the steady one.
+- **Gradients.** Every thermal and heat gradient of the matrix on
+  {doc}`capabilities` (the dissipated power, the temperature it heats, the
+  steady heat flow and the transient heat out), one chain from the heater's
+  conductivity, every element's thermal conductivity, the core's
+  thermo-optic coefficient and the drive current through DC conduction,
+  Joule heating, the steady and the transient temperature to the phase, and
+  one chain from a line's loss tangent, a sheet's fill and resistance, every
+  element's thermal conductivity and a two-port drive through the driven
+  solve and its electromagnetic heat to the temperature, match fourth-order
+  central differences on the direct solver. The thermal cells and chain,
+  and the dissipated power with respect to a conductivity, also run on
+  BDDC + GMRES.
 
 Two comparisons are observations, not checks, and live on the tutorials. The
 TiN heater of Jacques et al. (2019): gfem's P_π falls inside the published
@@ -458,6 +502,13 @@ its P_π, resistance and per-pass phases on three meshes
 ({doc}`tutorials/heater3d`).
 
 Tests: [closed forms](https://github.com/benvial/gfem/blob/main/tests/verification/test_thermal_closed_forms.py),
+[electromagnetic heat closed forms](https://github.com/benvial/gfem/blob/main/tests/verification/test_electromagnetic_heat_closed_forms.py),
+[dissipated power](https://github.com/benvial/gfem/blob/main/tests/unit/test_electromagnetic_heating.py),
+[electromagnetic heat sources](https://github.com/benvial/gfem/blob/main/tests/unit/test_electromagnetic_heat_source.py),
+[sheet heat](https://github.com/benvial/gfem/blob/main/tests/unit/test_face_heat.py),
+[heat flow](https://github.com/benvial/gfem/blob/main/tests/unit/test_heat_flow.py),
+[heat out](https://github.com/benvial/gfem/blob/main/tests/unit/test_heat_out_trace.py),
+[gold bend](https://github.com/benvial/gfem/blob/main/tests/verification/test_metal_bend.py),
 [gsim and femwell](https://github.com/benvial/gfem/blob/main/tests/verification/test_thermal_parity.py),
 [extrusion](https://github.com/benvial/gfem/blob/main/tests/verification/test_thermal_extrusion.py),
 [DC conduction](https://github.com/benvial/gfem/blob/main/tests/verification/test_dc_conduction.py),

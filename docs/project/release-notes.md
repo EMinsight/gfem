@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+Thermal:
+
+- **Electromagnetic heating.** `gfem.electromagnetic_heating(result,
+  model=, frequency=, incident_power=)` turns the kept fields of a driven
+  result at one frequency into a `gfem.HeatSource`, with no new solve: the
+  loss of the lossy materials (loss tangent, conductivity, complex or
+  anisotropic permittivity, a permittivity law at that frequency) and of
+  `Conductor` and `Impedance` sheets. Several ports are fed coherently, each
+  with its incident power and its phase at the reference plane
+  (`incident_phase=`); on a cross-section slab the drive is
+  `incident_power_per_length=`. A perfectly matched layer, absorbing faces,
+  ports and lumped port loads give no heat
+  ({doc}`../recipes/electromagnetic-heating`).
+- **Dissipated power.** `gfem.dissipated_power(field, model=)` gives a
+  driven field's loss per volume region and per sheet, in W per 1 W
+  incident. With real port references it sums to
+  $1 - \sum_j |S_{j1}|^2$ ({doc}`../recipes/measurements`).
+- **Sheet heat.** A heat source may carry heat on faces: a sheet's loss
+  enters the thermal problem at the sheet, and the face's thermal boundary
+  decides where it goes (an insulated face sends it all into the model).
+- **Heat flow.** `gfem.heat_flow(steady, side, model=)` and
+  `gfem.heat_flow_per_length` give the heat leaving named surfaces, volume
+  regions or the elements a predicate selects, in W (W/m on a cross-section),
+  positive out. It is read from the discrete heat balance, so the flows
+  through every boundary surface add up to the source power to round-off
+  ({doc}`../recipes/heater-temperature`). The heater tutorial now closes
+  its heat balance with it.
+- **Heat out.** `gfem.Trace.heat_out(side)` and
+  `gfem.Trace.heat_out_per_length` record the heat that has left a side
+  since the start of a transient run, in J (J/m), closing the energy balance
+  with the stored heat at every time under every time scheme
+  ({doc}`../recipes/thermal-step-response`).
+- **Gradients.** The dissipated power, the temperature its heat gives, the
+  heat flow and the heat out differentiate with respect to the lossy
+  materials, a sheet's fill and an `Impedance`'s resistance, the incident
+  powers and phases, the thermal conductivity, and (heat out) the mass
+  density and specific heat ({doc}`../capabilities`).
+- **Heat outside the thermal domain names its watts.** A heat source with
+  heat on a region outside the thermal domain raises as before, and the
+  message now gives the region and its watts. Sheet heat on a face with no
+  thermal domain on either side raises the same way, naming the surface.
+- **Behaviour change: `joule_heating` of a driven result raises
+  `TypeError`.** `gfem.joule_heating(driven_result, ...)` raised
+  `NotImplementedError`; it now raises `TypeError`, naming
+  `gfem.electromagnetic_heating`. Code that caught `NotImplementedError`
+  there should catch `TypeError`, or call `electromagnetic_heating`.
+
 Electro-optics:
 
 - **The electro-optic shift.** `gfem.electro_optic_shift` gives the change of

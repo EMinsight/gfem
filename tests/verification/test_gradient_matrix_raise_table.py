@@ -889,6 +889,64 @@ EXPECTED |= {
 }
 
 
+# Electromagnetic heat: the dissipated power per region and sheet of a driven
+# field, and the steady temperature the heat of a two-port drive raises, as
+# functions of the model (through the driven solve) and of the drive
+# (`heat_cases`). Each differentiates with respect to every electromagnetic
+# input the solve reads (the permeability and the `Impedance` inductance and
+# capacitance through the field), the sheet's fill, and the incident powers
+# and phase; a lossless region's power is an exact zero for every input; the
+# thermal properties are exact zeros of the heat, and the temperature reads
+# the thermal conductivity. The node coordinates raise for every leaf (the
+# heat kernel has no shape terms).
+HEAT_KINDS = [
+    ("nodes",),
+    *(("material", "lower", p) for p in ALL_PROPERTIES),
+    *(("boundary", 2, v) for v in ("resistance", "inductance", "capacitance")),
+    ("boundary", 2, "fill", "fill"),
+]
+#: The drive's leaves: the incident powers and p2's phase.
+DRIVE_KINDS = [
+    ("drive", "power", "p1"),
+    ("drive", "power", "p2"),
+    ("drive", "phase", "p2"),
+]
+_EM_READS = {
+    *(("material", "lower", p) for p in EM_PROPERTIES),
+    *HEAT_KINDS[-4:],
+}
+_HEATING_READS = _EM_READS | set(DRIVE_KINDS)
+#: ``dissipated_power_law``: the upper half a permittivity law (`TABLE_LAW`).
+HEAT_LAW_KINDS = [("law", "upper", *k[2:]) for k in LAW_KINDS]
+_LAW_READS = _EM_READS | set(HEAT_LAW_KINDS)
+HEAT_READS = {
+    "dissipated_power": {"lower": _EM_READS, "upper": set(), "sheet": _EM_READS},
+    "dissipated_power_law": dict.fromkeys(("lower", "upper", "sheet"), _LAW_READS),
+    "electromagnetic_heating": {
+        "temperature.coefficients": _HEATING_READS | {_K},
+        "temperature.mesh.nodes": set(),
+        "rise.coefficients": _HEATING_READS | {_K},
+        "rise.mesh.nodes": set(),
+        "heat.coefficients": _HEATING_READS,
+        "heat.mesh.nodes": set(),
+        "power": _HEATING_READS,
+        "_face_heat": _HEATING_READS,
+    },
+}
+EXPECTED |= {
+    (name, out, kind): (
+        RAISES if kind == ("nodes",) else GRADIENT if kind in reads else ZERO
+    )
+    for name, leaves in HEAT_READS.items()
+    for out, reads in leaves.items()
+    for kind in [
+        *HEAT_KINDS,
+        *(DRIVE_KINDS if name == "electromagnetic_heating" else ()),
+        *(HEAT_LAW_KINDS if name == "dissipated_power_law" else ()),
+    ]
+}
+
+
 def _field(mesh, region, **overrides):
     # values vary per element, so the terminal potentials depend on them
     n = len(mesh.elements(region))
@@ -1434,6 +1492,273 @@ def test_measurement_raise_table(measurement_cases):
             assert np.abs(grad).max() > 0, cell
 
 
+HEAT_FREQUENCY = 20e9
+#: The heat cases' drive: p1's and p2's incident powers (W), p2's phase (rad).
+HEAT_DRIVE = {"power": {"p1": 1.0, "p2": 0.5}, "phase": {"p2": 0.7}}
+
+
+@pytest.fixture(scope="module")
+def heat_cases(sheet_mesh):
+    """The dissipated power (also beside a law) and the heating on the sheet line.
+
+    Each as ``(model, measure)``: ``measure(model, drive)`` is the
+    measurement. The lower half holds every material property, the upper
+    half is lossless (a plain material), the sheet an `Impedance` with every
+    value and a fill; the lower plate is the heat sink.
+    """
+    n = len(sheet_mesh.elements("sheet"))
+    fill = gfem.SheetField(fill=np.linspace(0.2, 0.9, n))
+    model = gfem.Model(
+        sheet_mesh,
+        materials={
+            "lower": _field(sheet_mesh, "lower"),
+            "upper": gfem.Material(thermal_conductivity=1.0),
+        },
+        boundaries=[
+            gfem.PEC("plate1"),
+            gfem.PEC("plate2"),
+            gfem.Impedance(
+                "sheet", resistance=2e3, inductance=2e-8, capacitance=2e-15, fill=fill
+            ),
+            gfem.FixedTemperature("plate1", temperature=300.0),
+        ],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+y", impedance=1000.0),
+            gfem.LumpedPort("p2", "port2", "+y", impedance=1000.0),
+        ],
+    )
+    problem = gfem.Driven(frequency=HEAT_FREQUENCY, keep_fields=True)
+
+    def lost(model, _drive):
+        field = gfem.solve(model, problem).e_field(HEAT_FREQUENCY, "p1")
+        return gfem.dissipated_power(field, model=model)
+
+    def heated(model, drive):
+        heat = gfem.electromagnetic_heating(
+            gfem.solve(model, problem),
+            model=model,
+            frequency=HEAT_FREQUENCY,
+            incident_power=drive["power"],
+            incident_phase=drive["phase"],
+        )
+        return gfem.solve(model, gfem.SteadyThermal(heat))
+
+    law = model.with_material(
+        "upper", gfem.Material(eps_r=TABLE_LAW, thermal_conductivity=1.0)
+    )
+    return {
+        "dissipated_power": (model, lost),
+        "dissipated_power_law": (law, lost),
+        "electromagnetic_heating": (model, heated),
+    }
+
+
+def _heat_cells(cases):
+    drive_paths = jax.tree_util.tree_flatten_with_path(HEAT_DRIVE)[0]
+    for name, (model, measure) in cases.items():
+        result = measure(model, HEAT_DRIVE)
+        kinds = [
+            input_kind(path, "model")
+            for path, _ in jax.tree_util.tree_flatten_with_path(model)[0]
+        ]
+        if name == "electromagnetic_heating":
+            kinds += [("drive", *(str(k.key) for k in path)) for path, _ in drive_paths]
+        for out_path, _ in jax.tree_util.tree_flatten_with_path(result)[0]:
+            out_name = jax.tree_util.keystr(out_path, simple=True, separator=".")
+            for index, kind in enumerate(kinds):
+                yield name, model, measure, out_name, out_path, index, kind
+
+
+def _heat_objective(model, measure, out_path, index):
+    """One heat leaf's weighted sum in one input leaf (the drive's last)."""
+    leaves, treedef = jax.tree.flatten(model)
+    drive_leaves, drive_tree = jax.tree.flatten(HEAT_DRIVE)
+    inputs = [*leaves, *drive_leaves]
+
+    def objective(x):
+        moved = [*inputs[:index], x, *inputs[index + 1 :]]
+        result = measure(
+            jax.tree.unflatten(treedef, moved[: len(leaves)]),
+            jax.tree.unflatten(drive_tree, moved[len(leaves) :]),
+        )
+        (value,) = [
+            v
+            for p, v in jax.tree_util.tree_flatten_with_path(result)[0]
+            if p == out_path
+        ]
+        weights = np.random.default_rng(1).uniform(0.5, 1.5, np.shape(value))
+        return jnp.sum(jnp.real(value) * weights)
+
+    return objective, jnp.asarray(inputs[index])
+
+
+def test_every_heat_cell_has_an_expected_outcome(heat_cases):
+    cells = {(n, o, k) for n, *_, o, _, _, k in _heat_cells(heat_cases)}
+    assert cells == {c for c in EXPECTED if c[0] in HEAT_READS}
+
+
+def test_heat_raise_table(heat_cases):
+    for name, model, measure, out_name, out_path, index, kind in _heat_cells(
+        heat_cases
+    ):
+        expected = EXPECTED[(name, out_name, kind)]
+        objective, x = _heat_objective(model, measure, out_path, index)
+        cell = f"{name} {out_name} x {kind}"
+        if expected == RAISES:
+            with pytest.raises(gfem.NonDifferentiableError):  # noqa: PT012
+                jax.make_jaxpr(jax.grad(objective))(x)
+                pytest.fail(f"{cell}: no NonDifferentiableError")
+            continue
+        grad = np.asarray(jax.grad(objective)(x))
+        assert np.isfinite(grad).all(), cell
+        if expected == ZERO:
+            assert not grad.any(), cell
+        else:
+            assert np.abs(grad).max() > 0, cell
+
+
+# --- the heat kernel's explicit term: what is never heat ----------------------------
+
+
+def _excluded_metal_model(directory):
+    """A 4 x 2 x 1 mm line beside a 1 mm metal block left out of the solve.
+
+    Plates at z = 0 and 1 mm over the line, lumped ports at its ends, PEC
+    on the face it shares with the block; the block is excluded from the
+    electromagnetic problem.
+    """
+    edges = (np.linspace(0, 4, 5), np.linspace(0, 3, 4), np.array([0.0, 1.0]))
+
+    def region(c):
+        return "metal" if c[1] > 2.0 else "line"
+
+    def face(c):
+        x, y, z = c
+        if y > 2.0 + 1e-9:
+            return ""
+        if abs(y - 2.0) < 1e-9:
+            return "wall"
+        if abs(x) < 1e-9:
+            return "port1"
+        if abs(x - 4.0) < 1e-9:
+            return "port2"
+        return "plates" if abs(z) < 1e-9 or abs(z - 1.0) < 1e-9 else ""
+
+    path = sm.write_msh22(directory / "beside.msh", sm.structured(edges, region, face))
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+    return gfem.Model(
+        mesh,
+        materials={
+            "line": _field(mesh, "line"),
+            "metal": gfem.MaterialField(
+                eps_r=np.full(len(mesh.elements("metal")), 1.0 - 0.5j),
+                conductivity=np.full(len(mesh.elements("metal")), 1e3),
+            ),
+        },
+        boundaries=[gfem.PEC("plates"), gfem.PEC("wall")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z"),
+        ],
+        excluded={"em": ("metal",)},
+    )
+
+
+def _explicit_case(request, case):
+    """``(model, frequency, leaf)``: the model whose field is held, and the leaf."""
+    if case == "em-excluded tetrahedra":
+        directory = request.getfixturevalue("tmp_path")
+        return _excluded_metal_model(directory), 20e9, ("metal", "conductivity")
+    model, _ = request.getfixturevalue("heat_cases")["dissipated_power"]
+    leaf = {
+        "mu_r": ("lower", "mu_r"),
+        "Impedance inductance": ("sheet", "inductance"),
+        "Impedance capacitance": ("sheet", "capacitance"),
+        "loss tangent (control)": ("lower", "tan_delta"),
+        "Impedance resistance (control)": ("sheet", "resistance"),
+    }[case]
+    return model, HEAT_FREQUENCY, leaf
+
+
+def _moved(model, leaf, value):
+    owner, name = leaf
+    if owner == "sheet":
+        (i,) = [
+            i for i, b in enumerate(model.boundaries) if isinstance(b, gfem.Impedance)
+        ]
+        boundaries = list(model.boundaries)
+        boundaries[i] = dataclasses.replace(boundaries[i], **{name: value})
+        return model.replace(boundaries=boundaries)
+    material = dataclasses.replace(model.materials[owner], **{name: value})
+    return model.with_material(owner, material)
+
+
+def _held_value(model, leaf):
+    owner, name = leaf
+    if owner == "sheet":
+        (b,) = [b for b in model.boundaries if isinstance(b, gfem.Impedance)]
+        return jnp.asarray(getattr(b, name))
+    return jnp.asarray(getattr(model.materials[owner], name))
+
+
+EXPLICIT = {
+    # a real permeability stores energy, it does not dissipate
+    "mu_r": ZERO,
+    # a sheet's L and C are reactive: its loss is |E_t|^2 / (2 R) per fill
+    "Impedance inductance": ZERO,
+    "Impedance capacitance": ZERO,
+    # a region left out of the solve has no field to dissipate
+    "em-excluded tetrahedra": ZERO,
+    "loss tangent (control)": GRADIENT,
+    "Impedance resistance (control)": GRADIENT,
+}
+
+
+def test_a_lossy_perfectly_matched_layer_heats_nothing_whatever_the_design(pml_model):
+    # the layer's background is lossy, the slab lossless: the layer's
+    # absorption leaves the model, so the heat is an exact zero of the slab's
+    # permittivity, though the field moves with it. (The background is a
+    # constant `Material`, so it is no input itself.)
+    model = pml_model.with_material("pml", gfem.Material(tan_delta=0.1))
+    problem = gfem.Driven(frequency=pml_cases.F0, keep_fields=True)
+    eps = jnp.linspace(2.0, 3.0, len(model.mesh.elements("slab")))
+
+    def lost(e):
+        moved = model.with_material("slab", gfem.MaterialField(eps_r=e))
+        result = gfem.solve(moved, problem)
+        field = result.e_field(pml_cases.F0, "p1")
+        heat = gfem.dissipated_power(field, model=moved)
+        return sum(jnp.real(v) for v in heat.values()), result.s.values
+
+    assert float(lost(eps)[0]) == 0.0
+    grad = np.asarray(jax.grad(lambda e: lost(e)[0])(eps))
+    assert np.isfinite(grad).all()
+    assert not grad.any()
+    # the field (and so S) does move with the design
+    moved = jax.grad(lambda e: jnp.sum(jnp.abs(lost(e)[1]) ** 2))(eps)
+    assert np.abs(moved).max() > 0
+
+
+@pytest.mark.parametrize("case", EXPLICIT)
+def test_the_heat_kernel_s_explicit_term(request, case):
+    # the field held: what the dissipated power reads of the model itself,
+    # beside what the field reads (the solve's own gradient)
+    model, frequency, leaf = _explicit_case(request, case)
+    field = gfem.solve(model, gfem.Driven(frequency=frequency, keep_fields=True))
+    field = field.e_field(frequency, model.ports[0].name)
+
+    def objective(value):
+        lost = gfem.dissipated_power(field, model=_moved(model, leaf, value))
+        return sum(jnp.real(v) for v in lost.values())
+
+    grad = np.asarray(jax.grad(objective)(_held_value(model, leaf)))
+    assert np.isfinite(grad).all()
+    if EXPLICIT[case] == ZERO:
+        assert not grad.any(), case
+    else:
+        assert np.abs(grad).max() > 0, case
+
+
 @pytest.fixture(scope="module")
 def cases(model, driven_model, eigen_model, wave_cases, request):
     mesh = gfem.Mesh.from_gmsh(DATA / "parallel_plate.msh", length_unit="um")
@@ -1521,7 +1846,9 @@ def _objective(model, problem, out_path, index):
 
 def test_every_cell_has_an_expected_outcome(cases):
     cells = {(p, o, k) for p, _, _, o, _, _, k in _cells(cases)}
-    assert cells == {c for c in EXPECTED if c[0] not in MEASUREMENT_READS}
+    assert cells == {
+        c for c in EXPECTED if c[0] not in MEASUREMENT_READS and c[0] not in HEAT_READS
+    }
 
 
 @pytest.mark.bitwise  # its low-Q lumped mode converges run to run only on one thread
@@ -1944,6 +2271,136 @@ def _out_power_flow_of_a_reduced_field(request):
         return gfem.power_flow(field, "core", model=m)
 
     jax.make_jaxpr(jax.grad(objective))(eps)
+
+
+def _out_heat_flow_in_the_node_coordinates(request):
+    # the residual integrates on the elements the nodes move
+    path = request.getfixturevalue("tmp_path") / "heat.msh"
+    mesh = tc.section(
+        path,
+        [(0.0, 0.0, 2.0, 1.0, "slab", None)],
+        0.5,
+        [(lambda p: abs(p[1]) < 1e-9, "bottom")],
+    )
+    model = gfem.Model(
+        mesh,
+        materials={"slab": gfem.Material(thermal_conductivity=1.4)},
+        boundaries=[gfem.FixedTemperature("bottom", temperature=300.0)],
+    )
+    heat = gfem.HeatSource.uniform("slab", power_per_length=1.0)
+    result = gfem.solve(model, gfem.SteadyThermal(heat))
+
+    def objective(nodes):
+        moved = jax.tree_util.tree_unflatten(
+            jax.tree_util.tree_structure(model.mesh), [nodes]
+        )
+        return gfem.heat_flow_per_length(
+            result, "bottom", model=model.replace(mesh=moved)
+        )
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
+
+
+def _out_dissipated_power_in_the_node_coordinates(request):
+    model = request.getfixturevalue("wave_model")
+    problem = gfem.Driven(frequency=20e9, keep_fields=True)
+
+    def objective(nodes):
+        mesh = jax.tree_util.tree_unflatten(
+            jax.tree_util.tree_structure(model.mesh), [nodes]
+        )
+        frozen = model.replace(mesh=jax.lax.stop_gradient(mesh))
+        field = gfem.solve(frozen, problem).e_field(20e9, "p1")
+        field = dataclasses.replace(field, mesh=mesh)
+        return gfem.dissipated_power(field, model=frozen)["core"]
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
+
+
+def _out_dissipated_power_of_a_reduced_field(request):
+    # an adaptive sweep's basis holds no adjoint of the dissipated power
+    model = request.getfixturevalue("wave_model")
+    problem = gfem.Driven(
+        frequency=(18e9, 20e9, 22e9),
+        sweep="adaptive",
+        samples=(18e9, 22e9),
+        keep_fields=20e9,
+    )
+    eps = model.materials["core"].eps_r
+
+    def objective(e):
+        m = model.with_material("core", gfem.MaterialField(eps_r=e))
+        field = gfem.solve(m, problem).e_field(20e9, "p1")
+        return gfem.dissipated_power(field, model=m)["core"]
+
+    jax.make_jaxpr(jax.grad(objective))(eps)
+
+
+def _out_dissipated_power_in_the_frequency(request):
+    # the frequency is a fixed input of the driven solve
+    model = request.getfixturevalue("wave_model")
+    field = gfem.solve(model, gfem.Driven(frequency=20e9, keep_fields=True)).e_field(
+        20e9, "p1"
+    )
+
+    def objective(scale):
+        moved = dataclasses.replace(field, omega=field.omega * scale)
+        return gfem.dissipated_power(moved, model=model)["core"]
+
+    jax.make_jaxpr(jax.grad(objective))(1.0)
+
+
+def _out_electromagnetic_heating_in_the_frequency(request):
+    # the heat's frequency picks a kept field: a fixed input, as the solve's
+    model = request.getfixturevalue("wave_model")
+    result = gfem.solve(model, gfem.Driven(frequency=20e9, keep_fields=True))
+
+    def objective(f):
+        heat = gfem.electromagnetic_heating(
+            result, model=model, frequency=f, incident_power={"p1": 1.0}
+        )
+        return jnp.sum(heat._density_on(model.mesh))
+
+    jax.make_jaxpr(jax.grad(objective))(20e9)
+
+
+def _out_electromagnetic_heating_of_a_reduced_field(request):
+    # the heat reads the adaptive sweep's field as the dissipated power does
+    model = request.getfixturevalue("wave_model")
+    problem = gfem.Driven(
+        frequency=(18e9, 20e9, 22e9),
+        sweep="adaptive",
+        samples=(18e9, 22e9),
+        keep_fields=20e9,
+    )
+    eps = model.materials["core"].eps_r
+
+    def objective(e):
+        m = model.with_material("core", gfem.MaterialField(eps_r=e))
+        heat = gfem.electromagnetic_heating(
+            gfem.solve(m, problem),
+            model=m,
+            frequency=20e9,
+            incident_power={"p1": 1.0},
+        )
+        return jnp.sum(heat._density_on(m.mesh))
+
+    jax.make_jaxpr(jax.grad(objective))(eps)
+
+
+def _out_conductor_conductivity(request):
+    # a Conductor's conductivity is a fixed value (raised by the
+    # constructor): a sheet's fill or an Impedance's resistance is the design
+    model, _ = request.getfixturevalue("heat_cases")["dissipated_power"]
+    problem = gfem.Driven(frequency=HEAT_FREQUENCY, keep_fields=True)
+
+    def objective(sigma):
+        boundaries = [*model.boundaries[:2], gfem.Conductor("sheet", sigma, 1e-6)]
+        m = model.replace(boundaries=boundaries)
+        field = gfem.solve(m, problem).e_field(HEAT_FREQUENCY, "p1")
+        return gfem.dissipated_power(field, model=m)["sheet"]
+
+    jax.grad(objective)(100.0)
 
 
 def _out_traced_pml_knob(knob):
@@ -2662,10 +3119,52 @@ OUT_OF_SCOPE = [
         r"mesh node coordinates.*stop_gradient",
     ),
     (
+        "heat_flow x node coordinates",
+        _out_heat_flow_in_the_node_coordinates,
+        gfem.NonDifferentiableError,
+        r"mesh node coordinates.*stop_gradient",
+    ),
+    (
         "power_flow x reduced field",
         _out_power_flow_of_a_reduced_field,
         gfem.NonDifferentiableError,
         r"adaptive sweep.*frozen reduced basis.*sweep=\"uniform\"",
+    ),
+    (
+        "electromagnetic_heating x reduced field",
+        _out_electromagnetic_heating_of_a_reduced_field,
+        gfem.NonDifferentiableError,
+        r"adaptive sweep.*frozen reduced basis.*sweep=\"uniform\"",
+    ),
+    (
+        "Conductor conductivity",
+        _out_conductor_conductivity,
+        gfem.NonDifferentiableError,
+        r"Conductor\.conductivity is a fixed value",
+    ),
+    (
+        "dissipated_power x node coordinates",
+        _out_dissipated_power_in_the_node_coordinates,
+        gfem.NonDifferentiableError,
+        r"mesh node coordinates.*stop_gradient",
+    ),
+    (
+        "dissipated_power x reduced field",
+        _out_dissipated_power_of_a_reduced_field,
+        gfem.NonDifferentiableError,
+        r"adaptive sweep.*frozen reduced basis.*sweep=\"uniform\"",
+    ),
+    (
+        "dissipated_power x frequency",
+        _out_dissipated_power_in_the_frequency,
+        gfem.NonDifferentiableError,
+        r"omega.*frequency is a fixed input of the driven solve",
+    ),
+    (
+        "electromagnetic_heating x frequency",
+        _out_electromagnetic_heating_in_the_frequency,
+        gfem.NonDifferentiableError,
+        r"electromagnetic_heating: frequency is a fixed value.*driven solve",
     ),
     # driven on a periodic model
     (

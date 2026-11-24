@@ -16,6 +16,11 @@ chain (mirror about y = x, Helmholtz filter, projection at beta = 4), is
 checked against a fourth-order difference. The design gets a little pixel
 noise first, so that no filtered density sits on the projection's clamp at 0
 or 1, where the clamp's derivative is zero and a difference is not.
+
+With the design square all gold (a plain law material, no blend), the heat
+it dissipates is the power the field brings into it: `gfem.dissipated_power`
+against `gfem.power_flow`. The absorbing outer boundary keeps S out of this
+identity, and the blended bend is the dissipated power's refusal case.
 """
 
 from pathlib import Path
@@ -121,3 +126,20 @@ def test_band_objective_gradient_through_the_blend(posed, request):
     direction = np.random.default_rng(1).standard_normal(mirror.shape)
     direction /= np.linalg.norm(direction)
     assert_gradient_matches(missed, start, [direction], step=1e-4, rel=1e-6)
+
+
+def test_a_gold_design_dissipates_what_power_flow_says_enters_it(bend):
+    # the design square all gold, a plain Drude law: the heat kernel reads the
+    # law's complex permittivity at the frequency. The absorbing outer
+    # boundary keeps S out of this identity; the blended bend is refused.
+    model, _, _, _ = bend
+    gold = model.with_material("design", GOLD)
+    problem = gfem.Driven(frequency=FREQUENCIES[1], excite="p1", keep_fields=True)
+    result = gfem.solve(gold, problem, options=OPTIONS)
+    field = result.e_field(FREQUENCIES[1], "p1")
+    lost = gfem.dissipated_power(field, model=gold)
+    entering = -float(gfem.power_flow(field, "design", model=gold))
+    assert entering > 1e-3
+    # gate 1e-12 (9e-15 measured)
+    assert float(lost["design"]) == pytest.approx(entering, rel=1e-12)
+    assert float(lost["core"]) == 0.0

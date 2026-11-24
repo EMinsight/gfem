@@ -39,6 +39,9 @@ GRID = {
     "eigenmode_periodic_bloch": (V, V, V, V),
     "eigenmode_participation": (V, V, V, V),
     "eigenmode_field": (V, V, V, R),
+    # the heat kernel has no shape terms
+    "dissipated_power": (V, V, V, R),
+    "electromagnetic_heating": (V, V, V, R),
     "steady_thermal": (Z, Z, Z, R),
     "transient_thermal": (Z, Z, Z, R),
     "dc_conduction": (Z, V, Z, R),
@@ -133,13 +136,20 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
         ("driven_periodic_plain", ["permittivity-law parameters"], 1),
         ("eigenmode_participation", ["lumped values"], 6),
         ("eigenmode_field", ["lumped values"], 1),
-        ("steady_thermal", ["thermal conductivity"], 2),
+        ("dissipated_power", ["loss tangent"], 1),
+        ("dissipated_power", ["lumped values"], 1),
+        ("dissipated_power", ["permittivity-law parameters"], 1),
+        ("electromagnetic_heating", ["lumped values"], 1),
+        ("electromagnetic_heating", ["thermal conductivity"], 1),
+        ("electromagnetic_heating", ["incident powers and phases"], 1),
+        ("steady_thermal", ["thermal conductivity"], 3),
+        ("steady_thermal", ["heat-source amount and waveform scales"], 1),
         (
             "transient_thermal",
             ["thermal conductivity", "mass density", "specific heat"],
-            24,
+            36,
         ),
-        ("transient_thermal", ["heat-source amount and waveform scales"], 16),
+        ("transient_thermal", ["heat-source amount and waveform scales"], 24),
     ]
     assert [e["text"] for e in derived["also"]] == [
         (
@@ -172,8 +182,30 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
         "Eigenmode, participations with respect to the lumped values (direct solver)",
         "Eigenmode, mode field with respect to the lumped values (direct solver)",
         (
+            "Dissipated power with respect to the loss tangent "
+            "(principal values only, direct solver)"
+        ),
+        "Dissipated power with respect to the lumped values (direct solver)",
+        (
+            "Dissipated power with respect to the permittivity-law parameters "
+            "(direct solver)"
+        ),
+        "Electromagnetic heating with respect to the lumped values (direct solver)",
+        (
+            "Electromagnetic heating with respect to the thermal conductivity "
+            "(direct solver)"
+        ),
+        (
+            "Electromagnetic heating with respect to the incident powers and "
+            "phases (direct solver)"
+        ),
+        (
             "Steady thermal with respect to the thermal conductivity "
             "(direct solver, BDDC + GMRES)"
+        ),
+        (
+            "Steady thermal with respect to the heat-source amount and waveform "
+            "scales (direct solver)"
         ),
         (
             "Transient thermal with respect to the thermal conductivity and the "
@@ -249,7 +281,7 @@ def test_raising_cells_name_their_error(derived):
 
 def test_raises_list_is_the_out_of_scope_rows_off_the_grid(derived):
     rows = {r["key"]: r for r in derived["raises"]}
-    assert len(rows) == 67
+    assert len(rows) == 74
     assert "electrostatic x sheet fill" not in rows
     for knob in ("target_reflection", "reference_frequency"):
         layer = rows[f"PML target reflection ({knob})"]
@@ -263,6 +295,9 @@ def test_raises_list_is_the_out_of_scope_rows_off_the_grid(derived):
     assert route["label"].startswith("`route_phase`")
     assert rows["law parameter of a blend's end"]["error"] == "NonDifferentiableError"
     assert rows["probe x node coordinates"]["error"] == "NonDifferentiableError"
+    heat = rows["heat_flow x node coordinates"]
+    assert heat["error"] == "NonDifferentiableError"
+    assert heat["label"].startswith("The heat through a surface")
     assert rows["material axes (orientation)"] == {
         "key": "material axes (orientation)",
         "label": "Any result, with respect to a material's principal axes",
@@ -328,7 +363,7 @@ def _derive(data, cells=None, expected=None, out_of_scope=None):
 
 
 def test_unchanged_data_derives(data):
-    assert len(_derive(data)["rows"]) == 15
+    assert len(_derive(data)["rows"]) == 17
 
 
 def test_a_new_problem_in_the_cells_fails(data):

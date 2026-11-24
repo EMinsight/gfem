@@ -69,6 +69,7 @@ recipes/periodic-cell
 recipes/floquet-ports
 recipes/perfectly-matched-layer
 recipes/heater-temperature
+recipes/electromagnetic-heating
 recipes/thermo-optic-phase
 recipes/electro-optic-phase
 recipes/thermal-step-response

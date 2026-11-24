@@ -210,7 +210,7 @@ def test_the_temperature_is_the_rise_plus_the_source_free_temperature(ran):
 
 
 def test_the_phase_is_a_delay_that_lowers_a_transmissions_argument(ran):
-    positive, angle = _thermal(ran)[2].printed.splitlines()
+    positive, angle = _thermal(ran)[3].printed.splitlines()
     assert positive == "True"
     assert float(angle) < 0
 
@@ -234,6 +234,15 @@ def test_the_units_table_lists_the_thermal_units(page):
     units = dp.section(page, "Units")
     for unit in ("W/m/K", "kg/m³", "J/kg/K", "W/m²/K", "S/m", "1/K", "W/m³", "| K |"):
         assert unit in units, unit
+
+
+def test_the_heat_flows_out_of_the_boundaries_add_up_to_the_source_power(ran):
+    blocks = [e for e in ran if e.section == "Temperature and thermo-optic phase"]
+    (example,) = [e for e in blocks if "heat_flow_per_length" in e.code]
+    sink, air, together = dp.numbers(example.printed)
+    assert air < 0  # the air at 310 K warms the section from the top
+    assert sink > 10.0
+    assert together == pytest.approx(10.0, abs=1e-6)  # the 10 W/m of the heater
 
 
 # -- Electro-optic shift: the modulator section of the electro-optic recipes

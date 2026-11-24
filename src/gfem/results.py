@@ -407,6 +407,9 @@ class SteadyThermalResult:
     power: jax.Array
     #: The slab thickness in m of a cross-section mesh, else ``None``.
     _thickness: float | None = None
+    #: The sources' face heat per gfem triangle (W/m^2), when a source has
+    #: any (the residual of `gfem.heat_flow` reads it), else ``None``.
+    _face_heat: jax.Array | None = None
 
     @property
     def power_per_length(self) -> jax.Array:
@@ -450,7 +453,9 @@ class SteadyThermalResult:
         return f"SteadyThermalResult(regions={regions}, {total})"
 
 
-register_fields(SteadyThermalResult, ("temperature", "rise", "heat", "power"))
+register_fields(
+    SteadyThermalResult, ("temperature", "rise", "heat", "power", "_face_heat")
+)
 
 
 @dataclasses.dataclass(frozen=True, eq=False)

@@ -159,13 +159,28 @@ ROWS = {
         recipe="recipes/measurements",
         front=False,
     ),
+    # the loss of a driven field and the heat it gives: Capabilities page only
+    "dissipated_power": Row(
+        "Dissipated power",
+        "loss per region and sheet of a driven field",
+        recipe="recipes/measurements",
+        front=False,
+    ),
+    "electromagnetic_heating": Row(
+        "Electromagnetic heating",
+        "temperature from a driven result's loss",
+        recipe="recipes/electromagnetic-heating",
+        front=False,
+    ),
     # thermal and DC conduction: Capabilities page only
     "steady_thermal": Row(
-        "Steady thermal", "temperature, rise, heat and power", front=False
+        "Steady thermal",
+        "temperature, rise, heat, power and heat flow",
+        front=False,
     ),
     "transient_thermal": Row(
         "Transient thermal",
-        "traces and kept temperatures, TR-BDF2 and theta",
+        "traces (heat out too) and kept temperatures, TR-BDF2 and theta",
         front=False,
     ),
     "dc_conduction": Row(
@@ -226,9 +241,16 @@ PROBLEMS = {
     # a perfectly matched layer: a model option on the driven and eigenmode rows
     "driven_pml": Problem("driven", "s.values", "wave"),
     "eigenmode_pml": Problem("eigenmode", "omega"),
-    # thermal and DC conduction
+    # the loss of a driven field (also beside a law), and its heat under a drive
+    "dissipated_power": Problem("dissipated_power", "lower"),
+    "dissipated_power_law": Problem("dissipated_power", "lower"),
+    "electromagnetic_heating": Problem("electromagnetic_heating", "rise.coefficients"),
+    # thermal and DC conduction; the heat through a sink and a cut, steady
+    # and transient, on the thermal rows
     "steady_thermal": Problem("steady_thermal", "temperature.coefficients"),
     "transient_thermal": Problem("transient_thermal", "traces.upper"),
+    "steady_heat_flow": Problem("steady_thermal", "temperature.coefficients"),
+    "transient_heat_out": Problem("transient_thermal", "traces.upper"),
     "dc_conduction": Problem("dc_conduction", "conductance"),
     "thermo_optic_shift": Problem("thermo_optic_shift", "phase_per_length"),
     "route_phase": Problem("route_phase", "phase.r"),
@@ -270,6 +292,8 @@ OFF_GRID = {
     "specific_heat": "specific heat",
     "thermo_optic_coefficient": "thermo-optic coefficient",
     "heat": "heat-source amount and waveform scales",
+    # an electromagnetic heat source's drive, ("drive", ...)
+    "drive": "incident powers and phases",
 }
 #: The off-grid inputs listed together, one phrase per group and row.
 OFF_GRID_GROUPS = (
@@ -280,6 +304,7 @@ OFF_GRID_GROUPS = (
     ("thermal_conductivity", "mass_density", "specific_heat"),
     ("thermo_optic_coefficient",),
     ("heat",),
+    ("drive",),
 )
 #: The material properties among them (the others have no value forms).
 OFF_GRID_PROPERTIES = ("mu_r", "tan_delta")
@@ -436,9 +461,38 @@ RAISES_LABELS = {
     "power_flow x node coordinates": (
         "The power through a surface (`power_flow`), with respect to node coordinates"
     ),
+    "heat_flow x node coordinates": (
+        "The heat through a surface (`heat_flow`, `heat_flow_per_length`), with "
+        "respect to node coordinates"
+    ),
     "power_flow x reduced field": (
         "The power through a surface (`power_flow`) of a field of an adaptive "
         "sweep, with respect to anything the field depends on"
+    ),
+    "dissipated_power x node coordinates": (
+        "The dissipated power per region and sheet (`dissipated_power`), with "
+        "respect to node coordinates"
+    ),
+    "dissipated_power x reduced field": (
+        "The dissipated power per region and sheet (`dissipated_power`) of a "
+        "field of an adaptive sweep, with respect to anything the field depends on"
+    ),
+    "dissipated_power x frequency": (
+        "The dissipated power per region and sheet (`dissipated_power`), with "
+        "respect to the field's frequency (a fixed input of the driven solve)"
+    ),
+    "electromagnetic_heating x reduced field": (
+        "The heat of a driven result (`electromagnetic_heating`) of an adaptive "
+        "sweep, with respect to anything its fields depend on"
+    ),
+    "Conductor conductivity": (
+        "Any result, with respect to a `Conductor`'s conductivity or thickness "
+        "(fixed values of the sheet: its fill, or an `Impedance` resistance, is "
+        "the design)"
+    ),
+    "electromagnetic_heating x frequency": (
+        "The heat of a driven result (`electromagnetic_heating`), with respect "
+        "to its frequency (a fixed input of the driven solve)"
     ),
     "driven x wave_vector": (
         "Driven S-parameters, with respect to the Bloch wave vector"
@@ -583,7 +637,7 @@ def _input_column(kind) -> str | None:
         return MATERIAL_PROPERTIES[kind[2]]
     if len(kind) == 4 and kind[0] == "boundary" and kind[2:] == ("fill", "fill"):
         return "fill"
-    if _off_grid_input(kind) in ("lumped", "law", "blend", "heat", "rise"):
+    if _off_grid_input(kind) in ("lumped", "law", "blend", "heat", "drive", "rise"):
         return None
     raise CapabilitiesError(
         f"{RAISE_TEST}: input kind {kind!r} is not in the Capabilities mapping "
@@ -591,14 +645,19 @@ def _input_column(kind) -> str | None:
     )
 
 
+#: The off-grid input of an input kind that is no model leaf, by its head.
+LEAF_INPUTS = {"problem": "heat", "drive": "drive"}
+
+
 def _off_grid_input(kind: tuple) -> str | None:
     """The `OFF_GRID` input of an EXPECTED input kind, or None."""
     # a law's ("law", region, "eps_inf") or ("law", region, term, parameter)
     if kind[0] == "law" and len(kind) in (3, 4):
         return "law"
-    # a thermal problem's leaves: a heat source's amount, the waveform's scales
-    if kind[0] == "problem":
-        return "heat"
+    # a thermal problem's leaves (a heat source's amount, the waveform's
+    # scales) and an electromagnetic heat source's incident powers and phases
+    if kind[0] in LEAF_INPUTS:
+        return LEAF_INPUTS[kind[0]]
     # the rise a thermo-optic measurement reads (no cell, no group)
     if kind == ("rise",):
         return "rise"
@@ -973,6 +1032,8 @@ REFUSAL_LABELS = {
     "region_mean": "`region_mean`",
     "element_mean": "`element_mean`",
     "electric_energy": "`electric_energy`",
+    "dissipated_power": "`dissipated_power`",
+    "electromagnetic_heating": "`electromagnetic_heating`",
     "error_estimate": "`error_estimate` of a result solved across ranks",
     "mesh_refinement": "`refine_mesh`",
     "mode_field_gradient": (

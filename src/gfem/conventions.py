@@ -111,11 +111,18 @@ carries a factor 1/2:
   :math:`w_m = \mathrm{Re}(B \cdot H^*) / 4`;
 - Poynting vector :math:`S = \mathrm{Re}(E \times H^*) / 2`;
 - ohmic loss density :math:`p = \mathrm{Re}(\sigma_\mathrm{eff})\, |E|^2 / 2`;
+- sheet loss per area :math:`\mathrm{Re}(1 / Z_s)\, |E_t|^2 / 2` on a
+  `Conductor` and :math:`|E_t|^2 / (2 R)` on an `Impedance`, times the
+  sheet's fill (`gfem.dissipated_power` integrates both densities);
 - a lumped port's power :math:`|V|^2 / (2 R)`.
 
 With 1 W incident, the power a driven field delivers into the network
 through the excited port is :math:`1 - |S_{ii}|^2` W, and the power arriving
-at port j's termination is :math:`|S_{ji}|^2` W.
+at port j's termination is :math:`|S_{ji}|^2` W. On a model whose ports all
+have real references and that radiates nothing, the power the field
+dissipates inside, :math:`1 - \sum_j |S_{ji}|^2`, is the sum of
+`gfem.dissipated_power`. On a complex reference a field is per unit
+:math:`|a|^2`, which is not exactly 1 W incident.
 
 Surface conductors
 ------------------
@@ -395,6 +402,11 @@ positive for a positive coefficient and a positive rise. Under
 :math:`P_\pi = \pi P' /` ``phase_per_length`` for a heater dissipating
 :math:`P'` per unit length (``power_per_length``), which equals
 :math:`\lambda / (2 s)` with :math:`s = \delta n_\mathrm{eff} / P'`.
+
+`gfem.heat_flow` is the heat leaving a side of a steady temperature, in W,
+positive out (`gfem.heat_flow_per_length`, W/m, on a cross-section), read
+from the absolute temperature. `gfem.Trace.heat_out` is the heat that has
+left a side since :math:`t = 0`, in J (J/m on a cross-section).
 
 `gfem.route_phase` integrates the same first-order phase per length along
 a route through a 3D rise (rad, a phase delay, positive for a positive

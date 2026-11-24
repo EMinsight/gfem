@@ -57,7 +57,11 @@ The thermal problems use the same SI units, with temperatures in kelvin
 | `thermo_optic_coefficient` | 1/K |
 | heat (`SteadyThermalResult.heat`), `power_density` | W/m³ |
 | time, `duration` | s |
+| `heat_flow`, `dissipated_power`, `incident_power` | W |
+| `Trace.heat_out` | J |
 | on a cross-section: `power_per_length`, `resistance_per_length`, `capacitance_per_length` | W/m, Ω/m, F/m |
+| on a cross-section: `heat_flow_per_length`, `incident_power_per_length` | W/m |
+| on a cross-section: `Trace.heat_out_per_length` | J/m |
 | `electro_optic_tensor` | m/V |
 | `delta_n_eff_per_volt`, `phase_per_length_per_volt`, `v_pi_l` | 1/V, rad/(V m), V m |
 
@@ -444,8 +448,45 @@ T 301.7118 K = rise 1.7117 K + T0 300.0002 K
 9.999999999999817
 ```
 
+**Heat flow is positive out.** {py:obj}`gfem.heat_flow` is the heat leaving
+a side, in W; on a cross-section {py:obj}`gfem.heat_flow_per_length` gives it
+in W/m. It reads the absolute temperature, so a flow the boundaries drive
+with no source on, here from the warmer air down to the sink, is part of it;
+the flows out of every boundary surface still add up to the power the
+sources put in:
+
+```python
+sink = float(gfem.heat_flow_per_length(steady, "bottom", model=heater))  # W/m
+air = float(gfem.heat_flow_per_length(steady, "top", model=heater))
+print(f"out through the sink {sink:.4f} W/m, through the top {air:.4f} W/m")
+print(f"together: {sink + air:.6f} W/m")
+```
+
+```text
+out through the sink 10.0037 W/m, through the top -0.0037 W/m
+together: 10.000000 W/m
+```
+
+The top's flow is negative: heat enters there, from the air.
+
 **Time** is in seconds: a transient's `duration`, its waveform's start times
 and the times it returns ({doc}`recipes/thermal-step-response`).
+
+A transient run's {py:meth}`gfem.Trace.heat_out` is the heat that has left
+since $t = 0$, in J (J/m with {py:meth}`gfem.Trace.heat_out_per_length`), so
+it starts at 0; its step difference over `dt` is the mean flow over the
+step, in W.
+
+**Electromagnetic heat** is time-averaged power.
+{py:obj}`gfem.dissipated_power` gives a kept driven field's loss per region
+and sheet in W, for its 1 W incident (`INCIDENT_POWER`): the fraction of the
+incident power each one dissipates. On a port with a complex reference
+impedance the field is per unit $|a|^2$, not exactly 1 W incident. A
+{py:obj}`gfem.Conductor` sheet dissipates $\mathrm{Re}(1/Z_s)\, |E_t|^2/2$
+per area and an {py:obj}`gfem.Impedance` sheet $|E_t|^2/(2R)$, times its
+fill, with $E_t$ the peak tangential field. {py:obj}`gfem.electromagnetic_heating`
+scales those losses by the incident power of each port, in W (W/m on a
+cross-section), into a heat source ({doc}`recipes/electromagnetic-heating`).
 
 **The thermo-optic phase is a delay.** A material's
 `thermo_optic_coefficient` $dn/dT$ acts on the rise, about the index of its

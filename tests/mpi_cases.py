@@ -158,6 +158,8 @@ METHOD_KEYS = (
     "region_mean",
     "element_mean",
     "electric_energy",
+    "dissipated_power",
+    "electromagnetic_heating",
     "error_estimate",
     "mesh_refinement",
     "mode_field_gradient",

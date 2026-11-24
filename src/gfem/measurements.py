@@ -15,6 +15,12 @@ result reloaded with `gfem.load_result`.
 - `power_flow`: the net power a driven field carries out of a set of
   elements, exact for the solved field (a flux of point-sampled
   ``E x H*`` is not, see the measurements recipe).
+- `dissipated_power`: the time-averaged power a driven field dissipates
+  in each volume region and on each `Conductor` or `Impedance` sheet,
+  exact for the solved field.
+- `heat_flow` and `heat_flow_per_length`: the heat a steady temperature
+  carries out of a set of elements or through named surfaces, exact for
+  the solved temperature.
 - `electric_energy`: the time-averaged electric energy a field stores in
   each volume region, with the model's materials.
 - `region_mean`: a field's mean over named volume regions, exact for the
@@ -58,14 +64,17 @@ from gfem.mesh import Mesh
 if TYPE_CHECKING:
     from gfem._field import Field
     from gfem.model import Model
-    from gfem.results import EigenmodeResult, PortModeResult
+    from gfem.results import EigenmodeResult, PortModeResult, SteadyThermalResult
 
 __all__ = [
     "INTERFACE_KINDS",
     "InterfaceParticipation",
     "characteristic_impedance",
+    "dissipated_power",
     "electric_energy",
     "element_mean",
+    "heat_flow",
+    "heat_flow_per_length",
     "interface_participation",
     "power_flow",
     "region_mean",
@@ -896,6 +905,370 @@ def _check_estimated_side(names: tuple[str, ...], model: Model) -> None:
             f"dispersive region {odd[0]!r}, where the absorbed-power estimate "
             "was not verified: use gfem.FieldEstimator().",
         )
+
+
+# --- dissipated power -------------------------------------------------------------
+
+
+def dissipated_power(field: Field, *, model: Model) -> dict[str, jax.Array]:
+    r"""Time-averaged power a driven field dissipates in each region and sheet, W.
+
+    The electric loss of each volume region,
+    :math:`\frac{1}{2} \omega \varepsilon_0 \int_r E^* \cdot
+    (-\mathrm{Im}\, \varepsilon_\mathrm{eff}) E\, dV` with the loss tangent,
+    the conductivity, a complex or anisotropic permittivity and a
+    `gfem.PermittivityLaw` at the field's frequency in
+    :math:`\varepsilon_\mathrm{eff}`, and the loss of each surface carrying
+    a `gfem.Conductor` or `gfem.Impedance`,
+    :math:`\frac{1}{2} \int_S \mathrm{Re}(Y_s) |E_t|^2 dS` times the sheet's
+    fill. The power is read from the driven operator's lossy pieces, so it
+    is exact for the solved field: a region's value is minus
+    `power_flow` out of it when no sheet lies on its boundary, and the
+    values sum to :math:`1 - \sum_j |S_{ji}|^2` on a model whose ports have
+    real reference impedances and that radiates nothing.
+
+    A driven field is the one for 1 W incident at its excited port
+    (`gfem.conventions`), so each value reads as the fraction of the
+    incident power dissipated there. With a complex port reference
+    impedance the field is per unit :math:`|a|^2`, which is not exactly 1 W
+    incident. On a slab cross-section the fraction is the same per length.
+
+    What is not heat gets no value: a perfectly matched layer (its regions
+    have no key), an `gfem.Absorbing` face, a wave or Floquet port, and a
+    lumped port's resistance, whose power is the network's load.
+
+    Differentiable: inside `jax.grad`, `jax.jit` or `jax.vmap` the field
+    carries the gradient through its solve, and the loss tangent,
+    conductivity and permittivity (real or complex, per axis) of a lossy
+    region, a permittivity law's parameters, a `gfem.SheetField` fill and an
+    `gfem.Impedance` resistance add their direct share. An adaptive sweep's
+    field, the field's frequency and the node coordinates raise.
+
+    Args:
+        field: A driven electric field (quantity ``"E"``, in H(curl),
+            complex, with a real ``omega``), e.g. ``result.e_field(f)``.
+        model: The model the field was solved with: the materials and
+            boundaries whose loss is read.
+
+    Returns:
+        A 0-d float64 array, W, per volume region of the solve domain
+        outside a perfectly matched layer (lossless regions at 0.0) and per
+        surface carrying a `gfem.Conductor` or `gfem.Impedance`.
+
+    Raises:
+        TypeError: ``field`` is not a `gfem.Field`, or ``model`` is not a
+            `gfem.Model`.
+        ValueError: The field is not a driven electric field (another
+            quantity, static, an eigenmode's complex omega, real
+            coefficients), or was not solved on ``model``; or a name is
+            both a volume region and a sheet surface.
+        NotImplementedError: A region has a complex ``mu_r`` (magnetic loss
+            is not heat in this version), the model holds a
+            metal-dielectric blend with a permittivity law, or the model is
+            2D (pose the driven solve on the slab of
+            `gfem.Mesh.from_gmsh_cross_section`).
+        gfem.MeshRefinementUnsupportedError: Called while an objective is
+            classified for `gfem.refine_mesh`.
+        gfem.DistributedUnsupportedError: The field is a piece across ranks.
+        NonDifferentiableError: While `jax.grad` traces it: the node
+            coordinates or the field's ``omega`` are differentiated, or the
+            field is one of an adaptive sweep (`gfem.ReducedFields`).
+    """
+    from gfem._engine.heat import sheet_surfaces
+    from gfem._heat import heated_regions, loss_matrices
+
+    check_heat_field(field, model, "dissipated_power")
+
+    sheets = sheet_surfaces(model)
+    mesh = model.mesh
+    matrices = loss_matrices([field], model)
+    tets = matrices["tetrahedra_re"][:, 0, 0]
+    faces = matrices["triangles_re"][:, 0, 0]
+    out = {
+        region: jnp.sum(tets[elements])
+        for region, elements in heated_regions(field, model).items()
+    }
+    for name in sheets:
+        out[name] = jnp.sum(faces[mesh.elements(name)])
+    return out
+
+
+def check_heat_field(field: Any, model: Any, who: str) -> None:
+    """Raise unless ``field`` is a driven field whose loss ``model`` can turn into heat.
+
+    The refusals of `dissipated_power`, shared by every caller of the loss
+    matrices (`gfem._heat.loss_matrices`). ``who`` is the public entry's name:
+    its 2D refusal (`gfem._dim2`), its key among the distributed refusals and
+    the refinement recorder's feature. Complex ``mu_r`` is refused by the
+    kernel, which reads the element values.
+
+    Raises:
+        TypeError: ``field`` is not a `gfem.Field`, or ``model`` is not a
+            `gfem.Model`.
+        ValueError: Not a driven electric field, or a name that is both a
+            volume region and a sheet surface.
+        NotImplementedError: A 2D model, or a law blend.
+        gfem.MeshRefinementUnsupportedError: Under the refinement recorder.
+        gfem.DistributedUnsupportedError: A field across ranks.
+    """
+    from gfem._engine.dispersion import refuse_blends
+    from gfem._engine.heat import sheet_surfaces
+    from gfem._field import Field
+    from gfem.model import Model
+
+    refuse_entry(getattr(field, "mesh", None), who)
+    if not isinstance(field, Field):
+        raise TypeError(f"{who} needs a gfem.Field, got {type(field).__name__}.")
+    if field._communicator is not None:  # noqa: SLF001
+        _mpi.refuse_feature(who)
+    if not isinstance(model, Model):
+        raise TypeError(f"{who} needs model= a gfem.Model, got {type(model).__name__}.")
+    if _objective.recording() is not None:
+        raise MeshRefinementUnsupportedError(
+            who,
+            f"The objective reads gfem.{who}, whose error is not estimated in "
+            "this version: refine on the S-parameters or on gfem.power_flow "
+            "instead.",
+        )
+    refuse_blends(model, f"gfem.{who}")
+    _check_time_harmonic(field, who, static="solve a gfem.Driven problem")
+    if jnp.iscomplexobj(field.omega):
+        raise ValueError(
+            f"{who} needs a driven field with a real omega: an eigenmode has no "
+            "drive, so its amplitude and its heat are undefined; solve a driven "
+            "problem at the mode's frequency."
+        )
+    if not field.is_complex:
+        raise ValueError(
+            f"{who} needs a complex phasor field, got real coefficients: solve a "
+            "gfem.Driven problem."
+        )
+    for name in sheet_surfaces(model):
+        if name in model.mesh.volumes:
+            raise ValueError(
+                f"{name!r} names both a volume region and a sheet surface, so "
+                f"{who} would give two values under one key: rename one of "
+                "them in the mesh."
+            )
+
+
+# --- heat flow -------------------------------------------------------------------
+
+#: What a heat-flow side may be: names, or a centroid predicate.
+HeatSide = str | Sequence[str] | Callable[[np.ndarray], np.ndarray]
+
+
+def heat_flow(
+    result: SteadyThermalResult, side: HeatSide, *, model: Model
+) -> jax.Array:
+    r"""Net heat leaving ``side``, W: positive out.
+
+    ``side`` takes three forms:
+
+    - a volume region, several (their union), or a predicate
+      ``inside(centroids) -> bool`` on the ``(n_tetrahedra, 3)`` element
+      centroids in m (a staircase cut, e.g. ``lambda c: c[:, 1] > y0``).
+      Only elements of the thermal domain count. The flow is the heat
+      leaving the selected elements through the faces between them and the
+      rest of the thermal domain; what crosses the thermal domain's own
+      boundary there (convection, a heat flux, a fixed temperature) is
+      counted inside ``side``. A cut may end on a fixed-temperature
+      surface: the reaction of its nodes is split between the two sides by
+      their elements, so a side's flow is minus its complement's. A face
+      belongs to ``side`` when every thermal element beside it does, so
+      the heat of a sheet or a `gfem.HeatFlux` lying exactly on the cut
+      belongs to neither side.
+    - a surface name: the heat leaving the thermal domain through it. A
+      `gfem.FixedTemperature` surface gives the heat it removes (an
+      interior one removes it from both sides), a `gfem.Convection`
+      surface :math:`\int h (T - T_\infty)\, dS`, a `gfem.HeatFlux` surface
+      minus the power it puts in, and an exterior surface with no thermal
+      condition 0 (insulated).
+    - several surface names: their union. The flows out of every boundary
+      surface sum to ``result.power``, sheet heat included: heat on a face
+      is a source, and on a fixed-temperature face its reaction takes it.
+
+    The heat comes from the residual of the discrete heat equation, tested
+    with the vertex hat functions, not from :math:`-k\, \partial T /
+    \partial n`: it is exact for the solved temperature (to the solver's
+    residual), conservative across any set of surfaces, and needs no
+    gradient sampled at a sink, where the gradient is least accurate. It
+    measures the absolute temperature, so a background flow set by unequal
+    boundary temperatures is part of it.
+
+    Differentiable: inside `jax.grad`, `jax.jit` or `jax.vmap` the flow
+    differentiates with respect to the thermal conductivity (read on the
+    side's elements, and through the temperature everywhere), the heat
+    sources (their amounts, and through `gfem.joule_heating` the drive),
+    and the temperature. A side whose closure holds no fixed-temperature
+    node and no convection face measures exactly its source power, so its
+    conductivity gradient is exactly zero.
+
+    Args:
+        result: A steady thermal result, e.g. ``gfem.solve(model,
+            gfem.SteadyThermal(heat))``, on a 3D mesh.
+        side: The volume region name(s) or predicate, or the surface
+            name(s).
+        model: The model the result was solved with: the conductivity and
+            the boundaries the residual reads.
+
+    Returns:
+        A 0-d float64 array, W.
+
+    Raises:
+        TypeError: ``result`` is not a `gfem.SteadyThermalResult` (a
+            transient result records its heat with a heat-out trace,
+            `gfem.Trace.heat_out`), ``model`` is not a `gfem.Model`, or
+            ``side`` is neither names nor a callable.
+        RegionNotFoundError: A named region does not exist.
+        ValueError: The result was solved on a cross-section mesh (use
+            `heat_flow_per_length`), or not on ``model``; ``side`` mixes
+            volume regions and surfaces, selects no element of the thermal
+            domain or all of them, names an interior surface with no
+            thermal condition or a surface away from the thermal domain,
+            or names one of two fixed-temperature surfaces that share mesh
+            nodes (measure their union); the predicate does not return one
+            boolean per tetrahedron.
+        gfem.DistributedUnsupportedError: The result's fields are pieces
+            across ranks.
+        MeshRefinementUnsupportedError: Called inside a refined objective.
+        NonDifferentiableError: While `jax.grad` traces it, the node
+            coordinates are differentiated.
+    """
+    names = _heat_side(result, side, model, "heat_flow")
+    if result.temperature.mesh.section_thickness is not None:
+        raise ValueError(
+            "gfem.heat_flow measures a 3D result in W, but this result was solved "
+            "on a cross-section mesh, whose slab thickness is a numerical choice: "
+            "use gfem.heat_flow_per_length (W/m)."
+        )
+    from gfem._heat_flow import heat_flow as measured
+
+    return measured(result, names, model, who="heat_flow")
+
+
+def heat_flow_per_length(
+    result: SteadyThermalResult, side: HeatSide, *, model: Model
+) -> jax.Array:
+    """Net heat leaving ``side`` per unit length of a cross-section, W/m.
+
+    `heat_flow` on a result solved on a cross-section mesh
+    (`gfem.Mesh.from_gmsh_cross_section`): the same sides and the same
+    residual, divided by the slab thickness. The end faces ``front`` and
+    ``back`` are insulated unless the model gives them a condition.
+
+    Args:
+        result: A steady thermal result on a cross-section mesh.
+        side: As for `heat_flow`.
+        model: The model the result was solved with.
+
+    Returns:
+        A 0-d float64 array, W/m.
+
+    Raises:
+        TypeError: As for `heat_flow`.
+        RegionNotFoundError: A named region does not exist.
+        ValueError: The result was solved on a 3D mesh (use `heat_flow`),
+            and as for `heat_flow`.
+        gfem.DistributedUnsupportedError: As for `heat_flow`.
+        MeshRefinementUnsupportedError: Called inside a refined objective.
+        NonDifferentiableError: As for `heat_flow`.
+    """
+    names = _heat_side(result, side, model, "heat_flow_per_length")
+    thickness = result.temperature.mesh.section_thickness
+    if thickness is None:
+        raise ValueError(
+            "gfem.heat_flow_per_length measures a cross-section result in W/m, but "
+            "this result was solved on a 3D mesh: use gfem.heat_flow (W)."
+        )
+    from gfem._heat_flow import heat_flow as measured
+
+    return measured(result, names, model, who="heat_flow_per_length") / thickness
+
+
+def _heat_side(
+    result: Any, side: Any, model: Any, who: str
+) -> tuple[str, ...] | Callable[[np.ndarray], np.ndarray]:
+    """``side`` as names or a predicate, after the checks every heat flow runs.
+
+    Raises:
+        TypeError: The result, the model or the side has the wrong type.
+        ValueError: The result was not solved on ``model``.
+        gfem.DistributedUnsupportedError: Fields across ranks.
+        MeshRefinementUnsupportedError: Inside a refined objective.
+        NonDifferentiableError: A predicate side on traced node coordinates.
+    """
+    from gfem.model import Model
+    from gfem.results import SteadyThermalResult, TransientThermalResult
+
+    if isinstance(result, TransientThermalResult):
+        raise TypeError(
+            f"gfem.{who} measures a steady result; a transient result records the "
+            "heat leaving a side at every time step with a heat-out trace: pass "
+            "traces={'out': gfem.Trace.heat_out(side)} to gfem.TransientThermal."
+        )
+    if not isinstance(result, SteadyThermalResult):
+        raise TypeError(
+            f"gfem.{who} needs a gfem.SteadyThermalResult, got {type(result).__name__}."
+        )
+    if result.temperature._communicator is not None:  # noqa: SLF001
+        _mpi.refuse_feature("thermal")  # no distributed thermal path
+    if not isinstance(model, Model):
+        raise TypeError(f"{who} needs model= a gfem.Model, got {type(model).__name__}.")
+    if _objective.recording() is not None:
+        raise MeshRefinementUnsupportedError(
+            who,
+            f"The objective reads gfem.{who}, and thermal problems have no error "
+            "estimate: refine the mesh by hand and compare.",
+        )
+    if isinstance(side, str):
+        names: Any = (side,)
+    elif callable(side):
+        names = side
+    elif isinstance(side, Sequence) and side and all(isinstance(s, str) for s in side):
+        names = tuple(dict.fromkeys(side))
+    else:
+        raise TypeError(
+            f"{who}'s side must be a region or surface name, a sequence of names or "
+            f"a predicate on element centroids, got {side!r}."
+        )
+    _check_thermal_field(result.temperature, model, who)
+    if callable(names) and is_traced(model.mesh.nodes):
+        raise NonDifferentiableError(
+            f"{who}'s side is a predicate on element centroids, which needs the "
+            "node coordinates as numbers, but they are computed inside jax.grad, "
+            "jax.jit or jax.vmap here: name the side's volume regions instead."
+        )
+    return names
+
+
+def _check_thermal_field(field: Field, model: Model, who: str) -> None:
+    """Raise unless the temperature was solved on ``model``'s thermal domain.
+
+    Raises:
+        ValueError: Another mesh, node positions, thermal domain or order.
+    """
+    from gfem.mesh import _same_topology
+
+    other = ValueError(
+        f"{who}: the result was not solved on this model (another mesh, node "
+        "positions or thermal domain): pass the model the result was solved with."
+    )
+    if not _same_topology(field.mesh, model.mesh):
+        raise other
+    if not (is_traced(field.mesh.nodes) or is_traced(model.mesh.nodes)) and not (
+        np.array_equal(np.asarray(field.mesh.nodes), np.asarray(model.mesh.nodes))
+    ):
+        raise other
+    domain = model._domain_of("thermal")  # noqa: SLF001
+    mesh = model.mesh
+    support = tuple(r for r in mesh.volumes if domain.active[mesh.elements(r)].any())
+    if (
+        field.quantity != "T"
+        or tuple(field.support) != support
+        or tuple(field._excluded) != tuple(domain.excluded)  # noqa: SLF001
+    ):
+        raise other
 
 
 # --- region mean -----------------------------------------------------------------

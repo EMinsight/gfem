@@ -239,12 +239,8 @@ def test_the_problem_validates_like_electrostatic():
 
 def test_joule_heating_refuses_a_driven_result():
     driven = object.__new__(gfem.DrivenResult)
-    with pytest.raises(NotImplementedError) as info:
+    with pytest.raises(TypeError, match=r"gfem\.electromagnetic_heating\(result"):
         gfem.joule_heating(driven, current=1e-3)
-    assert str(info.value) == (
-        "heating from electromagnetic loss is not available in this version; "
-        "give the dissipated power per region with gfem.HeatSource.uniform"
-    )
     with pytest.raises(TypeError, match="DCConduction"):
         gfem.joule_heating(object(), current=1e-3)
 
