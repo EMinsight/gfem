@@ -2030,7 +2030,7 @@ class DrivenRule:
         wanted: frozenset | None = None,
         port_modes: list[dict[str, np.ndarray]] | None = None,
     ) -> list[FieldPair | Integrated]:
-        """Fold the S and kept-field cotangents into one field pair per frequency.
+        r"""Fold the S and kept-field cotangents into one field pair per frequency.
 
         At frequency n, with ``X`` the excited ports' solutions, ``f_i`` port
         i's S functional (``S_ij = f_iᵀ x_j``, de-embedding aside) and ``W``
@@ -2060,6 +2060,14 @@ class DrivenRule:
         material cotangents join the pairs (`Integrated`), the rest
         (a law's parameters, a sheet's fill, an `Impedance`'s values) go
         through `explicit_inputs`.
+
+        Port waves read by reciprocity (``source_fields=False``,
+        :math:`W_{ic} = d_i\, b_c^\mathsf{T} z_i` with :math:`z_i` port i's
+        own solution) load the ports' own columns instead: one adjoint column
+        per port, the dipoles' loads weighted by its cotangent row, whatever
+        the number of dipoles (`_reciprocal_loads`); columns without a load
+        are not solved. Their node term reads the ports' own solutions at the
+        dipoles (`PointLoads.port_wave_nodes`).
 
         The frequencies are solved from the adjoint base's frequency
         (`SystemOperator.adjoint_order`): a base handle kept from the forward
@@ -2372,7 +2380,8 @@ class DrivenRule:
                         i,
                         np.asarray(ct_w[i]) * deembedding[i][:, None],
                         nodes=nodes,
-                        laws=laws,
+                        weights=op.weights(omega, laws=laws),
+                        domain=domain,
                     )
                     if pair is not None:
                         full.append(pair)
@@ -2542,7 +2551,8 @@ class DrivenRule:
         ct: np.ndarray,
         *,
         nodes: bool,
-        laws: bool,
+        weights: dict[str, complex],
+        domain: ngs.Region,
     ) -> FieldPair | None:
         r"""Frequency ``i``'s pair of port waves read by reciprocity, adaptive sweep.
 
@@ -2553,7 +2563,8 @@ class DrivenRule:
         \bar W_{ic} d_i b_c` is solved at full size on ``sweep``: the pair
         :math:`(-y_i, z_i)` is exact at the samples, where :math:`z_i` lies in
         the basis, and accurate to the sweep's field error between them.
-        ``None`` without a cotangent at ``i``.
+        ``None`` without a cotangent at ``i``; ``weights`` and ``domain`` are
+        the pair's (`DrivenOperator.pair`).
         """
         rows = np.flatnonzero(np.any(ct != 0, axis=1))
         if not rows.size:
@@ -2570,12 +2581,8 @@ class DrivenRule:
             self._add_port_wave_nodes(
                 model, sources, omega, solutions=z, weights=ct[rows]
             )
-        op = self.operator(model)
-        return op.pair(
-            -np.asarray(y),
-            z,
-            weights=op.weights(omega, laws=laws),
-            domain=em_region(model, op.built),
+        return self.operator(model).pair(
+            -np.asarray(y), z, weights=weights, domain=domain
         )
 
     def _add_explicit_nodes(

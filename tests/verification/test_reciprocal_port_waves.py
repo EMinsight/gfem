@@ -14,6 +14,13 @@ dipoles, and pairs it with :math:`z_i`. The cases are the terminated line of
   paired with the ports' reduced solutions: exact at the samples, and
   accurate to the sweep's own field error between them, for a design next to
   a dipole (where a gradient on the frozen port basis is off by 10 %).
+
+Observed, not asserted (``adaptive_tolerance=1e-4``, order 2, every port
+excited): reading the port waves by reciprocity costs the adaptive sweep no
+sample over S alone, the ports' own solutions being the excited columns
+(L1: 6 samples, basis 24, both; W1: 10 samples, basis 40, both); the
+dipoles' own columns take fewer samples and a larger basis (L1: 5 and 66;
+W1: 7 and 168, with 5 and 10 dipoles).
 """
 
 import jax
@@ -104,7 +111,9 @@ def test_uniform_reciprocal_gradients_are_the_column_path_s(line, guide, objecti
             model, region, objective, frequency, sources, **kwargs
         )
         assert np.abs(np.asarray(column)).max() > 0
-        assert _relative(reciprocal, column) <= UNIFORM_GATE
+        error = _relative(reciprocal, column)
+        print(f"{region}: gradient error {error:.2g}")  # noqa: T201
+        assert error <= UNIFORM_GATE
 
 
 # --- W1 values (lossless wave ports) ---------------------------------------------
@@ -421,7 +430,9 @@ def test_adaptive_reciprocal_gradients_are_exact_at_the_samples(line, excite):
         got = _wave_jacobian(build, problem, row, rc.ORDER2)
         want = _column_jacobian(build, row, excite)
         assert np.abs(want).max() > 0
-        assert _relative(got, want) <= SAMPLE_GATE
+        error = _relative(got, want)
+        print(f"sample {row}: dW error {error:.2g}")  # noqa: T201
+        assert error <= SAMPLE_GATE
 
 
 @pytest.mark.parametrize(
@@ -448,3 +459,29 @@ def test_adaptive_reciprocal_gradients_between_samples_follow_the_field_error(
     error = _relative(got, want)
     print(f"samples={len(samples)} dW error {error:.2g}, W error {forward:.2g}")  # noqa: T201
     assert error <= FIELD_ERROR_RATIO * forward
+
+
+def test_adaptive_reciprocal_node_gradients_are_exact_at_the_samples(dipole_line):
+    # the node term reads the ports' reduced solutions at the dipoles: their
+    # full ones at a sample (1.3e-11 measured)
+    build, t = _slab_kind(dipole_line, "nodes")
+    grid = tuple(float(f) for f in np.linspace(0.9, 1.1, 5) * pml_cases.F0)
+
+    def gradient(source_fields, **sweep):
+        def objective(t):
+            problem = gfem.Driven(
+                grid,
+                excite=(),
+                sources=ELECTRIC,
+                source_fields=source_fields,
+                **sweep,
+            )
+            w = gfem.solve(build(t), problem, options=DIPOLE_OPTIONS).port_waves[2]
+            return jnp.sum(jnp.abs(w) ** 2)
+
+        return jax.grad(objective)(t)
+
+    adaptive = gradient(False, sweep="adaptive", samples=(grid[0], grid[4], grid[2]))
+    column = gradient(True)
+    assert np.abs(np.asarray(column)).max() > 0
+    assert _relative(adaptive, column) <= SAMPLE_GATE

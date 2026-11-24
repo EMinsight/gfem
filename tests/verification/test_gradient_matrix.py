@@ -4257,6 +4257,10 @@ FAMILIES = [
     Cell("driven_wave", "eps_r", "direct", "uniform", "face_lossy"),
     Cell("driven_wave", "nodes", "direct", "uniform", "face_lossy"),
     Cell("port_mode", "eps_r", "direct"),
+    # port waves read by reciprocity: the ports' own columns of the entry, and
+    # the adaptive sweep's full-size adjoint columns
+    Cell("driven_dipole_reciprocal", "eps_r", "direct", "uniform"),
+    Cell("driven_dipole_reciprocal", "eps_r", "direct", "adaptive"),
     Cell("eigenmode", "conductivity", "direct"),
     Cell("eigenmode", "fill", "direct"),
     Cell("eigenmode", "nodes", "direct"),
