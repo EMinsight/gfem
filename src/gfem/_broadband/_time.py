@@ -283,10 +283,14 @@ def _reference(
         renormalized = net.renormalize(z)
         return renormalized.values, z, renormalized.excited
     if is_traced(z_ref):
-        # inside a transformation the reference cannot be inspected; it is
-        # read as real and constant, as it is checked to be outside one, and
-        # takes the same mean value
-        return net.values, jnp.real(z_ref).mean(axis=0), net.excited
+        # a traced reference cannot be checked to be one real value per port,
+        # and reading it as one would be wrong physics for a complex Z_PV
+        raise ValueError(
+            f"{what} needs one real reference impedance per port, constant over "
+            "frequency, but z_ref is traced by JAX (jax.jit, jax.grad or "
+            "jax.vmap) and cannot be checked. Pass z0= (e.g. z0=50.0) to "
+            "renormalize S to one fixed real reference first."
+        )
     arr = np.asarray(z_ref)
     if np.isnan(arr).all():
         return net.values, jnp.full(n_ports, jnp.nan), net.excited

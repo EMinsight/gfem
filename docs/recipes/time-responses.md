@@ -192,7 +192,10 @@ warnings, and no gradient, which is why gfem never does it for you.
 
 The time views are written in `jax.numpy`: an objective on $Z(t)$ or on a
 TDT differentiates with respect to the design through S, with no extra step
-({doc}`adaptive-sweep-gradient` for a differentiable adaptive sweep).
+({doc}`adaptive-sweep-gradient` for a differentiable adaptive sweep). When the
+reference impedance is traced too (a wave port's $Z_{PV}$ moves with the
+design), pass `z0=`: inside `jax.grad` or `jax.jit` gfem cannot check that
+`z_ref` is one real value per port, so it asks for the reference to use.
 
 ## Check your results
 

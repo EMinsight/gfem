@@ -1301,14 +1301,17 @@ class NetworkParameters:
                 needs every port excited). Without it, `z_ref` must be one
                 real value per port over frequency, to a relative
                 :math:`10^{-9}` (each port then on its mean real value), or
-                NaN for every port (the response of S on unit modal power).
+                NaN for every port (the response of S on unit modal power);
+                when `z_ref` is traced by JAX this cannot be checked, and
+                ``z0`` is needed.
 
         Raises:
             ValueError: The grid is not harmonic (low pass) or not evenly
                 spaced (band pass), and the message gives the grid to solve
                 on and the explicit resampling through a rational model; an
                 argument is out of range; or `z_ref` is complex, frequency
-                dependent or NaN for some ports only (pass ``z0=``).
+                dependent, NaN for some ports only or traced by JAX (pass
+                ``z0=``).
             NonDifferentiableError: ``mode``, ``kaiser_beta`` or ``n_time``
                 is traced by JAX.
         """

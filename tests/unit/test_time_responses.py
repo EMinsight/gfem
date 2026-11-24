@@ -307,6 +307,36 @@ def test_a_reference_that_is_not_one_real_value_is_refused(z_ref):
     assert np.asarray(net.step_response(z0=50.0).z_ref).tolist() == [50.0]
 
 
+def test_a_traced_reference_needs_z0_and_takes_it():
+    # inside a transformation a traced z_ref cannot be checked to be one real
+    # value per port, so the time views ask for the reference to use
+    f = _harmonic(100)
+    z_ref = (np.linspace(45.0, 55.0, f.size) + 3.0j)[:, None]
+    net = _net(_s11(f), f, z_ref=z_ref)
+
+    def scaled(x):
+        return dataclasses.replace(net, z_ref=net.z_ref * x)
+
+    with pytest.raises(ValueError, match=r"z0=50\.0"):
+        jax.jit(lambda n: n.step_response().values)(net)
+    with pytest.raises(ValueError, match=r"z0=50\.0"):
+        jax.grad(lambda x: scaled(x).impulse_response().values.sum())(1.0)
+
+    eager = net.step_response(z0=50.0)
+    traced = jax.jit(lambda n: n.step_response(z0=50.0))(net)
+    np.testing.assert_allclose(traced.values, eager.values, rtol=0, atol=1e-14)
+    assert np.asarray(traced.z_ref).tolist() == [50.0]
+    # the response on z0 differentiates with respect to the data's reference
+    h = 1e-6
+    x0 = 1.0
+
+    def objective(x):
+        return scaled(x).step_response(z0=50.0)["p1", "p1"][1100]
+
+    central = (objective(x0 + h) - objective(x0 - h)) / (2 * h)
+    assert jax.grad(objective)(x0) == pytest.approx(float(central), rel=1e-5)
+
+
 def _near(z, n, spread=0.0, imag=0.0):
     """``z`` ohm over ``n`` frequencies, off by ``spread`` and ``imag`` relative."""
     ramp = np.linspace(-0.5, 0.5, n)
@@ -418,7 +448,7 @@ def test_a_traced_response_does_not_export_to_xarray():
     pytest.importorskip("xarray")
     net = _line(_harmonic(100))
     with pytest.raises(TypeError, match="to_xarray"):
-        jax.jit(lambda n: n.step_response().to_xarray())(net)
+        jax.jit(lambda n: n.step_response(z0=50.0).to_xarray())(net)
 
 
 def test_the_step_differentiates_as_the_linear_map_it_is():
@@ -454,7 +484,7 @@ def test_jit_gives_the_same_values():
     assert np.allclose(traced.values, eager.values, rtol=0, atol=1e-15)
     assert np.array_equal(traced.time, eager.time)
     assert np.allclose(
-        jax.jit(lambda n: n.impulse_response(mode="band_pass").values)(net),
+        jax.jit(lambda n: n.impulse_response(mode="band_pass", z0=50.0).values)(net),
         net.impulse_response(mode="band_pass").values,
         rtol=0,
         atol=1e-15,
