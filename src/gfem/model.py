@@ -423,7 +423,7 @@ class Model:
         by = _excluded_by_physics(excluded)
         if mesh.dim == 2:
             items = (*_as_tuple(boundaries, "boundaries"), *_as_tuple(ports, "ports"))
-            refuse_model(mesh, materials, items, by, pml)
+            refuse_model(mesh, items, by, pml)
         if domains is None:
             # physics with the same exclusions share one domain
             keys = [frozenset(_excluded_entities(mesh, e)) for e in by]

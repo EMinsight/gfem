@@ -34,6 +34,7 @@ if TYPE_CHECKING:
         Driven,
         Eigenmode,
         Electrostatic,
+        Piezoelectric,
         PortMode,
         SteadyThermal,
         TransientThermal,
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
         DrivenResult,
         EigenmodeResult,
         ElectrostaticResult,
+        PiezoelectricResult,
         PortModeResult,
         SteadyThermalResult,
         TransientThermalResult,
@@ -114,6 +116,15 @@ def solve(
     comm: Any = None,
     cache: str | os.PathLike | None = None,
 ) -> PortModeResult: ...
+@overload
+def solve(
+    model: Model,
+    problem: Piezoelectric,
+    *,
+    options: SolverOptions | None = None,
+    comm: Any = None,
+    cache: str | os.PathLike | None = None,
+) -> PiezoelectricResult: ...
 def solve(
     model: Model,
     problem: Any,
@@ -429,6 +440,13 @@ def _rule_class(problem: Any, dim: int = 3) -> type:
     path = getattr(type(problem), "_rule", None)
     if dim == 2:
         path = getattr(type(problem), "_rule_2d", path)
+    if not isinstance(path, str) and hasattr(type(problem), "_rule_2d"):
+        raise NotImplementedError(
+            f"A {type(problem).__name__} problem solves a 2D mesh "
+            "(gfem.Mesh.from_gmsh on a triangle-only file); a tetrahedral mesh "
+            "or a slab cross-section has no "
+            f"{type(problem).__name__.lower()} solve in this version."
+        )
     if not isinstance(path, str):
         raise TypeError(
             "solve needs a problem type such as gfem.Electrostatic(...), got "

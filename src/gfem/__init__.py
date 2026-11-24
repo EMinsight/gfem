@@ -109,6 +109,7 @@ from gfem.model import (  # noqa: E402
 )
 from gfem.options import SolverOptions  # noqa: E402
 from gfem.problems import (  # noqa: E402
+    DampingFrame,
     DCConduction,
     Driven,
     Eigenmode,
@@ -117,6 +118,7 @@ from gfem.problems import (  # noqa: E402
     GaussianBeam,
     IncidentField,
     MagneticDipole,
+    Piezoelectric,
     PlaneWave,
     PortMode,
     SteadyThermal,
@@ -139,6 +141,7 @@ from gfem.results import (  # noqa: E402
     ElectrostaticResult,
     Field,
     NetworkParameters,
+    PiezoelectricResult,
     PortModeField,
     PortModeResult,
     SteadyThermalResult,
@@ -175,6 +178,7 @@ __all__ = [
     "CrossSections",
     "DCConduction",
     "DCConductionResult",
+    "DampingFrame",
     "Debye",
     "DegenerateModeError",
     "DeviceMemoryWarning",
@@ -233,6 +237,8 @@ __all__ = [
     "PermittivityFit",
     "PermittivityFitWarning",
     "PermittivityLaw",
+    "Piezoelectric",
+    "PiezoelectricResult",
     "PlaneWave",
     "PortGeometryError",
     "PortMode",

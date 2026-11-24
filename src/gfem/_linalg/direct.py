@@ -226,15 +226,21 @@ class DirectHandle(PlannedHandle):
         *,
         is_complex: bool,
         tolerance: float = 1e-6,
+        cholesky: bool = False,
     ) -> None:
         """Factorize an assembled matrix (see `prepare` and `factorize`).
 
         ``symmetry`` is refused before (`from_operator`; `from_scipy`'s real
         symmetric matrix always passes). ``tolerance`` is the prepared
-        tolerance, read only by solves on reused factors.
+        tolerance, read only by solves on reused factors. ``cholesky`` asks
+        for NGSolve's sparse Cholesky of an operator equal to its transpose
+        even with the ``mkl`` extra installed: on a long strip section its
+        minimum degree ordering loses nothing to nested dissection and the
+        factors take half the memory.
         """
         super().__init__(matrix, freedofs, symmetry, is_complex=is_complex)
         self.tolerance = tolerance
+        self._cholesky = cholesky
         factors = self._factor(matrix, freedofs)
         self._factors: Factors | None = factors
         self._solver = factors.inverse
@@ -263,7 +269,7 @@ class DirectHandle(PlannedHandle):
         # on an empty matrix, which PARDISO refuses
         pardiso = (
             pardiso_inverse(self.symmetry, is_complex=self._complex)
-            if free > 0
+            if free > 0 and not self._prefers_cholesky()
             else None
         )
         if pardiso is not None:
@@ -281,6 +287,12 @@ class DirectHandle(PlannedHandle):
         if pardiso is None:
             return UpdateFactors(solver, free)
         return PardisoFactors(solver, self._free, is_complex=self._complex)
+
+    def _prefers_cholesky(self) -> bool:
+        """Whether the handle asked for sparse Cholesky (`__init__`), if it can."""
+        return self._cholesky and equals_its_transpose(
+            self.symmetry, is_complex=self._complex
+        )
 
     @classmethod
     def from_scipy(cls, matrix: sp.sparray | sp.spmatrix) -> DirectHandle:
