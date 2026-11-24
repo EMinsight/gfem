@@ -21,6 +21,7 @@ from gfem._materials import (  # noqa: E402
     Lorentz,
     PermittivityLaw,
 )
+from gfem.broadband import TimeResponse  # noqa: E402
 from gfem.electro_optic import ElectroOpticShift, electro_optic_shift  # noqa: E402
 from gfem.errors import (  # noqa: E402
     AntiBoundRootWarning,
@@ -250,6 +251,7 @@ __all__ = [
     "SweepRankDeficientWarning",
     "ThermoOpticShift",
     "ThinLayerWarning",
+    "TimeResponse",
     "Trace",
     "TransientThermal",
     "TransientThermalResult",

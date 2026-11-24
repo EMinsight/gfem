@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from gfem._line_section import LineSection
     from gfem._pml import PML
     from gfem._port_section import PortSection
+    from gfem.broadband import TimeResponse
     from gfem.problems import Polarization
 
 __all__ = [
@@ -1165,6 +1166,107 @@ class NetworkParameters:
             s = np.asarray(self.renormalize(z0).values)
         path.write_text(_touchstone(self, s, z0))
         return path
+
+    def impulse_response(
+        self,
+        *,
+        mode: Literal["low_pass", "band_pass"] = "low_pass",
+        kaiser_beta: float = 6.0,
+        n_time: int | None = None,
+        z0: float | Sequence[float] | None = None,
+    ) -> TimeResponse:
+        r"""The impulse response of S, a `gfem.TimeResponse` (dimensionless).
+
+        Low pass (default), as a network analyzer's low-pass mode: S must be
+        on a harmonic grid, :math:`f_k = k\,\Delta f` for :math:`k = 1..N`
+        (:math:`N \ge 3`, checked to :math:`10^{-6}`; a 0 Hz point, if
+        present, is the DC value). Without one, DC is
+        :math:`\mathrm{Re}(15 S_1 - 6 S_2 + S_3)/10`, the even polynomial
+        through the first three points. S times the upper half of a Kaiser
+        window of parameter :math:`\beta` goes through a real inverse FFT,
+        with no conjugation under :math:`e^{+i\omega t}`, so a delay is
+        positive time. The result is divided by the window kernel's peak:
+        a frequency-independent reflection :math:`\Gamma` peaks at
+        :math:`\Gamma`. The record is two-sided and periodic,
+        :math:`t_m = (m - n_t/2)/(n_t\,\Delta f)`, of length
+        :math:`T = 1/\Delta f`: later responses alias, so the record should
+        be at least 5 times the settling time. Resolution is set by the
+        span and :math:`\beta`; ``n_time`` only interpolates.
+
+        Band pass: any evenly spaced grid (no DC needed, e.g. a waveguide
+        above cutoff), a full Kaiser window over the band, a complex
+        inverse FFT, and the magnitude :math:`|h(t)|`, kernel-peak
+        normalized, on the same two-sided axis; the sign of a reflection is
+        lost.
+
+        Written in `jax.numpy`: differentiates with respect to S and ``z0``.
+
+        Args:
+            mode: ``"low_pass"`` or ``"band_pass"``.
+            kaiser_beta: The Kaiser window's :math:`\beta`, finite,
+                :math:`\ge 0`: 0 (no window, the sharpest edges, 13 dB
+                sidelobes), 6 (the usual default), 13 (the smoothest).
+            n_time: Samples in the record, even and :math:`\ge 2N`; default
+                the smallest power of two :math:`\ge 20N`.
+            z0: Reference impedance to renormalize S to first, ohm (real,
+                :math:`> 0`; one value or one per port in `ports` order;
+                needs every port excited). Without it, `z_ref` must be one
+                real value per port over frequency, or NaN for every port
+                (the response of S on unit modal power).
+
+        Raises:
+            ValueError: The grid is not harmonic (low pass) or not evenly
+                spaced (band pass), and the message gives the grid to solve
+                on and the explicit resampling through a rational model; an
+                argument is out of range; or `z_ref` is complex, frequency
+                dependent or NaN for some ports only (pass ``z0=``).
+            NonDifferentiableError: ``mode``, ``kaiser_beta`` or ``n_time``
+                is traced by JAX.
+        """
+        from gfem._broadband import _time
+
+        return _time.impulse_response(
+            self, mode=mode, kaiser_beta=kaiser_beta, n_time=n_time, z0=z0
+        )
+
+    def step_response(
+        self,
+        *,
+        kaiser_beta: float = 6.0,
+        n_time: int | None = None,
+        z0: float | Sequence[float] | None = None,
+    ) -> TimeResponse:
+        r"""The step response of S, a `gfem.TimeResponse` (dimensionless).
+
+        The low-pass impulse response (`impulse_response`, before its
+        normalization) summed over the whole two-sided record, so it starts
+        near 0 and settles at :math:`S(0)`. The reflected step at a port is
+        its TDR trace, and `gfem.TimeResponse.impedance` the impedance
+        profile; ``step["p2", "p1"]`` is the transmitted step (TDT), a wave
+        ratio (the voltage ratio is
+        :math:`S_{21} \sqrt{Z_{0,2}/Z_{0,1}}`). The 10-90 % rise of an edge
+        is about :math:`0.99/f_\mathrm{max}` at :math:`\beta = 6`. Needs a
+        harmonic grid (see `impulse_response`): a step needs DC, so there is
+        no band-pass step.
+
+        Written in `jax.numpy`: differentiates with respect to S and ``z0``.
+
+        Args:
+            kaiser_beta: The Kaiser window's :math:`\beta` (see
+                `impulse_response`).
+            n_time: Samples in the record, even and :math:`\ge 2N`; default
+                the smallest power of two :math:`\ge 20N`.
+            z0: Reference impedance to renormalize S to first (see
+                `impulse_response`).
+
+        Raises:
+            ValueError: As `impulse_response` in low pass.
+            NonDifferentiableError: ``kaiser_beta`` or ``n_time`` is traced
+                by JAX.
+        """
+        from gfem._broadband import _time
+
+        return _time.step_response(self, kaiser_beta=kaiser_beta, n_time=n_time, z0=z0)
 
     def _square(self, what: str) -> jax.Array:
         """S with every port as a column, in `ports` order."""
