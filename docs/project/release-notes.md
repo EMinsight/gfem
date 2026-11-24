@@ -209,6 +209,13 @@ Design:
   pixels, to re-solve a pattern or pin fixed neighbours. contourpy is now a
   dependency.
 
+- **GDS export.** `gfem.design.write_gds(path, {(layer, datatype): pattern})`
+  writes layer patterns to a GDSII file for a layout tool or fab: one flat
+  cell, several layers, datatypes (e.g. robust variants for review) and
+  patterns per layer, vertices snapped to a settable database grid (default
+  1 nm), holes as keyhole cuts, large polygons split to stay within what
+  strict readers accept. The same arguments give the same bytes.
+
 - **A fabrication model in the gradient.**
   `gfem.design.FabricationModel(grid, sigma=..., bias=...)` predicts the
   printed design of a drawn (projected) design: a Gaussian blur of standard
