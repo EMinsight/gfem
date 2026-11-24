@@ -291,6 +291,16 @@ def test_a_modal_network_responds_on_unit_modal_power_without_an_impedance():
         _net(_s11(f), f, z_ref=np.nan).step_response(z0=50.0)
 
 
+def test_the_profile_of_a_modal_port_names_the_remedy_that_works():
+    f = _harmonic(100)
+    net = _net(_s11(f), f, z_ref=np.nan)
+    with pytest.raises(ValueError, match="no reference impedance") as info:
+        net.step_response().impedance("p1")
+    # such a network refuses z0= (above), so a voltage_path is the way out
+    assert "voltage_path" in str(info.value)
+    assert "z0" not in str(info.value)
+
+
 @pytest.mark.parametrize(
     "z_ref",
     [

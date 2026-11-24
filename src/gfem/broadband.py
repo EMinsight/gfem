@@ -148,9 +148,9 @@ class TimeResponse:
             raise ValueError(
                 f"Port {port!r} has no reference impedance (z_ref is NaN: a "
                 "network of wave ports without voltage_path), so its step is "
-                "not a voltage ratio and has no impedance profile. Pass z0= to "
-                "step_response with a voltage_path on each WavePort, or give "
-                "the ports one."
+                "not a voltage ratio and has no impedance profile. Give each "
+                "WavePort a voltage_path and solve again: S then has a "
+                "reference impedance to read the profile on."
             )
         rho = self[port, port]
         return self.z_ref[i] * (1 + rho) / (1 - rho)
