@@ -677,10 +677,11 @@ class Mesh:
         """This mesh with its nodes at new coordinates.
 
         The moved mesh has the same elements, regions, length unit and
-        `imported_nodes`; only `nodes` change. It is how a shape design
-        moves a mesh by a map of its own: `jax.grad` of an objective of a
-        solve on the moved mesh reaches ``nodes``, and from there the map's
-        parameters, as for a `gfem.shape.BoundaryMorph`.
+        `imported_nodes`; only `nodes` change. It applies a node map, a
+        JAX function of your design parameters that returns node
+        coordinates: `jax.grad` of an objective of a solve on the moved mesh
+        reaches ``nodes``, and from there the map's parameters, as for a
+        `gfem.shape.BoundaryMorph`.
 
         Concrete coordinates are checked over the whole mesh: an inverted
         element raises, and one below a quarter of its imported quality
