@@ -21,8 +21,9 @@ Resolving ``linear_solver="auto"`` logs one record of the choice
 setup times (`gauge_basis`).
 
 A port mode sweep logs one record when every output frequency passes its
-guard (`port_mode_sweep`): ``ports``, ``frequencies``, ``exact_solves`` and
-``rounds``. An eigenmode mode search logs one record per seed solve
+guard and every reduced row has its dispersion (`port_mode_sweep`):
+``ports``, ``frequencies``, ``exact_solves``, ``rounds`` and
+``fallback_solves``. An eigenmode mode search logs one record per seed solve
 (`seed_solve`), so a retry shows: ``problem``, ``attempt``, ``pairs``
 (asked), ``returned``, ``modes`` (selected), ``wanted`` and ``bound`` (the
 seed solve stopped at its restart bound). Mesh refinement logs its
@@ -290,30 +291,40 @@ def seed_solve(
 
 
 def port_mode_sweep(
-    *, ports: Sequence[str], frequencies: int, exact_solves: int, rounds: int
+    *,
+    ports: Sequence[str],
+    frequencies: int,
+    exact_solves: int,
+    rounds: int,
+    fallback_solves: int,
 ) -> None:
     """Log one port mode sweep, once every output frequency passes its guard.
 
     ``ports`` names the wave ports of the swept surface; ``frequencies`` is
     the output frequency count, ``exact_solves`` the exact port mode solves
-    the sweep made (retries after a rebuild included) and ``rounds`` the
-    times it checked the reduced model over the grid. The attributes carry
-    the same names, ``ports`` as a tuple.
+    the sweep made (retries after a rebuild included), ``rounds`` the times
+    it checked the reduced model over the grid and ``fallback_solves`` the
+    exact solves a reduced row's dispersion needed past its guard (named in
+    the message only when there are some). The attributes carry the same
+    names, ``ports`` as a tuple.
     """
     if not LOGGER.isEnabledFor(logging.INFO):
         return
     ports = tuple(ports)
+    message = "port mode sweep for %s over %d frequencies: %d exact solves, %d rounds"
+    args: tuple = (", ".join(ports), frequencies, exact_solves, rounds)
+    if fallback_solves:
+        message += ", %d fallback solves"
+        args += (fallback_solves,)
     LOGGER.info(
-        "port mode sweep for %s over %d frequencies: %d exact solves, %d rounds",
-        ", ".join(ports),
-        frequencies,
-        exact_solves,
-        rounds,
+        message,
+        *args,
         extra={
             "ports": ports,
             "frequencies": frequencies,
             "exact_solves": exact_solves,
             "rounds": rounds,
+            "fallback_solves": fallback_solves,
         },
     )
 

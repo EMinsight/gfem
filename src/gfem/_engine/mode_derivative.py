@@ -45,8 +45,11 @@ __all__ = [
     "ModeDerivative",
     "gmres_on",
     "mode_derivative",
+    "piece_series",
     "rayleigh_series",
     "residual",
+    "right_hand_side",
+    "slope",
 ]
 
 # GMRES on the shift-invert factor converged within 24 iterations on every
@@ -55,7 +58,7 @@ _RESTART = 50
 _CYCLES = 4
 # a true residual this many times the GMRES tolerance means the preconditioned
 # residual misled it: solve directly instead
-_DIRECT = 100.0
+_DIRECT_SOLVE_RATIO = 100.0
 
 
 class Solve(Protocol):
@@ -96,7 +99,7 @@ class ModeDerivative:
         x: The mode.
         x1: Its derivative :math:`x'` in :math:`k_0`, with
             :math:`x^TB_0x' = 0`.
-        taylor: The pencil's Taylor coefficients at ``k0``, shape (J, 4).
+        coefficients: The pencil's Taylor coefficients at ``k0``, shape (J, 4).
         lam_taylor: :math:`\lambda^{(n)}(k_0)/n!` for :math:`n \le 3`.
         residual: The relative residual of the :math:`x'` equation
             (`residual`).
@@ -106,7 +109,7 @@ class ModeDerivative:
     lam: complex
     x: np.ndarray
     x1: np.ndarray
-    taylor: np.ndarray
+    coefficients: np.ndarray
     lam_taylor: np.ndarray
     residual: float
 
@@ -153,13 +156,11 @@ def mode_derivative(
         solve: The solve for :math:`x'` (`Solve`).
         k0: The wavenumber, per local unit.
     """
-    a_n = _series(a, coefficients)
-    b_n = _series(b, coefficients)
+    a_n = piece_series(a, coefficients)
+    b_n = piece_series(b, coefficients)
     bx, a1x, b1x = b_n[0] @ x, a_n[1] @ x, b_n[1] @ x
-    lam1 = (x @ a1x - lam * (x @ b1x)) / (x @ bx)
-    rhs = -(a1x - lam1 * bx - lam * b1x)
-    norm = np.linalg.norm
-    size = float(norm(a1x) + abs(lam1) * norm(bx) + abs(lam) * norm(b1x))
+    lam1 = slope(x, a1x, bx, b1x, lam)
+    rhs, size = right_hand_side(a1x, bx, b1x, lam, lam1)
     x1, eta = solve(a_n[0], b_n[0], lam, rhs, x, size=size)
     series = rayleigh_series(a_n, b_n, x, x1)
     return ModeDerivative(
@@ -167,10 +168,48 @@ def mode_derivative(
         lam=lam,
         x=x,
         x1=x1,
-        taylor=coefficients,
+        coefficients=coefficients,
         lam_taylor=np.array([lam, lam1, series[2], series[3]], dtype=complex),
         residual=eta,
     )
+
+
+def piece_series(pieces: Sequence[Any], coefficients: np.ndarray) -> list[Any]:
+    r""":math:`M_n = \sum_j c_{jn}M_j` for each order :math:`n \le 3`.
+
+    ``pieces`` holds :math:`M_j` (sparse or dense, any shape) and
+    ``coefficients`` the matching rows :math:`c_{jn}`, shape (J, 4).
+    """
+    return [
+        sum(c * m for c, m in zip(coefficients[:, n], pieces, strict=True))
+        for n in range(ORDER + 1)
+    ]
+
+
+def slope(
+    x: np.ndarray, a1x: np.ndarray, b0x: np.ndarray, b1x: np.ndarray, lam: complex
+) -> complex:
+    r"""Hellmann-Feynman: :math:`\lambda' = x^T(A_1 - \lambda B_1)x / x^TB_0x`.
+
+    From the products :math:`A_1x`, :math:`B_0x` and :math:`B_1x`.
+    """
+    return complex((x @ a1x - lam * (x @ b1x)) / (x @ b0x))
+
+
+def right_hand_side(
+    a1x: np.ndarray, b0x: np.ndarray, b1x: np.ndarray, lam: complex, lam1: complex
+) -> tuple[np.ndarray, float]:
+    r"""The :math:`x'` equation's right-hand side and its uncancelled size.
+
+    :math:`r = -(A_1 - \lambda'B_0 - \lambda B_1)x` and
+    :math:`s = \|A_1x\| + |\lambda'|\,\|B_0x\| + |\lambda|\,\|B_1x\|`
+    (`residual`), from the products :math:`A_1x`, :math:`B_0x` and
+    :math:`B_1x`.
+    """
+    norm = np.linalg.norm
+    rhs = -(a1x - lam1 * b0x - lam * b1x)
+    size = float(norm(a1x) + abs(lam1) * norm(b0x) + abs(lam) * norm(b1x))
+    return rhs, size
 
 
 def rayleigh_series(
@@ -243,7 +282,7 @@ def gmres_on(factor: Preconditioner, rtol: float) -> Solve:
         )
         x1 = _orthogonal(z, x, bx)
         eta = residual(a0, b0, lam, x1, rhs, size=size)
-        if info == 0 and eta <= _DIRECT * rtol:
+        if info == 0 and eta <= _DIRECT_SOLVE_RATIO * rtol:
             return x1, eta
         try:
             z = spla.splu(sp.csc_matrix(t)).solve(rhs)
@@ -288,14 +327,6 @@ class _FactorOperator(spla.LinearOperator):
         return self._factor.solve(x)
 
 
-def _series(pieces: Sequence[Any], coefficients: np.ndarray) -> list[Any]:
-    r""":math:`\sum_j c_{jn} M_j` for each order ``n``."""
-    return [
-        sum(c * m for c, m in zip(coefficients[:, n], pieces, strict=True))
-        for n in range(ORDER + 1)
-    ]
-
-
 def _orthogonal(z: np.ndarray, x: np.ndarray, bx: np.ndarray) -> np.ndarray:
-    """``z`` less its ``x`` component in the bilinear form of ``B_0``."""
+    r"""``z`` less its ``x`` component in the bilinear form :math:`u^TB_0v`."""
     return z - x * ((bx @ z) / (x @ bx))

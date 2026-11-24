@@ -10,6 +10,7 @@ derivative to solve for.
 """
 
 import dataclasses
+import logging
 import math
 from pathlib import Path
 from types import SimpleNamespace
@@ -147,7 +148,7 @@ def test_gmres_that_does_not_converge_falls_back_to_a_direct_solve(slab_mesh):
 # --- the sweep's exact solves ----------------------------------------------------
 
 
-def _greedy(slab_mesh, dispersion=(), tolerance=1e-6):
+def _greedy(slab_mesh, dispersive_modes=(), tolerance=1e-6):
     space = _space(slab_mesh, "slab", 4.0, "air")
     grid = np.linspace(10e9, 20e9, 20)
     return _Greedy(
@@ -156,7 +157,7 @@ def _greedy(slab_mesh, dispersion=(), tolerance=1e-6):
         [1],
         tolerance,
         [gfem.WavePort("p1", "port1")],
-        dispersion=dispersion,
+        dispersive_modes=dispersive_modes,
     )
 
 
@@ -175,7 +176,7 @@ def test_a_sample_s_mode_derivative_solves_to_its_own_backward_error(
     slab_mesh, monkeypatch
 ):
     seen = _spy_rtol(monkeypatch)
-    greedy = _greedy(slab_mesh, dispersion=(0,))
+    greedy = _greedy(slab_mesh, dispersive_modes=(0,))
     first = greedy._solve(0)
     assert first.residual[0] < 1e-10
     greedy._keep(0, first, [0])
@@ -185,7 +186,7 @@ def test_a_sample_s_mode_derivative_solves_to_its_own_backward_error(
 
 
 def test_a_kept_sample_holds_its_derivative_and_drops_its_factor(slab_mesh):
-    greedy = _greedy(slab_mesh, dispersion=(0,))
+    greedy = _greedy(slab_mesh, dispersive_modes=(0,))
     first = greedy._solve(0)
     assert first.factor is not None
     greedy._keep(0, first, [0])
@@ -196,7 +197,7 @@ def test_a_kept_sample_holds_its_derivative_and_drops_its_factor(slab_mesh):
 
 
 def test_a_re_picked_sample_refactors_for_its_new_mode(slab_mesh, monkeypatch):
-    greedy = _greedy(slab_mesh, dispersion=(0,))
+    greedy = _greedy(slab_mesh, dispersive_modes=(0,))
     greedy._keep(0, greedy._solve(0), [0])
     factors = []
     real = ShiftInvert.factor
@@ -224,7 +225,7 @@ def test_without_dispersion_a_sweep_keeps_no_factor_and_derives_nothing(
 
 
 def test_derivatives_leave_the_sweep_bit_identical(slab_mesh):
-    plain, derived = _greedy(slab_mesh), _greedy(slab_mesh, dispersion=(0,))
+    plain, derived = _greedy(slab_mesh), _greedy(slab_mesh, dispersive_modes=(0,))
     plain.run()
     derived.run()
     np.testing.assert_array_equal(derived.lam, plain.lam)
@@ -538,6 +539,90 @@ def test_a_reduced_row_s_dispersion_matches_an_exact_solve(swept):
             assert _relative(complex(value), complex(expected)) <= gate, SWEEP_GRID[i]
 
 
+HOMOGENEOUS_GRID = np.linspace(10e9, 15e9, 41)
+
+
+def _sweep_record(caplog):
+    (record,) = [
+        r for r in caplog.records if getattr(r, "fallback_solves", None) is not None
+    ]
+    return record
+
+
+@pytest.mark.parametrize("fill", ["air", "eps4"])
+def test_a_filled_guide_s_reduced_rows_need_no_fallback_solve(guide_mesh, fill, caplog):
+    # x' = 0 exactly, so the derivative equation's right-hand side is rounding
+    # of its terms: beta_2 and beta_3 are still those of the guide's own
+    # dispersion, not a small difference
+    material, _ = GUIDE_FILLS[fill]
+    model = gfem.Model(
+        guide_mesh,
+        materials={"air": material},
+        boundaries=[gfem.PEC("walls")],
+        ports=[gfem.WavePort("p1", "port1")],
+    )
+    caplog.set_level(logging.INFO, logger="gfem.solver")
+    result = gfem.solve(model, gfem.PortMode("p1", HOMOGENEOUS_GRID))
+    assert _sweep_record(caplog).fallback_solves == 0
+    solved = np.asarray(result.solved)
+    assert not solved.all()
+    for i in np.flatnonzero(~solved)[::6]:
+        ref = gfem.solve(model, gfem.PortMode("p1", HOMOGENEOUS_GRID[i]))
+        got = (result.n_g[i], result.beta_2[i], result.beta_3[i])
+        want = (ref.n_g[0], ref.beta_2[0], ref.beta_3[0])
+        for value, gate, expected in zip(got, (1e-12, 1e-10, 1e-8), want, strict=True):
+            assert _relative(complex(value), complex(expected)) <= gate, i
+
+
+def test_a_sweep_logs_its_fallback_solves_beside_its_exact_solves(
+    slab_mesh, monkeypatch, caplog
+):
+    space = _space(slab_mesh, "slab", 4.0, "air")
+    grid = np.linspace(10e9, 20e9, 20)
+    ports = [gfem.WavePort("p1", "port1")]
+    caplog.set_level(logging.INFO, logger="gfem.solver")
+    (plain,) = sweep.port_mode_sweep(
+        space, grid, [1], tolerance=1e-6, ports=ports, dispersive_modes=(0,)
+    )
+    before = _sweep_record(caplog)
+    assert before.fallback_solves == 0
+    caplog.clear()
+    # no row can reach a floor of 0: every reduced row falls back
+    monkeypatch.setattr(_Greedy, "_guard_floor", lambda self: np.zeros_like(self.floor))
+    sweep.port_mode_sweep(
+        space, grid, [1], tolerance=1e-6, ports=ports, dispersive_modes=(0,)
+    )
+    after = _sweep_record(caplog)
+    assert after.exact_solves == before.exact_solves
+    assert after.fallback_solves == (~np.asarray(plain.solved)).sum()
+    assert after.getMessage().endswith(
+        f"{after.exact_solves} exact solves, {after.rounds} rounds, "
+        f"{after.fallback_solves} fallback solves"
+    )
+
+
+def test_a_driven_sweep_builds_no_derivative_basis(slab_mesh, monkeypatch):
+    built = []
+    real = _Greedy._derivative_basis
+
+    def spy(self, extra):
+        built.append(self)
+        return real(self, extra)
+
+    monkeypatch.setattr(_Greedy, "_derivative_basis", spy)
+    model = gfem.Model(
+        slab_mesh,
+        materials={"slab": gfem.Material(eps_r=4.0), "air": gfem.Material()},
+        boundaries=[gfem.PEC("walls")],
+        ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")],
+    )
+    result = gfem.solve(
+        model, gfem.Driven(tuple(np.linspace(16e9, 20e9, 6)), excite="p1")
+    )
+    assert not np.asarray(result.port_modes["p1"].solved).all()
+    assert built == []
+
+
 # --- the derivative basis and its guard ----------------------------------------------
 
 
@@ -549,7 +634,7 @@ RELATIVE, ABSOLUTE = 1e-10, 1e-15
 
 
 def _run(slab_mesh, tolerance=1e-6):
-    greedy = _greedy(slab_mesh, dispersion=(0,), tolerance=tolerance)
+    greedy = _greedy(slab_mesh, dispersive_modes=(0,), tolerance=tolerance)
     greedy.run()
     return greedy
 
