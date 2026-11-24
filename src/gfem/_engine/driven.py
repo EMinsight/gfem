@@ -2297,7 +2297,7 @@ class DrivenRule:
             )
         return adjoint, load, undefined
 
-    def _backward_adaptive(  # noqa: PLR0912
+    def _backward_adaptive(  # noqa: PLR0912, PLR0915 - one frequency loop, two adjoints
         self,
         model: Model,
         entry: Entry,
@@ -2325,6 +2325,13 @@ class DrivenRule:
         (`SourceColumns.reduced_power_loads`), and with the node coordinates
         wanted, its load's node term reads the adjoint and the solution
         on the basis (`_add_explicit_nodes`).
+
+        Port waves read by reciprocity (``source_fields=False``) take no
+        reduced adjoint: at each frequency where they carry a cotangent, one
+        adjoint column per port is solved at full size and paired with the
+        port's reduced solution (`_reciprocal_adaptive_pair`). A dipole's
+        near field is in no basis of port solutions, so a reduced adjoint
+        would miss it for a design near a dipole, at the samples too.
         """
         kept = ReducedKept.of(entry)
         basis, matrices = kept.basis, kept.matrices
@@ -2334,31 +2341,43 @@ class DrivenRule:
         n, n_exc, width = basis.shape[1], len(self.excite), len(self.columns)
         ct_c = cotangents.get("e_coordinates")
         ct_p = cotangents.get("emitted_power")
+        ct_w = cotangents.get("port_waves") if self.reciprocal else None
         nodes = bool(self.dipoles) and (wanted is None or ("nodes",) in wanted)
         self._explicit_nodes = None
         self._port_nodes_report = {}
         accumulated: dict[str, np.ndarray] = {}
-        with task_manager(self.options.threads):
+        full: list[FieldPair] = []
+        with task_manager(self.options.threads), contextlib.ExitStack() as stack:
             op = self.operator(model)
-            sources, projected = None, None
+            sources, projected, sweep = None, None, None
             system, port_pass = self._adaptive_ports(
-                model, wanted, sources=ct_p is not None or nodes
+                model, wanted, sources=ct_p is not None or nodes or ct_w is not None
             )
-            if system is not None and (ct_p is not None or nodes):
-                sources = self._source_columns(model, system)
+            self._refuse_reciprocal_port_pass(port_pass)
+            if system is not None and (ct_p is not None or nodes or ct_w is not None):
+                sources, sweep = self._adaptive_sources(
+                    model, system, stack, full_size=ct_w is not None
+                )
                 if sources is not None and sources.dipoles is not None:
                     projected = (sources.dipoles[1].vectors.T @ basis).T
             domain = em_region(model, op.built)
             for i, f in enumerate(self.problem.frequency):
                 omega = 2 * math.pi * f
+                if sweep is not None and sources is not None and ct_w is not None:
+                    pair = self._reciprocal_adaptive_pair(
+                        model,
+                        kept,
+                        sweep,
+                        sources,
+                        i,
+                        np.asarray(ct_w[i]) * deembedding[i][:, None],
+                        nodes=nodes,
+                        laws=laws,
+                    )
+                    if pair is not None:
+                        full.append(pair)
                 g = np.zeros((n, width), complex)
-                ct = np.zeros((len(self.port_names), width), complex)
-                for name, part in (
-                    ("s", slice(0, n_exc)),
-                    ("port_waves", slice(n_exc, None)),
-                ):
-                    if cotangents.get(name) is not None:
-                        ct[:, part] = cotangents[name][i]
+                ct = self._reduced_cotangent(i, cotangents)
                 if ct.any():
                     split = split_cotangent(
                         ct, deembedding[i], columns, functionals[i].T
@@ -2410,7 +2429,7 @@ class DrivenRule:
                         domain=domain,
                     )
                 )
-        return [*pairs, *port_terms]
+        return [*pairs, *full, *port_terms]
 
     def _refuse_reciprocal_port_pass(self, port_pass: PortPass | None) -> None:
         """Refuse a design at a wave port face under ``source_fields=False``.
@@ -2467,6 +2486,97 @@ class DrivenRule:
         system, ports = self.system(model)
         port_pass = PortPass(self, model, system, ports, wanted) if reads else None
         return system, (port_pass if port_pass and port_pass.active else None)
+
+    def _adaptive_sources(
+        self,
+        model: Model,
+        system: SystemOperator,
+        stack: contextlib.ExitStack,
+        *,
+        full_size: bool,
+    ) -> tuple[SourceColumns | None, SystemSweep | None]:
+        """The adaptive backward's source columns, and its full-size sweep.
+
+        ``system`` is the one `_adaptive_ports` built. With ``full_size``
+        (port waves read by reciprocity carry a cotangent) a sweep at the
+        adjoint tolerance, one base refactorized at each frequency with a
+        cotangent, held by ``stack`` with the system.
+        """
+        sources = self._source_columns(model, system)
+        if not full_size:
+            return sources, None
+        stack.callback(system.free)
+        sweep = stack.enter_context(
+            system.sweep(
+                reuse_preconditioner=False,
+                tolerance=adjoint_tolerance(self.options),
+                pool_budget=retain_budget(self.options.retain_memory),
+            )
+        )
+        return sources, sweep
+
+    def _reduced_cotangent(
+        self, i: int, cotangents: Mapping[str, np.ndarray]
+    ) -> np.ndarray:
+        """Frequency ``i``'s cotangent on the reduced columns' waves.
+
+        ``(n_ports, n_columns)``: S's on the excited ports' columns, a source
+        column's port waves' on its own; port waves read by reciprocity have
+        no column (`_reciprocal_adaptive_pair`).
+        """
+        n_exc = len(self.excite)
+        ct = np.zeros((len(self.port_names), len(self.columns)), complex)
+        if cotangents.get("s") is not None:
+            ct[:, :n_exc] = cotangents["s"][i]
+        if cotangents.get("port_waves") is not None and not self.reciprocal:
+            ct[:, n_exc:] = cotangents["port_waves"][i]
+        return ct
+
+    def _reciprocal_adaptive_pair(  # noqa: PLR0917 - one frequency's adjoint
+        self,
+        model: Model,
+        kept: ReducedKept,
+        sweep: SystemSweep,
+        sources: SourceColumns,
+        i: int,
+        ct: np.ndarray,
+        *,
+        nodes: bool,
+        laws: bool,
+    ) -> FieldPair | None:
+        r"""Frequency ``i``'s pair of port waves read by reciprocity, adaptive sweep.
+
+        ``ct`` ``(n_ports, n_sources)`` is their cotangent, de-embedded. Port
+        :math:`i`'s solution is its reduced one, :math:`z_i = V\zeta_i` with
+        :math:`\zeta_i = A_r^{-1} V^\mathsf{T} f_i` (the kept reduced matrix
+        and S functional), and its adjoint column :math:`y_i = A^{-1}\sum_c
+        \bar W_{ic} d_i b_c` is solved at full size on ``sweep``: the pair
+        :math:`(-y_i, z_i)` is exact at the samples, where :math:`z_i` lies in
+        the basis, and accurate to the sweep's field error between them.
+        ``None`` without a cotangent at ``i``.
+        """
+        rows = np.flatnonzero(np.any(ct != 0, axis=1))
+        if not rows.size:
+            return None
+        f = self.problem.frequency[i]
+        omega = 2 * math.pi * f
+        zeta = np.linalg.solve(kept.matrices[i], kept.functionals[i][rows].T)
+        z = kept.basis @ zeta
+        try:
+            y, _ = sweep.solve(omega, sources.port_wave_loads(omega, ct[rows]))
+        except LinearSolverConvergenceError as err:
+            raise _adjoint_error(f, err) from err
+        if nodes:
+            self._add_port_wave_nodes(
+                model, sources, omega, solutions=z, weights=ct[rows]
+            )
+        op = self.operator(model)
+        return op.pair(
+            -np.asarray(y),
+            z,
+            weights=op.weights(omega, laws=laws),
+            domain=em_region(model, op.built),
+        )
 
     def _add_explicit_nodes(
         self,

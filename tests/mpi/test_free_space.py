@@ -15,7 +15,8 @@ process:
   `EXACT_GATE`, with and without an element set whose edge crosses the
   partition;
 - a dipole's port waves read by reciprocity (`Driven(source_fields=False)`)
-  are one process's, and its own column's, to `GATE`;
+  are one process's, and its own column's, to `GATE`, and so is their
+  gradient by the cube's permittivity (one adjoint column per port);
 - the Purcell factor's gradient by the cube's permittivity is one process's;
 - on a finer box, whose truncation layer is background, the cross sections of
   the plane wave, `gfem.power_flow` (the corrected one of the wave's total
@@ -169,8 +170,12 @@ def test_source_measurements_across_ranks_are_one_process_s(box):
 
 
 def _reciprocal_waves(path, position):
-    """The dipole's port waves read by reciprocity, and its own column's."""
-    model = fs.scatterer_model(path)
+    """The dipole's port waves read by reciprocity, and its own column's.
+
+    Then the gradient of ``sum |W|^2``, read by reciprocity, by the cube's
+    permittivity.
+    """
+    model = fs.scatterer_model(path, field=True)
     dipole = gfem.ElectricDipole("d", position=position, moment=MOMENT)
     kwargs = {"excite": (), "sources": dipole}
     read = gfem.solve(
@@ -178,7 +183,19 @@ def _reciprocal_waves(path, position):
     )
     column = gfem.solve(model, gfem.Driven(GRID, **kwargs), options=_options())
     assert read.emitted_power == {}
-    return np.asarray(read.port_waves), np.asarray(column.port_waves)
+
+    def power(eps):
+        moved = model.with_material("scat", gfem.MaterialField(eps_r=eps))
+        problem = gfem.Driven(GRID, source_fields=False, **kwargs)
+        waves = gfem.solve(moved, problem, options=_options()).port_waves
+        return jnp.sum(jnp.abs(waves) ** 2)
+
+    grad = jax.grad(power)(jnp.asarray(model.materials["scat"].eps_r))
+    return (
+        np.asarray(read.port_waves),
+        np.asarray(column.port_waves),
+        np.asarray(grad),
+    )
 
 
 def _on_ranks_reciprocal_waves(path):
@@ -188,16 +205,18 @@ def _on_ranks_reciprocal_waves(path):
 
 @needs_stack
 def test_reciprocal_port_waves_across_ranks_are_one_process_s(box):
-    position, holders, read, column = on_ranks(
-        _on_ranks_reciprocal_waves, box, ranks=RANKS, limit=300
+    position, holders, read, column, grad = on_ranks(
+        _on_ranks_reciprocal_waves, box, ranks=RANKS, limit=600
     )[0]
     assert len(holders) == 1
     assert holders[0] != 0
-    one, one_column = _reciprocal_waves(box, position)
+    one, one_column, one_grad = _reciprocal_waves(box, position)
+    assert np.abs(one_grad).max() > 0
     for name, got, want in (
         ("one process", read, one),
         ("its own column", read, one_column),
         ("ranks column", column, one_column),
+        ("one process's gradient", grad, one_grad),
     ):
         error = _relative(got, want)
         print(f"ranks={RANKS} reciprocal waves vs {name} error={error:.3g}")  # noqa: T201

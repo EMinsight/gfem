@@ -290,6 +290,8 @@ PROBLEMS = {
     # electric or magnetic dipole beside a wave port (its emitted power)
     "driven_planewave": Problem("driven_incident", "e_fields.0.coefficients"),
     "driven_dipole": Problem("driven_dipole", "emitted_power.d", "wave"),
+    # the dipole's port waves read by reciprocity (no source column)
+    "driven_dipole_reciprocal": Problem("driven_dipole", "port_waves", "wave"),
     "driven_magnetic_dipole": Problem(
         "driven_magnetic_dipole", "emitted_power.d", "wave"
     ),

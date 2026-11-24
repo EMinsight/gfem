@@ -353,3 +353,98 @@ def test_a_magnetic_dipole_refuses_the_node_coordinates_alike(dipole_line):
             )
         messages.append(str(raised.value))
     assert messages[0] == messages[1]
+
+
+# --- the adaptive sweep -----------------------------------------------------------
+
+#: Relative to max |dW|, at a sample against the uniform columns: the ports'
+#: reduced solutions are their full ones there (2e-14 measured on the line; a
+#: gradient on the frozen port basis is off by 9.7e-2 for this design).
+SAMPLE_GATE = 1e-8
+#: Between samples, the gradient's error relative to max |dW| stays within
+#: this many times the sweep's own forward error, max |dW| / max |W| over the
+#: grid (ratios 0.1-0.9 measured; the frozen port basis is 30 times over).
+FIELD_ERROR_RATIO = 10
+#: The slab around dipole 0 whose permittivity the design scales, mm along x.
+SLAB_HALF_WIDTH_MM = 0.5
+
+
+def _slab_design(model):
+    """``p -> model``: eps_r of "dielectric" as 4 (1 + p chi), chi the slab's."""
+    mesh = model.mesh
+    elements = mesh.elements("dielectric")
+    centroids = np.asarray(mesh.nodes)[np.asarray(mesh.tetrahedra)[elements]].mean(1)
+    x0 = rc.dipoles()[0].position[0]
+    chi = jnp.asarray(np.abs(centroids[:, 0] - x0) <= SLAB_HALF_WIDTH_MM * 1e-3, float)
+    assert 0 < float(chi.sum()) < len(chi)
+
+    def build(p):
+        eps = 4.0 * (1 + p * chi)
+        return model.with_material("dielectric", gfem.MaterialField(eps_r=eps))
+
+    return build
+
+
+def _wave_jacobian(build, problem, row, options):
+    """d(Re W, Im W)/dp at grid row ``row``, ``(2, n_ports, n_sources)``."""
+
+    def waves(p):
+        w = gfem.solve(build(p), problem, options=options).port_waves[row]
+        return jnp.stack([jnp.real(w), jnp.imag(w)])
+
+    return np.asarray(jax.jacrev(waves)(jnp.asarray(0.0)))
+
+
+def _adaptive_problem(samples, excite):
+    grid = rc.grid()
+    return gfem.Driven(
+        grid,
+        excite=excite,
+        sources=rc.dipoles(),
+        sweep="adaptive",
+        samples=tuple(grid[i] for i in samples),
+        source_fields=False,
+    )
+
+
+def _column_jacobian(build, row, excite):
+    problem = gfem.Driven((rc.grid()[row],), excite=excite, sources=rc.dipoles())
+    return _wave_jacobian(build, problem, 0, rc.ORDER2)
+
+
+@pytest.mark.parametrize("excite", [None, ()])
+def test_adaptive_reciprocal_gradients_are_exact_at_the_samples(line, excite):
+    build = _slab_design(line)
+    samples = (0, 20, 40)
+    problem = _adaptive_problem(samples, excite)
+    for row in samples:
+        got = _wave_jacobian(build, problem, row, rc.ORDER2)
+        want = _column_jacobian(build, row, excite)
+        assert np.abs(want).max() > 0
+        assert _relative(got, want) <= SAMPLE_GATE
+
+
+@pytest.mark.parametrize(
+    ("samples", "row"),
+    [((0, 20, 40), 10), ((0, 8, 16, 24, 32, 40), 4)],
+    ids=["3-samples", "6-samples"],
+)
+def test_adaptive_reciprocal_gradients_between_samples_follow_the_field_error(
+    line, samples, row
+):
+    build = _slab_design(line)
+    problem = _adaptive_problem(samples, ())
+    # the same sweep's forward error over the grid, against the uniform columns
+    model = build(jnp.asarray(0.0))
+    adaptive = gfem.solve(model, problem, options=rc.ORDER2).port_waves
+    uniform = gfem.solve(
+        model,
+        gfem.Driven(rc.grid(), excite=(), sources=rc.dipoles()),
+        options=rc.ORDER2,
+    ).port_waves
+    forward = _relative(adaptive, uniform)
+    got = _wave_jacobian(build, problem, row, rc.ORDER2)
+    want = _column_jacobian(build, row, ())
+    error = _relative(got, want)
+    print(f"samples={len(samples)} dW error {error:.2g}, W error {forward:.2g}")  # noqa: T201
+    assert error <= FIELD_ERROR_RATIO * forward

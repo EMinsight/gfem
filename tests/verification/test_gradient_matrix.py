@@ -15,7 +15,10 @@ One cell per problem type x input kind x linear solver x frequency sweep:
   dissipation through a Joule heat source); the dissipated power per
   region and sheet of a driven field, the steady rise its heat drives
   (`gfem.electromagnetic_heating`), and the heat through a sink and a cut,
-  steady (`gfem.heat_flow`) and transient (`gfem.Trace.heat_out`);
+  steady (`gfem.heat_flow`) and transient (`gfem.Trace.heat_out`); a
+  plane wave's kept field, a point dipole's emitted power, and a dipole's
+  port wave read by reciprocity (``driven_dipole_reciprocal``:
+  ``source_fields=False``, uniform, and adaptive at frozen samples);
 - inputs: per-element permittivity ``eps_r`` and conductivity, the same per
   principal value of a field with axes (``eps_r_axes``,
   ``conductivity_axes``: biaxial values on the `TILTED` axes, so every
@@ -745,6 +748,10 @@ def _source_cells() -> list[Cell]:
     On the direct solver and the uniform sweep: the load of a source column
     is the only new path, and it is the same for every solver. The node
     coordinates of a plane wave or a magnetic dipole raise (`OUT_OF_SCOPE`).
+    ``driven_dipole_reciprocal``: the dipole's port wave read by reciprocity
+    (``source_fields=False``, no source column), whose backward solves one
+    adjoint column per port; on the adaptive sweep at frozen samples, where
+    those columns are solved at full size.
     """
     return [
         *(
@@ -759,6 +766,11 @@ def _source_cells() -> list[Cell]:
             Cell("driven_magnetic_dipole", name, "direct", "uniform")
             for name in ("eps_r", "conductivity", "fill")
         ),
+        *(
+            Cell("driven_dipole_reciprocal", name, "direct", "uniform")
+            for name in ("eps_r", "conductivity", "fill", "nodes")
+        ),
+        Cell("driven_dipole_reciprocal", "eps_r", "direct", "adaptive"),
     ]
 
 
@@ -1587,6 +1599,71 @@ def _dipole_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
         np.random.default_rng(seed),
         step=1e-9,
         taylor=3e-8,
+        taylor_at=jnp.full(morph.n_params, 1e-10),
+    )
+
+
+#: The reciprocal port wave's grid on the adaptive sweep, its frozen samples
+#: and the sample its objective reads.
+RECIPROCAL_GRID = tuple(float(f) for f in np.linspace(0.9, 1.1, 5) * pml_cases.F0)
+RECIPROCAL_SAMPLES = (RECIPROCAL_GRID[0], RECIPROCAL_GRID[4], RECIPROCAL_GRID[2])
+#: |W|^2 of the dipole's port wave is 3e-11 W on the eps_r design: the scale
+#: that makes the objective O(1).
+RECIPROCAL_SCALE = 1e-11
+
+
+def _reciprocal_wave(cell: Cell, model, options):
+    """|W_p1,d|^2 / scale, the dipole's port wave read by reciprocity."""
+    dipole, _ = SOURCE_DIPOLES["driven_dipole"]
+    if cell.sweep == "adaptive":
+        problem = gfem.Driven(
+            RECIPROCAL_GRID,
+            excite=(),
+            sources=dipole,
+            source_fields=False,
+            sweep="adaptive",
+            samples=RECIPROCAL_SAMPLES,
+        )
+        row = 2
+    else:
+        problem = gfem.Driven(
+            pml_cases.F0, excite=(), sources=dipole, source_fields=False
+        )
+        row = 0
+    result = gfem.solve(model, problem, options=options)
+    return jnp.abs(result.port_wave("p1", "d")[row]) ** 2 / RECIPROCAL_SCALE
+
+
+def _reciprocal_material(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """The dipole's port wave in the slab's property or its sheet's fill."""
+    model = d.dipole_line
+    values, rng = _source_design(model, "slab", seed)
+
+    def objective(p):
+        moved = _with_source_design(model, "slab", values, cell.input, p)
+        return _reciprocal_wave(cell, moved, options)
+
+    return _source_case(cell, objective, values, rng)
+
+
+def _reciprocal_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """The dipole's port wave as the slab's face, and the dipole's element, move."""
+    values, _ = _source_design(d.dipole_line, "slab", seed)
+    model = _with_source_design(d.dipole_line, "slab", values, "fill", values["fill"])
+    morph = boundary_morph(model, "front", grows="slab")
+
+    def objective(t):
+        return _reciprocal_wave(cell, model.replace(mesh=morph(t)), options)
+
+    return Case(
+        objective,
+        jnp.zeros(morph.n_params),
+        np.random.default_rng(seed),
+        step=1e-9,
+        # the port wave's third-order term cancels its second near 1e-8 (the
+        # remainders' slope reads 5.4 from 3e-8 to 1e-8): second order from
+        # 1e-9 down (slopes 1.98 and 1.99 measured, remainders 7e-7 to 8e-9)
+        taylor=1e-9,
         taylor_at=jnp.full(morph.n_params, 1e-10),
     )
 
@@ -3817,6 +3894,11 @@ BUILDERS = {
         for name in ("eps_r", "conductivity", "fill")
     },
     ("driven_dipole", "nodes"): _dipole_nodes,
+    **{
+        ("driven_dipole_reciprocal", name): _reciprocal_material
+        for name in ("eps_r", "conductivity", "fill")
+    },
+    ("driven_dipole_reciprocal", "nodes"): _reciprocal_nodes,
 }
 # --- port mode builders (the cells are listed with `_port_mode_cells`) ---
 
