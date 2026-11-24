@@ -81,6 +81,7 @@ from gfem import _timing
 from gfem._engine.cache import ENTRIES
 from gfem._engine.wave_ports import PortSurfaceCoupling
 from gfem._linalg import (
+    KRYLOV_KINDS,
     Handle,
     Operator,
     ResolvedLinearSolver,
@@ -556,7 +557,7 @@ class SystemOperator:
         return (
             self._transposed is None
             and self._linear.device == "cpu"
-            and self._linear.kind in ("direct", "bddc_gmres", "pmg_gmres")
+            and self._linear.kind in ("direct", *KRYLOV_KINDS)
         )
 
     def free_base(self, *, return_plan: bool = False, walk: bool = True) -> None:

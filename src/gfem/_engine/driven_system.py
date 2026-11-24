@@ -27,6 +27,7 @@ from gfem._engine.gauge import gauge_basis
 from gfem._engine.port_network import PortNetwork
 from gfem._engine.system_operator import SystemOperator, SystemSweep
 from gfem._engine.wave_ports import PortSurfaceCoupling, wave_port_couplings
+from gfem._linalg import KRYLOV_KINDS
 from gfem._linalg.layout import ONE_PROCESS
 from gfem._port_section import port_section_key
 
@@ -233,7 +234,7 @@ class DesignGuess:
         op = system.operator
         disc = cached(op.built)
         if (
-            builder.linear.kind not in ("bddc_gmres", "pmg_gmres")
+            builder.linear.kind not in KRYLOV_KINDS
             or builder.comm is not None
             or builder.retain_memory == 0
             or disc is None

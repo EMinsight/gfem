@@ -312,8 +312,9 @@ class VCycle(ngs.BaseMatrix):
     r"""One symmetric V-cycle of the two-level p-multigrid, as an NGSolve matrix.
 
     $y = M x$: from $y = 0$, one forward block Gauss-Seidel sweep on
-    $A y = x$, the direct correction $y \mathrel{+}= A_{DD}^{-1} (x - A y)_D$
-    on the direct set $D$, one backward sweep. The cycle is linear in $b$, and complex
+    $A y = x$; the residual $r = x - A y$ and the direct correction
+    $z = A_{DD}^{-1} r_D$ on the direct set $D$, $y \mathrel{+}= z$; one
+    backward sweep on $A y = x$. The cycle is linear in $x$, and complex
     symmetric when $A$ is.
 
     Attributes:
@@ -480,6 +481,3 @@ class PmgHandle(KrylovHandle):
             return 0
         own = 0 if pre.form is form else host_bytes(pre.form.mat)
         return host_bytes(held) + pre.nbytes + own
-
-    def _drop_setup(self) -> None:
-        """Nothing beyond the V-cycle, which goes with the preconditioner."""

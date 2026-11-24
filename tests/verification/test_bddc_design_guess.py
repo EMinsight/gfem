@@ -21,6 +21,7 @@ from gradient_cases import layered_line, line_design, s_functional, with_fields
 
 import gfem
 from gfem._engine.system_operator import SystemSweep
+from gfem._linalg import KRYLOV_KINDS
 
 TOLERANCE = 1e-6
 PROBLEM = gfem.Driven(frequency=(20e9, 24e9))
@@ -86,7 +87,7 @@ def _gradient_error(run, reference):
     )
 
 
-@pytest.mark.parametrize("solver", ["bddc_gmres", "pmg_gmres"])
+@pytest.mark.parametrize("solver", KRYLOV_KINDS)
 def test_a_design_guess_keeps_s_and_the_gradient_within_the_guess_free_band(
     line, monkeypatch, solver
 ):

@@ -30,7 +30,7 @@ from gfem._engine.cache import ENTRIES
 from gfem._engine.driven import DrivenRule
 from gfem._engine.solve_request import SolveRequest
 from gfem._engine.system_operator import SystemOperator
-from gfem._linalg import bddc, pardiso, prepare
+from gfem._linalg import KRYLOV_KINDS, bddc, pardiso, prepare
 from gfem._linalg.base import PlannedHandle, same_pattern
 from gfem._linalg.direct import DirectHandle
 from gfem._linalg.krylov_handle import KrylovHandle
@@ -337,7 +337,7 @@ def test_auto_is_direct_while_it_fits(line, monkeypatch, caplog):
     assert rule.linear.kind == "bddc_gmres"
 
 
-@pytest.mark.parametrize("linear_solver", ["bddc_gmres", "pmg_gmres"])
+@pytest.mark.parametrize("linear_solver", KRYLOV_KINDS)
 def test_the_iterative_tolerance_is_the_preconditioned_residual(
     line, monkeypatch, linear_solver
 ):

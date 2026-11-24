@@ -182,7 +182,9 @@ def refuse_solve(model: Model, problem: Any, options: SolverOptions, comm: Any) 
             "A solve under several processes (comm=)",
             "Solve on one process: leave comm out.",
         )
-    if options.linear_solver in ("bddc_gmres", "pmg_gmres"):
+    from gfem._linalg import KRYLOV_KINDS  # loads NGSolve, which `import gfem` defers
+
+    if options.linear_solver in KRYLOV_KINDS:
         raise _refusal(
             f"linear_solver={options.linear_solver!r}",
             'Use linear_solver="direct", "auto" or "petsc".',

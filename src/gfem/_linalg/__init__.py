@@ -109,6 +109,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "KINDS",
+    "KRYLOV_KINDS",
     "AutoChoice",
     "Handle",
     "Kind",
@@ -129,6 +130,9 @@ Symmetry = Literal["complex_symmetric", "hermitian", "general"]
 #: A linear solver a problem can use (`ResolvedLinearSolver.kind`).
 Kind = Literal["direct", "bddc_gmres", "petsc", "pmg_gmres"]
 KINDS: tuple[Kind, ...] = get_args(Kind)
+#: The iterative linear solvers: a Krylov solve on a preconditioner kept
+#: across a sweep (`gfem._linalg.krylov_handle.KrylovHandle`).
+KRYLOV_KINDS: tuple[Kind, ...] = ("bddc_gmres", "pmg_gmres")
 #: Most Krylov iterations of an iterative solve.
 MAXITER = 400
 #: Bytes per unknown of a direct factorization, above every measured peak
@@ -587,22 +591,12 @@ def prepare(
         from gfem._linalg.direct import DirectHandle
 
         return DirectHandle.from_operator(operator, symmetry, tolerance=tolerance)
-    if kind == "bddc_gmres":
+    if kind in KRYLOV_KINDS:
         from gfem._linalg.bddc import BddcHandle
-
-        return BddcHandle(
-            operator,
-            symmetry,
-            tolerance=tolerance,
-            maxiter=maxiter,
-            reuse=reuse_preconditioner,
-            width=width,
-            solves=solves,
-        )
-    if kind == "pmg_gmres":
         from gfem._linalg.pmg import PmgHandle
 
-        return PmgHandle(
+        handle = {"bddc_gmres": BddcHandle, "pmg_gmres": PmgHandle}[kind]
+        return handle(
             operator,
             symmetry,
             tolerance=tolerance,
