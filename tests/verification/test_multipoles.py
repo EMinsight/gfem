@@ -30,7 +30,14 @@ from gfem import _multipoles as mpm
 
 OPTIONS = gfem.SolverOptions(order=3, linear_solver="direct")
 EPS0, MU0, C0 = const.epsilon_0, const.mu_0, const.c
-SPHERE_MAXH = 0.1
+#: The lossy sphere's mesh: the sphere at maxh 0.06 in a layer 0.5 um thick.
+#: The partial cross sections need both. At the free-space layer (0.35 um,
+#: under two elements of maxh 0.25) the layer's reflection, scattered back by
+#: the sphere, leaves about 5e-3 of the norm in degree 1 whatever the sphere's
+#: mesh; at sphere maxh 0.1 the faceted sphere leaves about 1.6e-3 in degree
+#: 2, eight times that in the degree-2 partial cross section (5.7 % of the
+#: total). Either alone puts some incidence direction near 2e-2.
+SPHERE_MAXH, LAYER_THICKNESS = 0.06, 0.5
 
 # gates (>= 3x the measured floors recorded in multipole_cases)
 E1_GATE, E2_GATE, LEAK_GATE = 1.5e-2, 5e-3, 3.5e-3
@@ -62,7 +69,7 @@ def _solve(model, frequency, sources):
 
 
 class _Sphere:
-    """A solved sphere with memoized multipoles per column."""
+    """A solved sphere with memoized multipoles and cross sections per column."""
 
     def __init__(self, model, result, case, frequency):
         self.model, self.result, self.case, self.frequency = (
@@ -81,6 +88,27 @@ class _Sphere:
             )
         return self._cache[key]
 
+    def cross_sections(self, name):
+        key = ("cross_sections", name)
+        if key not in self._cache:
+            self._cache[key] = gfem.cross_sections(self.result, name, model=self.model)
+        return self._cache[key]
+
+    def release(self, names, waves):
+        """Read every quantity the tests use, then drop the solve.
+
+        The multipoles of ``names``, the cross sections of ``waves`` and the
+        axial wave's multipoles about `SHIFT`. The result holds its
+        factorization (gigabytes), which the module's later solves need.
+        """
+        for name in names:
+            self.multipoles(name)
+        for name in waves:
+            self.cross_sections(name)
+        self.multipoles("z", origin=SHIFT)
+        del self.result
+        return self
+
     def errors(self, name="z", mu=1.0):
         mp = self.multipoles(name)
         ref = mc.mie_multipoles(self.case.eps, self.case.x, mp.lmax, mu=mu)
@@ -88,20 +116,23 @@ class _Sphere:
         return mc.degree_errors(a, b, *ref), mc.leak(a, b, *ref)
 
     def sum_vs_cross_sections(self, name="z"):
-        xs = gfem.cross_sections(self.result, name, model=self.model)
+        xs = self.cross_sections(name)
         return float(self.multipoles(name).scattering[0] / xs.scattering[0] - 1)
 
 
 @pytest.fixture(scope="module")
 def mesh(tmp_path_factory):
     path = tmp_path_factory.mktemp("multipoles") / "sphere.msh"
-    return mc.sphere_case(path, mc.CASES["L"], sphere_maxh=SPHERE_MAXH)
+    return mc.sphere_case(
+        path, mc.CASES["L"], sphere_maxh=SPHERE_MAXH, thickness=LAYER_THICKNESS
+    )
 
 
 @pytest.fixture(scope="module")
 def lossy(mesh):
     model = fsc.model(mesh[0], fsc.LOSSY)
-    return _Sphere(model, _solve(model, mesh[2], SOURCES), mc.CASES["L"], mesh[2])
+    sphere = _Sphere(model, _solve(model, mesh[2], SOURCES), mc.CASES["L"], mesh[2])
+    return sphere.release([source.name for source in SOURCES], ["z", "te", "tm"])
 
 
 def test_v1_the_axial_wave_gives_the_mie_coefficients(lossy):
@@ -206,14 +237,22 @@ R0 = np.array([0.47, 0.53, 0.56]) * fsc.UM
 PM = np.array([0.3 + 0.4j, -0.5 + 0.2j, 0.7 - 0.1j]) * 1e-30
 MM = np.array([-0.2 + 0.6j, 0.5 + 0.1j, 0.4 - 0.3j]) * 1e-22
 CENTRE = np.array([0.5, 0.5, 0.5]) * fsc.UM
+#: The dipoles' box: 7 cells per um, a layer of 3 cells. The content of degree
+#: 2 and above is the discretization of the air around the dipole (6 cells per
+#: um leave 1.9e-3 of the norm, order 4 on them 1.3e-4); the layer's
+#: reflections do not reach the projection, whose layer integral keeps only
+#: what radiates from inside it (2 to 4 layer cells give the same digits), but
+#: they do reach `gfem.far_field`'s radiated power: 4.4e-4 with 2 cells, 1.4e-4
+#: with 3.
+BOX_CELLS, BOX_LAYER_CELLS = 7, 3
 
 
 def _dipole_solve(tmp_path_factory, eps_b, mu_b, frequency):
     path = pc.box(
         tmp_path_factory.mktemp("dipoles") / "box.msh",
         sides=pc.SIDES,
-        thickness=2 / 6,
-        cells=6,
+        thickness=BOX_LAYER_CELLS / BOX_CELLS,
+        cells=BOX_CELLS,
     )
     air = gfem.Material(eps_r=eps_b, mu_r=mu_b)
     model = gfem.Model(
@@ -256,15 +295,38 @@ def _power(mp):
     return float(np.sum(np.abs(c) ** 2) / (2 * mp.impedance * mp.wavenumber[0] ** 2))
 
 
+def _round_trips(tmp_path_factory, eps_b, mu_b, frequency, *, powers):
+    """Per dipole column: multipoles about `R0`, power about `CENTRE`, radiated power.
+
+    The two powers (the total about `CENTRE` and `gfem.far_field`'s) only
+    with ``powers``. The solve is dropped on return: it holds its
+    factorization (gigabytes).
+    """
+    model, result, k, eta = _dipole_solve(tmp_path_factory, eps_b, mu_b, frequency)
+    wave = (k, eta, frequency)
+    out = {}
+    for name in ("p", "m"):
+        mp = _projected(model, result, name, wave, R0, 4)
+        shifted = radiated = None
+        if powers:
+            d = float(np.linalg.norm(CENTRE - R0))
+            lmax = max(4, mpm._wiscombe(k * d))
+            shifted = _power(_projected(model, result, name, wave, CENTRE, lmax))
+            radiated = float(
+                gfem.far_field(result, name, 0.3, 0.2, model=model).radiated_power[0]
+            )
+        out[name] = (mp, shifted, radiated)
+    return out
+
+
 @pytest.fixture(scope="module")
 def vacuum(tmp_path_factory):
-    return (*_dipole_solve(tmp_path_factory, 1.0, 1.0, fsc.F0), fsc.F0)
+    return _round_trips(tmp_path_factory, 1.0, 1.0, fsc.F0, powers=True)
 
 
 @pytest.fixture(scope="module")
 def medium(tmp_path_factory):
-    f = fsc.F0 / 2
-    return (*_dipole_solve(tmp_path_factory, 2.0, 3.0, f), f)
+    return _round_trips(tmp_path_factory, 2.0, 3.0, fsc.F0 / 2, powers=False)
 
 
 def _back(mp, name):
@@ -275,8 +337,7 @@ def _back(mp, name):
 
 @pytest.mark.parametrize("name", ["p", "m"])
 def test_v10_dipoles_round_trip_in_vacuum(vacuum, name):
-    model, result, k, eta, f = vacuum
-    mp = _projected(model, result, name, (k, eta, f), R0, 4)
+    mp, shifted, radiated = vacuum[name]
     got, ref = _back(mp, name)
     assert np.linalg.norm(got - ref) < ROUND_TRIP_GATE * np.linalg.norm(ref)
     a, b = np.asarray(mp.alpha)[0], np.asarray(mp.beta)[0]
@@ -284,20 +345,13 @@ def test_v10_dipoles_round_trip_in_vacuum(vacuum, name):
     higher = math.sqrt(np.sum(np.abs(a[3:]) ** 2) + np.sum(np.abs(b[3:]) ** 2))
     assert higher < HIGHER_GATE * norm
     # the total power does not depend on the origin
-    d = float(np.linalg.norm(CENTRE - R0))
-    lmax = max(4, mpm._wiscombe(k * d))
-    shifted = _projected(model, result, name, (k, eta, f), CENTRE, lmax)
-    assert _power(shifted) == pytest.approx(_power(mp), rel=SHIFT_POWER_GATE)
-    radiated = float(
-        gfem.far_field(result, name, 0.3, 0.2, model=model).radiated_power[0]
-    )
-    assert _power(shifted) == pytest.approx(radiated, rel=RADIATED_GATE)
+    assert shifted == pytest.approx(_power(mp), rel=SHIFT_POWER_GATE)
+    assert shifted == pytest.approx(radiated, rel=RADIATED_GATE)
 
 
 @pytest.mark.parametrize("name", ["p", "m"])
 def test_v11_dipoles_round_trip_in_a_medium(medium, name):
-    model, result, k, eta, f = medium
-    mp = _projected(model, result, name, (k, eta, f), R0, 4)
+    mp, _, _ = medium[name]
     got, ref = _back(mp, name)
     assert np.linalg.norm(got - ref) < MEDIUM_GATE * np.linalg.norm(ref)
 
