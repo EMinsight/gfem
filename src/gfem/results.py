@@ -968,7 +968,7 @@ class PortModeResult:
         )
 
     def __repr__(self) -> str:
-        n_f = self.frequency.shape[-1]
+        n_f = np.shape(self.frequency)[-1]
         head = f"PortModeResult(port {self.port!r}, mode {self.mode}, {n_f} frequencies"
         try:
             f = np.asarray(self.frequency)
