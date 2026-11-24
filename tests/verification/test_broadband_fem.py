@@ -109,8 +109,9 @@ def test_v1_the_transmitted_step_settles_at_one(tdr):
 
 
 def test_v1_the_first_edge_rises_in_about_one_over_the_span(tdr):
-    window = (tdr.time > 0) & (tdr.time < 0.3e-9)
-    rise = gfem.rise_time(tdr.time[window], np.asarray(tdr["p1", "p1"])[window])
+    t = np.asarray(tdr.time)
+    window = (t > 0) & (t < 0.3e-9)
+    rise = gfem.rise_time(t[window], np.asarray(tdr["p1", "p1"])[window])
     print(f"\nV1: rise {rise * 1e12:.2f} ps vs {0.99 / F_MAX * 1e12:.2f}")  # noqa: T201
     assert rise == pytest.approx(0.99 / F_MAX, rel=0.05)  # 49.2 vs 49.5 ps
 
@@ -135,7 +136,7 @@ def test_v2_the_docs_line_fits_passive_within_tolerance(docs_fit):
 def test_v2_the_resampled_step_is_the_direct_step(docs_fit, tdr):
     resampled = docs_fit.network(DF * np.arange(0, N + 1)).step_response()
     np.testing.assert_allclose(resampled.time, tdr.time, rtol=1e-12)
-    late = tdr.time > 0
+    late = np.asarray(tdr.time) > 0
     gap = np.abs(np.asarray(resampled.values) - np.asarray(tdr.values))[late].max()
     print(f"\nV2: resampled vs direct step {gap:.2e}")  # noqa: T201
     assert gap <= 2e-3  # 3.7e-4
@@ -146,8 +147,9 @@ def test_v2_the_closed_form_step_is_the_windowed_step(docs_fit, tdr):
     # the ceramic's echoes (round trip 0.42 ns, its resonances are pole pairs
     # of Q 14 to 21) keep sharp edges up to about 2.5 ns (gap 1.3e-2 from
     # 1 ns), so the gap is read once they have decayed (3.3e-4 from 3 ns)
-    late = tdr.time >= 3e-9
-    exact = docs_fit.step_response(tdr.time[late])
+    t = np.asarray(tdr.time)
+    late = t >= 3e-9
+    exact = docs_fit.step_response(t[late])
     gap = np.abs(np.asarray(exact.values) - np.asarray(tdr.values)[late]).max()
     print(f"\nV2: closed form vs windowed step {gap:.2e}")  # noqa: T201
     assert gap <= 2e-3  # 3.3e-4

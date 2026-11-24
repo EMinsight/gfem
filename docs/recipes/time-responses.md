@@ -70,7 +70,8 @@ by hand 19.86 ohm and 62.79 ohm
   face, 489 ps; after that the far air line, ended on port 2's 62.79 Ω.
 - `step.time` is the whole two-sided record, $-T/2$ to $T/2$ with
   $T = 1/\Delta f$, negative times included: the window's pre-response
-  lives there. Slice it for a plot.
+  lives there. Slice it for a plot. Like `s.frequency` it is a tuple of
+  labels; `np.asarray(step.time)` gives an array to compute with.
 - The adaptive sweep solves 11 of the 400 frequencies in full
   ({doc}`frequency-sweep`): a dense grid costs few solves.
 - `step.to_xarray()` labels the responses by time and port name (the
@@ -118,8 +119,9 @@ give it a slice around that edge.
 tdt = np.asarray(step["p2", "p1"])
 print(f"the TDT settles at {tdt[-1]:.4f}")  # S21 at DC
 
-edge = (step.time > 0) & (step.time < 0.3e-9)  # the first reflection only
-rise = gfem.rise_time(step.time[edge], np.asarray(step["p1", "p1"])[edge])
+t = np.asarray(step.time)
+edge = (t > 0) & (t < 0.3e-9)  # the first reflection only
+rise = gfem.rise_time(t[edge], np.asarray(step["p1", "p1"])[edge])
 print(f"rise {rise * 1e12:.1f} ps, 0.99 / f_max = {0.99 / f_max * 1e12:.1f} ps")
 ```
 

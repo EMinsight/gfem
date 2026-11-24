@@ -29,7 +29,6 @@ import numpy as np
 
 from gfem._broadband._reference import constant_real
 from gfem._checks import is_traced, static_float
-from gfem._pytree import readonly
 from gfem._text import hertz, hertz_band
 from gfem.broadband import TimeResponse
 from gfem.errors import NonDifferentiableError
@@ -175,9 +174,9 @@ def _n_time(value: Any, n_freq: int, what: str) -> int:
     return int(value)
 
 
-def _time_axis(n: int, df: float) -> np.ndarray:
+def _time_axis(n: int, df: float) -> tuple[float, ...]:
     r""":math:`t_m = (m - n/2) / (n\,\Delta f)`, the two-sided record."""
-    return readonly((np.arange(n) - n // 2) / (n * df))
+    return tuple(((np.arange(n) - n // 2) / (n * df)).tolist())
 
 
 def _harmonic_grid(

@@ -59,9 +59,11 @@ class TimeResponse:
     arrays that differentiate with respect to S and the reference.
 
     Attributes:
-        time: The sample times in s, ``(n_time,)``: increasing for the
-            windowed responses, whose negative times hold the window's
-            pre-response; as given for a rational model's closed form.
+        time: The sample times in s, a tuple of ``n_time`` floats (static
+            labels, as `gfem.NetworkParameters.frequency`; ``np.asarray``
+            gives an array): increasing for the windowed responses, whose
+            negative times hold the window's pre-response; as given for a
+            rational model's closed form.
         values: The responses, real, ``(n_time, n_ports, n_excited)``.
         z_ref: The real reference impedance of each port in ohm,
             ``(n_ports,)``; NaN for every port of a network without
@@ -75,13 +77,18 @@ class TimeResponse:
             (exact response of a rational model).
     """
 
-    time: np.ndarray
+    time: tuple[float, ...]
     values: jax.Array
     z_ref: jax.Array
     ports: tuple[str, ...]
     excited: tuple[str, ...]
     kind: Literal["impulse", "step"]
     mode: Literal["low_pass", "band_pass", "closed_form"]
+
+    def __post_init__(self) -> None:
+        """Store `time` as a tuple of floats: JAX needs static labels hashable."""
+        t = np.asarray(self.time, dtype=float).reshape(-1)
+        object.__setattr__(self, "time", tuple(t.tolist()))
 
     def __getitem__(self, key: tuple[str, str]) -> jax.Array:
         """The response at port ``to`` to port ``from``, ``(n_time,)``.
