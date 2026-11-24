@@ -52,6 +52,95 @@ def test_the_module_holds_the_eight_entries_and_nothing_else():
     assert not set(materials.__all__) & set(gfem.model.__all__)
 
 
+#: Each entry's name tag, and what its docstring and its row of the module's
+#: sources table cite: the DOIs, then the fitted range in um and in Hz.
+SOURCES = {
+    "silicon": (
+        "silicon (Li 1980)",
+        ["10.1063/1.555624"],
+        ["1.2-14 µm", "21.41-249.8 THz"],
+    ),
+    "silica": (
+        "silica (Malitson 1965)",
+        ["10.1364/JOSA.55.001205"],
+        ["0.21-3.71 µm", "80.81-1428 THz"],
+    ),
+    "silicon_nitride": (
+        "silicon nitride (Luke 2015)",
+        ["10.1364/OL.40.004823"],
+        ["0.31-5.504 µm", "54.47-967.1 THz"],
+    ),
+    **{
+        metal: (
+            f"{metal} (Rakic 1998)",
+            ["10.1364/AO.37.005271"],
+            ["0.1-6 eV", "0.21-12.4 µm", "24.18-1451 THz"],
+        )
+        for metal in ("gold", "copper", "aluminium")
+    },
+    "lithium_niobate": (
+        "lithium niobate (Zelmon 1997, Turner 1966)",
+        ["10.1364/JOSAB.14.003319", "10.1063/1.1754449"],
+        ["0.4-5 µm", "59.96-749.5 THz"],
+    ),
+    "lithium_niobate_static": (
+        "lithium niobate static (Smith & Welsh 1971)",
+        ["10.1063/1.1660528"],
+        [],
+    ),
+}
+
+
+@pytest.mark.parametrize("entry", ENTRIES)
+def test_each_entry_names_its_source(entry):
+    tag, dois, ranges = SOURCES[entry]
+    assert _build(entry).name == tag
+    doc = " ".join(getattr(materials, entry).__doc__.split())
+    for text in [*dois, *ranges]:
+        assert text in doc
+    assert ("fitted range" in doc.lower()) == bool(ranges)
+
+
+def _table_rows(doc):
+    """The sources table's rows: the function name, then the row's text."""
+    table = doc[doc.index(".. list-table::") :]
+    rows = {}
+    for block in table.split("   * - ")[2:]:
+        name, _, rest = block.partition("\n")
+        rows[name.strip().strip("`")] = " ".join(rest.split())
+    return rows
+
+
+def test_the_sources_table_lists_every_entry():
+    rows = _table_rows(materials.__doc__)
+    assert sorted(rows) == sorted(ENTRIES)
+    for entry, (_, dois, ranges) in SOURCES.items():
+        for text in [*dois, *ranges[:2]]:
+            assert text in rows[entry]
+
+
+def test_the_docstrings_state_the_out_of_range_values():
+    for entry, stated in (
+        ("silicon", "11.66"),
+        ("silica", "3.00"),
+        ("silicon_nitride", "265"),
+    ):
+        law = getattr(materials, entry)().eps_r
+        assert f"{float(np.real(law(0.0))):.{len(stated.partition('.')[2])}f}" == stated
+        assert stated in getattr(materials, entry).__doc__
+    # the nitride refit's lossless infrared term sits at 100 um (3 THz)
+    nitride = materials.silicon_nitride().eps_r
+    assert any(
+        t.damping == 0 and t.resonance_frequency == pytest.approx(299792458.0 / 100e-6)
+        for t in nitride.terms
+    )
+    assert "100 µm" in materials.silicon_nitride.__doc__
+    # the lithium niobate laws' static values, which are not the crystal's
+    doc = materials.lithium_niobate.__doc__
+    assert "17.5" in doc
+    assert "13.5" in doc
+
+
 #: ADR-fixed fitted ranges in Hz: the source bands 1.2-14 um, 0.31-5.504 um,
 #: 0.21-3.71 um and 0.1-6 eV.
 RANGES = {
@@ -239,7 +328,6 @@ def _sellmeier(wavelength_um, b, c):
 
 def test_the_library_feeds_the_electro_optic_shift(tmp_path):
     mesh = eo.layered_slab(tmp_path / "slab.msh", factor=2.0)
-    regions = ("below", "film", "above")
     drive = gfem.Electrostatic(terminals={"r": ["right"]}, ground=["left"])
     options = gfem.SolverOptions(order=2, linear_solver="direct")
 
@@ -259,9 +347,7 @@ def test_the_library_feeds_the_electro_optic_shift(tmp_path):
             boundaries=[gfem.PEC("left"), gfem.PEC("right")],
             ports=[gfem.WavePort("p", "front")],
         )
-        return gfem.electro_optic_shift(
-            optical, potential, port="p", frequency=F_1550
-        )
+        return gfem.electro_optic_shift(optical, potential, port="p", frequency=F_1550)
 
     library = shift(
         materials.lithium_niobate_static(axes=X_CUT),
