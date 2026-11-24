@@ -7,16 +7,22 @@ random coefficients, no solved field.
 import dataclasses
 import math
 import pickle
+import re
 
 import free_space_cases as fsc
 import jax
 import jax.numpy as jnp
 import multipole_cases as mc
 import numpy as np
+import pml_cases as pc
 import pytest
 import scipy.constants as const
+from strip2d import write_strip
 
+import gfem
+from gfem import _incident
 from gfem import _multipoles as mpm
+from gfem._sources import polarization_vector, propagation_basis
 
 C0, MU0, EPS0 = const.c, const.mu_0, const.epsilon_0
 F0 = C0 / 1e-6
@@ -367,3 +373,356 @@ def test_construction_checks():
         dataclasses.replace(res, lmax=1)
     with pytest.raises(ValueError, match="alpha must have shape"):
         dataclasses.replace(res, alpha=res.alpha[:, :-1])
+
+
+def test_u6_top_level_identity():
+    from gfem import measurements
+
+    for name in ("Multipoles", "CurrentMoments", "multipoles"):
+        assert getattr(gfem, name) is getattr(measurements, name)
+        assert name in gfem.__all__
+        assert name in measurements.__all__
+    assert gfem.multipoles is mpm.multipoles
+    assert gfem.Multipoles is mpm.Multipoles
+
+
+# --- the entry on the coarse cube -------------------------------------------------
+#
+# A one-cell dielectric cube centred on the origin, order 2, one module solve with a
+# plane wave, the same wave as an `IncidentField` and a dipole column.
+
+OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
+AIR = gfem.Material()
+WAVE = gfem.PlaneWave("te", theta=0.4, phi=0.3, polarization="TE")
+DIPOLE_AT = (-0.245e-6, 0.035e-6, 0.495e-6)
+UM = 1e-6
+SHIFT = (0.5, 0.5, 0.5)
+
+
+def _te_function(points, frequency):
+    """``WAVE`` as an incident-field function."""
+    khat, _, _ = propagation_basis(WAVE.theta, WAVE.phi)
+    k = 2 * math.pi * frequency / C0
+    e = polarization_vector(WAVE.theta, WAVE.phi, "TE")
+    return np.exp(-1j * k * points @ khat)[:, None] * e[None, :]
+
+
+def _solve(model, *sources, **kw):
+    problem = gfem.Driven(F0, sources=sources, keep_fields=True, **kw)
+    return gfem.solve(model, problem, options=OPTIONS)
+
+
+@pytest.fixture(scope="module")
+def run(tmp_path_factory):
+    tmp = tmp_path_factory.mktemp("mp")
+    path = mc.cube(tmp / "c.msh", centred=True)
+    model = mc.portless_scatterer_model(path)
+    sources = (
+        WAVE,
+        gfem.IncidentField("f", _te_function),
+        gfem.ElectricDipole("d", position=DIPOLE_AT, moment=(0, 0, 1e-30)),
+    )
+    return model, _solve(model, *sources)
+
+
+@pytest.fixture(scope="module")
+def reference(run):
+    model, result = run
+    return gfem.multipoles(result, "te", model=model)
+
+
+def test_u7_checks_are_in_order_and_refusals_are_named(run, tmp_path_factory):
+    model, result = run
+    call = lambda **kw: gfem.multipoles(result, "te", model=model, **kw)  # noqa: E731
+    # 1 / the 2D refusal comes first, even before the types
+    flat = gfem.Model(
+        gfem.Mesh.from_gmsh(
+            write_strip(tmp_path_factory.mktemp("strip") / "s.msh"), length_unit="um"
+        ),
+        materials={k: gfem.Material(eps_r=2.0) for k in "abc"},
+        boundaries=(gfem.PEC("outer"),),
+    )
+    with pytest.raises(
+        NotImplementedError,
+        match=r"gfem\.multipoles is not avail.*2D mesh.*3D mesh",
+    ):
+        gfem.multipoles("not a result", "te", model=flat)
+    # 2 / types
+    with pytest.raises(
+        TypeError, match=r"multipoles needs a gfem\.DrivenResult, got str"
+    ):
+        gfem.multipoles("r", "te", model=model)
+    with pytest.raises(
+        TypeError, match=r"multipoles needs model= a gfem\.Model, got int"
+    ):
+        gfem.multipoles(result, "te", model=1)
+    # 3 / traced origin
+    with pytest.raises(
+        gfem.NonDifferentiableError, match=r"multipoles' origin must be fixed"
+    ):
+        jax.grad(lambda o: call(origin=o).scattering.sum())(jnp.zeros(3))
+    # 4 / origin form
+    for bad in ((0.0, 0.0), (0.0, np.nan, 0.0), (0.0, np.inf, 0.0), "abc", None, 1.0):
+        with pytest.raises(ValueError, match=r"origin must be three finite numbers"):
+            call(origin=bad)
+    # 5-6 / lmax
+    for bad in (2.0, True, "3", np.float64(3)):
+        with pytest.raises(TypeError, match=r"lmax must be an int"):
+            call(lmax=bad)
+    with pytest.raises(ValueError, match=r"lmax=1 is below 2"):
+        call(lmax=1)
+    # 7 / unknown column
+    with pytest.raises(KeyError, match=r"'nope' is not a column of the result"):
+        gfem.multipoles(result, "nope", model=model)
+    # 8 / a dipole column
+    with pytest.raises(
+        ValueError, match=r"'d' is a ElectricDipole column.*gfem\.far_field"
+    ):
+        gfem.multipoles(result, "d", model=model)
+    # 10-12 / the background
+    with pytest.raises(ValueError, match=r"needs the model's background"):
+        gfem.multipoles(result, "te", model=model.replace(background=None))
+    lossy = gfem.Material(tan_delta=0.01)
+    with pytest.raises(
+        NotImplementedError,
+        match=r"multipoles in a lossy background \(.*\) is not computed",
+    ):
+        gfem.multipoles(result, "te", model=model.replace(background=lossy))
+    stack = gfem.Background([AIR, gfem.Material(eps_r=2.0)], interfaces=[1e-6])
+    with pytest.raises(NotImplementedError, match=r"over a layered background"):
+        gfem.multipoles(result, "te", model=model.replace(background=stack))
+    ground = gfem.Background(AIR, ground=-1e-6)
+    with pytest.raises(NotImplementedError, match=r"over a layered background"):
+        gfem.multipoles(result, "te", model=model.replace(background=ground))
+    # 14 / intensity
+    with pytest.raises(
+        ValueError, match=r"multipoles of the IncidentField 'f' needs intensity="
+    ):
+        gfem.multipoles(result, "f", model=model)
+    with pytest.raises(
+        ValueError, match=r"multipoles' intensity must be a positive finite"
+    ):
+        gfem.multipoles(result, "f", model=model, intensity=-1.0)
+    with pytest.raises(
+        ValueError, match=r"multipoles takes intensity= for an IncidentField only"
+    ):
+        call(intensity=1.0)
+    with pytest.raises(
+        gfem.NonDifferentiableError, match=r"multipoles' intensity is static"
+    ):
+        jax.grad(
+            lambda i: gfem.multipoles(
+                result, "f", model=model, intensity=i
+            ).scattering.sum()
+        )(1.0)
+
+
+def test_u7_a_column_without_kept_fields_or_incident_part(run):
+    model, result = run
+    problem = gfem.Driven(F0, sources=WAVE)
+    unkept = gfem.solve(model, problem, options=OPTIONS)
+    with pytest.raises(ValueError, match=r"multipoles needs the kept fields of 'te'"):
+        gfem.multipoles(unkept, "te", model=model)
+    fields = tuple(dataclasses.replace(f, _incident=None) for f in result.e_fields)
+    stale = dataclasses.replace(result, e_fields=fields)
+    with pytest.raises(ValueError, match=r"'te' carries no incident part"):
+        gfem.multipoles(stale, "te", model=model)
+
+
+def _walled(tmp_path_factory, sides, surface=None, boundaries=()):
+    path = pc.box(
+        tmp_path_factory.mktemp("wall") / "w.msh",
+        sides,
+        thickness=0.25,
+        cells=4,
+        surface=surface,
+    )
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="um")
+    return gfem.Model(
+        mesh,
+        materials={"air": AIR, "pml": AIR},
+        boundaries=boundaries,
+        pml=gfem.PML("pml"),
+        background=AIR,
+    )
+
+
+def test_u7_walls_are_refused_before_the_far_field_layer(run, tmp_path_factory):
+    _, result = run
+    plane = lambda c: "ground" if abs(c[2]) < 1e-9 else ""  # noqa: E731
+    cases = {
+        "slab": _walled(tmp_path_factory, ("-z", "+z")),
+        "ground plane": _walled(
+            tmp_path_factory,
+            ("-x", "+x", "-y", "+y", "+z"),
+            plane,
+            (gfem.PEC("ground"),),
+        ),
+    }
+    for wall_model in cases.values():
+        with pytest.raises(
+            NotImplementedError,
+            match=r"ends on the (PEC|PMC) wall '.*' beside its physical region",
+        ):
+            gfem.multipoles(result, "te", model=wall_model)
+    # the far field itself would say something else about the slab
+    with pytest.raises(NotImplementedError, match=r"mirror half model or slab model"):
+        gfem.multipoles(result, "te", model=cases["slab"])
+
+
+def test_u7_a_scatterer_in_the_truncation_layer_or_at_a_port(tmp_path_factory):
+    guide = _port_model(tmp_path_factory)
+    solved = _solve(guide, gfem.IncidentField("w", _away_from_the_port), excite=())
+    with pytest.raises(ValueError, match=r"port 'o1''s surface 'feed'"):
+        gfem.multipoles(solved, "w", model=guide, intensity=1.0)
+    grown = _touching_model(tmp_path_factory)
+    solved = _solve(grown, gfem.IncidentField("w", _windowed))
+    with pytest.raises(
+        ValueError,
+        match=r"multipoles: the scatterer region 'scat' reaches the truncation "
+        r"layer.*no finite multipole expansion",
+    ):
+        gfem.multipoles(solved, "w", model=grown, intensity=1.0)
+
+
+def _port_surface(c):
+    """A wave port patch on the x = 0 wall; every other side wall absorbs."""
+    if abs(c[0]) < 1e-9 and 0.25 < c[1] < 0.75 and 0.25 < c[2] < 0.75:
+        return "feed"
+    if 0 < c[2] < 1 and min(abs(c[0]), abs(c[0] - 1), abs(c[1]), abs(c[1] - 1)) < 1e-9:
+        return "side"
+    return ""
+
+
+def _port_model(tmp_path_factory):
+    path = pc.box(
+        tmp_path_factory.mktemp("port") / "p.msh",
+        ("-z", "+z"),
+        cells=8,
+        surface=_port_surface,
+    )
+    return gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="um"),
+        materials={"air": AIR, "pml": AIR},
+        boundaries=[gfem.Absorbing("side")],
+        ports=[gfem.WavePort("o1", "feed")],
+        pml=gfem.PML("pml"),
+        background=AIR,
+    )
+
+
+def _away_from_the_port(points, frequency):
+    """Along +z, E along x, zero up to x = 0.3 um: none on the port face."""
+    k = 2 * math.pi * frequency / C0
+    x = points[:, 0] * 1e6
+    window = np.where(x > 0.3, np.sin(np.clip(x - 0.3, 0, 0.1) * 5 * math.pi) ** 2, 0)
+    return (np.exp(-1j * k * points[:, 2]) * window)[:, None] * np.array([1, 0, 0])
+
+
+def _touching_volume(c):
+    inside = bool(((c > 0) & (c < 1)).all())
+    if c[0] > 0.75 and inside:
+        return "scat"
+    return "air" if inside else "pml"
+
+
+def _touching_model(tmp_path_factory):
+    path = pc.box(
+        tmp_path_factory.mktemp("touch") / "t.msh",
+        pc.SIDES,
+        thickness=0.25,
+        cells=4,
+        volume=_touching_volume,
+    )
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="um")
+    return gfem.Model(
+        mesh,
+        materials={"air": AIR, "pml": AIR, "scat": gfem.Material(eps_r=4.0)},
+        pml=gfem.PML("pml"),
+        background=AIR,
+    )
+
+
+def _windowed(points, frequency):
+    """A plane wave cut off before x = 0.7 um: zero where the cube meets the layer."""
+    k = 2 * math.pi * frequency / C0
+    x = points[:, 0] * 1e6
+    window = np.where(x < 0.7, np.cos(np.clip(x - 0.6, 0, 0.1) * 5 * math.pi) ** 2, 0)
+    return (np.exp(-1j * k * points[:, 2]) * window)[:, None] * np.array([0, 1, 0])
+
+
+def test_u8_an_empty_scatterer_scatters_round_off(tmp_path_factory, run):
+    path = mc.cube(tmp_path_factory.mktemp("empty") / "e.msh", centred=True)
+    model = mc.portless_scatterer_model(path, eps=1.0)
+    mp = gfem.multipoles(_solve(model, WAVE), "te", model=model)
+    assert mp.lmax == 2
+    size = np.abs(np.asarray(run[1].e_field(F0, "te").coefficients)).max()
+    assert size > 0
+    for c in (mp.alpha, mp.beta):
+        assert np.abs(np.asarray(c)).max() <= 1e-10, np.abs(np.asarray(c)).max()
+
+
+def test_u9_a_design_equal_to_the_background_scatters_nothing(tmp_path_factory):
+    path = mc.cube(tmp_path_factory.mktemp("field") / "d.msh", centred=True)
+    model = mc.portless_scatterer_model(path, eps=1.0, field=True)
+    mp = gfem.multipoles(_solve(model, WAVE), "te", model=model)
+    # a region chosen per region, not by value: it still counts for the default
+    assert mp.lmax == 8
+    for c in (mp.alpha, mp.beta):
+        assert np.abs(np.asarray(c)).max() <= 1e-10
+
+
+def test_u10_an_incident_field_gives_the_plane_waves_coefficients(run, reference):
+    model, result = run
+    eta = _incident.impedance(model.background)
+    mp = gfem.multipoles(result, "f", model=model, intensity=1 / (2 * eta))
+    assert np.allclose(mp.alpha, reference.alpha, rtol=0, atol=1e-12)
+    assert np.allclose(mp.beta, reference.beta, rtol=0, atol=1e-12)
+    assert np.allclose(mp.incident_amplitude, 1.0, rtol=1e-12)
+    assert np.allclose(reference.incident_amplitude, 1.0, rtol=1e-12)
+    assert np.allclose(mp.intensity, 1 / (2 * eta), rtol=1e-12)
+
+
+def test_u11_a_translated_scatterer_has_the_translated_multipoles(
+    reference, tmp_path_factory
+):
+    path = mc.cube(tmp_path_factory.mktemp("shift") / "s.msh", centre=SHIFT)
+    model = mc.portless_scatterer_model(path)
+    result = _solve(model, WAVE)
+    centre = np.array(SHIFT) * UM
+    khat, _, _ = propagation_basis(WAVE.theta, WAVE.phi)
+    k = reference.wavenumber[0]
+    moved = gfem.multipoles(result, "te", model=model, origin=tuple(centre))
+    phase = np.exp(-1j * k * khat @ centre)
+    scale = np.abs(np.asarray(reference.alpha)).max()
+    assert moved.lmax == reference.lmax
+    for got, want in ((moved.alpha, reference.alpha), (moved.beta, reference.beta)):
+        assert np.abs(np.asarray(got) - phase * np.asarray(want)).max() <= 1e-8 * scale
+    # the partial cross sections depend on the origin; the sum does not
+    other = gfem.multipoles(result, "te", model=model)
+    assert other.lmax > moved.lmax
+    sigma = lambda m: np.asarray(m.electric_scattering)[0, 0]  # noqa: E731
+    assert abs(sigma(other) - sigma(moved)) > 1e-3 * sigma(moved)
+    total = lambda m: float(np.asarray(m.scattering)[0])  # noqa: E731
+    assert abs(total(other) - total(moved)) <= 1e-2 * total(moved)
+
+
+def test_u12_lmax_and_its_bounds(run, reference):
+    model, result = run
+    assert reference.lmax == 8
+    short = gfem.multipoles(result, "te", model=model, lmax=3)
+    assert short.lmax == 3
+    scale = np.abs(np.asarray(reference.alpha)).max()
+    for a, b in ((short.alpha, reference.alpha), (short.beta, reference.beta)):
+        assert np.abs(np.asarray(a) - np.asarray(b)[:, :15]).max() <= 1e-8 * scale
+    with pytest.raises(ValueError, match=r"lmax=1 is below 2"):
+        gfem.multipoles(result, "te", model=model, lmax=1)
+    with pytest.raises(
+        ValueError, match=r"lmax=1000 is above (\d+), the highest degree"
+    ) as info:
+        gfem.multipoles(result, "te", model=model, lmax=1000)
+    cap = int(re.search(r"is above (\d+)", str(info.value)).group(1))
+    assert gfem.multipoles(result, "te", model=model, lmax=cap).lmax == cap
+    with pytest.raises(ValueError, match=rf"lmax={cap + 1} is above {cap}"):
+        gfem.multipoles(result, "te", model=model, lmax=cap + 1)
+    assert "kR = " in str(info.value)

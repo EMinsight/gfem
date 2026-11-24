@@ -24,18 +24,35 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import importlib
 import math
 import numbers
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from scipy.special import sph_harm_y
 
+from gfem import _incident
+from gfem._background import Background, lossless
+from gfem._boundaries import PEC, Conductor, Impedance, LumpedPort, surfaces_of
+from gfem._checks import check_fixed, is_traced
+from gfem._dim2 import refuse_entry
+from gfem._far_field import _measure, engine
+from gfem._power_flow import concrete_field
 from gfem._pytree import readonly, register_fields
+from gfem._sources import INCIDENT, PlaneWave
+from gfem.errors import NonDifferentiableError
 
-__all__ = ["CurrentMoments", "Multipoles"]
+if TYPE_CHECKING:
+    from gfem._engine.far_field import Layer
+    from gfem._engine.power_flow import Surface
+    from gfem._field import Field
+    from gfem.model import Model
+    from gfem.results import DrivenResult
+
+__all__ = ["CurrentMoments", "Multipoles", "multipoles"]
 
 
 class _Grid(NamedTuple):
@@ -504,3 +521,411 @@ class CurrentMoments:
 
 
 register_fields(CurrentMoments, ("long_wavelength_dipole", "toroidal_dipole"))
+
+
+# --- the entry ----------------------------------------------------------------------
+
+#: The surfaces that belong to the scatterer when they lie inside the mesh.
+_SCATTERER_SURFACES = (Conductor, Impedance, LumpedPort, PEC)
+
+
+def _background(model: Model) -> Background:
+    """The model's background.
+
+    Raises:
+        ValueError: The model has none.
+    """
+    if model.background is None:
+        raise ValueError(
+            "multipoles needs the model's background (Model(background=...)): "
+            "pass the model the result was solved with."
+        )
+    return model.background
+
+
+def _scatterer_radius(model: Model, origin: np.ndarray) -> float:
+    """The scatterer's circumradius about ``origin``, m.
+
+    The largest distance to a node of the scatterer's elements (the regions
+    whose material is not the background's constant one, chosen per region:
+    never by comparing the values of a design) and of the sheets, conductors,
+    lumped ports and perfect-conductor faces inside the mesh.
+    """
+    from gfem._engine.incident import scatterer_elements
+
+    mesh = model.mesh
+    nodes = np.asarray(mesh.nodes, float)
+    used = np.zeros(len(nodes), bool)
+    inside = scatterer_elements(model, _background(model))
+    used[np.unique(np.asarray(mesh.tetrahedra)[inside])] = True
+    neighbours = np.asarray(mesh.triangle_neighbours)
+    triangles = np.asarray(mesh.triangles)
+    for item in (*model.boundaries, *model.ports):
+        if not isinstance(item, _SCATTERER_SURFACES):
+            continue
+        for surface in surfaces_of(item):
+            rows = mesh.elements(surface)
+            # a face with one element beside it is a wall, not a sheet
+            rows = rows[(neighbours[rows] >= 0).all(axis=1)]
+            used[np.unique(triangles[rows])] = True
+    if not used.any():
+        return 0.0
+    return float(np.linalg.norm(nodes[used] - origin, axis=1).max())
+
+
+def _default_lmax(model: Model, origin: Any, frequency: float) -> int:
+    r"""The default degree: Wiscombe's count of the scatterer about ``origin``.
+
+    :math:`x = kR_s` with :math:`R_s` the scatterer's circumradius
+    (`_scatterer_radius`) and :math:`k` the background's wavenumber at
+    ``frequency`` (the highest kept one); at least 2.
+    """
+    k = _incident.wavenumber(_background(model), frequency)
+    return _wiscombe(k * _scatterer_radius(model, np.asarray(origin, float)))
+
+
+def _layer_radius(model: Model, layer: Layer, origin: np.ndarray) -> float:
+    """The far-field layer's circumradius about ``origin``, m."""
+    nodes = np.asarray(model.mesh.nodes, float)
+    used = np.unique(np.asarray(model.mesh.tetrahedra)[layer.tetrahedra])
+    return float(np.linalg.norm(nodes[used] - origin, axis=1).max())
+
+
+def _check_walls(model: Model) -> None:
+    """Raise if the physical region ends on a PEC or PMC wall of the mesh.
+
+    A ground plane, a mirror half model or a slab model: the multipoles of
+    the meshed part are not those of the scatterer.
+
+    Raises:
+        NotImplementedError: A face on the mesh's outer boundary, owned by an
+            element outside the perfectly matched layer, that is a PEC or a
+            PMC wall (a face no boundary names is the natural PMC wall).
+    """
+    from gfem._engine.incident import Faces, layer_regions
+
+    mesh = model.mesh
+    faces = Faces.of(model)
+    layer = np.zeros(len(mesh.tetrahedra), bool)
+    for region in layer_regions(model):
+        layer[mesh.elements(region)] = True
+    owner = faces.tets[:, 0]
+    rows = faces.hull & (owner >= 0)
+    rows[rows] = ~layer[owner[rows]]
+    named: dict[str, str] = {}
+    for item in (*model.boundaries, *model.ports):
+        for name in surfaces_of(item):
+            named.setdefault(name, type(item).__name__)
+    for row in np.flatnonzero(rows):
+        on = [named[s] for s in faces.surfaces[row] if s in named]
+        kind = on[0] if on else "PMC"
+        if kind in ("PEC", "PMC"):
+            face = faces.surfaces[row][0] if faces.surfaces[row] else "(untagged)"
+            raise NotImplementedError(
+                f"multipoles: the model ends on the {kind} wall {face!r} beside "
+                "its physical region (a ground plane, mirror half model or slab "
+                "model), which is not computed in this gfem version: the "
+                "multipoles of the meshed part are not those of the scatterer. "
+                "Mesh the whole scatterer inside a PML or Absorbing box."
+            )
+
+
+def _incident_amplitude(source: Any, i0: np.ndarray, eta: float) -> np.ndarray:
+    r"""The incident amplitude :math:`E_\mathrm{inc}` per frequency, V/m."""
+    if isinstance(source, PlaneWave):
+        return np.full(len(i0), complex(source.amplitude))
+    return np.sqrt(2 * eta * i0).astype(complex)
+
+
+def _expand(
+    fields: list[Field],
+    model: Model,
+    layer: Layer,
+    *,
+    origin: np.ndarray,
+    lmax: int,
+    wavenumbers: np.ndarray,
+) -> tuple[jax.Array, jax.Array]:
+    """Absolute coefficients (V/m) of ``fields``' radiation about ``origin``."""
+    pf = importlib.import_module("gfem._engine.power_flow")
+    ff = engine()
+    n_theta = math.ceil(wavenumbers.max() * _layer_radius(model, layer, origin))
+    grid = _gauss_grid(n_theta + lmax + 4)
+    theta, phi = grid.theta.reshape(-1), grid.phi.reshape(-1)
+    rhat, that, phat = ff.directions(theta, phi)
+    where: Surface = pf.surface_of(concrete_field(fields[0]), layer.inside, model)
+    amplitude = jnp.stack(
+        [_measure(f, model, layer, where, (rhat, that, phat))[0] for f in fields]
+    )
+    # the far field is referred to the model origin: refer it to ``origin``
+    phase = jnp.exp(-1j * jnp.asarray(wavenumbers)[:, None] * (rhat @ origin)[None])
+    amplitude = amplitude * phase[..., None]
+    return _project(
+        amplitude[..., 0], amplitude[..., 1], grid, k=wavenumbers, lmax=lmax
+    )
+
+
+def _build_layer(fields: list[Field], model: Model, incident: bool) -> Layer:
+    """The far-field layer on its default side (the layer touching the truncation)."""
+    concrete = concrete_field(fields[0])
+    return engine().exterior_layer(
+        concrete,
+        model,
+        None,
+        model.background,
+        nodes=np.asarray(concrete.mesh.nodes),
+        incident=incident,
+    )
+
+
+def _column_coefficients(
+    result: DrivenResult,
+    name: str,
+    *,
+    model: Model,
+    origin: Any = (0.0, 0.0, 0.0),
+    lmax: int | None = None,
+) -> tuple[jax.Array, jax.Array]:
+    r"""The absolute spherical coefficients of any kept column, V/m.
+
+    :math:`(E_\mathrm{inc}\alpha, E_\mathrm{inc}\beta)` of the scattered field
+    of an incident-field column, or of the total field of a dipole or port
+    column, at every kept frequency, ``(n_freq, lmax * (lmax + 2))`` each. No
+    column check and no refusal beyond the far-field layer's own.
+    """
+    origin_a = np.asarray(origin, float)
+    frequencies = [f for f, c in result.kept if c == name]
+    incident = name in result.sources and isinstance(result.sources[name], INCIDENT)
+    part = "scattered" if incident else "total"
+    fields = [result.e_field(f, name, part=part) for f in frequencies]
+    layer = _build_layer(fields, model, incident)
+    if lmax is None:
+        lmax = _default_lmax(model, origin_a, max(frequencies))
+    k = np.array([_incident.wavenumber(_background(model), f) for f in frequencies])
+    return _expand(fields, model, layer, origin=origin_a, lmax=lmax, wavenumbers=k)
+
+
+def _check_column(
+    result: DrivenResult, source: str, model: Model
+) -> tuple[Any, list[float], Any]:
+    """Rows 7 to 13 of the refusal table: ``(source, kept frequencies, background)``."""
+    from gfem.measurements import _column_kind
+
+    kind = _column_kind(result, source)
+    if kind is not None:
+        raise ValueError(
+            f"multipoles: {source!r} is a {kind} column; multipoles are "
+            "decomposed for an incident field (gfem.PlaneWave, "
+            "gfem.GaussianBeam, gfem.IncidentField). For a dipole's or port's "
+            "radiation, read gfem.far_field."
+        )
+    wave = result.sources[source]
+    frequencies = [f for f, label in result.kept if label == source]
+    if not frequencies:
+        raise ValueError(
+            f"multipoles needs the kept fields of {source!r}: solve with "
+            "Driven(..., keep_fields=True) or keep_fields=[frequencies]."
+        )
+    background = _background(model)
+    for material in background.layers:
+        if not lossless(material):
+            raise NotImplementedError(
+                f"multipoles in a lossy background ({material!r}) is not "
+                "computed in this gfem version: a lossy medium carries no "
+                "scattered power to infinity. Give a lossless background."
+            )
+    if _incident.layered(background):
+        raise NotImplementedError(
+            "multipoles over a layered background (a substrate or a ground "
+            "plane) is not computed in this gfem version: the field radiated "
+            "into a stack is not a sum of free-space multipoles. Give a "
+            "homogeneous background."
+        )
+    _check_walls(model)
+    return wave, frequencies, background
+
+
+def multipoles(
+    result: DrivenResult,
+    source: str,
+    *,
+    model: Model,
+    origin: Any = (0.0, 0.0, 0.0),
+    lmax: int | None = None,
+    intensity: Any = None,
+) -> Multipoles:
+    r"""The spherical multipoles of the field an incident wave scatters.
+
+    The scattered field of an incident-field column, expanded outside the
+    sphere holding the scatterer in outgoing vector spherical waves about
+    ``origin`` (`Multipoles`; `gfem.conventions`, Multipoles). The
+    coefficients are read from the far-field amplitude of the scattered field
+    (`gfem.far_field`'s reciprocity integral over the element layer just
+    inside the truncation) sampled on a Gauss-Legendre by trapezoid grid of
+    directions, then projected in closed form. Any scatterer the solve
+    accepts is decomposed: dielectric, magnetic, lossy, perfectly
+    conducting, sheets, lumped ports.
+
+    The background must be one lossless medium, the whole scatterer meshed
+    inside a perfectly matched layer or `gfem.Absorbing` faces, with at
+    least one background element between it and the truncation. A PEC or
+    PMC wall beside the physical region (a ground plane, a mirror half model,
+    a slab model) is refused: the multipoles of the meshed part are not
+    those of the scatterer.
+
+    On a result of a distributed solve it is a collective call: every rank
+    calls it with the same arguments and gets the same multipoles.
+
+    Differentiable through the field: inside `jax.grad` the multipoles of a
+    material design in the scatterer (a `gfem.MaterialField`) carry its
+    gradient; not by the node coordinates or ``origin``. ``intensity``,
+    ``lmax``, the source and the frequency are fixed.
+
+    Args:
+        result: A driven result with kept fields, solved with ``source``.
+        source: The name of an incident-field source of the result.
+        model: The model the result was solved with.
+        origin: The multipole origin, m, in model coordinates: three finite
+            numbers.
+        lmax: The highest degree, at least 2; ``None`` for Wiscombe's count
+            of the scatterer about ``origin`` at the highest kept frequency.
+        intensity: W/m², a positive number or one per kept frequency: the
+            intensity of a `gfem.IncidentField`; ``None`` for any other
+            source.
+
+    Returns:
+        A `Multipoles`.
+
+    Raises:
+        TypeError: ``result`` or ``model`` is of the wrong type; ``lmax`` is
+            not an integer.
+        KeyError: ``source`` is not a column of the result.
+        ValueError: ``origin`` is not three finite numbers; ``lmax`` is
+            below 2 or above what a source inside the far-field layer
+            radiates; ``source`` is a port or a dipole (read
+            `gfem.far_field`); the result keeps no field of it, or no
+            incident part; the model has no background; ``intensity`` is
+            missing for a `gfem.IncidentField`, given for another source,
+            or not positive and finite; a scatterer reaches the truncation
+            layer or a wave port.
+        NotImplementedError: A 2D mesh; a lossy or layered background; a PEC
+            or PMC wall beside the physical region.
+        NonDifferentiableError: ``origin`` or ``intensity`` is traced; the
+            node coordinates are traced; a design reaches the truncation
+            layer.
+    """
+    from gfem.measurements import _intensity
+    from gfem.model import Model
+    from gfem.results import DrivenResult
+
+    refuse_entry(getattr(model, "mesh", None), "multipoles")
+    if not isinstance(result, DrivenResult):
+        raise TypeError(
+            f"multipoles needs a gfem.DrivenResult, got {type(result).__name__}."
+        )
+    if not isinstance(model, Model):
+        raise TypeError(
+            f"multipoles needs model= a gfem.Model, got {type(model).__name__}."
+        )
+    check_fixed(origin, "multipoles' origin must be fixed numbers")
+    _check_nodes(model.mesh.nodes)
+    origin_a = _origin(origin)
+    _check_lmax_form(lmax)
+    wave, frequencies, background = _check_column(result, source, model)
+    i0 = _intensity(wave, intensity, frequencies, background, "multipoles")
+    eta = _incident.impedance(background)
+    totals = [result.e_field(f, source) for f in frequencies]
+    _check_nodes(totals[0].mesh.nodes)
+    if any(field._incident is None for field in totals):  # noqa: SLF001
+        raise ValueError(
+            f"The kept field of {source!r} carries no incident part: solve "
+            "again to decompose its scattered field."
+        )
+    xs = importlib.import_module("gfem._engine.cross_sections")
+    pf = importlib.import_module("gfem._engine.power_flow")
+    from gfem._truncation import truncation
+
+    for field in totals:
+        where = pf.surface_of(concrete_field(field), truncation(model).side, model)
+        xs.check_truncation_layer(
+            model,
+            background,
+            where,
+            entry="multipoles",
+            outcome="finite multipole expansion",
+            remedy="Leave at least one background element between every "
+            "scatterer and the PML layer or Absorbing face.",
+        )
+        xs.check_side(model, where, "multipoles")
+    fields = [result.e_field(f, source, part="scattered") for f in frequencies]
+    layer = _build_layer(fields, model, True)
+    k = np.array([_incident.wavenumber(background, f) for f in frequencies])
+    top = float(max(frequencies))
+    cap = _wiscombe(
+        _incident.wavenumber(background, top) * _layer_radius(model, layer, origin_a)
+    )
+    if lmax is None:
+        lmax = _default_lmax(model, origin_a, top)
+    if lmax > cap:
+        radius = _layer_radius(model, layer, origin_a)
+        raise ValueError(
+            f"multipoles: lmax={lmax} is above {cap}, the highest degree a "
+            "source inside the far-field layer radiates (Wiscombe's count for "
+            f"its circumradius {radius:.3g} m about the origin, kR = "
+            f"{_incident.wavenumber(background, top) * radius:.3g}, at "
+            f"{top:.6g} Hz): give lmax <= {cap}, or None."
+        )
+    c_alpha, c_beta = _expand(
+        fields, model, layer, origin=origin_a, lmax=lmax, wavenumbers=k
+    )
+    e_inc = jnp.asarray(_incident_amplitude(wave, i0, eta))[:, None]
+    return Multipoles(
+        frequency=tuple(float(f) for f in frequencies),
+        origin=(float(origin_a[0]), float(origin_a[1]), float(origin_a[2])),
+        lmax=int(lmax),
+        wavenumber=tuple(float(x) for x in k),
+        impedance=float(eta),
+        incident_amplitude=e_inc[:, 0],
+        alpha=c_alpha / e_inc,
+        beta=c_beta / e_inc,
+    )
+
+
+def _check_nodes(nodes: Any) -> None:
+    if is_traced(nodes):
+        raise NonDifferentiableError(
+            "multipoles needs fixed node coordinates, but they are computed "
+            "inside jax.grad, jax.jit or jax.vmap here: the scattered field "
+            "subtracts the incident field's interpolant on the mesh, which has "
+            "no derivative by the node coordinates. Use a material design (a "
+            "gfem.MaterialField), or wrap the nodes in jax.lax.stop_gradient."
+        )
+
+
+def _origin(origin: Any) -> np.ndarray:
+    try:
+        value = np.asarray(origin, float)
+        ok = value.shape == (3,) and bool(np.isfinite(value).all())
+    except (TypeError, ValueError):
+        ok = False
+    if not ok:
+        raise ValueError(
+            "multipoles: origin must be three finite numbers, the multipole "
+            f"origin in m (model coordinates), got {origin!r}."
+        )
+    return value
+
+
+def _check_lmax_form(lmax: Any) -> None:
+    if lmax is None:
+        return
+    if isinstance(lmax, bool) or not isinstance(lmax, numbers.Integral):
+        raise TypeError(
+            "multipoles: lmax must be an int, the highest multipole degree, "
+            f"or None for the default, got {lmax!r}."
+        )
+    if lmax < 2:
+        raise ValueError(
+            f"multipoles: lmax={lmax} is below 2: the quadrupoles need degree "
+            "2, at no extra cost. Give lmax >= 2, or None."
+        )

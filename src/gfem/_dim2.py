@@ -245,6 +245,10 @@ _ENTRIES = {
     "helmholtz_filter(grid, radius=...).",
     "wave_vector_path": _BANDS,
     "band_diagram": _BANDS,
+    "multipoles": "A 2D model takes no incident field: pose the scatterer on a "
+    "3D mesh.",
+    "current_moments": "A 2D model takes no incident field: pose the scatterer "
+    "on a 3D mesh.",
 }
 
 

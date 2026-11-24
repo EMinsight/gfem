@@ -29,10 +29,17 @@ meshes) are recorded here as the verification tests measure them.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
+import pml_cases as pc
+import scipy.constants as const
+import sphere_mesh
 from scipy.special import spherical_jn, spherical_yn
+
+import gfem
 
 #: The case table's reference tolerances live with the tests that use them.
 
@@ -173,3 +180,111 @@ def leak(
         )
         / norm
     )
+
+
+# --- meshes and models --------------------------------------------------------------
+
+#: The cube's permittivity in `portless_scatterer_model`.
+CUBE_EPS = 3.0
+#: The centre of the one-cell scatterer of `cube` before any translation, um.
+CUBE_CENTRE = 0.375
+
+
+def _cube_volume(c: np.ndarray) -> str:
+    if ((c > 0.25) & (c < 0.5)).all():
+        return "scat"
+    return "air" if ((c > 0) & (c < 1)).all() else "pml"
+
+
+def _cube_feed(c: np.ndarray) -> str:
+    on = abs(c[0] - 0.5) < 1e-9 and 0.25 < c[1] < 0.5 and 0.25 < c[2] < 0.5
+    return "feed" if on else ""
+
+
+def cube(
+    path: str | Path,
+    *,
+    centred: bool = False,
+    cells: int = 4,
+    centre: tuple[float, float, float] | None = None,
+    feed: bool = False,
+) -> Path:
+    """A one-cell cube "scat" in air "air" wrapped in a layer "pml", um.
+
+    The cube is the cell :math:`[0.25, 0.5]^3` of the unit box (side
+    :math:`0.25`, circumradius :math:`0.2165` um) on `pml_cases.box`'s grid
+    with a layer of a quarter of a micrometre on every side. ``centred``
+    translates the whole mesh so that the cube's centre is the origin;
+    ``centre`` puts it at the given point (um). The same mesh, translated.
+    With ``feed`` the cube's :math:`+x` face is the surface region "feed", to
+    hang a port on.
+    """
+    target = (0.0, 0.0, 0.0) if centred else centre
+    mapping: Callable[[np.ndarray], np.ndarray] | None = None
+    if target is not None:
+        shift = np.asarray(target, float) - CUBE_CENTRE
+        mapping = lambda p: p + shift  # noqa: E731
+    return pc.box(
+        path,
+        pc.SIDES,
+        thickness=0.25,
+        cells=cells,
+        volume=_cube_volume,
+        surface=_cube_feed if feed else None,
+        mapping=mapping,
+    )
+
+
+def portless_scatterer_model(
+    path: str | Path, *, field: bool = False, eps: float = CUBE_EPS
+) -> gfem.Model:
+    """The model of `cube`'s mesh: air background, the cube of permittivity ``eps``.
+
+    ``eps=1`` leaves nothing of the scatterer (the empty-scatterer cases);
+    with ``field`` the cube is a `gfem.MaterialField` of that value, which is
+    a scatterer region whatever its value.
+    """
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="um")
+    air = gfem.Material()
+    scat = (
+        gfem.MaterialField(eps_r=np.full(len(mesh.elements("scat")), eps))
+        if field
+        else gfem.Material(eps_r=eps)
+    )
+    return gfem.Model(
+        mesh,
+        materials={"air": air, "pml": air, "scat": scat},
+        pml=gfem.PML("pml"),
+        background=air,
+    )
+
+
+def sphere_case(
+    path: str | Path,
+    case: SphereCase,
+    *,
+    maxh: float = 0.25,
+    sphere_maxh: float = 0.05,
+    thickness: float = 0.35,
+) -> tuple[gfem.Mesh, float, float]:
+    r"""The case's mirrored sphere: mesh, :math:`a_\mathrm{vol}` (um), frequency (Hz).
+
+    The sphere of radius :math:`x/(2\pi)` um in an air cube of half-side
+    :math:`a + 0.4` with its refinement box at :math:`a + 0.12`, the layer
+    ``thickness`` thick; the frequency puts :math:`k a_\mathrm{vol}` of the
+    meshed sphere's volume-equivalent radius on the case's :math:`x`.
+    """
+    a = case.x / (2 * math.pi)
+    volume = sphere_mesh.write(
+        path,
+        maxh=maxh,
+        sphere_maxh=sphere_maxh,
+        mirrored=True,
+        radius=a,
+        half_side=a + 0.4,
+        inner=a + 0.12,
+        thickness=thickness,
+    )
+    a_vol = (3 * volume / (4 * math.pi)) ** (1 / 3)
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="um")
+    return mesh, a_vol, case.x * const.c / (2 * math.pi * a_vol * 1e-6)

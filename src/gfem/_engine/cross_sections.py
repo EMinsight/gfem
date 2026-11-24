@@ -106,9 +106,18 @@ _SCATTERER_SURFACES = (Conductor, Impedance, LumpedPort, PEC)
 
 
 def check_truncation_layer(
-    model: Model, background: Background, where: Surface
+    model: Model,
+    background: Background,
+    where: Surface,
+    *,
+    entry: str = "cross_sections",
+    outcome: str = "finite cross section",
+    remedy: str | None = None,
 ) -> None:
     """Raise if a scatterer piece is in the truncation layer.
+
+    ``entry``, ``outcome`` and ``remedy`` word the messages of another
+    measurement with the same refusal (`gfem.multipoles`).
 
     Raises:
         NonDifferentiableError: A traced material of such a region.
@@ -117,7 +126,7 @@ def check_truncation_layer(
     """
     mesh = model.mesh
     read = where.read_elements(mesh)
-    remedy = (
+    remedy = remedy or (
         "Leave at least one background element between every scatterer and "
         "the PML layer or Absorbing face, or measure per region with "
         "power_flow and port_wave."
@@ -128,16 +137,16 @@ def check_truncation_layer(
             continue
         if is_traced(model.materials[region]):
             raise NonDifferentiableError(
-                f"gfem cannot differentiate cross_sections with respect to the "
+                f"gfem cannot differentiate {entry} with respect to the "
                 f"material of region {region!r}: it has elements in the "
                 "truncation layer, whose materials the measurement reads; "
                 f"{LAYER_REMEDY}, or wrap it in jax.lax.stop_gradient."
             )
         raise ValueError(
-            f"cross_sections: the scatterer region {region!r} reaches the "
+            f"{entry}: the scatterer region {region!r} reaches the "
             "truncation layer (the elements touching the PML layer or an "
             "Absorbing face), which must be background: a body reaching the "
-            f"truncation has no finite cross section. {remedy}"
+            f"truncation has no {outcome}. {remedy}"
         )
     neighbours = mesh.triangle_neighbours
     for item in (*model.boundaries, *model.ports):
@@ -150,7 +159,7 @@ def check_truncation_layer(
             sheet = (nb >= 0).all(axis=1)
             if (beside.any(axis=1) & sheet).any():
                 raise ValueError(
-                    f"cross_sections: the {type(item).__name__} surface "
+                    f"{entry}: the {type(item).__name__} surface "
                     f"{surface!r} reaches the truncation layer (the elements "
                     "touching the PML layer or an Absorbing face), which must "
                     f"be background. {remedy}"
