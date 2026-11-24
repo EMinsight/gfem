@@ -24,13 +24,11 @@ import dataclasses
 import math
 from collections.abc import Sequence
 
-import ngsolve as ngs
 import numpy as np
 import scipy.optimize
 import scipy.sparse as sp
 
 from gfem._eigen.velocity import GROUP_RTOL, groups
-from gfem.model import Model
 
 #: A mode continues another when their overlap is at least this: more than a
 #: quarter of its norm.
@@ -41,38 +39,6 @@ MARGIN = 0.05
 #: A wave vector component :math:`\mathbf k\cdot\mathbf a_j / 2\pi` this close
 #: to an integer is one (for the Γ test).
 GAMMA_ATOL = 1e-9
-
-
-def mass_matrix(model: Model, order: int) -> sp.csr_matrix:
-    r"""The mass :math:`\int \mathrm{Re}\,\varepsilon_r\, u\cdot v`, unpaired space.
-
-    ``model`` carries concrete values (its leaves under
-    `jax.lax.stop_gradient`); ``order`` is the solve's H(curl) order. A
-    perfectly matched layer holds no weight, as the mode energy.
-    """
-    from gfem._engine.coefficients import coefficient
-    from gfem._engine.driven import driven_operator
-    from gfem._engine.eigen import _physical_eps
-
-    n_tets = len(model.mesh.tetrahedra)
-    n_tris = len(model.mesh.triangles)
-    op = driven_operator(
-        model,
-        order,
-        elements=np.zeros(n_tets, bool),
-        faces=np.zeros(n_tris, bool),
-        paired=False,
-    )
-    eps = coefficient(op.built, np.real(_physical_eps(model)))
-    u, v = op.space.TnT()
-    form = ngs.BilinearForm(op.space, check_unused=False)
-    form += (eps * u) * v * ngs.dx(bonus_intorder=2)
-    form.Assemble()
-    rows, cols, vals = form.mat.COO()
-    n = op.space.ndof
-    return sp.csr_matrix(
-        (np.array(vals), (np.array(rows), np.array(cols))), shape=(n, n)
-    )
 
 
 def overlaps(

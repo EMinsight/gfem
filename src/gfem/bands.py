@@ -862,7 +862,9 @@ def band_diagram(
         one = _order(result)
         found.append(one)
         if mass is None:
-            mass = tracking.mass_matrix(fixed, result.e_fields[0].order)
+            from gfem._engine.band_mass import mass_matrix
+
+            mass = mass_matrix(fixed, result.e_fields[0].order)
         x = np.stack(
             [
                 np.asarray(jax.lax.stop_gradient(f.coefficients), dtype=complex)
