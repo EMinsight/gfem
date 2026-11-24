@@ -97,11 +97,12 @@ is taken.
 When the design has moved far from where the samples were picked, the
 response has shifted and the frozen samples no longer resolve it. Pick new
 ones the same way: an adaptive solve outside the gradient, then frozen
-samples. Run that solve at `adaptive_tolerance <= 1e-6`, so that the
-objective's jump at the switch stays below the optimizer's resolution:
+samples. Run that solve at `adaptive_tolerance <= 1e-6`, with `tolerance` at
+most a tenth of it, so that the objective's jump at the switch stays below the
+optimizer's resolution:
 
 ```python
-tight = gfem.SolverOptions(adaptive_tolerance=1e-6)
+tight = gfem.SolverOptions(tolerance=1e-7, adaptive_tolerance=1e-6)
 m = model.with_material("substrate", gfem.MaterialField(eps_r=eps))
 fresh = gfem.solve(m, gfem.Driven(frequency=grid, sweep="adaptive"), options=tight)
 problem = gfem.Driven(

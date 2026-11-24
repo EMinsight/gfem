@@ -103,6 +103,26 @@ Tests: [shared port surface](https://github.com/benvial/gfem/blob/main/tests/ver
 [wave ports](https://github.com/benvial/gfem/blob/main/tests/unit/test_driven_wave_ports.py),
 [silicon strip](https://github.com/benvial/gfem/blob/main/tests/reference/test_shared_port_surface.py).
 
+## SAX circuits
+
+- A wave port's reference plane moved inside the slab equals the plain slab
+  followed by SAX's straight guide with the port mode's index, to $10^{-12}$.
+- An RF block followed by SAX's series capacitor equals scikit-rf's cascade of
+  the same two networks, to $10^{-12}$, on a reference of 50 Ω and of 75 Ω; a
+  new reference impedance costs no solve.
+- The gradient of a circuit, with respect to a gfem input and a SAX input in
+  one `jax.grad` (an interferometer's cross power; an RF block's permittivity
+  and the circuit's reference impedance), matches fourth-order central
+  differences to a relative $10^{-6}$, and the same under `jax.jit`.
+- A 3D E-plane bend, rotated by quarter turns and mirrored with its polarity
+  reference (or voltage path), keeps $S_{21}$ to $10^{-8}$; an interferometer
+  of a bend and its quarter turn sends all its power to the cross output, the
+  bar output carrying less than $10^{-8}$ of it.
+
+Tests: [circuits](https://github.com/benvial/gfem/blob/main/tests/unit/test_sax_circuits.py),
+[polarity](https://github.com/benvial/gfem/blob/main/tests/verification/test_circuit_polarity.py),
+[recipe](https://github.com/benvial/gfem/blob/main/tests/unit/test_docs_sax_recipe.py).
+
 ## Eigenmodes with wave ports
 
 Each case solves an eigenmode problem with wave ports and compares it with an

@@ -15,6 +15,7 @@ gfem/problems/index
 gfem/solve/index
 gfem/results/index
 gfem/broadband/index
+gfem/circuit/index
 gfem/refinement/index
 gfem/measurements/index
 gfem/thermal/index

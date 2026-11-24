@@ -304,6 +304,12 @@ USER_TERMS = (
     "Harmonic grid",
     "Time response",
     "Impedance profile",
+    "SAX component",
+    "Circuit port",
+    "Component band",
+    "Common reference impedance",
+    "Internal lumped load",
+    "Polarity reference",
 )
 
 

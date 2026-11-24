@@ -267,6 +267,37 @@ Broadband models:
   as a SPICE or Verilog-A model"; a "Time responses" section of the
   conventions and a "Broadband models" section of the glossary.
 
+Circuits:
+
+- **gfem solves as SAX components.** `gfem.SaxComponent(model, problem,
+  circuit=..., ports=...)` turns a function from design settings to a
+  `gfem.Model`, and a `gfem.Driven` band, into a model of a SAX circuit, so one
+  `jax.grad` of the circuit reaches gfem's inputs and SAX's analytic models
+  together. A photonic component takes the wavelength `wl` in µm and returns
+  the complex conjugate of S, SAX's photonic phase convention; an RF component
+  takes the frequency `f` in Hz and the reference impedance `z0` (50 Ω by
+  default) and returns S renormalized to it. The component solves its whole
+  band once per design and interpolates any wavelength or frequency inside it;
+  instances with equal settings share one solve
+  ({doc}`../recipes/sax-circuit`).
+- **S for SAX and scikit-rf.** `NetworkParameters.to_sdict(circuit=...,
+  ports=..., z0=...)` gives a solved S as a SAX dictionary, every port pair
+  included, differentiable; `NetworkParameters.to_skrf(ports=..., name=...)`
+  gives a scikit-rf network of pseudo-waves on the ports' own reference
+  impedances.
+- **Polarity reference.** `WavePort(polarity=(point, direction))` makes the
+  port mode's field at a point real and positive at every frequency, so the
+  sign of the port's row and column of S no longer depends on the mesh or, in
+  3D, on the model's orientation. A SAX component requires it on every wave
+  port it exposes that has no `voltage_path`.
+- **New extras.** `gfem[sax]` (SAX 0.16.14 or later) and `gfem[skrf]`
+  (scikit-rf 1.8 or later). gfem imports neither: `SaxComponent` and
+  `to_sdict` return plain dictionaries.
+- **Documentation.** A recipe, "Differentiate a SAX circuit with gfem blocks",
+  a "SAX circuits" section of the conventions and of the verification page, a
+  "Circuits" section of the glossary, and a scikit-rf section in "Save and
+  export results".
+
 ## 0.2.0 (2026-11-23)
 
 - **Native 2D models.** A gmsh file of triangles at one height reads as a
