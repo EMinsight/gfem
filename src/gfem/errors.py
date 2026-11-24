@@ -507,6 +507,20 @@ class FittedRangeWarning(UserWarning):
     """
 
 
+class PermittivityFitWarning(UserWarning):
+    """A permittivity fit stopped above its tolerance in eps or in k.
+
+    `gfem.fit_permittivity` still returns its best law: the one with the
+    smallest relative error in eps up to its term cap. The message gives the
+    error and the remedies: more Lorentz terms, ``drude=True`` for a metal, a
+    narrower band, or a looser tolerance when the table's own scatter is that
+    large. A ``k`` error above the tolerance means the law has loss where the
+    data have little or none, as below an absorption edge: fit only where the
+    material absorbs, or fit the transparent part without ``k``. Filter it
+    with Python's `warnings` module.
+    """
+
+
 class LowFrequencyWarning(UserWarning):
     r"""A driven frequency or an eigenmode is below the mesh's low-frequency floor.
 

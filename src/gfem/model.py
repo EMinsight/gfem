@@ -42,6 +42,7 @@ from gfem._floquet import (
     surface_lead,
     wavenumber,
 )
+from gfem._law_fit import PermittivityFit, fit_permittivity
 from gfem._materials import (
     Debye,
     DjordjevicSarkar,
@@ -98,11 +99,13 @@ __all__ = [
     "MaterialField",
     "Model",
     "Periodic",
+    "PermittivityFit",
     "PermittivityLaw",
     "Port",
     "SheetField",
     "WavePort",
     "enclosed_by",
+    "fit_permittivity",
 ]
 
 _BOUNDARY_TYPES = (
