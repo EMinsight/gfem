@@ -1042,7 +1042,10 @@ _codec.register(
 )
 _codec.register(PortMode, to_args=_unset_omitted(PortMode, polarization=None))
 _codec.register(
-    PortModeResult, to_args=_unset_omitted(PortModeResult, h_field=None, pml=None)
+    PortModeResult,
+    to_args=_unset_omitted(
+        PortModeResult, h_field=None, pml=None, n_g=None, beta_2=None, beta_3=None
+    ),
 )
 _codec.register(
     DrivenResult,

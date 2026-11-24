@@ -166,6 +166,9 @@ _POLARITY_GUARD = 1e-2
 # A polarity direction whose in-plane part is below this is normal to the
 # port plane: it reads no field, refused before the sweep.
 _NORMAL_ARROW = 1e-6
+# The per-mode fields of a `PortModeSweep` that only a sweep asked for its
+# modes' dispersion carries.
+_DISPERSION = ("n_g", "beta_2", "beta_3")
 # Gauss-Legendre rule for voltage line integrals: points per piece, pieces.
 _GAUSS = np.polynomial.legendre.leggauss(4)
 _PIECES = 32
@@ -203,6 +206,13 @@ class PortModeSweep:
             basis ``v``; ``None`` likewise.
         v: ``(n_free, m)`` the real reduced basis of pencil vectors;
             ``None`` likewise.
+        n_g: ``(n_f,)`` complex group index
+            :math:`(c/i)\,\mathrm{d}\gamma/\mathrm{d}\omega`; ``None`` for a
+            mode the sweep was not asked the dispersion of.
+        beta_2: ``(n_f,)`` :math:`(1/i)\,\mathrm{d}^2\gamma/\mathrm{d}\omega^2`,
+            s²/m, or ``None``.
+        beta_3: ``(n_f,)`` :math:`(1/i)\,\mathrm{d}^3\gamma/\mathrm{d}\omega^3`,
+            s³/m, or ``None``.
     """
 
     space: ModeSpace
@@ -218,6 +228,9 @@ class PortModeSweep:
     lam: np.ndarray | None = None
     y: np.ndarray | None = None
     v: np.ndarray | None = None
+    n_g: np.ndarray | None = None
+    beta_2: np.ndarray | None = None
+    beta_3: np.ndarray | None = None
 
     @property
     def z_pv(self) -> np.ndarray:
@@ -348,7 +361,7 @@ class PortModeRule:
             "field": jax.ShapeDtypeStruct(
                 (*n, self._field_width(model)), jnp.complex128
             ),
-        }
+        } | {name: jax.ShapeDtypeStruct(n, jnp.complex128) for name in _DISPERSION}
 
     def _field_width(self, model: Model) -> int:
         if model.mesh.dim == 2:
@@ -436,6 +449,8 @@ class PortModeRule:
         Returns:
             The per-frequency arrays of `output_specs` plus ``"sweep"`` (the
             `PortModeSweep`), and the entry a backward reads (or ``None``).
+            Only the requested port's mode carries its dispersion, also on a
+            shared surface.
         """
         del request
         ports = self._ports
@@ -456,6 +471,7 @@ class PortModeRule:
                 tolerance=self.options.port_mode_tolerance,
                 ports=ports,
                 pairs=keep,
+                dispersion=(ports.index(self.port),),
             )
         sweep = sweeps[self._index]
         field = sweep.coords @ sweep.basis.T
@@ -466,7 +482,7 @@ class PortModeRule:
             "solved": sweep.solved,
             "field": field,
             "sweep": sweep,
-        }
+        } | {name: getattr(sweep, name) for name in _DISPERSION}
         entry = PortModeEntry("em", sweeps=sweeps) if keep else None
         return outputs, entry
 
@@ -628,7 +644,7 @@ class PortModeRule:
                 quantity=quantity,
                 unit=unit,
             )
-        fields = {"h_field": field} if polarization == "Hz" else {"e_field": field}
+        hz = polarization == "Hz"
         return PortModeResult(
             port=self.port.name,
             mode=self.mode,
@@ -637,8 +653,12 @@ class PortModeRule:
             Z_PV=jnp.asarray(outputs["Z_PV"]),
             residual=jnp.asarray(outputs["residual"]),
             solved=jnp.asarray(outputs["solved"]),
-            **fields,
+            e_field=None if hz else field,
+            h_field=field if hz else None,
             pml=self._model.pml,
+            n_g=jnp.asarray(outputs["n_g"]),
+            beta_2=jnp.asarray(outputs["beta_2"]),
+            beta_3=jnp.asarray(outputs["beta_3"]),
         )
 
     def _locate(self) -> PortModeSpace | LineModeSpace:
@@ -726,6 +746,7 @@ def port_mode_sweep(
     *,
     tolerance: float,
     ports: list[WavePort],
+    dispersion: Sequence[int] = (),
 ) -> list[PortModeSweep]:
     """The guarded port mode sweep of one port surface (see the module docstring).
 
@@ -740,6 +761,8 @@ def port_mode_sweep(
         tolerance: Backward error a reduced mode must reach.
         ports: The wave port of each mode (its name for messages, its
             voltage path or polarity).
+        dispersion: The modes (indices into ``modes``) whose group index and
+            dispersion the sweep reports; the others carry ``None``.
 
     Returns:
         One `PortModeSweep` per mode, sharing ``space``, ``basis`` and
@@ -773,12 +796,21 @@ def port_mode_sweep(
         for p in ports
     ]
     order = np.argsort(f_given, kind="stable")
-    sweep = _Greedy(space, f_given[order], modes, tolerance, ports)
+    sweep = _Greedy(
+        space, f_given[order], modes, tolerance, ports, dispersion=dispersion
+    )
     sweep.run()
     basis, coords, gamma, voltage, power = sweep.normalized(rules, arrows)
     reduced = sweep.reduced.v
     out = np.empty_like(order)
     out[order] = np.arange(len(order))
+
+    def derived(k: int) -> dict[str, np.ndarray]:
+        if k not in sweep.dispersion:
+            return {}
+        rows = sweep.dispersion_rows(k)
+        return {name: rows[n, out] for n, name in enumerate(_DISPERSION)}
+
     return [
         PortModeSweep(
             space=space,
@@ -794,6 +826,7 @@ def port_mode_sweep(
             lam=sweep.lam[k, out],
             y=sweep.rows[k][out],
             v=reduced,
+            **derived(k),
         )
         for k in range(len(modes))
     ]
@@ -807,6 +840,7 @@ def swept_once(
     *,
     tolerance: float,
     ports: list[WavePort],
+    dispersion: Sequence[int] = (),
     derived: Callable[[np.ndarray], dict[str, np.ndarray]] | None = None,
     pairs: bool = False,
 ) -> tuple[list[PortModeSweep], dict[str, np.ndarray]]:
@@ -822,6 +856,8 @@ def swept_once(
         modes: As `port_mode_sweep`.
         tolerance: As `port_mode_sweep`.
         ports: As `port_mode_sweep`.
+        dispersion: As `port_mode_sweep`; a mode it leaves out has NaN rows in
+            the dispersion arrays whenever another mode carries them.
         derived: More arrays read off the sweep's basis, computed beside it and
             sent with it, since an assembled form may round differently per rank.
         pairs: Also send each mode's eigenvalue and pencil vector rows and the
@@ -833,13 +869,23 @@ def swept_once(
 
     def compute() -> dict[str, np.ndarray]:
         sweeps = port_mode_sweep(
-            space, frequency, modes, tolerance=tolerance, ports=ports
+            space,
+            frequency,
+            modes,
+            tolerance=tolerance,
+            ports=ports,
+            dispersion=dispersion,
         )
         first = sweeps[0]
         arrays: dict[str, np.ndarray] = {
             name: np.stack([getattr(sweep, name) for sweep in sweeps])
             for name in _PER_MODE
         }
+        if dispersion:
+            missing = np.full(len(first.frequency), complex(math.nan, math.nan))
+            for name in _DISPERSION:
+                rows = [getattr(sweep, name) for sweep in sweeps]
+                arrays[name] = np.stack([missing if r is None else r for r in rows])
         arrays |= {"basis": first.basis, "solved": first.solved}
         if pairs:
             arrays |= {
@@ -885,6 +931,7 @@ def sweeps_on(
                 if "lam" in arrays
                 else {}
             ),
+            **{name: arrays[name][k] for name in _DISPERSION if name in arrays},
         )
         for k in range(len(arrays["gamma"]))
     ]
@@ -901,8 +948,9 @@ def rows_of(
     """
     rows = np.asarray(rows, int)
     out = dict(arrays)
-    for name in _PER_MODE:
-        out[name] = arrays[name][:, rows]
+    for name in _PER_MODE + _DISPERSION:
+        if name in arrays:
+            out[name] = arrays[name][:, rows]
     out["solved"] = arrays["solved"][rows]
     return out
 
@@ -1141,6 +1189,20 @@ class _Greedy:
                 k0=float(self.k0[j]),
             )
         self.derivatives[j] = new
+
+    def dispersion_rows(self, k: int) -> np.ndarray:
+        r"""Mode ``k``'s :math:`n_g`, :math:`\beta_2`, :math:`\beta_3` per row.
+
+        ``(3, n)``, SI (s²/m, s³/m). Each exact solve's mode derivative gives
+        its row; a reduced row is NaN.
+        """
+        out = np.full((len(_DISPERSION), len(self.f)), complex(math.nan, math.nan))
+        scale = self.space.section.scale
+        for j, derivatives in self.derivatives.items():
+            derivative = derivatives[k]
+            if derivative is not None:
+                out[:, j] = derivative.dispersion(scale)
+        return out
 
     def _exact(self, j: int, ref: int, *, certain: bool) -> None:
         """Exact solve at ``j``, keeping the candidates closest to the modes at ``ref``.

@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import scipy.constants
 import scipy.sparse.linalg as spla
 
 import gfem
@@ -29,6 +30,7 @@ from gfem._sweep.port_mode import _Greedy, _wavenumbers
 
 DATA = Path(__file__).parent / "data"
 C0 = 299792458.0
+EPS0 = scipy.constants.epsilon_0
 F = 15e9
 
 # A strongly dispersive Lorentz law, resonance above the X band
@@ -221,3 +223,106 @@ def test_derivatives_leave_the_sweep_bit_identical(slab_mesh):
     np.testing.assert_array_equal(derived.residual, plain.residual)
     np.testing.assert_array_equal(derived.solved, plain.solved)
     assert sorted(derived.derivatives) == np.flatnonzero(derived.solved).tolist()
+
+
+# --- the public result: homogeneous fills -----------------------------------------
+#
+# A homogeneous fill's discrete mode obeys beta^2 = eps(omega) k0^2 - k_c^2 with
+# k_c fixed by the mesh and read from the reported gamma. The permittivity's
+# omega derivatives are written out here, apart from the laws' own code.
+
+
+def _law_eps(eps_inf, term):
+    r""":math:`\varepsilon` and its first three :math:`\omega` derivatives."""
+
+    def eps(w):
+        g = 2 * math.pi * term.damping
+        if isinstance(term, gfem.Lorentz):
+            w0 = 2 * math.pi * term.resonance_frequency
+            d, d1, d2 = w0**2 - w * w + 1j * g * w, -2 * w + 1j * g, -2.0
+            k = term.delta_eps * w0**2
+        else:  # Drude
+            d, d1, d2 = w * w - 1j * g * w, 2 * w - 1j * g, 2.0
+            k = -((2 * math.pi * term.plasma_frequency) ** 2)
+        return np.array(
+            [
+                eps_inf + k / d,
+                -k * d1 / d**2,
+                k * (2 * d1**2 / d**3 - d2 / d**2),
+                k * (-6 * d1**3 / d**4 + 6 * d1 * d2 / d**3),
+            ]
+        )
+
+    return eps
+
+
+def _constant(eps):
+    return lambda _w: np.array([eps, 0, 0, 0], complex)
+
+
+def _conductive(eps, sigma):
+    s = sigma / EPS0
+    return lambda w: np.array(
+        [
+            eps - 1j * s / w,
+            1j * s / w**2,
+            -2j * s / w**3,
+            6j * s / w**4,
+        ]
+    )
+
+
+def _closed_form(gamma, f, eps):
+    r""":math:`n_g`, :math:`\beta_2`, :math:`\beta_3` of
+    :math:`\beta^2 = \varepsilon(\omega)k_0^2 - k_c^2`, :math:`k_c` from ``gamma``.
+    """
+    beta = gamma / 1j
+    w = 2 * math.pi * f
+    k0 = w / C0
+    e0, e1, e2, e3 = eps(w) * C0 ** np.arange(4)  # derivatives in k0
+    q1 = 2 * k0 * e0 + k0**2 * e1
+    q2 = 2 * e0 + 4 * k0 * e1 + k0**2 * e2
+    q3 = 6 * e1 + 6 * k0 * e2 + k0**2 * e3
+    b1 = q1 / (2 * beta)
+    b2 = (q2 / 2 - b1**2) / beta
+    b3 = (q3 / 2 - 3 * b1 * b2) / beta
+    return b1, b2 / C0**2, b3 / C0**3
+
+
+def _assert_closed_form(result, eps):
+    want = _closed_form(complex(result.gamma[0]), float(result.frequency[0]), eps)
+    got = (result.n_g[0], result.beta_2[0], result.beta_3[0])
+    for value, gate, ref in zip(got, (1e-12, 1e-10, 1e-9), want, strict=True):
+        assert _relative(complex(value), ref) <= gate
+
+
+def _law(eps_inf, term):
+    """A material of one law term, and its permittivity series (`_law_eps`)."""
+    law = gfem.PermittivityLaw(eps_inf=eps_inf, terms=[term])
+    return gfem.Material(eps_r=law), _law_eps(eps_inf, term)
+
+
+GUIDE_FILLS = {
+    "air": (gfem.Material(), _constant(1.0)),
+    "eps4": (gfem.Material(eps_r=4.0), _constant(4.0)),
+    "lorentz": _law(
+        2.0, gfem.Lorentz(delta_eps=1.5, resonance_frequency=30e9, damping=0.0)
+    ),
+    "lossy-lorentz": _law(
+        2.0, gfem.Lorentz(delta_eps=1.5, resonance_frequency=30e9, damping=3e9)
+    ),
+    "drude": _law(1.0, gfem.Drude(plasma_frequency=5e9, damping=0.0)),
+    "lossy-drude": _law(1.0, gfem.Drude(plasma_frequency=5e9, damping=1e9)),
+}
+
+
+@pytest.mark.parametrize("fill", GUIDE_FILLS)
+def test_a_filled_guide_s_reported_dispersion_is_its_closed_form(guide_mesh, fill):
+    material, eps = GUIDE_FILLS[fill]
+    model = gfem.Model(
+        guide_mesh,
+        materials={"air": material},
+        boundaries=[gfem.PEC("walls")],
+        ports=[gfem.WavePort("p1", "port1")],
+    )
+    _assert_closed_form(gfem.solve(model, gfem.PortMode("p1", 10e9)), eps)

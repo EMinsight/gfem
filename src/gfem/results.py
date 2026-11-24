@@ -877,6 +877,25 @@ class PortModeResult:
         pml: The model's perfectly matched layer (`gfem.PML`) the mode was
             solved with, or ``None``. In its regions the field is the
             stretched one, not a physical field.
+        n_g: Complex group index :math:`(c/i)\,\mathrm{d}\gamma/\mathrm{d}\omega`,
+            written :math:`n_g' - in_g''` as `n_eff`:
+            :math:`n_g' = c\,\mathrm{d}\beta/\mathrm{d}\omega`,
+            :math:`n_g'' = c\,\mathrm{d}\alpha/\mathrm{d}\omega`;
+            ``(n_freq,)``. On a lossless section, :math:`c` times stored
+            energy over power, with the energy permittivity. Exact frequency
+            derivative of `gamma` (no step); its error is the mesh's and the
+            truncation's. ``None`` on a driven result's port modes: solve
+            `gfem.PortMode` on the same grid for them.
+        beta_2: Group-velocity dispersion
+            :math:`(1/i)\,\mathrm{d}^2\gamma/\mathrm{d}\omega^2`,
+            ``(n_freq,)``, s²/m; real part
+            :math:`\mathrm{d}^2\beta/\mathrm{d}\omega^2`, positive for normal
+            dispersion; needs more clearance from a truncating layer or wall
+            than `n_eff`. See `gfem.conventions` (Group index and
+            dispersion). ``None`` on a driven result's port modes.
+        beta_3: Third-order dispersion
+            :math:`(1/i)\,\mathrm{d}^3\gamma/\mathrm{d}\omega^3`,
+            ``(n_freq,)``, s³/m. ``None`` on a driven result's port modes.
     """
 
     port: str
@@ -889,6 +908,9 @@ class PortModeResult:
     e_field: PortModeField | None = None
     h_field: PortModeField | None = None
     pml: PML | None = None
+    n_g: jax.Array | None = None
+    beta_2: jax.Array | None = None
+    beta_3: jax.Array | None = None
 
     @property
     def n_eff(self) -> jax.Array:
@@ -896,12 +918,27 @@ class PortModeResult:
         k0 = 2 * math.pi * self.frequency / scipy.constants.c
         return self.gamma / (1j * k0)
 
+    @property
+    def D(self) -> jax.Array | None:  # noqa: N802 - the dispersion parameter's symbol
+        r"""Dispersion parameter :math:`-(2\pi c/\lambda^2)\,\beta_2`, s/m².
+
+        :math:`\lambda = c/f`; positive is anomalous; ``D * 1e6`` is in
+        ps/(nm km). See `gfem.conventions` (Group index and dispersion).
+        ``None`` when `beta_2` is.
+        """
+        if self.beta_2 is None:
+            return None
+        c = scipy.constants.c
+        return -(2 * math.pi * self.frequency**2 / c) * self.beta_2
+
     def to_xarray(self) -> xarray.Dataset:
         """The mode's per-frequency values as an `xarray.Dataset`.
 
         ``gamma`` (1/m), ``n_eff``, ``Z_PV`` (ohm), ``residual`` and
-        ``solved`` over the dimension ``frequency`` (Hz); the attributes
-        ``port`` and ``mode`` name the mode. The field is not exported.
+        ``solved`` over the dimension ``frequency`` (Hz), then, where the
+        result carries them, ``n_g``, ``beta_2`` (s^2/m), ``beta_3``
+        (s^3/m) and ``D`` (s/m^2); the attributes ``port`` and ``mode`` name
+        the mode. The field is not exported.
         Needs the ``xarray`` extra: ``pip install "gfem[xarray]"``.
 
         Raises:
@@ -910,37 +947,64 @@ class PortModeResult:
         """
         xr = _xarray(self)
         f = ("frequency",)
+        data = {
+            "gamma": _variable(f, self.gamma, "1/m"),
+            "n_eff": _variable(f, self.n_eff),
+            "Z_PV": _variable(f, self.Z_PV, "ohm"),
+            "residual": _variable(f, self.residual),
+            "solved": _variable(f, self.solved),
+        }
+        if self.n_g is not None:
+            data["n_g"] = _variable(f, self.n_g)
+        if self.beta_2 is not None:
+            data["beta_2"] = _variable(f, self.beta_2, "s^2/m")
+            data["D"] = _variable(f, self.D, "s/m^2")
+        if self.beta_3 is not None:
+            data["beta_3"] = _variable(f, self.beta_3, "s^3/m")
         return xr.Dataset(
-            {
-                "gamma": _variable(f, self.gamma, "1/m"),
-                "n_eff": _variable(f, self.n_eff),
-                "Z_PV": _variable(f, self.Z_PV, "ohm"),
-                "residual": _variable(f, self.residual),
-                "solved": _variable(f, self.solved),
-            },
+            data,
             coords={"frequency": _variable(f, self.frequency, "Hz")},
             attrs={"port": self.port, "mode": self.mode},
         )
 
     def __repr__(self) -> str:
-        f = np.asarray(self.frequency)
-        n = np.asarray(self.n_eff)
-        z = np.asarray(self.Z_PV)
+        n_f = self.frequency.shape[-1]
+        head = f"PortModeResult(port {self.port!r}, mode {self.mode}, {n_f} frequencies"
+        try:
+            f = np.asarray(self.frequency)
+            n = np.asarray(self.n_eff)
+            z = np.asarray(self.Z_PV)
+            # per frequency: a vmapped result stacks one sweep per batch entry
+            solved = np.asarray(self.solved).reshape(-1, n_f).any(axis=0)
+            n_g = None if self.n_g is None else np.asarray(self.n_g)
+        except (TypeError, jax.errors.TracerArrayConversionError):
+            return head + ")"
         span = hertz_band(f.min(), f.max(), 4)
         zs = (
             "no voltage_path"
             if np.isnan(z).all()
             else (f"|Z_PV| {np.abs(z).min():.4g}-{np.abs(z).max():.4g} ohm")
         )
-        exact = int(np.asarray(self.solved).sum())
+        gs = "" if n_g is None else f", n_g {n_g.real.min():.5g}-{n_g.real.max():.5g}"
         return (
-            f"PortModeResult(port {self.port!r}, mode {self.mode}, {len(f)} "
-            f"frequencies {span} ({exact} exact solves), n_eff "
-            f"{n.real.min():.5g}-{n.real.max():.5g}, {zs})"
+            f"{head} {span} ({int(solved.sum())} exact solves), n_eff "
+            f"{n.real.min():.5g}-{n.real.max():.5g}{gs}, {zs})"
         )
 
 
-register_fields(PortModeResult, ("frequency", "gamma", "Z_PV", "residual", "solved"))
+register_fields(
+    PortModeResult,
+    (
+        "frequency",
+        "gamma",
+        "Z_PV",
+        "residual",
+        "solved",
+        "n_g",
+        "beta_2",
+        "beta_3",
+    ),
+)
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
