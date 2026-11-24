@@ -220,6 +220,8 @@ nitpick_ignore = [
     # fixed ends of a law blend, MaterialField.blend_ends: not exported, and
     # the docstrings describe them.
     ("py:obj", "_DispersionTerm"),
+    # The private base of the point dipoles, shown as "Bases:" likewise.
+    ("py:obj", "_PointDipole"),
     ("py:obj", "Blend"),
     ("py:class", "Blend"),
     # JAX documents ArrayLike as data (a type alias), so a class reference misses.
