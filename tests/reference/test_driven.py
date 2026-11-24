@@ -34,10 +34,9 @@ import os
 import time
 from pathlib import Path
 
-import bend3d_mesh as bm
 import numpy as np
 import pytest
-import structured_meshes as sm
+import soi_cases
 from isolated import isolated, peak_rss_gib
 
 import gfem
@@ -534,69 +533,15 @@ def test_wave_port_low_frequency_backward_errors(reference):
 
 # --- p-multigrid on a silicon strip ------------------------------------------------
 
-#: The strip at 1.55 um: a 0.5 x 0.22 um Si core in SiO2 (Sellmeier at 1.55 um).
-SOI_FREQUENCY = 299_792_458.0 / 1.55e-6
-SOI_CORE = gfem.Material(eps_r=3.4757**2)
-SOI_CLADDING = gfem.Material(eps_r=1.444024**2)
-#: The cladding wavelength (um), the unit of the box width.
-SOI_WAVELENGTH = 1.55 / 1.444024
-SOI_H = 0.1
 #: DOF at order 2 by box width (cladding wavelengths).
 SOI_NDOF = {2: 201_950, 4: 746_774}
 #: GMRES iterations per excited port, measured 9 at both widths; allowed +2.
 SOI_MAX_ITERATIONS = 11
 
 
-def _soi_straight(path: Path, wavelengths: float) -> gfem.Model:
-    r"""The SOI strip straight along x through a box ``wavelengths`` wide.
-
-    The mirror half model ``z >= 0`` (a PMC on "mirror") of the box
-    $[-B, B]^2 \times [0, 1.11]$ um, $2B$ the given number of cladding
-    wavelengths; structured, in-plane cells of 0.1 um, the z grid of the 3D
-    bend's meshes; second-order absorbing outer faces and a TE0 wave port
-    on each end face (PEC window edges).
-    """
-    box = round(wavelengths * SOI_WAVELENGTH / 2, 3)
-    lines = {bm.CORE_W / 2, box}
-    x = bm.axis({-box, 0.0, box}, SOI_H)
-    y = bm.axis({-v for v in lines} | lines, SOI_H)
-    z = bm.z_edges(SOI_H, half=True)
-    eps = 1e-9
-
-    def volume(c):
-        inside = abs(c[2]) < bm.CORE_T / 2 and abs(c[1]) < bm.CORE_W / 2
-        return "core" if inside else "cladding"
-
-    def surface(c):
-        if abs(c[2]) < eps:
-            return "mirror"
-        if abs(c[0] + box) < eps:
-            return "port1"
-        if abs(c[0] - box) < eps:
-            return "port2"
-        if abs(abs(c[1]) - box) < eps or abs(abs(c[2]) - bm.Z_TOP) < eps:
-            return "outer"
-        return ""
-
-    # built on z <= 0 and reflected, as the bend's half model is
-    grid = sm.structured(
-        (x, y, -z[::-1]), volume, surface, lambda p: p * [1.0, 1.0, -1.0]
-    )
-    mesh = gfem.Mesh.from_gmsh(sm.write_msh22(path, grid), length_unit="um")
-    return gfem.Model(
-        mesh,
-        materials={"cladding": SOI_CLADDING, "core": SOI_CORE},
-        boundaries=[gfem.Absorbing("outer", order=2), gfem.PMC("mirror")],
-        ports=[
-            gfem.WavePort("p1", "port1", pec_edges=("outer",)),
-            gfem.WavePort("p2", "port2", pec_edges=("outer",)),
-        ],
-    )
-
-
 def _soi_forward(model: gfem.Model, kind: str, ndof: int) -> dict:
     options = gfem.SolverOptions(threads=THREADS, linear_solver=kind)
-    rule = DrivenRule(model, gfem.Driven(frequency=SOI_FREQUENCY), options)
+    rule = DrivenRule(model, gfem.Driven(frequency=soi_cases.F0), options)
     assert rule.linear.kind == kind
     assert rule.operator(model).space.ndof == ndof
     start = time.perf_counter()
@@ -612,7 +557,8 @@ def _soi_forward(model: gfem.Model, kind: str, ndof: int) -> dict:
 @pytest.fixture(scope="module")
 def soi_2(tmp_path_factory):
     """``pmg_gmres`` and direct outputs on the strip at 2 wavelengths."""
-    model = _soi_straight(tmp_path_factory.mktemp("soi") / "soi2.msh", 2)
+    path = tmp_path_factory.mktemp("soi") / "soi2.msh"
+    model = soi_cases.model(soi_cases.straight(path, 2))
     ndof = SOI_NDOF[2]
     return _soi_forward(model, "pmg_gmres", ndof), _soi_forward(model, "direct", ndof)
 
@@ -626,7 +572,7 @@ def test_pmg_matches_direct_on_soi_at_2_wavelengths(soi_2):
 
 
 def test_pmg_iterations_stay_flat_on_soi_at_4_wavelengths(soi_2, tmp_path):
-    model = _soi_straight(tmp_path / "soi4.msh", 4)
+    model = soi_cases.model(soi_cases.straight(tmp_path / "soi4.msh", 4))
     outputs = _soi_forward(model, "pmg_gmres", SOI_NDOF[4])
     iterations = max(outputs["iterations"][0])
     at_2 = max(soi_2[0]["iterations"][0])
