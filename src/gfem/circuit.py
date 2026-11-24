@@ -247,8 +247,10 @@ class SaxComponent:
             # the greedy solve is the constructor's solve at the defaults;
             # its samples are the band's from now on, in every later solve
             greedy = solve(built, solved, options=options, cache=cache)
-            assert greedy.sweep is not None  # an adaptive solve reports its sweep
-            samples = tuple(greedy.sweep.sampled_frequencies)
+            sweep = greedy.sweep
+            if sweep is None:  # an adaptive solve always reports its sweep
+                raise RuntimeError("An adaptive solve returned no sweep report.")
+            samples = tuple(sweep.sampled_frequencies)
             problem = dataclasses.replace(problem, samples=samples)
             solved = dataclasses.replace(solved, samples=samples)
         middle = 0.5 * (band[0] + band[-1])
