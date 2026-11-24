@@ -87,20 +87,25 @@ class ShiftWeightsRule(PortModeRule):
             "weights": jax.ShapeDtypeStruct(shape, jnp.float64),
         }
 
+    #: The shift's outputs are not the port mode rule's: every cotangent raises.
+    input_aware = False
+    differentiable_outputs = frozenset()
+
     def unsupported_input(self, kind: tuple) -> str | None:
         """Every input the port mode problem reads: the mode is held constant."""
         del kind
         return (
             "a thermo-optic shift holds the port mode constant (first order in "
-            "the rise), and its derivative with respect to the optical model's "
-            "permittivity, losses, permeability, node coordinates or boundary "
-            "values would need the mode's own derivative, which this version "
-            "does not have (a frozen mode gives a wrong value). Differentiate "
+            "the rise), and the mode's derivative with respect to the optical "
+            "model's permittivity, losses, permeability, node coordinates or "
+            "boundary values is not wired through the shift's weights in this "
+            "version (a frozen mode gives a wrong value). Differentiate "
             "through the rise or the thermo_optic_coefficient"
         )
 
-    def nondifferentiable_output(self, name: str) -> str:
+    def nondifferentiable_output(self, name: str, kinds: Any = ()) -> str:
         """The error message for a cotangent on output ``name``."""
+        del kinds
         return (
             f"gfem cannot differentiate the thermo-optic shift's mode output "
             f"{name!r} with respect to the optical model: the mode is a constant "

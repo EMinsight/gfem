@@ -622,8 +622,7 @@ def characteristic_impedance(
     a line with conductor loss has :math:`\mathrm{Im}\, Z < 0`. For a wave
     port declared with a ``voltage_path`` the result already holds
     :math:`Z_{PV}` along it as ``Z_PV``; this measures any definition along
-    any path, after the solve. A constant of the port mode solve: port modes
-    are not differentiable.
+    any path, after the solve. Not differentiable; ``Z_PV`` on the result is.
 
     On a cross-section cut by a perfectly matched layer (`gfem.PML`),
     :math:`P` counts the section outside the layer only, so the
@@ -665,6 +664,7 @@ def characteristic_impedance(
             `jax.vmap`).
         NonDifferentiableError: A path is computed inside `jax.grad`,
             `jax.jit` or `jax.vmap` from their arguments; pass a fixed value.
+            Or ``mode`` is traced (a port mode solved inside them).
     """
     from gfem._sweep.port_mode import path_current, path_voltage, planar
     from gfem.results import PortModeResult
@@ -675,6 +675,13 @@ def characteristic_impedance(
             f"{type(mode).__name__}."
         )
     field = mode.e_field if mode.e_field is not None else mode.h_field
+    if field is not None and getattr(field, "_vector", None) is not None:
+        raise NonDifferentiableError(
+            "characteristic_impedance is not differentiable in this version. "
+            "Z_PV along the port's own voltage_path is (PortModeResult.Z_PV, "
+            "WavePort(voltage_path=...)). Compute it outside jax.grad, or from "
+            "jax.lax.stop_gradient(mode)."
+        )
     if field is not None and len(field.normal) == 2:
         # a 2-component normal (or an Hz field): the mode of a line port
         raise entry_refusal("characteristic_impedance")

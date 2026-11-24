@@ -79,11 +79,11 @@ def test_te10_profile_is_a_half_sine_at_one_watt(te10):
     np.testing.assert_allclose(e[..., [0, 2]], 0.0, atol=2e-5 * e0.max())
 
 
-def _slab_beta(f):
+def _slab_beta(f, eps=EPS_SLAB):
     k0 = 2 * math.pi * f / C0
 
     def mismatch(beta):
-        k1 = np.sqrt(complex(EPS_SLAB * k0**2 - beta**2))
+        k1 = np.sqrt(complex(eps * k0**2 - beta**2))
         k2 = np.sqrt(complex(k0**2 - beta**2))
         # k1 cot(k1 s) + k2 cot(k2 (a - s)) = 0, multiplied through to be pole-free
         # and real for real or imaginary k2.
@@ -92,7 +92,7 @@ def _slab_beta(f):
             k1 * np.cos(k1 * SLAB) * s2 + np.cos(k2 * (A - SLAB)) * np.sin(k1 * SLAB)
         ).real
 
-    grid = np.linspace(1e-6, math.sqrt(EPS_SLAB) * k0 * (1 - 1e-9), 4000)
+    grid = np.linspace(1e-6, math.sqrt(eps) * k0 * (1 - 1e-9), 4000)
     values = [mismatch(b) for b in grid]
     roots = [
         brentq(mismatch, grid[i], grid[i + 1])
@@ -120,3 +120,54 @@ def test_slab_loaded_guide_mode_converges_with_order():
         errors.append(np.abs(np.asarray(result.gamma) / (1j * beta) - 1).max())
     assert all(e2 < e1 / 10 for e1, e2 in itertools.pairwise(errors)), errors
     assert errors[-1] < 1e-9, errors
+
+
+def test_slab_loaded_guide_root_derivative_converges_with_order():
+    """d beta / d eps of the dispersion relation's root, to the discrete derivative.
+
+    The discrete model satisfies the relation only up to its discretization
+    error, so the gradient converges to the root's derivative (fourth order,
+    like the root itself).
+    """
+    import jax
+    import jax.numpy as jnp
+
+    mesh = gfem.Mesh.from_gmsh(DATA / "slab_waveguide.msh", length_unit="mm")
+    n = len(mesh.elements("slab"))
+    freqs = np.array([8e9, 12e9])
+    h = 1e-3
+    exact = np.array(
+        [
+            (
+                8 * (_slab_beta(f, EPS_SLAB + h) - _slab_beta(f, EPS_SLAB - h))
+                - (_slab_beta(f, EPS_SLAB + 2 * h) - _slab_beta(f, EPS_SLAB - 2 * h))
+            )
+            / (12 * h)
+            for f in freqs
+        ]
+    )
+    errors = []
+    for p in ORDERS[1:]:
+        options = gfem.SolverOptions(order=p, port_mode_tolerance=1e-12)
+
+        def beta(eps, options=options):
+            model = gfem.Model(
+                mesh,
+                materials={
+                    "slab": gfem.MaterialField(eps_r=eps * jnp.ones(n)),
+                    "air": gfem.Material(),
+                },
+                boundaries=[gfem.PEC("walls")],
+                ports=[gfem.WavePort("p1", "port1")],
+            )
+            return gfem.solve(model, gfem.PortMode("p1", freqs), options=options)
+
+        got = np.array(
+            [
+                jax.grad(lambda x, k=k: beta(x).gamma[k].imag)(EPS_SLAB)
+                for k in range(len(freqs))
+            ]
+        )
+        errors.append(np.abs(got / exact - 1).max())
+    assert all(e2 < e1 / 10 for e1, e2 in itertools.pairwise(errors)), errors
+    assert errors[-1] < 1e-8, errors

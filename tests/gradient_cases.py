@@ -1103,3 +1103,64 @@ def wave_resonator(mesh: gfem.Mesh, layers, design: dict, ports) -> gfem.Model:
         boundaries=[gfem.PEC("walls")],
         ports=ports,
     )
+
+
+# --- port modes ---------------------------------------------------------------------
+
+#: The port mode cells' frequencies on the wave line, and the voltage path of its
+#: port p1 (m): across both layers, inside the elements (not on a mesh edge).
+PORT_MODE_FREQUENCIES = (12e9, 18e9, 24e9)
+PORT_MODE_PATH = ((0.0, 0.7e-3, 0.0), (0.0, 0.7e-3, 1e-3))
+#: Points on port p1's face (m) where the cells read the mode's field.
+PORT_MODE_POINTS = np.array(
+    [
+        [0.0, 0.3e-3, 0.2e-3],
+        [0.0, 0.7e-3, 0.4e-3],
+        [0.0, 1.2e-3, 0.6e-3],
+        [0.0, 1.6e-3, 0.8e-3],
+        [0.0, 0.9e-3, 0.25e-3],
+    ]
+)
+#: The field's scale at 1 W through the line's 2 x 1 mm face (V/m).
+PORT_MODE_E0 = 1e4
+
+
+def port_mode_line(mesh: gfem.Mesh, lower, *, path: bool = True) -> gfem.Model:
+    """The wave line with a design ``lower`` on the leads' lower layer "lo".
+
+    ``lo`` touches both port faces. Wave ports with ``path`` a voltage path on
+    p1; "hi" and the core are constants.
+    """
+    return gfem.Model(
+        mesh,
+        materials={
+            "lo": lower,
+            "hi": gfem.Material(eps_r=2.0),
+            "core": gfem.Material(eps_r=3.0),
+        },
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.WavePort("p1", "port1", voltage_path=PORT_MODE_PATH if path else None),
+            gfem.WavePort("p2", "port2"),
+        ],
+    )
+
+
+def port_mode_functional(
+    result, frequency, points=PORT_MODE_POINTS, e0=PORT_MODE_E0, *, field: bool = True
+):
+    """``Im gamma/k0 + 0.3 Re gamma/k0``, ``Z_PV/50`` and the field, over the rows.
+
+    The field term carries the phase: ``sum |e|^2`` and ``Re((0.3 - 0.7i) e_z)``
+    at ``points``, scaled by ``e0``. Every term is O(1).
+    """
+    k0 = 2 * math.pi * jnp.asarray(frequency) / const.c
+    g = result.gamma / k0
+    value = jnp.sum(g.imag + 0.3 * g.real)
+    z = result.Z_PV / 50.0
+    value += jnp.sum(jnp.nan_to_num(z.real) + 0.5 * jnp.nan_to_num(z.imag))
+    if field:
+        e = result.e_field.at(points) / e0
+        value += jnp.sum(jnp.abs(e) ** 2)
+        value += jnp.sum(jnp.real((0.3 - 0.7j) * e[:, :, 2]))
+    return value

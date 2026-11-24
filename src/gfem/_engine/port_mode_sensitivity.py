@@ -196,6 +196,12 @@ class SectionKernel:
             a, b = sorted(v.nr for v in el.vertices)
             self._edge_dof[a, b] = self._surface.GetDofNrs(el)[0]
 
+    def at(self, k0: float) -> SectionKernel:
+        """This kernel at another wavenumber (the forms and spaces are shared)."""
+        self.k0 = float(k0)
+        self.theta = self.space.pencil.theta(self.k0)
+        return self
+
     # --- integrals -------------------------------------------------------------
 
     def _fields(self, v: np.ndarray, *, nedelec: bool = False) -> tuple[Any, Any]:

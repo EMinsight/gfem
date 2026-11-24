@@ -32,10 +32,11 @@ GRID = {
     "driven": (V, V, V, V),
     "eigenmode": (V, V, V, V),
     "electrostatic": (V, Z, R, V),
-    "port_mode": (R, R, R, R),
     # the piezoelectric section: principal permittivities and a pitch map are
     # verified; it reads no conductivity, and a sheet field needs a slab
     "piezoelectric": (V, Z, R, V),
+    # the face nodes are not differentiated yet
+    "port_mode": (V, V, V, R),
     "driven_periodic_plain": (V, V, V, V),
     "driven_periodic_bloch": (V, V, V, V),
     "eigenmode_periodic_plain": (V, V, V, V),
@@ -117,6 +118,7 @@ def test_principal_value_cells_fold_into_their_property_column(derived):
         ("eigenmode", "eps_r"),
         ("eigenmode", "conductivity"),
         ("electrostatic", "eps_r"),
+        ("port_mode", "eps_r"),
         ("eigenmode_participation", "eps_r"),
         ("electric_energy", "eps_r"),
     }
@@ -145,6 +147,9 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
         ("eigenmode", ["lumped values"], 3),
         ("eigenmode", ["permittivity-law parameters"], 4),
         ("electrostatic", ["permittivity-law parameters"], 1),
+        ("port_mode", ["permeability", "loss tangent"], 2),
+        ("port_mode", ["lumped values"], 1),
+        ("port_mode", ["permittivity-law parameters"], 1),
         ("driven_periodic_plain", ["permittivity-law parameters"], 1),
         ("eigenmode_participation", ["lumped values"], 6),
         ("eigenmode_field", ["lumped values"], 1),
@@ -190,6 +195,15 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
         "Eigenmode with respect to the lumped values (direct solver, BDDC + GMRES)",
         "Eigenmode with respect to the permittivity-law parameters (direct solver)",
         "Electrostatic with respect to the permittivity-law parameters (direct solver)",
+        (
+            "Port mode problem with respect to the permeability and the loss "
+            "tangent (direct solver)"
+        ),
+        "Port mode problem with respect to the lumped values (direct solver)",
+        (
+            "Port mode problem with respect to the permittivity-law parameters "
+            "(direct solver)"
+        ),
         (
             "Driven, plain periodic with respect to the permittivity-law "
             "parameters (direct solver, uniform sweep)"
@@ -299,7 +313,7 @@ def test_only_the_four_problem_types_are_front_page_rows(derived):
 def test_raising_cells_name_their_error(derived):
     sheet = _cell(derived, "electrostatic", "fill")
     assert sheet["label"] == "raises NotImplementedError"
-    assert _cell(derived, "port_mode", "eps_r")["label"] == "raises"
+    assert _cell(derived, "port_mode", "nodes")["label"] == "raises"
     assert _cell(derived, "electrostatic", "conductivity")["label"] == "exact zero"
 
 

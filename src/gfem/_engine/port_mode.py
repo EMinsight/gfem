@@ -227,8 +227,15 @@ class PortModeSpace:
     quantity = "E"
     unit = "V/m"
 
-    def __init__(self, section: PortSection, order: int) -> None:
-        """Build the mesh and spaces and assemble the pencil."""
+    def __init__(
+        self, section: PortSection, order: int, *, geometry: bool = False
+    ) -> None:
+        """Build the mesh and spaces and assemble the pencil.
+
+        With ``geometry`` only the mesh and spaces are built, to locate a field
+        (`evaluate`, `point_columns`): no coefficient is read and no pencil
+        is assembled, so the section's material arrays may be placeholders.
+        """
         if not isinstance(section, PortSection):
             # a backstop: a 2D mesh's line ports never reach this space
             raise TypeError(
@@ -246,6 +253,8 @@ class PortModeSpace:
         self.space = ngs.FESpace([nd, h1])
         self.n_t = nd.ndof
         self.free = np.flatnonzero(free_mask(self.space.FreeDofs(), self.space.ndof))
+        if geometry:
+            return
         self._coef = _coefficients(self.mesh, section)
         self.pencil = self._assemble()
 
@@ -360,11 +369,12 @@ class PortModeSpace:
         if kind == "value_n":
             return (c if w is None else w * c) * en * vn * measure
         trace, test = (et, vt) if kind == "edge_t" else (en, vn)
+        # the weight multiplies the coefficient: a form has no scalar product
         if c is None:
-            edge = trace.Trace() * test.Trace() * measure
-        else:
-            edge = c * trace.Trace() * test.Trace() * measure
-        return edge if w is None else w * edge
+            c = 1.0 if w is None else w
+        elif w is not None:
+            c = w * c
+        return c * trace.Trace() * test.Trace() * measure
 
     def _conductor_theta(
         self, item: Conductor, factor: float
@@ -645,6 +655,43 @@ class PortModeSpace:
                 out[j, i, 2] = en(mips[i])
         return out
 
+    def point_columns(self, local: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """The field at plane points as a linear map of the full DOF vector.
+
+        Args:
+            local: Plane coordinates ``(n, 2)`` in local units.
+
+        Returns:
+            ``dofs (n, k)`` the DOF numbers of the element holding each point
+            (padded with 0) and ``weights (n, 3, k)`` such that ``(E_u, E_v,
+            E_n)`` at point ``p`` is ``weights[p] @ x[dofs[p]]``; zero off the
+            cross-section.
+        """
+        points = np.asarray(local, float)
+        mips = [self.mesh(float(x), float(y)) for x, y in points]
+        owners = [
+            list(self.space.GetDofNrs(ngs.ElementId(ngs.VOL, mip.nr)))
+            if mip.nr >= 0
+            else []
+            for mip in mips
+        ]
+        width = max((len(d) for d in owners), default=0)
+        dofs = np.zeros((len(mips), width), np.int64)
+        weights = np.zeros((len(mips), 3, width), complex)
+        gf = ngs.GridFunction(self.space)
+        et, en = gf.components
+        values = gf.vec.FV().NumPy()
+        for i, (mip, element) in enumerate(zip(mips, owners, strict=True)):
+            for j, dof in enumerate(element):
+                if dof < 0:  # an unnumbered DOF of the element
+                    continue
+                dofs[i, j] = dof
+                values[:] = 0.0
+                values[dof] = 1.0
+                weights[i, :2, j] = et(mip)
+                weights[i, 2, j] = en(mip)
+        return dofs, weights
+
     def magnetic_parts(
         self, coeffs: np.ndarray, local: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
@@ -785,7 +832,62 @@ class SectionReduction:
             * self.space.section.scale
             * 1j
             / (np.conj(omega) * scipy.constants.mu_0)
-            * (z @ self._g @ z.conj() + gamma.conjugate() * (z @ self._t @ z.conj()))
+            * (
+                z @ (self._g @ z.conj())
+                + gamma.conjugate() * (z @ (self._t @ z.conj()))
+            )
+        )
+
+    def gauge(self, z: np.ndarray, gamma: complex, omega: float) -> complex:
+        """Phase reference (`PortModeSpace.gauge`)."""
+        del omega
+        return -1j * (self._ln @ z + gamma * (self._lt @ z))
+
+
+@dataclasses.dataclass(eq=False)
+class FullReduction:
+    """`SectionReduction`'s protocol on the whole free-DOF vector, no reduced basis.
+
+    The coordinates are the field's own ``(E_t, E_n)`` on the free DOFs, so
+    the forms are the space's sparse matrices and a cotangent may point
+    anywhere in the space: a backward pass that pulls a normalization back
+    to the pencil vector needs that, since a reduced basis (one column for a
+    lossless mode) holds only part of the directions the field can move.
+
+    Attributes:
+        space: The port mode problem.
+    """
+
+    space: PortModeSpace
+
+    def __post_init__(self) -> None:
+        space = self.space
+        n = len(space.free)
+        self.w = sp.identity(n, format="csr")
+        self._g, self._t = space.power_forms
+        self._ln, self._lt = space.gauge_forms
+        self.source = np.arange(n)
+        self.tangential = space.free < space.n_t
+
+    def forms(self) -> tuple[Any, Any, np.ndarray, np.ndarray]:
+        """The sparse power forms ``G``, ``T`` and the gauge ``l_n``, ``l_t``."""
+        return self._g, self._t, self._ln, self._lt
+
+    def coords(self, y: np.ndarray, gamma: complex) -> np.ndarray:
+        """The field ``(y_t / gamma, y_n)`` of a pencil vector."""
+        return np.where(self.tangential, y / gamma, y)
+
+    def power(self, z: np.ndarray, gamma: complex, omega: complex) -> complex:
+        """Complex power through the port, W (`SectionReduction.power`)."""
+        return (
+            0.5
+            * self.space.section.scale
+            * 1j
+            / (np.conj(omega) * scipy.constants.mu_0)
+            * (
+                z @ (self._g @ z.conj())
+                + gamma.conjugate() * (z @ (self._t @ z.conj()))
+            )
         )
 
     def gauge(self, z: np.ndarray, gamma: complex, omega: float) -> complex:

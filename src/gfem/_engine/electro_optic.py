@@ -64,15 +64,16 @@ class ElectroOpticWeightsRule(ShiftWeightsRule):
         del kind
         return (
             "an electro-optic shift holds the port mode constant (first order in "
-            "the static field), and its derivative with respect to the optical "
+            "the static field), and the mode's derivative with respect to the optical "
             "model's permittivity, losses, permeability, node coordinates or "
-            "boundary values would need the mode's own derivative, which this "
-            "version does not have (a frozen mode gives a wrong value). "
+            "boundary values is not wired through the shift's weights in this "
+            "version (a frozen mode gives a wrong value). "
             "Differentiate through the potential or the electro_optic_tensor"
         )
 
-    def nondifferentiable_output(self, name: str) -> str:
+    def nondifferentiable_output(self, name: str, kinds: Any = ()) -> str:
         """The error message for a cotangent on output ``name``."""
+        del kinds
         return (
             f"gfem cannot differentiate the electro-optic shift's mode output "
             f"{name!r} with respect to the optical model: the mode is a constant "

@@ -974,9 +974,11 @@ def gradient_matrix(cells, expected, out_of_scope) -> dict:
 #: The ``EXPECTED`` outcomes an off-grid input's cells may verify, by input:
 #: gradients, and for a permittivity law also the exact zeros of the
 #: parameters a problem never reads (the electrostatic static permittivity
-#: reads no frequency).
+#: reads no frequency), and for lumped values the exact zeros of a lumped
+#: port's own L and C beside a wave port's mode (which never reads them).
 _VERIFIED_CLAIMS = {name: ({"gradient"},) for name in OFF_GRID} | {
-    "law": ({"gradient"}, {"gradient", "zero"})
+    "law": ({"gradient"}, {"gradient", "zero"}),
+    "lumped": ({"gradient"}, {"gradient", "zero"}),
 }
 
 

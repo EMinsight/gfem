@@ -94,7 +94,7 @@ class NormalizationCotangents:
 
 def normalize_rows(
     fields: Any,
-    mass: np.ndarray,
+    mass: Any,
     y: np.ndarray,
     gamma: np.ndarray,
     omega: np.ndarray,
@@ -147,7 +147,7 @@ def normalize_rows(
                 kind, value = "largest", c[entry]
                 zi *= abs(value) / value
         else:
-            kind, value = "overlap", previous.conj() @ mass @ zi
+            kind, value = "overlap", previous.conj() @ (mass @ zi)
             zi *= abs(value) / value
         sign = 1.0
         if volts is not None:
@@ -161,7 +161,7 @@ def normalize_rows(
 
 def normalize_vjp(  # noqa: PLR0915, PLR0917
     fields: Any,
-    mass: np.ndarray,
+    mass: Any,
     norm: Normalized,
     y: np.ndarray,
     gamma: np.ndarray,
@@ -242,7 +242,7 @@ def normalize_vjp(  # noqa: PLR0915, PLR0917
         gc = gam.conjugate()
         gz, tz = g_form @ zc, t_form @ zc
         zb0 = zb0 + p_bar * pref * (gz + gc * tz)
-        zb0 = zb0 + np.conj(p_bar * pref * (z0 @ g_form + gc * (z0 @ t_form)))
+        zb0 = zb0 + np.conj(p_bar * pref * (g_form.T @ z0 + gc * (t_form.T @ z0)))
         gamma_bar[i] += np.conj(p_bar * pref * (z0 @ tz))
         lifted0 = w @ z0
         pairs.append(FormPair("power_g", lifted0, lifted0.conj(), p_bar * pref))

@@ -50,37 +50,61 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.constants
 import scipy.linalg
+from jax.interpreters import partial_eval
 
 from gfem import _mpi, _pml, _progress
 from gfem._boundaries import (
+    Conductor,
     FloquetPort,
+    Impedance,
     Polarity,
     WavePort,
     lead_port,
+    sheet_of,
     wave_port_label,
     wave_port_surfaces,
 )
 from gfem._checks import is_traced
 from gfem._dim2 import refuse_anisotropic
 from gfem._engine import dispersion
+from gfem._engine import terms as driven_terms
+from gfem._engine.cache import Entry, discretization
 from gfem._engine.line_mode import ModeSpace, mode_space
 from gfem._engine.port_mode import PortModeSpace
 from gfem._engine.port_mode_normalization import normalize_rows
+from gfem._engine.port_mode_sensitivity import (
+    impedance_cotangents,
+    integrated,
+    owner_tetrahedra,
+)
 from gfem._engine.runtime import task_manager
-from gfem._engine.sensitivity import is_thermal_value
+from gfem._engine.sensitivity import Term, is_thermal_value
 from gfem._engine.solve_request import SolveRequest
 from gfem._linalg import report
 from gfem._linalg.superlu import backward_error, shift_invert_eigs
 from gfem._line_section import LineSection
-from gfem._port_section import PLANE_RTOL, PortSection, port_section
+from gfem._port_section import (
+    PLANE_RTOL,
+    PortSection,
+    anisotropic_absorbing,
+    port_geometry,
+    port_section,
+)
+from gfem._sweep import port_mode_pass
 from gfem._text import hertz, hertz_band
-from gfem.errors import LayerClearanceWarning, PortModeError, PortModeTrackingWarning
+from gfem.errors import (
+    LayerClearanceWarning,
+    NonDifferentiableError,
+    PortModeError,
+    PortModeTrackingWarning,
+)
 from gfem.model import Model
 from gfem.options import SolverOptions
 from gfem.problems import PortMode
 from gfem.results import PortModeField, PortModeResult
 
 __all__ = [
+    "PortModeEntry",
     "PortModeRule",
     "PortModeSweep",
     "path_voltage",
@@ -167,6 +191,13 @@ class PortModeSweep:
             V; NaN without one.
         power: ``(n_f,)`` complex power of the mode through the port, W, of
             modulus 1.
+        lam: ``(n_f,)`` the eigenvalue ``gamma**2`` of each frequency's pencil
+            pair, per local unit squared; ``None`` on a sweep rebuilt from
+            arrays that lack it.
+        y: ``(n_f, m)`` the pencil vector of each frequency in the reduced
+            basis ``v``; ``None`` likewise.
+        v: ``(n_free, m)`` the real reduced basis of pencil vectors;
+            ``None`` likewise.
     """
 
     space: ModeSpace
@@ -179,6 +210,9 @@ class PortModeSweep:
     coords: np.ndarray
     voltage: np.ndarray
     power: np.ndarray
+    lam: np.ndarray | None = None
+    y: np.ndarray | None = None
+    v: np.ndarray | None = None
 
     @property
     def z_pv(self) -> np.ndarray:
@@ -191,23 +225,55 @@ class PortModeSweep:
         return np.abs(self.voltage) ** 2 / 2.0
 
 
+@dataclasses.dataclass(eq=False)
+class PortModeEntry(Entry):
+    """What a port mode forward keeps for its backward: the surface's sweeps.
+
+    Attributes:
+        sweeps: One `PortModeSweep` per mode of the surface (they share the
+            basis).
+    """
+
+    sweeps: list[PortModeSweep] = dataclasses.field(default_factory=list)
+
+    @property
+    def nbytes(self) -> int:
+        """Host memory held, in bytes."""
+        first = self.sweeps[0] if self.sweeps else None
+        if first is None:
+            return 0
+        shared = int(first.basis.nbytes) + int(np.asarray(first.v).nbytes)
+        return shared + sum(
+            int(s.coords.nbytes + np.asarray(s.y).nbytes) for s in self.sweeps
+        )
+
+    def free(self, *, return_plans: bool = False) -> None:
+        """Drop the sweeps."""
+        del return_plans
+        self.sweeps = []
+
+
 class PortModeRule:
     """Host-side solve of a `PortMode` problem on a `Model`.
 
     Construction runs the static checks; `forward` extracts the port's
-    cross-section and runs the port mode sweep over its frequencies. Port
-    modes are constants of a solve: under `jax.grad` a perturbed input the
-    port mode problem reads raises `gfem.NonDifferentiableError`, one it
-    never reads (a thermal property) gets an exact zero, and `jax.jit` /
-    `jax.vmap` run the solve (the result's field is then not available).
+    cross-section and runs the port mode sweep over its frequencies. Under
+    `jax.grad`, ``gamma`` (so ``n_eff``), ``Z_PV`` and the field (``field``,
+    the full DOF vector of each frequency, read through
+    `gfem.results.PortModeField.at`) differentiate with respect to the
+    material, law, sheet and `Impedance` inputs of the section
+    (`gfem._sweep.port_mode_pass`); ``residual`` raises
+    `gfem.NonDifferentiableError` and a thermal property gets an exact zero.
     """
 
     physics = "em"
     form = "port mode"
     #: Material properties the port mode problem reads.
     reads = frozenset({"eps_r", "mu_r", "tan_delta", "conductivity"})
-    #: No output has a gradient (`unsupported_input` raises for read inputs).
-    differentiable_outputs = frozenset()
+    #: The outputs a cotangent may reach.
+    differentiable_outputs = frozenset({"gamma", "Z_PV", "field"})
+    #: An output's refusal reads the wanted inputs (`nondifferentiable_output`).
+    input_aware = True
 
     def __init__(
         self,
@@ -251,6 +317,7 @@ class PortModeRule:
             ]
             self._index = 0
         self._model = model
+        self._explicit: dict[tuple, Any] = {}
         dispersion.warn_fitted_range(
             model,
             problem.frequency,
@@ -260,15 +327,33 @@ class PortModeRule:
         )
 
     def output_specs(self, model: Model) -> dict[str, jax.ShapeDtypeStruct]:
-        """Shape and dtype of each forward output (one value per frequency)."""
-        del model
+        """Shape and dtype of each forward output (one value per frequency).
+
+        ``field`` is the mode's full DOF vector on the port's section, of a
+        static width: that of the discrete space built from the mesh alone
+        (empty for a line port of a 2D mesh, whose field stays unavailable
+        under JAX).
+        """
         n = (len(self.problem.frequency),)
         return {
             "gamma": jax.ShapeDtypeStruct(n, jnp.complex128),
             "Z_PV": jax.ShapeDtypeStruct(n, jnp.complex128),
             "residual": jax.ShapeDtypeStruct(n, jnp.float64),
             "solved": jax.ShapeDtypeStruct(n, jnp.bool_),
+            "field": jax.ShapeDtypeStruct(
+                (*n, self._field_width(model)), jnp.complex128
+            ),
         }
+
+    def _field_width(self, model: Model) -> int:
+        if model.mesh.dim == 2:
+            return 0
+        return self._geometry(model).space.ndof
+
+    def _geometry(self, model: Model) -> PortModeSpace:
+        """The port's discrete space from the mesh alone (`port_geometry`)."""
+        section = port_geometry(model, lead_port(self._ports))
+        return PortModeSpace(section, self.options.order, geometry=True)
 
     def role(self, kind: tuple) -> str:
         """``"read"`` if the port mode problem depends on input ``kind``.
@@ -282,36 +367,61 @@ class PortModeRule:
         return "unread" if is_thermal_value(kind) else "read"
 
     def unsupported_input(self, kind: tuple) -> str | None:
-        """Every read input: port modes are constants of a solve."""
-        del kind
-        return (
-            "the port mode problem is not differentiable in this version (port "
-            "modes are constants of a solve)"
-        )
+        """Why a read input cannot be differentiated here, or ``None``.
 
-    def nondifferentiable_output(self, name: str) -> str:
-        """The error message for a cotangent on output ``name``."""
+        The node coordinates (a wave port's face) are not yet, and a line
+        port's mode has no derivative in this version.
+        """
+        if self._model.mesh.dim == 2:
+            return (
+                "the port mode problem of a line port is not differentiable in "
+                "this version"
+            )
+        if kind[0] == "nodes":
+            return (
+                "the port mode problem does not differentiate the node "
+                "coordinates in this version"
+            )
+        return anisotropic_absorbing(self._model, lead_port(self._ports))
+
+    def nondifferentiable_output(self, name: str, kinds: Any = ()) -> str | None:
+        """The error message for a cotangent on output ``name``, or ``None``.
+
+        ``residual`` is a diagnostic. The field's vector cannot carry a
+        cotangent while the node coordinates are wanted, as
+        `gfem.results.PortModeField.at` cannot.
+        """
+        if name == "residual":
+            return (
+                f"gfem cannot differentiate the port mode output {name!r} of wave "
+                f"port {self.port.name!r}: it is the backward error of the mode "
+                "solve, a diagnostic, not a physical quantity. Wrap it in "
+                "jax.lax.stop_gradient to use its value without its derivative."
+            )
+        if name == "field" and ("nodes",) in set(kinds):
+            return _AT_NODES
+        if name in self.differentiable_outputs:
+            return None
         return (
-            f"gfem cannot differentiate the port mode output {name!r}: the port "
-            "mode problem is not differentiable in this version. Wrap it in "
+            f"gfem cannot differentiate the port mode output {name!r}. Wrap it in "
             "jax.lax.stop_gradient to use its value without its derivative."
         )
 
     def forward(
         self, model: Model, *, keep: bool, request: SolveRequest | None = None
-    ) -> tuple[dict, None]:
+    ) -> tuple[dict, Entry | None]:
         """Run the port mode sweep.
 
         Args:
             model: The model, with concrete leaves.
-            keep: Ignored: nothing is kept for a backward pass.
+            keep: Whether a backward pass will read the sweep.
             request: Ignored: a port mode sweep reads no per-call input.
 
         Returns:
             The per-frequency arrays of `output_specs` plus ``"sweep"`` (the
-            `PortModeSweep`), and ``None``.
+            `PortModeSweep`), and the entry a backward reads (or ``None``).
         """
-        del keep, request
+        del request
         ports = self._ports
         modes = [self.mode] if len(ports) == 1 else [p.mode for p in ports]
         lead = lead_port(ports)
@@ -329,32 +439,149 @@ class PortModeRule:
                 modes,
                 tolerance=self.options.port_mode_tolerance,
                 ports=ports,
+                pairs=keep,
             )
         sweep = sweeps[self._index]
+        if isinstance(space, PortModeSpace):
+            field = sweep.coords @ sweep.basis.T
+        else:
+            field = np.zeros((len(sweep.gamma), 0), complex)
         outputs = {
             "gamma": sweep.gamma,
             "Z_PV": sweep.z_pv,
             "residual": sweep.residual,
             "solved": sweep.solved,
+            "field": field,
             "sweep": sweep,
         }
-        return outputs, None
+        entry = PortModeEntry("em", sweeps=sweeps) if keep else None
+        return outputs, entry
+
+    def backward(
+        self,
+        model: Model,
+        entry: Entry,
+        cotangents: dict[str, np.ndarray],
+        *,
+        wanted: frozenset,  # noqa: ARG002 - the rule reads every wanted kind
+    ) -> list:
+        """The cotangents of the section's coefficients as owner-tetrahedron integrals.
+
+        The 2D work runs on rank 0 alone (an adjoint failure is an agreed
+        `PortModeError`); only rank 0 returns pairs and explicit inputs. The
+        gradient by each input kind of the section that is not a material
+        (laws, sheet fills, `Impedance` values) is kept for `explicit_inputs`.
+        """
+        self._explicit = {}
+        pairs: list = []
+
+        def compute() -> dict[str, np.ndarray]:
+            pairs.extend(self._pass(model, entry, cotangents))
+            return {}
+
+        _mpi.on_root(self.comm, compute, results=(PortModeError,))
+        return pairs if _mpi.rank(self.comm) == 0 else []
+
+    def _pass(
+        self,
+        model: Model,
+        entry: Entry,
+        cotangents: dict[str, np.ndarray],
+    ) -> list:
+        sweeps = entry.sweeps  # ty: ignore[unresolved-attribute]
+        sweep = sweeps[self._ports.index(self.port)]
+        space = sweep.space
+        section = space.section
+        rule = (
+            None
+            if self.port.voltage_path is None
+            else _voltage_rule(
+                section, np.asarray(self.port.voltage_path, float), self.port.name
+            )
+        )
+        done = port_mode_pass.mode_pass(
+            space,
+            frequency=sweep.frequency,
+            lam=sweep.lam,
+            y=sweep.y,
+            v=sweep.v,
+            solved=sweep.solved,
+            wavenumbers=lambda f: _wavenumbers(section, f),
+            volts=None if rule is None else _voltage_row(space, rule),
+            ct_gamma=cotangents.get("gamma"),
+            ct_z_pv=cotangents.get("Z_PV"),
+            ct_field=cotangents.get("field"),
+            who=f"WavePort {self.port.name!r}",
+        )
+        cot = done.section
+        # a law's triangles take eps_inf through the law, not through the mass
+        if section.law_index is not None:
+            on_law = np.asarray(section.law_index) >= 0
+            cot.eps_tt[on_law] = 0
+            cot.eps_nn[on_law] = 0
+        owners = owner_tetrahedra(model, section)
+        n_tets = len(model.mesh.volume_elements)
+        out = [integrated(section, cot, owners, n_tets)]
+        explicit: dict[tuple, Any] = dict(done.laws)
+        for (g, name), value in impedance_cotangents(section, cot).items():
+            explicit[("boundary", _boundary_index(model, section, g), name)] = value
+        explicit |= _fill_cotangents(model, section, cot)
+        self._explicit = explicit
+        return out
+
+    def explicit_inputs(self) -> dict[tuple, Any]:
+        """The gradients by input kind the section computed itself."""
+        return self._explicit
+
+    def terms(self, model: Model, *, nodes: bool) -> list:
+        """The driven operator's material terms, for the owner-tetrahedron integrals."""
+        del nodes
+        built = discretization(model.mesh, model._periodic, self.comm).built  # noqa: SLF001
+        pieces, latent = driven_terms.pieces(model, built, self.options.order, ())
+        keep = {"mass", "conductivity", "curl_curl", "absorbing"}
+        return [
+            Term(
+                p.name,
+                p.kind,  # ty: ignore[invalid-argument-type]
+                coefficient=p.coefficient,
+                region=p.region,
+                derivatives=p.derivatives,
+                owner=p.owner,
+                position=p.position,
+            )
+            for p in (*pieces, *latent)
+            if p.name in keep
+        ]
+
+    def lumped_terms(self, model: Model) -> list:
+        """No piece moves with a lumped value: the section's mode reads none."""
+        del model
+        return []
 
     def result(self, outputs: dict) -> PortModeResult:
         """The public result from the forward outputs.
 
-        Without ``"sweep"`` (a solve traced by JAX) the mode field is built
-        on first use, from the model's values when they are concrete.
+        Without ``"sweep"`` (a solve traced by JAX) the field is the traced
+        DOF vector of ``"field"``, located from the mesh alone when a point is
+        read (a line port's is built on first use, from concrete values).
         """
         sweep: PortModeSweep | None = outputs.get("sweep")
         polarization = self.problem.polarization
-        if sweep is None:
-            quantity, unit = _FIELD_NAMES[polarization]
+        quantity, unit = _FIELD_NAMES[polarization]
+        if sweep is not None:
+            field = PortModeField(sweep.space, sweep.basis, sweep.coords)
+        elif self._model.mesh.dim == 2:
             field = PortModeField._deferred(  # noqa: SLF001
                 self.port.name, self._field, quantity=quantity, unit=unit
             )
         else:
-            field = PortModeField(sweep.space, sweep.basis, sweep.coords)
+            field = PortModeField._on_vector(  # noqa: SLF001
+                self.port.name,
+                self._locate,
+                jnp.asarray(outputs["field"]),
+                quantity=quantity,
+                unit=unit,
+            )
         fields = {"h_field": field} if polarization == "Hz" else {"e_field": field}
         return PortModeResult(
             port=self.port.name,
@@ -368,6 +595,23 @@ class PortModeRule:
             pml=self._model.pml,
         )
 
+    def _locate(self) -> PortModeSpace:
+        """The port's space from the mesh, for a point read on a traced field.
+
+        Raises:
+            NonDifferentiableError: The node coordinates are traced by
+                differentiation: a point value on a moving section is not
+                available.
+            TypeError: They are traced by `jax.jit`.
+        """
+        nodes = self._model.mesh.nodes
+        if is_traced(nodes):
+            staged = partial_eval.DynamicJaxprTracer
+            if any(isinstance(x, staged) for x in jax.tree.leaves(nodes)):
+                raise TypeError(_AT_STAGED)
+            raise NonDifferentiableError(_AT_NODES)
+        return self._geometry(self._model)
+
     def _field(self) -> tuple[ModeSpace, np.ndarray, np.ndarray]:
         if is_traced(self._model):
             name = "h_field" if self.problem.polarization == "Hz" else "e_field"
@@ -379,6 +623,56 @@ class PortModeRule:
             )
         sweep = self.forward(self._model, keep=False)[0]["sweep"]
         return sweep.space, sweep.basis, sweep.coords
+
+
+_AT_NODES = (
+    "PortModeField.at reads the mode at fixed points while gfem differentiates the "
+    "node coordinates: the derivative of a point value on a moving section is not "
+    "available in this version. Differentiate gamma, n_eff or Z_PV, or wrap the "
+    "node coordinates in jax.lax.stop_gradient."
+)
+_AT_STAGED = (
+    "PortModeResult.e_field.at needs concrete node coordinates to locate the "
+    "points on the section; inside jax.jit the model's mesh is traced. Pass the "
+    "model as a closed-over constant, or read the field outside jax.jit."
+)
+
+
+def _boundary_index(model: Model, section: PortSection, group: int) -> int:
+    """Index in ``model.boundaries`` of an impedance group's boundary."""
+    surface = section.impedance_terms[group][0].surface
+    for i, b in enumerate(model.boundaries):
+        if isinstance(b, (Conductor, Impedance)) and b.surface == surface:
+            return i
+    raise RuntimeError(f"No boundary on surface {surface!r}.")  # pragma: no cover
+
+
+def _fill_cotangents(model: Model, section: PortSection, cot: Any) -> dict[tuple, Any]:
+    """The gradient by each sheet field's fill, per face of its surface.
+
+    Each section impedance edge reads the fill of one face of the sheet's
+    surface along it (the last face listing the edge, as
+    `gfem._port_section._sheet_fill_by_edge`).
+    """
+    if section.impedance_fill is None or not len(section.impedance_edges):
+        return {}
+    mesh = model.mesh
+    used = np.unique(mesh.triangles[section.faces])
+    out: dict[tuple, Any] = {}
+    for g, (item, _) in enumerate(section.impedance_terms):
+        if sheet_of(item) is None:
+            continue
+        index = _boundary_index(model, section, g)
+        faces = mesh.elements(item.surface)
+        keys = np.sort(mesh.triangles[faces][:, [[0, 1], [1, 2], [2, 0]]], axis=2)
+        owner = {(int(a), int(b)): f for f, tri in enumerate(keys) for a, b in tri}
+        grad = out.setdefault(
+            ("boundary", index, "fill", "fill"), np.zeros(len(faces), complex)
+        )
+        for e in np.flatnonzero(section.impedance_group == g):
+            edge = np.sort(used[np.asarray(section.impedance_edges[e])])
+            grad[owner[int(edge[0]), int(edge[1])]] += cot.fill[e]
+    return out
 
 
 def _section_regions(model: Model, port: WavePort) -> set[str]:
@@ -485,6 +779,7 @@ def port_mode_sweep(
     sweep = _Greedy(space, f_given[order], modes, tolerance, ports)
     sweep.run()
     basis, coords, gamma, voltage, power = sweep.normalized(rules, arrows)
+    reduced = sweep.reduced.v
     out = np.empty_like(order)
     out[order] = np.arange(len(order))
     return [
@@ -499,6 +794,9 @@ def port_mode_sweep(
             coords=coords[k, out],
             voltage=voltage[k, out],
             power=power[k, out],
+            lam=sweep.lam[k, out],
+            y=sweep.rows[k][out],
+            v=reduced,
         )
         for k in range(len(modes))
     ]
@@ -513,6 +811,7 @@ def swept_once(
     tolerance: float,
     ports: list[WavePort],
     derived: Callable[[np.ndarray], dict[str, np.ndarray]] | None = None,
+    pairs: bool = False,
 ) -> tuple[list[PortModeSweep], dict[str, np.ndarray]]:
     """`port_mode_sweep` once, on rank 0 of ``comm``, with its arrays on every rank.
 
@@ -528,6 +827,8 @@ def swept_once(
         ports: As `port_mode_sweep`.
         derived: More arrays read off the sweep's basis, computed beside it and
             sent with it, since an assembled form may round differently per rank.
+        pairs: Also send each mode's eigenvalue and pencil vector rows and the
+            reduced basis (a backward pass reads them).
 
     Returns:
         The sweeps and ``derived``'s arrays.
@@ -538,11 +839,17 @@ def swept_once(
             space, frequency, modes, tolerance=tolerance, ports=ports
         )
         first = sweeps[0]
-        arrays = {
+        arrays: dict[str, np.ndarray] = {
             name: np.stack([getattr(sweep, name) for sweep in sweeps])
             for name in _PER_MODE
         }
         arrays |= {"basis": first.basis, "solved": first.solved}
+        if pairs:
+            arrays |= {
+                "lam": np.stack([np.asarray(sweep.lam) for sweep in sweeps]),
+                "y": np.stack([np.asarray(sweep.y) for sweep in sweeps]),
+                "v": np.asarray(first.v),
+            }
         return arrays | (derived(first.basis) if derived is not None else {})
 
     # ValueError: a voltage path or a polarity point off the port, on replicated
@@ -576,6 +883,11 @@ def sweeps_on(
             basis=arrays["basis"],
             solved=arrays["solved"],
             **{name: arrays[name][k] for name in _PER_MODE},
+            **(
+                {"lam": arrays["lam"][k], "y": arrays["y"][k], "v": arrays["v"]}
+                if "lam" in arrays
+                else {}
+            ),
         )
         for k in range(len(arrays["gamma"]))
     ]
@@ -643,6 +955,8 @@ class _Greedy:
         for i, fi in enumerate(f):
             self.k0[i], self.k_max[i], self.shift[i] = _wavenumbers(space.section, fi)
         self.reduced = _Reduced(space)
+        #: Each mode's pencil vectors in the reduced basis, set by `normalized`.
+        self.rows: list[np.ndarray] = [np.zeros((n, 0)) for _ in self.modes]
         self.lam = np.zeros((n_modes, n), complex)
         self.coords: list[list[np.ndarray]] = [[np.zeros(0)] * n for _ in self.modes]
         self.residual = np.full((n_modes, n), np.inf)
@@ -981,6 +1295,7 @@ class _Greedy:
                 else _voltage_functional(planar(space), basis, rule)
             )
             y = np.array([self.coords_at(i, k) for i in range(n)])
+            self.rows[k] = y
             polar = None
             if arrow is not None:
                 polar, peak = _polarity_functionals(space, basis, arrow)
@@ -1424,6 +1739,17 @@ def _polarity_functionals(
         return at, space.evaluate(basis.T, nodes)[:, :, :2]
     at = space.evaluate(basis.T, local)[:, 0] * weights[0]
     return at, space.evaluate(basis.T, nodes)[:, :, None]
+
+
+def _voltage_row(
+    space: PortModeSpace, rule: tuple[np.ndarray, np.ndarray]
+) -> np.ndarray:
+    """``V = int E . dl`` as a vector on the free DOFs (`_voltage_functional`'s row)."""
+    pts, wts = rule
+    dofs, weights = space.point_columns(pts)
+    row = np.zeros(space.space.ndof, complex)
+    np.add.at(row, dofs, np.einsum("pc,pcl->pl", wts, weights))
+    return row[space.free]
 
 
 def _voltage_rule(

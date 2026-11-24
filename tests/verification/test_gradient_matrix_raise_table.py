@@ -127,14 +127,38 @@ EXPECTED |= {
     for kind in [("nodes",)] + [("material", "oxide", p) for p in ALL_PROPERTIES]
 }
 EM_PROPERTIES = ("eps_r", "mu_r", "tan_delta", "conductivity")
-# The port mode problem is not differentiable: every input it reads raises
-# (whichever result leaf is used), and the thermal properties it never reads
-# get exact zeros.
+# The port mode problem: gamma, Z_PV (with a voltage path) and the field
+# differentiate with respect to the material, law, fill and Impedance inputs
+# its section reads, a diagnostic (residual) raises, constants (frequency,
+# solved) and the thermal properties get exact zeros. The node coordinates
+# raise (the face's shape terms are not differentiated yet). These cases
+# run in `test_port_face_raise_table`, one item per case.
 PORT_MODE_OUTPUTS = ("frequency", "gamma", "Z_PV", "residual", "solved")
+PORT_FACE_NAMES = ("port_mode", "port_mode_law", "port_mode_sheet", "port_mode_lumped")
+
+
+def _port_mode_outcome(out, kind, *, path, zero=()):
+    """The expected outcome of a port mode output by an input kind.
+
+    ``path``: whether p1 has a voltage path (else Z_PV is a NaN constant
+    whose cotangent is an exact zero); ``zero``: the kinds the mode never
+    reads (a lumped port's own L and C).
+    """
+    if kind == ("nodes",):
+        return RAISES
+    if kind[0] == "material" and kind[2] not in EM_PROPERTIES:
+        return ZERO
+    if out == "residual":
+        return RAISES
+    if out in ("frequency", "solved") or kind in zero:
+        return ZERO
+    if out == "Z_PV" and not path:
+        return ZERO
+    return GRADIENT
+
+
 EXPECTED |= {
-    ("port_mode", out, kind): (
-        ZERO if kind[0] == "material" and kind[2] not in EM_PROPERTIES else RAISES
-    )
+    ("port_mode", out, kind): _port_mode_outcome(out, kind, path=True)
     for out in PORT_MODE_OUTPUTS
     for kind in [("nodes",)] + [("material", "fill", p) for p in ALL_PROPERTIES]
 }
@@ -771,7 +795,7 @@ EXPECTED |= {
     for kind in [("nodes",), FILL]
 }
 EXPECTED |= {
-    ("port_mode_sheet", out, kind): RAISES
+    ("port_mode_sheet", out, kind): _port_mode_outcome(out, kind, path=False)
     for out in PORT_MODE_OUTPUTS
     for kind in [("nodes",), FILL]
 }
@@ -869,16 +893,19 @@ PORT_MODE_LUMPED_KINDS = [
     ("boundary", 2, "inductance"),
     ("boundary", 2, "capacitance"),
 ]
+# the wave port's mode does not read the lumped port's own L and C: exact zeros
 EXPECTED |= {
-    ("port_mode_lumped", out, kind): RAISES
+    ("port_mode_lumped", out, kind): _port_mode_outcome(
+        out, kind, path=False, zero=PORT_MODE_LUMPED_KINDS[:2]
+    )
     for out in PORT_MODE_OUTPUTS
     for kind in [("nodes",), *PORT_MODE_LUMPED_KINDS]
 }
 
 
-# A permittivity law in a wave port's cross-section: the port mode
-# problem is not differentiable, so every law parameter raises, with the node
-# coordinates. One term of each kind, each with Re eps > 0 at 10 GHz.
+# A permittivity law in a wave port's cross-section: every law parameter
+# differentiates gamma and Z_PV, the node coordinates raise. One term of each
+# kind, each with Re eps > 0 at 10 GHz.
 PORT_MODE_LAW = gfem.PermittivityLaw(
     eps_inf=2.0,
     terms=[
@@ -902,7 +929,7 @@ PORT_MODE_LAW_KINDS = [
     ("law", "fill", 3, "high_frequency"),
 ]
 EXPECTED |= {
-    ("port_mode_law", out, kind): RAISES
+    ("port_mode_law", out, kind): _port_mode_outcome(out, kind, path=True)
     for out in PORT_MODE_OUTPUTS
     for kind in [("nodes",), *PORT_MODE_LAW_KINDS]
 }
@@ -2142,13 +2169,27 @@ def test_the_heat_kernel_s_explicit_term(request, case):
 
 
 @pytest.fixture(scope="module")
-def cases(model, driven_model, eigen_model, wave_cases, request):
+def cases(all_cases):
+    return {k: v for k, v in all_cases.items() if k not in PORT_FACE_NAMES}
+
+
+@pytest.fixture(scope="module")
+def port_face_cases(all_cases):
+    return {k: all_cases[k] for k in PORT_FACE_NAMES}
+
+
+@pytest.fixture(scope="module")
+def all_cases(model, driven_model, eigen_model, wave_cases, request):
     mesh = gfem.Mesh.from_gmsh(DATA / "parallel_plate.msh", length_unit="um")
+    path = ((20e-6, 0.0, 0.0), (20e-6, 10e-6, 0.0))
     port_model = gfem.Model(
         mesh,
         materials={"fill": _field(mesh, "fill")},
         boundaries=[gfem.PEC("plates")],
-        ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")],
+        ports=[
+            gfem.WavePort("p1", "port1", voltage_path=path),
+            gfem.WavePort("p2", "port2"),
+        ],
     )
     return {
         "electrostatic": (model, PROBLEMS["electrostatic"]),
@@ -2236,8 +2277,115 @@ def _objective(model, problem, out_path, index):
 def test_every_cell_has_an_expected_outcome(cases):
     cells = {(p, o, k) for p, _, _, o, _, _, k in _cells(cases)}
     assert cells == {
-        c for c in EXPECTED if c[0] not in MEASUREMENT_READS and c[0] not in HEAT_READS
+        c
+        for c in EXPECTED
+        if c[0] not in MEASUREMENT_READS
+        and c[0] not in HEAT_READS
+        and c[0] not in PORT_FACE_NAMES
     }
+
+
+def test_every_port_face_cell_has_an_expected_outcome(port_face_cases):
+    cells = {(p, o, k) for p, _, _, o, _, _, k in _cells(port_face_cases)}
+    assert cells == {c for c in EXPECTED if c[0] in PORT_FACE_NAMES}
+
+
+@pytest.mark.parametrize("name", PORT_FACE_NAMES)
+def test_port_face_raise_table(port_face_cases, name):
+    """The port mode's cases, one item each (their gradients solve a mode per cell)."""
+    only = {name: port_face_cases[name]}
+    for _, model, problem, out_name, out_path, index, kind in _cells(only):
+        expected = EXPECTED[(name, out_name, kind)]
+        objective, x = _objective(model, problem, out_path, index)
+        cell = f"{name} {out_name} x {kind}"
+        if expected == RAISES:
+            with pytest.raises(gfem.NonDifferentiableError):  # noqa: PT012
+                jax.make_jaxpr(jax.grad(objective))(x)
+                pytest.fail(f"{cell}: no NonDifferentiableError")
+            continue
+        grad = np.asarray(jax.grad(objective)(x))
+        assert np.isfinite(grad).all(), cell
+        if expected == ZERO:
+            assert not grad.any(), cell
+        else:
+            assert np.abs(grad).max() > 0, cell
+
+
+PORT_FACE_PATH = ((20e-6, 0.0, 0.0), (20e-6, 10e-6, 0.0))
+
+
+def _plate_mode(eps, path=True):
+    mesh = gfem.Mesh.from_gmsh(DATA / "parallel_plate.msh", length_unit="um")
+    n = len(mesh.elements("fill"))
+    model = gfem.Model(
+        mesh,
+        materials={"fill": gfem.MaterialField(eps_r=eps * jnp.ones(n))},
+        boundaries=[gfem.PEC("plates")],
+        ports=[
+            gfem.WavePort("p1", "port1", voltage_path=PORT_FACE_PATH if path else None),
+            gfem.WavePort("p2", "port2"),
+        ],
+    )
+    return gfem.solve(model, gfem.PortMode("p1", 10e9)), model
+
+
+def test_a_port_mode_field_under_batched_nodes_is_refused():
+    """`PortModeField.at` reads fixed points: traced nodes are not available."""
+    _, model = _plate_mode(4.0)
+    nodes = jnp.asarray(model.mesh.nodes)
+
+    def field(x):
+        moved = jax.tree_util.tree_unflatten(
+            jax.tree_util.tree_structure(model.mesh), [x]
+        )
+        result = gfem.solve(model.replace(mesh=moved), gfem.PortMode("p1", 10e9))
+        return result.e_field.at([20e-6, 5e-6, 0.0])
+
+    with pytest.raises(
+        gfem.NonDifferentiableError, match=r"PortModeField\.at reads the mode at fixed"
+    ):
+        jax.vmap(field)(nodes[None])
+
+
+def test_a_field_cotangent_under_wanted_nodes_has_the_same_refusal():
+    from gfem._sweep.port_mode import PortModeRule
+
+    _, model = _plate_mode(4.0)
+    rule = PortModeRule(model, gfem.PortMode("p1", 10e9), gfem.SolverOptions())
+    text = rule.nondifferentiable_output("field", {("nodes",)})
+    assert "PortModeField.at reads the mode at fixed points" in text
+    assert (
+        rule.nondifferentiable_output("field", {("material", "fill", "eps_r")}) is None
+    )
+    assert "diagnostic" in rule.nondifferentiable_output("residual", ())
+
+
+def test_the_characteristic_impedance_of_a_traced_mode_raises_at_call_time():
+    def impedance(eps):
+        mode, _ = _plate_mode(eps)
+        return jnp.real(
+            gfem.characteristic_impedance(mode, voltage_path=PORT_FACE_PATH)[0]
+        )
+
+    with pytest.raises(
+        gfem.NonDifferentiableError,
+        match="characteristic_impedance is not differentiable",
+    ):
+        jax.grad(impedance)(4.0)
+
+
+@pytest.mark.parametrize("rule", ["thermo", "electro"])
+def test_a_shift_keeps_refusing_the_optical_inputs_of_its_mode(rule):
+    from gfem._engine.electro_optic import ElectroOpticWeightsRule
+    from gfem._engine.thermo_optic import ShiftWeightsRule
+
+    _, model = _plate_mode(4.0)
+    made = {"thermo": ShiftWeightsRule, "electro": ElectroOpticWeightsRule}[rule](
+        model, gfem.PortMode("p1", 10e9), gfem.SolverOptions(), np.array([0])
+    )
+    reason = made.unsupported_input(("material", "fill", "eps_r"))
+    assert "shift holds the port mode constant" in reason
+    assert "is not wired through the shift's weights" in reason
 
 
 @pytest.mark.bitwise  # its low-Q lumped mode converges run to run only on one thread

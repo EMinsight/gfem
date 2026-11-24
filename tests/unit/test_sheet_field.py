@@ -231,3 +231,31 @@ def test_fill_beside_a_wave_port_is_not_differentiable(mesh):
     assert np.isfinite(float(objective(fill)))  # the forward runs
     with pytest.raises(gfem.PortGeometryError, match=r"boundaries\[2\].*stop_gradient"):
         jax.make_jaxpr(jax.grad(objective))(fill)
+
+
+def test_port_mode_gamma_by_a_uniform_fill_follows_the_resistance(mesh):
+    # gamma depends on R / fill only (the forward test above), so
+    # d gamma / d fill = -(R / fill) d gamma / dR on the same filled model
+    problem = gfem.PortMode("p1", F)
+    resistance, fill = 400.0, 0.25
+    n = _faces(mesh)
+
+    def gamma(r, f):
+        sheet = gfem.Impedance(
+            "sheet", resistance=r, fill=gfem.SheetField(fill=jnp.full(n, f))
+        )
+        return gfem.solve(_wave_model(mesh, sheet), problem).gamma[0]
+
+    def derivative(wrt):
+        parts = [
+            jax.grad(lambda r, f, p=part: p(gamma(r, f)), argnums=wrt)(resistance, fill)
+            for part in (jnp.real, jnp.imag)
+        ]
+        return parts[0] + 1j * parts[1]
+
+    # the fill's gradient is the sum over the sheet's faces
+    d_fill, d_resistance = derivative(1), derivative(0)
+    np.testing.assert_allclose(
+        d_fill, -(resistance / fill) * d_resistance, rtol=1e-10, atol=0
+    )
+    assert abs(d_resistance) > 0

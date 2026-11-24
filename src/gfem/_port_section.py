@@ -23,6 +23,7 @@ from gfem._boundaries import (
     sheet_of,
     surfaces_of,
 )
+from gfem._checks import is_traced
 from gfem._domain import physics_of
 from gfem._engine.anisotropy import CROSS_N, edge_admittance
 from gfem._line_section import LineSection, line_section, line_section_key
@@ -270,28 +271,31 @@ def _norm(tt: np.ndarray, nn: np.ndarray) -> float:
     return max(np.linalg.norm(tt, ord=2, axis=(1, 2)).max(), np.abs(nn).max())
 
 
-def port_section(
-    model: Model, port: WavePort, stretch: Stretch | None = None
-) -> PortSection | LineSection:
-    """Extract the cross-section of ``port`` from ``model``.
+@dataclasses.dataclass(frozen=True, eq=False)
+class _Plane:
+    """What a port surface's mesh triangles say of the plane, nodes included."""
 
-    On a 2D mesh, the `LineSection` of a line port (`line_section`).
+    scale: float
+    sel: np.ndarray
+    tets: np.ndarray
+    tris: np.ndarray
+    used: np.ndarray
+    origin: np.ndarray
+    frame: np.ndarray
+    points: np.ndarray
+    local_tris: np.ndarray
 
-    ``stretch`` is the layer's stretch of the solve (`gfem._pml.stretch`),
-    at its reference frequency; the section keeps it and marks its layer
-    triangles.
+
+def _plane(model: Model, port: WavePort, node_values: np.ndarray) -> _Plane:
+    """The port plane's frame and 2D triangulation at node coordinates ``node_values``.
 
     Raises:
-        PortGeometryError: The port surface is not planar (on a 2D mesh: the
-            line is not straight and connected).
-        ValueError: An anisotropic material beside the port has no principal
-            axis along the port normal.
+        PortGeometryError: The port surface is not planar, or the solve
+            domain lies on both sides of it.
     """
     mesh = model.mesh
-    if mesh.dim == 2:
-        return line_section(model, port)
     scale = LENGTH_UNITS[mesh.length_unit]
-    nodes = np.asarray(mesh.nodes, float) / scale
+    nodes = node_values / scale
     active = model._domain.active  # noqa: SLF001
     tag = mesh.region(port.surface).tag
     nb = mesh.triangle_neighbours
@@ -337,6 +341,151 @@ def port_section(
     flip = area2 < 0
     local_tris[flip] = local_tris[flip][:, ::-1]
 
+    return _Plane(scale, sel, tets, tris, used, origin, frame, points, local_tris)
+
+
+def _topology_edges(
+    model: Model, port: WavePort, plane: _Plane
+) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray], list[int]]:
+    """The cross-section's edges by kind, from the mesh and the boundaries alone.
+
+    Returns the perfect-conductor, absorbing and sheet (`Conductor`,
+    `Impedance`) edges as local node pairs, and the triangle beside each
+    absorbing edge. The same classification as `_edges`, without values.
+    """
+    port_edges = _edge_keys(plane.tris)
+    kinds = _edge_kinds(model, port)
+    local = np.searchsorted(plane.used, port_edges)
+    pec: list[np.ndarray] = []
+    absorbing: list[np.ndarray] = []
+    sheets: list[np.ndarray] = []
+    owners: list[int] = []
+    seen: set[tuple[int, int]] = set()
+    for k, surfaces in enumerate(_surfaces_on_edges(model, port, port_edges)):
+        key = (int(local[k][0]), int(local[k][1]))
+        if not surfaces or key in seen:
+            continue
+        seen.add(key)
+        types = [kinds.get(s) for s in sorted(surfaces)]
+        if "pec" in types:
+            pec.append(local[k])
+        elif any(isinstance(t, (Conductor, Impedance)) for t in types):
+            sheets.append(local[k])
+        elif any(t in ("absorbing", "absorbing2") for t in types):
+            absorbing.append(local[k])
+            owners.append(k // 3)
+    return pec, absorbing, sheets, owners
+
+
+def port_geometry(model: Model, port: WavePort) -> PortSection:
+    """The cross-section of ``port`` from the mesh and the boundaries alone.
+
+    The triangulation, frame and edge sets of `port_section`, with no
+    material, law or sheet value read: a model whose values are JAX tracers
+    (a design inside `jax.jit`) has one, and it locates a mode's field. The
+    node coordinates are the model's when they are concrete values and the
+    mesh's imported ones when they are traced (the DOF count does not read
+    them). Material arrays are placeholders, and the sheet edges join the
+    absorbing ones.
+
+    Raises:
+        PortGeometryError: As `port_section`.
+    """
+    mesh = model.mesh
+    nodes = mesh.nodes
+    plane = _plane(
+        model, port, np.asarray(mesh.imported_nodes if is_traced(nodes) else nodes)
+    )
+    pec, absorbing, sheets, _ = _topology_edges(model, port, plane)
+    n = len(plane.tris)
+    pairs = [
+        np.asarray(e, np.int64).reshape(-1, 2) for e in (pec, [*absorbing, *sheets])
+    ]
+    return PortSection(
+        port=port,
+        scale=plane.scale,
+        origin=plane.origin,
+        frame=plane.frame,
+        points=plane.points,
+        triangles=plane.local_tris,
+        eps_tt=np.tile(np.eye(2, dtype=complex), (n, 1, 1)),
+        eps_nn=np.ones(n, complex),
+        nu_tt=np.tile(np.eye(2, dtype=complex), (n, 1, 1)),
+        nu_nn=np.ones(n, complex),
+        sigma_tt=np.zeros((n, 2, 2)),
+        sigma_nn=np.zeros(n),
+        pec_edges=pairs[0],
+        absorbing_edges=pairs[1],
+        absorbing_admittance=np.ones((len(pairs[1]), 2)),
+        faces=plane.sel,
+    )
+
+
+def anisotropic_absorbing(model: Model, port: WavePort) -> str | None:
+    """Why a port-face design is refused beside an absorbing edge, or ``None``.
+
+    An anisotropic material (per-axis values or axes) owning a port-face
+    triangle next to an absorbing port edge has no per-axis admittance
+    derivative in this version.
+    """
+    mesh = model.mesh
+    if mesh.dim == 2:
+        return None
+    plane = _plane(model, port, np.asarray(mesh.imported_nodes))
+    _, absorbing, _, owners = _topology_edges(model, port, plane)
+    if not absorbing:
+        return None
+    names = mesh._region_names()  # noqa: SLF001
+    for t in plane.tets[owners]:
+        material = model.materials[names[int(mesh.tetrahedron_tags[t])]]
+        if isinstance(material, MaterialField):
+            aniso = material.axes is not None
+        else:
+            aniso = not material.isotropic
+        if aniso:
+            return (
+                "the absorbing edge's admittance beside a per-axis material at a "
+                "wave port face is not differentiable in this version; make the "
+                "material isotropic next to the absorbing edge or wrap it in "
+                "jax.lax.stop_gradient"
+            )
+    return None
+
+
+def port_section(
+    model: Model, port: WavePort, stretch: Stretch | None = None
+) -> PortSection | LineSection:
+    """Extract the cross-section of ``port`` from ``model``.
+
+    On a 2D mesh, the `LineSection` of a line port (`line_section`).
+
+    ``stretch`` is the layer's stretch of the solve (`gfem._pml.stretch`),
+    at its reference frequency; the section keeps it and marks its layer
+    triangles.
+
+    Raises:
+        PortGeometryError: The port surface is not planar (on a 2D mesh: the
+            line is not straight and connected).
+        ValueError: An anisotropic material beside the port has no principal
+            axis along the port normal.
+    """
+    mesh = model.mesh
+    if mesh.dim == 2:
+        return line_section(model, port)
+    plane = _plane(model, port, np.asarray(mesh.nodes, float))
+    scale, sel, tets, tris, used = (
+        plane.scale,
+        plane.sel,
+        plane.tets,
+        plane.tris,
+        plane.used,
+    )
+    origin, frame, points, local_tris = (
+        plane.origin,
+        plane.frame,
+        plane.points,
+        plane.local_tris,
+    )
     eps_tt, eps_nn, nu_tt, nu_nn, sigma_tt, sigma_nn, isotropic = _materials(
         model, port, tets, frame
     )
