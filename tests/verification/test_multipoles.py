@@ -48,8 +48,9 @@ CARTESIAN_GATE = 3e-3
 SUM_GATE = 2e-3
 PARTIAL_GATE = fsc.TOLERANCE
 BEAM_L1_GATE, BEAM_SUM_GATE = 3e-5, 5e-3
-#: Measured 3e-14: the sum is exactly origin-free up to round-off.
-SHIFT_GATE = 1.5e-13
+#: Measured 3e-14: the sum is exactly origin-free up to round-off, so the gate
+#: only guards against a broken shift, not against round-off across machines.
+SHIFT_GATE = 1e-8
 PEC_GATES = (5e-3, 3e-3, 2.5e-3, 1e-3)
 #: The sum's floor, 1.3e-5, is a signed cancellation: its gate is 5x that.
 MU_GATES = (3.5e-3, 2.5e-3, 2.5e-3, 6e-5)

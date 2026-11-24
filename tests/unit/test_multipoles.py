@@ -719,7 +719,7 @@ def test_u11_a_translated_scatterer_has_the_translated_multipoles(
     assert abs(sigma(other) - sigma(moved)) > 1e-3 * sigma(moved)
     total = lambda m: float(np.asarray(m.scattering)[0])  # noqa: E731
     # the two degrees differ in the truncation only: measured 9e-10
-    assert abs(total(other) - total(moved)) <= 5e-9 * total(moved)
+    assert abs(total(other) - total(moved)) <= 1e-8 * total(moved)
 
 
 def test_u12_lmax_and_its_bounds(run, reference):

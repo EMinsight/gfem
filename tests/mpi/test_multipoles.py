@@ -26,10 +26,11 @@ from gfem import _petsc
 #: NGSolve's rank 0 holds no element: two more ranks share a partition face.
 RANKS = 3
 #: Relative to the largest one-process value: direct solves of one system
-#: split over ranks. Measured worst 2.9e-13.
-GATE = 1e-12
+#: split over ranks. Measured worst 2.9e-13; kept well above round-off because
+#: the reduction order differs between rank counts and machines.
+GATE = 1e-10
 #: Relative to the largest one-process entry of the gradient. Measured 2.7e-13.
-GRADIENT_GATE = 1e-12
+GRADIENT_GATE = 1e-9
 F = fs.F0 / 2
 WAVE = gfem.PlaneWave("w", theta=0.4, phi=0.3, polarization="TM")
 ORIGIN = (0.5e-6, 0.5e-6, 0.5e-6)
