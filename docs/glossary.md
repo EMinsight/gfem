@@ -276,6 +276,12 @@ Wave port
   cross-section, which a {term}`port mode problem` supplies. It absorbs that
   mode without reflection.
 
+Polarity reference
+  A point on a {term}`wave port` and a direction along which the port mode's
+  electric field (on a line port, the field normal to the plane) is real and
+  positive at every frequency (`WavePort(polarity=...)`). It fixes the sign of
+  the port's row and column of S without defining a voltage or an impedance.
+
 Shared port surface
   An exterior surface that carries several wave ports, each requesting a
   different mode of one {term}`port mode problem`; together they form one
@@ -544,6 +550,36 @@ Bloch reciprocity
   {term}`Floquet ports <Floquet port>` the orders relabel and take a sign:
   $S_{p\leftarrow q}(\mathbf{k}) = \sigma_p \sigma_q S_{-q\leftarrow -p}(-\mathbf{k})$, with $-p$ the port of the opposite order
   and $\sigma = -1$ for an order with a nonzero in-plane wave vector, $+1$ otherwise.
+```
+
+## Circuits
+
+```{glossary}
+SAX component
+  A driven solve wrapped as a model of a SAX circuit
+  ({py:obj}`gfem.SaxComponent`): its design settings and the circuit's
+  wavelength or frequency in, the S-parameters between its circuit ports out,
+  photonic or RF.
+
+Circuit port
+  The name under which a SAX circuit reaches a port of a {term}`SAX component`.
+  A port left out of the component's circuit ports still terminates the
+  device, as in a solve.
+
+Component band
+  The frequencies of a {term}`SAX component`'s driven problem: it answers any
+  wavelength or frequency between the lowest and the highest, exactly at them
+  and interpolated between them, and refuses one outside.
+
+Common reference impedance
+  The one real impedance `z0`, 50 Ω by default, to which every RF model of a
+  SAX circuit, gfem's and SAX's, refers its S-parameters; set once for the
+  whole circuit.
+
+Internal lumped load
+  A {term}`lumped port` with only an inductance or a capacitance, left out of
+  an RF {term}`SAX component`'s circuit ports: it stays inside the device as
+  a load, and its value remains a design setting.
 ```
 
 ## Materials and optimization

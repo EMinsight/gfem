@@ -121,6 +121,45 @@ print(1 - abs(result.s["p1", "p1"][3]) ** 2)  # what port 1 does not reflect at 
 0.8124000081969966
 ```
 
+## SAX circuits
+
+A solved S can be a block of a [SAX](https://github.com/flaport/sax) circuit,
+through `result.s.to_sdict(...)` or a {py:obj}`gfem.SaxComponent`. What the
+circuit receives depends on its kind, so you state it (`circuit="optical"` or
+`"rf"`): the wrong kind still composes, with wrong interference.
+
+```python
+both = gfem.solve(model, gfem.Driven(frequency=5e9))  # every port excited
+net = both.s
+names = {"p1": "o1", "p2": "o2"}
+photonic = net.to_sdict(circuit="optical", ports=names)
+rf = net.to_sdict(circuit="rf", ports=names)  # renormalized to 50 ohm
+print(photonic["o1", "o2"][0] == np.conj(net["p2", "p1"][0]))
+print(abs(rf["o1", "o2"][0] - net.renormalize(50.0)["p2", "p1"][0]) < 1e-12)
+```
+
+```text
+True
+True
+```
+
+- A photonic component hands SAX $\overline{S}$: SAX's photonic models are
+  $e^{-i\omega t}$ (a straight guide of length $L$ is $e^{+ikL}$), gfem's fields
+  $e^{+i\omega t}$. S keeps its modal unit-power normalization, and the
+  circuit's wavelength `wl` is in µm.
+- An RF component hands S unchanged in time convention, as SAX's RF models, scikit-rf
+  and Touchstone share gfem's $e^{+j\omega t}$, renormalized to one real
+  reference impedance `z0` (50 Ω unless given) for the whole circuit
+  ({term}`common reference impedance`), with the frequency `f` in Hz.
+- Keys are `(input, output)` circuit port names, so `sd["o1", "o2"]` is
+  $S_{21}$: the wave out of `o2` when `o1` is fed. Every pair is present, zeros
+  included, because SAX reads a missing pair as zero.
+- The sign of a wave port's row and column of S follows its
+  {term}`polarity reference` (or its `voltage_path`), not the mesh.
+
+The recipe {doc}`recipes/sax-circuit` builds a photonic and an RF circuit from
+these blocks.
+
 ## Sign of loss
 
 Under $e^{+i\omega t}$ a lossy permittivity has a negative imaginary part,

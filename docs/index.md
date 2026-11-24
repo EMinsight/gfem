@@ -38,6 +38,7 @@ tutorials/modulator
 :caption: Gradients
 
 recipes/s-parameter-gradient
+recipes/sax-circuit
 recipes/capacitance-gradient
 recipes/eigenmode-gradient
 recipes/quantum-metrics
