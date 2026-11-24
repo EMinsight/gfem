@@ -42,9 +42,12 @@ class Violation(NamedTuple):
 
     Attributes:
         kind: ``"width"`` (across solid) or ``"spacing"`` (across void).
-        distance: The narrowest distance here (m).
+        distance: The narrowest distance here (m), exactly the least of its
+            markers.
         location: The midpoint of the narrowest edge pair's shortest
-            marker, ``(2,)`` (m).
+            marker, ``(2,)`` (m). Markers whose distances agree to
+            round-off (within $10^{-9}$ of the distance) are a tie, settled by
+            the least x, then y, so the place is the same on every platform.
         markers: Every too-narrow edge pair here, ``(n, 2, 2)`` (m).
     """
 
@@ -72,6 +75,9 @@ class PatternCheck:
             ``None`` when not checked.
         narrowest_spacing: The narrowest spacing, likewise.
         violations: Every place narrower than its rule, narrowest first.
+            Places whose distances agree to round-off (within $10^{-9}$ of
+            the distance, as at mirror-image places of a symmetric design)
+            come in order of their location's x, then y, on every platform.
     """
 
     region: str | None
@@ -129,6 +135,10 @@ _SHARED = 1e-9
 _ON_FOOTPRINT = 1e-9
 #: How to differentiate a rule (it cannot be: a check is not differentiable).
 _FIXED_RULE = "A rule is fixed: give it as a number."
+#: Distances within this fraction of each other are a tie: mirror-image places
+#: of a symmetric design measure equal up to round-off, which differs between
+#: platforms and library builds, so their order must not hang on it.
+_TIE = 1e-9
 #: Candidate edge pairs evaluated at a time (bounds the temporary arrays).
 _PAIR_BLOCK = 2**18
 
@@ -162,7 +172,12 @@ def check(
     unknown = tuple(k for k in rules if k not in narrowest)
     if unknown:
         narrowest |= edges.narrowest(unknown, min(rules[k] for k in unknown))
-    violations.sort(key=lambda v: (v.distance, v.kind, *v.location))
+    rank = _tie_ranks(np.array([v.distance for v in violations]))
+    order = sorted(
+        range(len(violations)),
+        key=lambda i: (rank[i], violations[i].kind, *violations[i].location),
+    )
+    violations = [violations[i] for i in order]
     return PatternCheck(
         region=pattern.region,
         min_width=rules.get("width"),
@@ -171,6 +186,22 @@ def check(
         narrowest_spacing=narrowest.get("spacing"),
         violations=tuple(violations),
     )
+
+
+def _tie_ranks(distance: np.ndarray) -> np.ndarray:
+    """Rank distances with round-off ties merged: equal ranks within `_TIE`.
+
+    Sorted, each distance starts a new rank unless it lies within `_TIE` times
+    itself of the first distance of the current rank.
+    """
+    order = np.argsort(distance, kind="stable")
+    rank = np.empty(len(distance), dtype=np.int64)
+    current, first = -1, -math.inf
+    for i in order:
+        if distance[i] - first > _TIE * abs(distance[i]):
+            current, first = current + 1, distance[i]
+        rank[i] = current
+    return rank
 
 
 #: Edge pairs as ``(i, j, shift_i, shift_j)``: both edges' indices and the
@@ -351,7 +382,8 @@ class _Edges:
 
         On a periodic axis the midpoints are compared modulo the period, so a
         place across the seam is one place whichever side its markers lie on.
-        A place's location is the shortest marker of its narrowest edge pair.
+        A place's location is the shortest marker of its narrowest edge pair;
+        markers tied to round-off go to the least x, then y.
         """
         if not len(distance):
             return []
@@ -375,9 +407,13 @@ class _Edges:
         out = []
         for site in range(label.max() + 1):
             members = np.flatnonzero(label == site)
-            best = members[np.lexsort((local[members], distance[members]))[0]]
+            m = mid[members]
+            tied = _tie_ranks(distance[members])
+            best = members[np.lexsort((local[members], m[:, 1], m[:, 0], tied))[0]]
             out.append(
-                Violation(kind, float(distance[best]), mid[best], markers[members])
+                Violation(
+                    kind, float(distance[members].min()), mid[best], markers[members]
+                )
             )
         return out
 

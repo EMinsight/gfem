@@ -195,7 +195,10 @@ def test_a_rule_just_above_the_narrowest_distance_fails_and_just_below_passes(
             continue
         above = pattern.check(**{f"min_{kind}": narrowest * (1 + 1e-9)})
         assert not above.passed, (kind, narrowest)
-        assert above.violations[0].distance == narrowest
+        # Places tied to round-off come in location order, so the least
+        # distance need not be the first; it is still exactly the narrowest.
+        assert min(v.distance for v in above.violations) == narrowest
+        assert above.violations[0].distance == pytest.approx(narrowest, rel=1e-9)
         below = pattern.check(**{f"min_{kind}": narrowest * (1 - 1e-9)})
         assert below.passed, (kind, narrowest, below.violations[:1])
         assert getattr(below, f"narrowest_{kind}") == narrowest
@@ -438,3 +441,39 @@ def test_the_report_names_live_in_gfem_design():
         assert name in design.__all__
         assert name not in gfem.__all__
         assert getattr(design, name) is getattr(_feature_check, name)
+
+
+@pytest.mark.parametrize("narrower", ["across x", "across y"])
+def test_mirror_image_violations_come_in_location_order_whatever_the_round_off(
+    narrower,
+):
+    # Two bars, mirror images about y = x, 0.1 um wide against a 0.15 um rule.
+    # One is made narrower by a relative 1e-13, the size of the round-off that
+    # differs between platforms: the order must not follow it.
+    w, eps = 0.1 * UM, 1e-13
+    wx, wy = (w * (1 - eps), w) if narrower == "across x" else (w, w * (1 - eps))
+    pattern = design.LayerPattern.from_polygons(
+        [
+            _rectangle(-1.0 * UM, 0.5 * UM, -1.0 * UM + wx, 1.5 * UM),  # thin in x
+            _rectangle(0.5 * UM, -1.0 * UM, 1.5 * UM, -1.0 * UM + wy),  # thin in y
+        ]
+    )
+    found = pattern.check(min_width=0.15 * UM).violations
+    assert len(found) == 2
+    first, second = (v.location for v in found)
+    assert first[0] < second[0]  # x first: the bar at x = -1 um
+    assert found[0].distance == pytest.approx(w, rel=1e-9)
+
+
+@pytest.mark.parametrize("dent", [-0.8, 0.8])
+def test_a_place_of_tied_markers_is_located_at_the_least_x(dent):
+    # A bar 0.1 um wide whose top edge dips by a relative 1e-13 at x = dent:
+    # every facing pair measures the width to round-off, so the place's
+    # location is the tie's least x, wherever the round-off puts the minimum.
+    w, eps = 0.1 * UM, 1e-13
+    xs = np.linspace(-1.0, 1.0, 9) * UM
+    top = [(x, w * (1 - eps) if np.isclose(x, dent * UM) else w) for x in xs]
+    ring = np.array([(xs[0], 0.0), (xs[-1], 0.0), *top[::-1]])
+    found = design.LayerPattern.from_polygons([ring]).check(min_width=0.15 * UM)
+    (place,) = found.violations
+    assert place.location[0] == pytest.approx(place.markers.mean(axis=1)[:, 0].min())

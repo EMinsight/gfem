@@ -95,7 +95,7 @@ for violation in strict.violations[:3]:
 ```
 
 ```text
-width 0.549 um at (-0.06, -1.10) um
+width 0.549 um at (-1.10, -0.06) um
 ```
 
 The check is a pre-check, not foundry sign-off. Edges on the footprint are not
