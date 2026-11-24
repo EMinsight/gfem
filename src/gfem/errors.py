@@ -469,6 +469,20 @@ class SweepNotConvergedWarning(UserWarning):
     """
 
 
+class RationalFitNotConvergedWarning(UserWarning):
+    """A rational fit reached its pole cap above its tolerance.
+
+    `gfem.NetworkParameters.fit_rational` raised the order up to
+    ``max_poles`` without its largest per-element RMS error reaching
+    ``tolerance``. The most accurate model tried is still returned; its
+    ``fit_error`` says how far it is. Raise ``max_poles``, fit a narrower
+    band, or remove a known delay first: a long line needs about one pole
+    pair per phase wrap in the band, and a wave port's reference plane can
+    be moved with ``DrivenResult.with_offsets``. Filter it with Python's
+    `warnings` module.
+    """
+
+
 class SweepRankDeficientWarning(UserWarning):
     """An adaptive sweep's rational interpolation lost rank.
 

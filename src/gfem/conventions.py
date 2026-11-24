@@ -127,6 +127,33 @@ must be conjugated first, or its reflections land at negative times.
   :math:`Z(t) = Z_0 \frac{1 + \rho(t)}{1 - \rho(t)}`, with :math:`\rho` its
   reflected step.
 
+Rational models
+---------------
+A `gfem.RationalModel` writes S as poles shared by every element,
+residue matrices and a constant:
+
+.. math::
+
+    S(f) = D + \sum_n \frac{R_n}{2\pi i f - p_n},
+
+with :math:`s = i\omega` the Laplace variable under :math:`e^{+i\omega t}`,
+poles :math:`p_n` in rad/s with :math:`\mathrm{Re}\, p_n < 0` (stable), real
+or in conjugate pairs with conjugate residues (a response real in time),
+and :math:`D` real, S as :math:`f \to \infty`. There is no term
+proportional to :math:`s`. The DC limit is :math:`D - \sum_n R_n / p_n`.
+The response to a unit step of incident wave at :math:`t = 0` is
+:math:`D + \sum_n \frac{R_n}{p_n} (e^{p_n t} - 1)` for :math:`t \ge 0`
+and 0 before.
+
+S is referred to one constant real reference impedance per port
+(``z_ref``), fixed when the model is fitted
+(`gfem.NetworkParameters.fit_rational`): a real ``z_ref`` constant over
+frequency is kept, anything else is renormalized to ``z0=`` first; a network
+without reference impedances (wave ports without ``voltage_path``) is
+fitted unchanged and its ``z0`` is only a label. On that reference the model
+is passive when the largest singular value of :math:`S(f)` is at most 1 at
+every frequency.
+
 Time-averaged densities
 -----------------------
 For peak phasors, the time average of a product of two harmonic quantities

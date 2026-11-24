@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from gfem._line_section import LineSection
     from gfem._pml import PML
     from gfem._port_section import PortSection
-    from gfem.broadband import TimeResponse
+    from gfem.broadband import RationalModel, TimeResponse
     from gfem.problems import Polarization
 
 __all__ = [
@@ -1166,6 +1166,78 @@ class NetworkParameters:
             s = np.asarray(self.renormalize(z0).values)
         path.write_text(_touchstone(self, s, z0))
         return path
+
+    def fit_rational(
+        self,
+        *,
+        tolerance: float = 1e-3,
+        max_poles: int | None = None,
+        weights: Any = None,
+        enforce_passivity: bool = True,
+        z0: float | Sequence[float] | None = None,
+    ) -> RationalModel:
+        r"""Fit a rational model to S over the network's frequencies.
+
+        :math:`S(f) = D + \sum_n R_n / (2\pi i f - p_n)` with poles shared by
+        every element (`gfem.RationalModel`), by fast relaxed vector fitting:
+        real poles and conjugate pairs, a fitted constant :math:`D` and no
+        term proportional to frequency. The order rises in steps of 4 poles
+        until the largest per-element RMS of :math:`|S_\mathrm{model} -
+        S_\mathrm{data}|` over the data is at most ``tolerance``; poles
+        contributing less than ``tolerance``/10 anywhere in the band are then
+        removed and the residues refitted. A zero-frequency sample in the
+        network is used like any other; none is added. A long line needs
+        about one pole pair per phase wrap in the band (two when reflections
+        bounce on it).
+
+        The model has one constant real reference impedance per port, fixed
+        here, with the rules of `to_touchstone`: a real `z_ref` constant over
+        frequency is kept; otherwise ``z0`` is needed and S is renormalized to
+        it first; a network in which no port has a reference impedance (wave
+        ports without ``voltage_path``) is fitted unchanged under ``z0`` as a
+        nominal label. Not collective: deterministic host work, the same on
+        every rank. Not differentiable.
+
+        Args:
+            tolerance: Target of the largest per-element RMS error, > 0.
+            max_poles: The most poles tried, from 4 to the number of
+                frequencies minus one; default ``min(100, n_freq - 1)``.
+            weights: Positive per-frequency weights ``(n_freq,)``, in the
+                network's frequency order; None for uniform. The reported
+                errors are unweighted.
+            enforce_passivity: Make the model passive. Not available yet:
+                pass False.
+            z0: Reference impedance to fit on, ohm: one real value > 0 or one
+                per port in `ports` order; the nominal label of a network
+                without reference impedances.
+
+        Returns:
+            The model, with its errors on the data.
+
+        Raises:
+            ValueError: An argument is out of range, fewer than 6 distinct
+                frequencies, a negative frequency, S not finite or not every
+                port excited, or the reference impedance cannot be resolved
+                (complex or frequency-dependent without ``z0``, none without
+                ``z0``, or some ports without one).
+            NonDifferentiableError: S, `z_ref`, ``z0`` or ``weights`` is
+                traced by JAX.
+            NotImplementedError: ``enforce_passivity=True``.
+
+        Warns:
+            RationalFitNotConvergedWarning: No order up to ``max_poles``
+                reached ``tolerance``; the most accurate model is returned.
+        """
+        from gfem._broadband._vector_fit import fit_rational
+
+        return fit_rational(
+            self,
+            tolerance=tolerance,
+            max_poles=max_poles,
+            weights=weights,
+            enforce_passivity=enforce_passivity,
+            z0=z0,
+        )
 
     def impulse_response(
         self,

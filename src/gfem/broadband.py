@@ -15,19 +15,24 @@ Both start from S on the frequencies of a result (`gfem.NetworkParameters`).
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING, Literal
+import math
+from typing import TYPE_CHECKING, Any, Literal
 
 import jax
+import jax.numpy as jnp
 import numpy as np
+from numpy.typing import ArrayLike
 
 from gfem._checks import is_traced
 from gfem._pytree import register_fields
-from gfem.results import _variable, _xarray
+from gfem._text import hertz, hertz_band
+from gfem.errors import NonDifferentiableError
+from gfem.results import NetworkParameters, _variable, _xarray
 
 if TYPE_CHECKING:
     import xarray
 
-__all__ = ["TimeResponse"]
+__all__ = ["RationalModel", "TimeResponse"]
 
 
 # --- Time responses -------------------------------------------------------
@@ -178,3 +183,256 @@ class TimeResponse:
 
 
 register_fields(TimeResponse, ("values", "z_ref"))
+
+
+# --- Rational models -------------------------------------------------------
+
+#: Relative slack above the fitted range that `RationalModel.network` accepts,
+#: so that a grid rebuilt as ``df * np.arange(...)`` over the same band, which
+#: can end one rounding above the data's last frequency, is not refused.
+_RANGE_SLACK = 1e-9
+#: Relative mismatch accepted between the two poles (or residues) of a pair.
+_PAIR_RTOL = 1e-12
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class RationalModel:
+    r"""A rational model of S: common poles, residue matrices and a constant.
+
+    .. math::
+
+        S(f) = D + \sum_n \frac{R_n}{2\pi i f - p_n}
+
+    under :math:`e^{+i\omega t}` (so :math:`s = i\omega` is the Laplace
+    variable), with poles :math:`p_n` in rad/s, :math:`\mathrm{Re}\, p_n < 0`,
+    shared by every element of S. Poles are real or come in conjugate pairs
+    whose residues are conjugate, so the model is real in the time domain.
+    S is referred to one constant real reference impedance per port,
+    `z_ref`, fixed when the model was fitted; to use another reference,
+    fit again with ``z0=``. There is no term proportional to :math:`s`: S
+    tends to :math:`D` at high frequency.
+
+    `gfem.NetworkParameters.fit_rational` builds a model from S. A model can
+    also be built from known poles and residues; the diagnostic fields then
+    keep their defaults. Arrays are converted to read-only NumPy arrays: the
+    model is a NumPy object, not differentiated by JAX.
+
+    Attributes:
+        poles: ``(n_poles,)`` complex, rad/s, :math:`\mathrm{Re}\, p < 0`;
+            the two poles of a pair are adjacent, positive imaginary part
+            first.
+        residues: ``(n_poles, n_ports, n_ports)`` complex, rad/s; ``residues
+            [n, i, j]`` belongs to S at port ``ports[i]`` excited from
+            ``ports[j]``. Conjugate for the two poles of a pair, real for a
+            real pole.
+        d: ``(n_ports, n_ports)`` real, S as :math:`f \to \infty`.
+        z_ref: ``(n_ports,)`` real ohm, the reference impedance of each port.
+        ports: Port names, the row and column order of S.
+        frequency_range: The lowest and highest data frequency of the fit,
+            Hz; `network` refuses frequencies above it. None: no range.
+        error: Largest per-element RMS of :math:`|S_\mathrm{model} -
+            S_\mathrm{data}|` over the data frequencies.
+        fit_error: The same before passivity enforcement.
+        passivity_violations: Frequency intervals (Hz) where the largest
+            singular value of the fitted S exceeded 1 before enforcement.
+        nominal_reference: Whether `z_ref` is only a label: the data had no
+            reference impedance (wave ports without ``voltage_path``, S on
+            unit modal power), so S was not renormalized.
+    """
+
+    poles: np.ndarray
+    residues: np.ndarray
+    d: np.ndarray
+    z_ref: np.ndarray
+    ports: tuple[str, ...]
+    frequency_range: tuple[float, float] | None = None
+    error: float = math.nan
+    fit_error: float = math.nan
+    passivity_violations: tuple[tuple[float, float], ...] = ()
+    nominal_reference: bool = False
+
+    def __post_init__(self) -> None:
+        """Check the shapes, the poles' stability and pairing, and `z_ref`."""
+        if is_traced((self.poles, self.residues, self.d, self.z_ref)):
+            raise NonDifferentiableError(
+                "RationalModel is a NumPy model and gfem does not differentiate "
+                "it; build it from concrete values, outside jax.grad, jax.jit "
+                "or jax.vmap."
+            )
+        ports = tuple(self.ports)
+        if not all(isinstance(p, str) for p in ports) or len(set(ports)) != len(ports):
+            raise ValueError(
+                f"RationalModel.ports must be distinct names, got {self.ports!r}."
+            )
+        n = len(ports)
+        # copies: the model's arrays are made read-only, the caller's are not
+        poles = np.array(self.poles, complex).reshape(-1)
+        residues = np.array(self.residues, complex)
+        d = np.array(self.d)
+        z_ref = np.array(self.z_ref)
+        if residues.shape != (poles.size, n, n):
+            raise ValueError(
+                f"RationalModel.residues must have shape (n_poles, n_ports, "
+                f"n_ports) = {(poles.size, n, n)}, got {residues.shape}."
+            )
+        if d.shape != (n, n) or z_ref.shape != (n,):
+            raise ValueError(
+                f"RationalModel.d must have shape {(n, n)} and z_ref {(n,)} for "
+                f"{n} ports, got {d.shape} and {z_ref.shape}."
+            )
+        if np.iscomplexobj(d) and np.any(d.imag != 0):
+            raise ValueError("RationalModel.d must be real (S at infinite frequency).")
+        if np.iscomplexobj(z_ref) and np.any(z_ref.imag != 0):
+            raise ValueError("RationalModel.z_ref must be real reference impedances.")
+        d = np.real(d).astype(float)
+        z_ref = np.real(z_ref).astype(float)
+        if not (np.isfinite(d).all() and np.isfinite(residues).all()):
+            raise ValueError("RationalModel residues and d must be finite.")
+        if not (np.isfinite(z_ref).all() and (z_ref > 0).all()):
+            raise ValueError(
+                f"RationalModel.z_ref must be finite and > 0 ohm, got {z_ref.tolist()}."
+            )
+        if not (np.isfinite(poles).all() and (poles.real < 0).all()):
+            raise ValueError(
+                "RationalModel poles must be finite with a negative real part "
+                f"(stable), got {poles.tolist()} rad/s."
+            )
+        _check_pairs(poles, residues)
+        object.__setattr__(self, "ports", ports)
+        for name, value in (
+            ("poles", poles),
+            ("residues", residues),
+            ("d", d),
+            ("z_ref", z_ref),
+        ):
+            value.setflags(write=False)
+            object.__setattr__(self, name, value)
+        if self.frequency_range is not None:
+            lo, hi = (float(x) for x in self.frequency_range)
+            if not (math.isfinite(hi) and 0 <= lo <= hi):
+                raise ValueError(
+                    "RationalModel.frequency_range must be (lowest, highest) "
+                    f"with 0 <= lowest <= highest Hz, got {self.frequency_range!r}."
+                )
+            object.__setattr__(self, "frequency_range", (lo, hi))
+        object.__setattr__(
+            self,
+            "passivity_violations",
+            tuple((float(a), float(b)) for a, b in self.passivity_violations),
+        )
+        object.__setattr__(self, "error", float(self.error))
+        object.__setattr__(self, "fit_error", float(self.fit_error))
+        object.__setattr__(self, "nominal_reference", bool(self.nominal_reference))
+
+    @property
+    def n_poles(self) -> int:
+        """The number of poles, counting both poles of a pair."""
+        return int(self.poles.size)
+
+    @property
+    def passive(self) -> bool:
+        """Whether S has no singular value above 1 at any frequency."""
+        raise NotImplementedError("RationalModel.passive is not available yet.")
+
+    def network(self, frequency: ArrayLike) -> NetworkParameters:
+        r"""The model's S on the given frequencies, as `gfem.NetworkParameters`.
+
+        ``network([0.0])`` is the DC limit :math:`D - \sum_n R_n / p_n`. A
+        model whose `z_ref` is a nominal label gives a network without
+        reference impedance (``z_ref`` NaN), like the data it was fitted to.
+
+        Args:
+            frequency: Frequencies in Hz, :math:`f \ge 0`, up to the highest
+                of `frequency_range`; any order.
+
+        Returns:
+            S with every port excited, in `ports` order.
+
+        Raises:
+            NonDifferentiableError: ``frequency`` is traced by JAX.
+            ValueError: A frequency is negative, not finite or above the
+                fitted range (the model never extrapolates above its data).
+        """
+        if is_traced(frequency):
+            raise NonDifferentiableError(
+                "RationalModel.network needs concrete frequencies: the model is "
+                "a NumPy object, not differentiated by JAX. Evaluate it outside "
+                "jax.grad, jax.jit or jax.vmap."
+            )
+        f = np.asarray(frequency, dtype=float).reshape(-1)
+        if not (np.isfinite(f).all() and (f >= 0).all()):
+            raise ValueError(
+                f"RationalModel.network takes frequencies >= 0 Hz, got {f.tolist()}."
+            )
+        if self.frequency_range is not None and f.size:
+            hi = self.frequency_range[1]
+            if f.max() > hi * (1 + _RANGE_SLACK):
+                raise ValueError(
+                    f"RationalModel.network: {hertz(float(f.max()))} is above the "
+                    f"fitted range {hertz_band(*self.frequency_range)}; a rational "
+                    "model is not extrapolated above its data. Fit over a wider "
+                    "band."
+                )
+        s = 2j * math.pi * f
+        terms = 1 / (s[:, None] - self.poles[None, :])
+        values = self.d[None] + np.einsum("fn,nij->fij", terms, self.residues)
+        n = len(self.ports)
+        z = np.full(n, np.nan) if self.nominal_reference else self.z_ref
+        return NetworkParameters(
+            values=jnp.asarray(values),
+            z_ref=jnp.asarray(np.broadcast_to(z, (f.size, n))),
+            frequency=tuple(float(x) for x in f),
+            ports=self.ports,
+            excited=self.ports,
+        )
+
+    def __repr__(self) -> str:
+        band = (
+            "no frequency range"
+            if self.frequency_range is None
+            else hertz_band(*self.frequency_range)
+        )
+        return (
+            f"RationalModel(ports={list(self.ports)}, n_poles={self.n_poles}, "
+            f"{band}, error={self.error:.3g})"
+        )
+
+
+def _check_pairs(poles: np.ndarray, residues: np.ndarray) -> None:
+    """Real poles carry real residues; a complex pole is followed by its pair.
+
+    The second pole and residue of each pair are set to the exact conjugates.
+    """
+    k = 0
+    while k < poles.size:
+        p = poles[k]
+        if p.imag == 0:
+            if np.any(residues[k].imag != 0):
+                raise ValueError(
+                    f"RationalModel: the real pole {p.real!r} rad/s has a complex "
+                    "residue; a real pole's residue must be real."
+                )
+            k += 1
+            continue
+        pair_ok = (
+            p.imag > 0
+            and k + 1 < poles.size
+            and abs(poles[k + 1] - np.conj(p)) <= _PAIR_RTOL * abs(p)
+            and _close(residues[k + 1], np.conj(residues[k]))
+        )
+        if not pair_ok:
+            raise ValueError(
+                f"RationalModel: the complex pole {p!r} rad/s must be followed by "
+                "its conjugate, positive imaginary part first, and the two "
+                "residues must be conjugate (a model real in time)."
+            )
+        # exact conjugates, so that the model is real in time to the last bit
+        poles[k + 1] = np.conj(p)
+        residues[k + 1] = np.conj(residues[k])
+        k += 2
+
+
+def _close(a: Any, b: Any) -> bool:
+    """Equal to the pair tolerance, relative to the larger magnitude."""
+    scale = max(float(np.abs(a).max(initial=0.0)), float(np.abs(b).max(initial=0.0)))
+    return bool(np.abs(a - b).max(initial=0.0) <= _PAIR_RTOL * scale)

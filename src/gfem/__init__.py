@@ -21,7 +21,7 @@ from gfem._materials import (  # noqa: E402
     Lorentz,
     PermittivityLaw,
 )
-from gfem.broadband import TimeResponse  # noqa: E402
+from gfem.broadband import RationalModel, TimeResponse  # noqa: E402
 from gfem.electro_optic import ElectroOpticShift, electro_optic_shift  # noqa: E402
 from gfem.errors import (  # noqa: E402
     AntiBoundRootWarning,
@@ -48,6 +48,7 @@ from gfem.errors import (  # noqa: E402
     PortModeError,
     PortModeProjectionWarning,
     PortModeTrackingWarning,
+    RationalFitNotConvergedWarning,
     RegionNotFoundError,
     SkippedPortModeWarning,
     SolveCacheWarning,
@@ -235,6 +236,8 @@ __all__ = [
     "PortModeResult",
     "PortModeTrackingWarning",
     "QuantityEstimator",
+    "RationalFitNotConvergedWarning",
+    "RationalModel",
     "RefinementCycle",
     "Region",
     "RegionNotFoundError",
