@@ -59,6 +59,7 @@ def _response(grid=GRID, **over):
         "lattice": {"z_min": lat, "z_max": lat},
         "direction": {"z_min": -1, "z_max": 1},
         "wave_vector": None,
+        "offsets": {"sub TM": 3e-7, "sub TE": 3e-7, "air TM": 3.5e-7},
     }
     kw.update(over)
     return dif.CellResponse(**kw)
@@ -124,6 +125,16 @@ def test_r6_json_round_trip_is_bitwise(tmp_path):
     assert back.lattice == r.lattice
     assert back.direction == r.direction
     assert back.wave_vector is None
+    assert (
+        back.offsets
+        == r.offsets
+        == {
+            "sub TM": 3e-7,
+            "sub TE": 3e-7,
+            "air TM": 3.5e-7,
+            "air TE": 0.0,
+        }
+    )
     assert set(back.diffraction_orders) == set(r.diffraction_orders)
     d0, d1 = r.diffraction_orders["sub TE"], back.diffraction_orders["sub TE"]
     assert (d1.order, d1.surface, d1.polarization, d1.index) == (
@@ -202,6 +213,16 @@ def test_constructor_refusals():
         _response(lattice=nan)
     with pytest.raises(ValueError, match="wave_vector must be"):
         _response(wave_vector=(1.0, 2.0))
+    for offsets in ({"top": 0.0}, {"sub TE": -1e-7}, {"sub TE": np.nan}, None):
+        with pytest.raises(
+            ValueError,
+            match=r"CellResponse: offsets must map ports of the response to finite "
+            r"distances >= 0 m",
+        ):
+            _response(offsets=offsets)
+    assert _response(offsets={}).offsets == dict.fromkeys(PORTS, 0.0)
+    with pytest.raises(gfem.NonDifferentiableError, match="offsets must be fixed"):
+        jax.jit(lambda d: dataclasses.replace(r, offsets={"sub TE": d}).values)(1e-7)
 
 
 def test_a_one_sample_response_evaluates_only_at_its_sample():
@@ -281,20 +302,29 @@ def test_r7_one_sample_equals_the_solve_and_a_rerun_solves_nothing(
     out = tmp_path / "ridge.json"
     response = _build(make_cell, [W0], out=out)
     assert len(solves) == 1
-    ref = gfem.solve(
+    result = gfem.solve(
         make_cell(W0, 0.0),
         gfem.Driven([pc.RIDGE_FREQUENCY], excite=EXCITE),
         options=OPTIONS,
-    ).s
+    )
+    ref = result.s
     assert response.ports == ref.ports == ("sub TE", "sub TM", "air TE", "air TM")
     assert response.excited == tuple(EXCITE)
     np.testing.assert_allclose(response(W0).values, ref.values, rtol=0, atol=1e-12)
     np.testing.assert_allclose(response.z_ref, np.asarray(ref.z_ref), rtol=0, atol=0)
-    assert response.direction == {"z_min": -1, "z_max": 1} or set(
-        response.direction
-    ) == {"z_min", "z_max"}
+    assert response.direction == {"z_min": -1, "z_max": 1}
     assert response.wave_vector is None
+    assert response.offsets == {n: dict(result.offsets)[n] for n in response.ports}
+    assert response.offsets["air TE"] == pytest.approx(pc.RIDGE_AIR * UM)
     assert response.diffraction_orders["sub TE"].frequency.shape == (1,)
+    # the block of the response at its sample is the Jones of the solve behind it
+    pair = ("sub TM", "sub TE")
+    np.testing.assert_allclose(
+        jones_block(response(W0), pair, pair),
+        dif.jones(result, "z_min", "z_min", model=make_cell(W0, 0.0)).values,
+        rtol=0,
+        atol=1e-12,
+    )
     assert np.abs(response.derivative).max() > 0
     solves.clear()
     again = _build(make_cell, [W0], out=out)
@@ -306,6 +336,18 @@ def test_r7_one_sample_equals_the_solve_and_a_rerun_solves_nothing(
     assert len(solves) == 1
     np.testing.assert_array_equal(more.values[0], response.values[0])
     assert dif.CellResponse.from_json(out).parameter.tolist() == [W0, W0 + 0.01]
+
+    def moved_planes(p, dp):
+        model = make_cell(p, dp)
+        ports = [dataclasses.replace(q, offset=2 * q.offset) for q in model.ports]
+        return model.replace(ports=ports)
+
+    solves.clear()
+    with pytest.raises(
+        ValueError, match=r"holds a cell response with other port offsets"
+    ):
+        _build(moved_planes, [W0, W0 + 0.01], out=out)
+    assert solves == []
 
 
 def test_r7_a_sample_that_changes_the_substrate_medium_raises_cr5(ridge_cell, solves):
@@ -360,6 +402,10 @@ def test_r7_input_refusals(ridge_cell, tmp_path, solves):
         TypeError, match=r"make_cell\(0\.25, dp\) returned str, not a gfem.Model"
     ):
         _build(lambda _p, _dp: "x", [W0])
+    with pytest.raises(
+        ValueError, match=r"cell_response: the cell has no Floquet port"
+    ):
+        _build(lambda p, dp: make_cell(p, dp).replace(ports=[]), [W0])
     for bad in ([], ["nope"], "sub TE"):
         with pytest.raises(
             ValueError, match="excite must name at least one port of the cell"

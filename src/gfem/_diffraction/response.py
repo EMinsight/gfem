@@ -42,9 +42,9 @@ _TRACED = (
     "meta-atom itself, differentiate gfem.solve of the cell directly."
 )
 _STATIC = (
-    "CellResponse: {name} must be fixed numbers: the sample grid, frequencies and "
-    "reference impedances are constants of the response. Build them outside "
-    "jax.grad, jax.jit or jax.vmap."
+    "CellResponse: {name} must be fixed numbers: the sample grid, frequencies, "
+    "reference impedances, incidence and port offsets are constants of the "
+    "response. Build them outside jax.grad, jax.jit or jax.vmap."
 )
 
 
@@ -126,6 +126,25 @@ def _check_wave_vector(who: str, k: Any) -> tuple[float, float, float] | None:
     return (float(arr[0]), float(arr[1]), float(arr[2]))
 
 
+def _check_offsets(
+    who: str, offsets: Mapping[str, Any], ports: tuple[str, ...]
+) -> dict[str, float]:
+    """One offset >= 0 m per port, in port order, 0 where ``offsets`` has none."""
+    bad = ValueError(
+        f"{who}: offsets must map ports of the response to finite distances "
+        f">= 0 m, got {offsets!r}."
+    )
+    try:
+        given = {name: float(d) for name, d in dict(offsets).items()}
+    except (TypeError, ValueError):
+        raise bad from None
+    if not set(given) <= set(ports) or not all(
+        np.isfinite(d) and d >= 0 for d in given.values()
+    ):
+        raise bad
+    return {name: given.get(name, 0.0) for name in ports}
+
+
 @dataclasses.dataclass(frozen=True, eq=False)
 class CellResponse:
     r"""S of a periodic cell, sampled against one parameter, with its derivative.
@@ -168,13 +187,17 @@ class CellResponse:
             the beams leaving through it along :math:`\hat e_3`.
         wave_vector: The incidence's Bloch wave vector, rad/m, or ``None``
             for plain periodicity.
+        offsets: Per port, the distance in m of its reference plane from
+            its Floquet surface (`gfem.FloquetPort` ``offset``), the plane
+            where the phase of S is read; 0 for a port it does not name.
 
     Raises:
         ValueError: The samples are not strictly increasing and finite, the
             arrays do not have the shape ``(n_p, n_f, n_ports, n_excited)``,
             a Floquet port has no diffraction order, ``direction`` is not
-            :math:`\pm1` per surface, or a lattice vector or the frequencies
-            are not finite numbers.
+            :math:`\pm1` per surface, a lattice vector or the frequencies
+            are not finite numbers, or an offset names no port or is not a
+            finite distance >= 0 m.
         NonDifferentiableError: A static field is traced by JAX.
     """
 
@@ -189,10 +212,11 @@ class CellResponse:
     lattice: Mapping[str, tuple[tuple[float, float, float], tuple[float, float, float]]]
     direction: Mapping[str, int]
     wave_vector: tuple[float, float, float] | None = None
+    offsets: Mapping[str, float] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
         who = "CellResponse"
-        for name in ("parameter", "frequency", "z_ref", "wave_vector"):
+        for name in ("parameter", "frequency", "z_ref", "wave_vector", "offsets"):
             if is_traced(getattr(self, name)):
                 raise NonDifferentiableError(_STATIC.format(name=name))
         parameter = _samples(self.parameter, who)
@@ -225,6 +249,7 @@ class CellResponse:
         direction = _check_direction(who, self.direction, surfaces)
         lattice = _check_lattice(who, self.lattice, surfaces)
         k = _check_wave_vector(who, self.wave_vector)
+        offsets = _check_offsets(who, self.offsets, ports)
         z_ref = np.asarray(self.z_ref)
         if z_ref.shape != (n_f, len(ports)):
             raise ValueError(
@@ -247,6 +272,7 @@ class CellResponse:
         object.__setattr__(self, "lattice", lattice)
         object.__setattr__(self, "direction", direction)
         object.__setattr__(self, "wave_vector", k)
+        object.__setattr__(self, "offsets", offsets)
 
     def __call__(self, p: ArrayLike) -> NetworkParameters:
         r"""S at the parameter value ``p``, for every frequency.
@@ -494,8 +520,9 @@ def cell_response(
     converged. The parameter may move the meta-atom only, not the lattice,
     the half-spaces or the ports.
 
-    Only the rows of the Floquet ports are kept. With ``out=`` the response
-    is written after each sample, and a rerun with the same ``out``,
+    Only the rows of the Floquet ports are kept, with their offsets: the
+    phase of S is read at the ports' reference planes. With ``out=`` the
+    response is written after each sample, and a rerun with the same ``out``,
     ``parameter``, ``frequency`` and ``excite`` keeps the finished samples.
 
     Args:
@@ -546,6 +573,13 @@ def cell_response(
         return model
 
     model0 = concrete(p0)
+    sig0 = _signature(model0, freqs, None)
+    if not sig0.ports:
+        raise ValueError(
+            "cell_response: the cell has no Floquet port; a cell response keeps "
+            "the rows of S of the Floquet ports (gfem.FloquetPort, "
+            "gfem.diffraction.floquet_ports)."
+        )
     names = [p.name for p in model0.ports]
     if (
         isinstance(excite, str)
@@ -558,13 +592,6 @@ def cell_response(
             f"{excite!r}."
         )
     excite = tuple(excite)
-    sig0 = _signature(model0, freqs, None)
-    if not sig0.ports:
-        raise ValueError(
-            "cell_response: the cell has no Floquet port; a cell response keeps "
-            "the rows of S of the Floquet ports (gfem.FloquetPort, "
-            "gfem.diffraction.floquet_ports)."
-        )
     ports = tuple(n for n, *_ in sig0.ports)
     old = _resume(out, samples, freqs, excite, ports, sig0)
     values = [] if old is None else list(np.asarray(old.values))
@@ -586,6 +613,7 @@ def cell_response(
             lattice={s: tuple(map(tuple, v)) for s, v in sig0.lattice.items()},
             direction=sig0.direction,
             wave_vector=None,
+            offsets=dict(sig0.offsets),
         )
 
     done = len(values)
@@ -643,6 +671,7 @@ def _resume(  # noqa: PLR0917
         ("excited ports", old.excited == excite),
         ("ports", old.ports == ports),
         ("lattice", same_lattice),
+        ("port offsets", old.offsets == dict(sig0.offsets)),
     ):
         if not same:
             raise ValueError(
