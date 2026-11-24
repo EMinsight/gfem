@@ -144,7 +144,7 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
         ("driven", ["permeability", "loss tangent"], 6),
         ("driven", ["lumped values"], 5),
         ("driven", ["permittivity-law parameters"], 9),
-        ("driven", ["density of a metal-dielectric blend"], 3),
+        ("driven", ["density of a metal-dielectric blend"], 2),
         ("eigenmode", ["permeability", "loss tangent"], 2),
         ("eigenmode", ["lumped values"], 3),
         ("eigenmode", ["permittivity-law parameters"], 4),

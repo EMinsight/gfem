@@ -817,8 +817,11 @@ def test_port_mode_runs_under_jit_and_reads_its_field(plate_mesh):
         result = gfem.solve(plate(plate_mesh, _fill(plate_mesh, eps_r=eps)), problem)
         return result.e_field.at(points)
 
+    reference = exact.e_field.at(points)
+    # components that vanish on the TEM plate carry eigensolver round-off of
+    # the field's own scale, which depends on the thread count
     np.testing.assert_allclose(
-        field(4.0), exact.e_field.at(points), rtol=1e-10, atol=1e-6
+        field(4.0), reference, rtol=1e-10, atol=1e-10 * np.abs(reference).max()
     )
 
 
