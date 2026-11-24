@@ -379,7 +379,8 @@ def test_incident_fields_gives_the_downward_rcp_phase(page):
     text = " ".join(dp.section(page, "Incident fields").split())
     assert (
         r"So for a wave going down the Floquet circular unit vector "
-        r"$(\hat{\mathbf{E}}_\mathrm{TM} + i\hat{\mathbf{E}}_\mathrm{TE})/\sqrt2$ of the "
+        r"$(\hat{\mathbf{E}}_\mathrm{TM} + i\hat{\mathbf{E}}_\mathrm{TE})/\sqrt2$ "
+        r"of the "
         r"RCP column is $-(\hat{\boldsymbol\theta} - i\hat{\boldsymbol\phi})/\sqrt2$: "
         r'the same right-handed wave as `"RCP"`, with the opposite phase.'
     ) in text
