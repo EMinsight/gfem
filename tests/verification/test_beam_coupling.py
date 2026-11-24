@@ -28,8 +28,11 @@ r"""Beam coupling against reciprocity, a closed form and finite differences.
   nodes move: the kernel's node pass with the beam's position-gradient
   term.
 
-N6 (an `gfem.IncidentField` on the default side of a morphed model) needs
-`boundary_morph` to hold the truncation layer; it lands with that hold.
+- N6: :math:`|c|^2` of the `gfem.IncidentField` fiber on the default
+  side of the slab grating, coarse, under a `boundary_morph` of the first
+  tooth's sidewall: the morph holds the elements touching the truncation, so
+  the frozen test field is exact there, and the layer's nodes stay where
+  they were imported, bit for bit.
 """
 
 import math
@@ -222,4 +225,37 @@ def test_n5_coupling_into_a_gaussian_beam_under_a_morph(tmp_path):
 
     t = jnp.zeros(morph.n_params)
     directions = unit_directions(np.random.default_rng(2), t.shape, 2)
+    assert_gradient_matches(power, t, directions, step=NODE_STEP)
+
+
+def test_n6_coupling_into_an_incident_field_fiber_under_a_morph(tmp_path):
+    mesh = fsc.grating_slab(tmp_path / "wall.msh", h_si=0.12, h_ox=0.4, wall=True)
+    model = fsc.grating_model(mesh)
+    fiber = _fiber(mesh)
+    problem = gfem.Driven(fsc.GRATING_F0, keep_fields=True)
+    morph = boundary_morph(model, "wall", grows="si")
+    assert morph.n_params > 0
+    # the default side's layer: the elements touching the PML and the
+    # absorbing ends, held exactly
+    tets = np.asarray(mesh.tetrahedra)
+    marked = np.zeros(len(mesh.nodes), bool)
+    pml = np.zeros(len(tets), bool)
+    for region in ("pml_top", "pml_bottom"):
+        pml[mesh.elements(region)] = True
+    marked[np.unique(tets[pml])] = True
+    for name in ("left", "right"):
+        marked[np.unique(np.asarray(mesh.triangles)[mesh.elements(name)])] = True
+    layer = np.unique(tets[~pml & marked[tets].any(axis=1)])
+    moved = np.asarray(morph(jnp.full(morph.n_params, 1e-8)).nodes)
+    assert np.any(moved != np.asarray(mesh.nodes))
+    imported = np.asarray(mesh.imported_nodes)
+    np.testing.assert_array_equal(moved[layer], imported[layer])
+
+    def power(t):
+        m = model.replace(mesh=morph(t))
+        result = gfem.solve(m, problem, options=OPTIONS)
+        return jnp.abs(gfem.beam_coupling(result, "p1", fiber, model=m)[0]) ** 2
+
+    t = jnp.zeros(morph.n_params)
+    directions = unit_directions(np.random.default_rng(3), t.shape, 2)
     assert_gradient_matches(power, t, directions, step=NODE_STEP)

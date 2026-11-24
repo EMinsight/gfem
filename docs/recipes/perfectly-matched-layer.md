@@ -275,8 +275,9 @@ q = modes.q  # the radiation Q of a lossless disk
 
 - Design and shape gradients are exact outside and next to the layer.
 - The layer's profile is fixed at the imported mesh:
-  `gfem.shape.boundary_morph` holds its nodes, and a moved mesh that pushes
-  device elements past a stretched face raises.
+  `gfem.shape.boundary_morph` holds its nodes and those of the physical
+  elements touching it, and a moved mesh that pushes device elements past a
+  stretched face raises.
 - The layer's background is not a gradient input: it is a constant
   `Material`. `target_reflection` and `reference_frequency` are fixed
   numbers, and a traced one raises.
@@ -314,7 +315,8 @@ How gfem itself is checked: {doc}`../verification`.
 - **Paths and surfaces in the physical part**: a characteristic impedance
   path through the layer, or an interface surface wholly in it, raises.
 - **Moved meshes**: a moved mesh may not push device elements past a
-  stretched face, and a morph of a surface wholly in the layer raises.
+  stretched face, and a morph of a surface wholly in the layer, or in the
+  elements touching it, raises.
 - **No iterative solver**: `linear_solver="bddc_gmres"` raises; `"auto"`
   picks the direct solver, MUMPS across MPI ranks.
 - **Thin layers**: a side thinner than about a hundredth of the reference

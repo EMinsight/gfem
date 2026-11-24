@@ -212,9 +212,11 @@ p_box = gfem.power_flow(e, "design", model=model)
   their gradient there is not available: a material field with an element in
   that layer, traced, raises `gfem.NonDifferentiableError`. Keep the surface
   one element away from the design region (inside `side` is fine), or wrap
-  the value in `jax.lax.stop_gradient`. Node coordinates are not
-  differentiable here either; when they are traced (a `jax.jit` over the
-  model), name the side's regions instead of a predicate. A field of an adaptive sweep raises: its
+  the value in `jax.lax.stop_gradient`. The power is differentiable with
+  respect to the node coordinates too (a shape design,
+  {doc}`shape-gradient`): the element layer moves with its nodes. When they
+  are traced (a `jax.jit` over the model), name the side's regions instead
+  of a predicate. A field of an adaptive sweep raises: its
   frozen basis gives no exact gradient of the power; use `sweep="uniform"`.
 
 :::{note}

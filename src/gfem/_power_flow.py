@@ -13,7 +13,11 @@ topology, so the inputs the measurement reads are known then:
 
 - the coefficients: differentiable, unless the field is formed from an
   adaptive sweep's frozen basis;
-- the node coordinates and ``omega``: read, not differentiable;
+- the node coordinates: differentiable, through the sensitivity kernel's
+  node pass on the layer's pieces (`gfem._engine.power_flow.node_pullback`),
+  except for the corrected power and the cross sections of an incident
+  column, whose load reads the incident field's interpolant on the mesh;
+- ``omega``: read, not differentiable;
 - a material field whose region has an element in the layer (or beside a
   face the layer's terms read), and the fill of a sheet with a face there:
   read, not differentiable (the restricted operator has no sensitivity
@@ -23,6 +27,7 @@ topology, so the inputs the measurement reads are known then:
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
@@ -37,13 +42,14 @@ from gfem._adjoint.solve_vjp import input_kind
 from gfem._boundaries import surfaces_of
 from gfem._checks import is_traced
 from gfem._probe import NODES_REASON
+from gfem.mesh import _at_imported_nodes
 
 if TYPE_CHECKING:
     from gfem._engine.power_flow import Surface
     from gfem._field import Field
     from gfem.model import Model
 
-__all__ = ["LAYER_REMEDY", "balance", "power_flow"]
+__all__ = ["LAYER_REMEDY", "balance", "concrete_field", "power_flow"]
 
 #: How to keep a design out of the surface's element layer (the measure
 #: wrapper adds jax.lax.stop_gradient as the other way out).
@@ -78,12 +84,28 @@ def power_flow(
     reference) has its load pairing subtracted (`corrected_where`).
     """
     pf = engine()
-    where = pf.surface(field, side, model)
+    where = pf.surface(concrete_field(field), side, model)
     part = field._incident  # noqa: SLF001
     if part is not None:
         _check_corrected(field, where, model)
         return balance(field, where, model, mode="corrected")["power"]
     return balance(field, where, model)["power"]
+
+
+def concrete_field(field: Field) -> Field:
+    """``field`` at the imported node positions if its nodes are traced.
+
+    For what a measurement fixes at trace time from the topology (its
+    surface, its layer, the element of a source), with zero coefficients.
+    """
+    if not is_traced(field.mesh.nodes):
+        return field
+    return dataclasses.replace(
+        field,
+        mesh=_at_imported_nodes(field.mesh),
+        coefficients=np.zeros(field.coefficients.shape, field.coefficients.dtype),
+        omega=None if field.omega is None else 0.0,
+    )
 
 
 def _check_corrected(field: Field, where: Surface, model: Model) -> None:
@@ -134,11 +156,16 @@ def balance(
     for path, leaf in f_paths:
         name = _FIELD_INPUTS[path[0].name]
         inputs[name] = leaf
-        roles[name] = _field_role(name, field)
+        roles[name] = _field_role(name, field, mode, model)
     for path, leaf in m_paths:
         name = "model" + jax.tree_util.keystr(tuple(path))
         inputs[name] = leaf
-        roles[name] = _model_role(input_kind(path, "model"), model, where)
+        kind = input_kind(path, "model")
+        roles[name] = (
+            _nodes_role("model", mode, model)
+            if kind[0] == "nodes"
+            else _model_role(kind, model, where)
+        )
     kernel = _PowerFlowKernel(
         comm=field._communicator,  # noqa: SLF001
         roles=roles,
@@ -151,12 +178,26 @@ def balance(
     return measure(kernel, inputs)
 
 
-def _field_role(name: str, field: Field) -> _Role:
+#: Why the corrected power and the cross sections have no node gradient.
+INCIDENT_NODES_REASON = (
+    "the incident load they subtract reads the incident field's interpolant on "
+    "the mesh, whose derivative by the node coordinates is not available"
+)
+
+
+def _nodes_role(owner: str, mode: str, model: Model) -> _Role:
+    """The role of the node coordinates of the field or of the model."""
+    described = f"the mesh node coordinates ({owner}.mesh.nodes)"
+    if mode != "power":
+        return _Role("read", INCIDENT_NODES_REASON, described)
+    terms = importlib.import_module("gfem._engine.terms")
+    return _Role("read", terms.absorbing_shape_unsupported(model), described)
+
+
+def _field_role(name: str, field: Field, mode: str, model: Model) -> _Role:
     """The role of a field input."""
     if name == "nodes":
-        return _Role(
-            "read", NODES_REASON, "the mesh node coordinates (field.mesh.nodes)"
-        )
+        return _nodes_role("field", mode, model)
     if name == "omega":
         return _Role(
             "read",
@@ -304,6 +345,30 @@ class _PowerFlowKernel:
         out[: len(grad)] = grad
         return {"coefficients": out}
 
+    def _nodes(
+        self,
+        values: dict[str, np.ndarray],
+        flux: Any,
+        e: np.ndarray,
+        omega: float,
+        *,
+        ct: float,
+        names: list[str],
+    ) -> dict[str, np.ndarray]:
+        """The node coordinates' cotangents: on the first wanted, zero on the rest.
+
+        The field's and the model's node coordinates are one position (the
+        host refuses others), so the gradient is given once.
+        """
+        m_def, m_names = self.model_def
+        model = jax.tree.unflatten(m_def, [values[n] for n in m_names])
+        grad = ct * engine().node_pullback(
+            flux, model, self.where, e, omega, comm=self.comm
+        )
+        out = {n: np.zeros(np.shape(values[n])) for n in names}
+        out[names[0]] = grad.reshape(np.shape(values[names[0]]))
+        return out
+
     def forward(self, values: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         flux, reading, e = self._host(values)
         omega = float(np.asarray(values["omega"]).real)
@@ -323,7 +388,10 @@ class _PowerFlowKernel:
         cotangents: dict[str, np.ndarray],
         wanted: tuple[str, ...],
     ) -> dict[str, np.ndarray]:
-        if wanted != ("coefficients",):  # the measure wrapper raised for others
+        nodes = [n for n in wanted if n == "nodes" or n.startswith("model.mesh")]
+        others = [n for n in wanted if n != "coefficients" and n not in nodes]
+        if others or (nodes and self.mode != "power"):
+            # the measure wrapper raised for these
             raise NotImplementedError(f"no power flow gradient for {wanted}")
         flux, reading, e = self._host(values)
         omega = float(np.asarray(values["omega"]).real)
@@ -332,7 +400,12 @@ class _PowerFlowKernel:
             return float(np.asarray(cotangents.get(name, 0.0)))
 
         if self.mode == "power":
-            return self._padded(ct("power") * flux.pullback(e, omega), values)
+            out = {}
+            if "coefficients" in wanted:
+                out = self._padded(ct("power") * flux.pullback(e, omega), values)
+            if nodes:
+                out |= self._nodes(values, flux, e, omega, ct=ct("power"), names=nodes)
+            return out
         if self.mode == "corrected":
             grad = flux.pullback(e, omega) - reading.load_pullback()
             return self._padded(ct("power") * grad, values)

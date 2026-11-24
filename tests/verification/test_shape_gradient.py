@@ -13,7 +13,14 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from finite_differences import assert_gradient_matches, unit_directions
-from gradient_cases import WEIGHTS, capacitor, shape_line, wave_line, wave_mesh
+from gradient_cases import (
+    WEIGHTS,
+    capacitor,
+    interface_move,
+    shape_line,
+    wave_line,
+    wave_mesh,
+)
 
 import gfem
 from gfem.shape import boundary_morph
@@ -57,18 +64,21 @@ GRID = tuple(float(f) for f in np.linspace(10e9, 30e9, 11))
 
 
 def test_driven_kept_field_shape_gradient_matches_fd(line):
-    # a field functional: one adjoint solve per frequency, then the same pass
+    # a field functional: one adjoint solve per frequency, then the same
+    # pass; the layer interface moves along z, node by node (the side walls are
+    # absorbing on every element of this coarse line, so a boundary_morph,
+    # which holds the elements touching the truncation, would move nothing)
     problem = gfem.Driven(frequency=GRID[5], excite="p1", keep_fields=True)
-    morph = boundary_morph(line, "sub__cover", grows="sub")
     options = gfem.SolverOptions(order=2, linear_solver="direct")
+    n, moved = interface_move(line)
 
     def objective(t):
-        result = gfem.solve(line.replace(mesh=morph(t)), problem, options=options)
+        result = gfem.solve(line.replace(mesh=moved(t)), problem, options=options)
         e = result.e_field(GRID[5]).coefficients
         weights = np.random.default_rng(7).uniform(0.5, 1.5, e.shape[0])
         return jnp.sum(weights * jnp.abs(e) ** 2) * 1e-6
 
-    t = jnp.zeros(morph.n_params)
+    t = jnp.zeros(n)
     rng = np.random.default_rng(3)
     assert_gradient_matches(objective, t, unit_directions(rng, t.shape, 2), step=STEP)
 

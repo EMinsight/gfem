@@ -37,7 +37,6 @@ LIMITS = {
     "Ground planes flat, PEC or PMC": (
         "test_a_direction_below_the_ground_plane_is_refused",
     ),
-    "No node gradient of the radiated power": (),
 }
 #: Refusal tests of the measurement's input, not limits of the transform.
 INPUT_CHECKS = ("test_far_field_needs_a_kept_field_of_a_column",)

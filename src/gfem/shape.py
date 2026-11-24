@@ -19,7 +19,7 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.sparse as sp
 
-from gfem import _morph, _mpi, _periodic, _pml
+from gfem import _morph, _mpi, _periodic, _pml, _truncation
 from gfem._boundaries import surfaces_of
 from gfem._checks import is_traced
 from gfem._dim2 import refuse_entry
@@ -337,15 +337,19 @@ jax.tree_util.register_static(BoundaryMorph)
 
 
 def _layer_nodes(model: Model) -> np.ndarray:
-    """The nodes of the perfectly matched layer's tetrahedra, held by a morph.
+    """The nodes a morph holds at the truncation.
 
-    The layer's stretch is fixed at the imported mesh: its nodes stay put,
-    so the moved layer is the declared one.
+    The nodes of the perfectly matched layer's tetrahedra (the layer's
+    stretch is fixed at the imported mesh), and of the truncation layer (the
+    physical tetrahedra touching the layer or a `gfem.Absorbing` face), where
+    the far field, the cross sections and the beam coupling read the field
+    by default: the moved model keeps both as declared.
     """
+    held = [_truncation.truncation(model).layer_nodes(model.mesh.tetrahedra)]
     layer = _pml.layer_tetrahedra(model.mesh, model.pml)
-    if layer is None:
-        return np.zeros(0, dtype=np.int64)
-    return np.unique(model.mesh.tetrahedra[layer])
+    if layer is not None:
+        held.append(np.unique(model.mesh.tetrahedra[layer]))
+    return np.unique(np.concatenate(held)).astype(np.int64)
 
 
 def boundary_morph(  # noqa: PLR0915
@@ -365,10 +369,14 @@ def boundary_morph(  # noqa: PLR0915
     elastic extension, solved once on the imported mesh. Surfaces play roles:
 
     - the moving nodes are displaced by ``t[i] * normals[i]``;
-    - nodes on port surfaces (from the model), on ``fixed`` surfaces and of
-      the tetrahedra of a perfectly matched layer are held, and are not
-      parameters even when they lie on the moving surface (the layer's
-      stretch is fixed at the imported mesh);
+    - nodes on port surfaces (from the model), on ``fixed`` surfaces, of
+      the tetrahedra of a perfectly matched layer and of the elements
+      touching the truncation (the physical tetrahedra with a vertex on the
+      layer or on a `gfem.Absorbing` face) are held, and are not parameters
+      even when they lie on the moving surface: the layer's stretch is
+      fixed at the imported mesh, and the far field, the cross sections and
+      the beam coupling read the field in the elements touching the
+      truncation, whose geometry then stays as declared;
     - nodes on every other named surface slide within it: a planar facet
       keeps its plane, the line where two facets meet keeps its line, and a
       corner is held;
@@ -398,8 +406,9 @@ def boundary_morph(  # noqa: PLR0915
     ``t = dw / 2 * jnp.ones(morph.n_params)`` widens a strip by ``dw``.
 
     Args:
-        model: The model; its ports and its perfectly matched layer are
-            held and its excluded volumes set the sign. Only its imported
+        model: The model; its ports, its perfectly matched layer and the
+            elements touching its truncation are held, and its excluded
+            volumes set the sign. Only its imported
             mesh geometry is used.
         moving: The moving surface region.
         where: Optional predicate that narrows the moving nodes. It gets the
@@ -420,7 +429,8 @@ def boundary_morph(  # noqa: PLR0915
     Raises:
         RegionNotFoundError: A surface or volume name is not in the mesh.
         ValueError: The selection is empty or entirely held (on ports,
-            ``fixed`` surfaces or in the layer), ``grows`` is
+            ``fixed`` surfaces, in the layer or in the elements touching
+            the truncation), ``grows`` is
             missing where it is needed (or given where it means nothing),
             ``extension`` is unknown, or ``moving`` is a periodic surface.
         TypeError: An argument has the wrong type.
@@ -477,8 +487,9 @@ def boundary_morph(  # noqa: PLR0915
     if len(params) == 0:
         msg = (
             f"Every selected node of {moving!r} ({len(selected)}) lies on a held "
-            "surface (a port or fixed=), or lies in the perfectly matched layer, "
-            "so nothing can move. Narrow fixed= or pick another surface."
+            "surface (a port or fixed=), in the perfectly matched layer, or in "
+            "the elements touching the truncation (the layer or an Absorbing "
+            "face), so nothing can move. Narrow fixed= or pick another surface."
         )
         raise ValueError(msg)
     # every node of the moving surface in a parameter's class moves with it

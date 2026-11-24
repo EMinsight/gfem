@@ -94,6 +94,13 @@ How gfem itself is checked: {doc}`../verification`.
   `dataclasses.replace(field, mesh=jax.lax.stop_gradient(field.mesh))`.
 - `result.energy` of an electrostatic problem differentiates with respect to
   the node coordinates, like the capacitance.
+- {py:obj}`gfem.power_flow`, {py:obj}`gfem.far_field` and
+  {py:obj}`gfem.beam_coupling` differentiate with respect to the node
+  coordinates: the element layer they read moves with its nodes.
+  `boundary_morph` holds the elements touching the truncation (the
+  perfectly matched layer or an `Absorbing` face), where the far field and
+  the beam coupling read by default. A `beam_coupling` of an
+  `gfem.IncidentField` raises once a node of its layer has moved.
 
 ## Next
 

@@ -20,7 +20,9 @@ One cell per problem type x input kind x linear solver x frequency sweep:
   loss tangent ``tan_delta`` (driven and eigenmode, on the direct solver:
   the solver and sweep paths are the permittivity's), the fill of a
   `gfem.SheetField`,
-  and the mesh node coordinates (through `gfem.shape.boundary_morph`); the
+  and the mesh node coordinates (through `gfem.shape.boundary_morph`, or
+  for the driven line, whose absorbing side walls touch every element, by
+  moving its interface's nodes along z: `gradient_cases.interface_move`); the
   thermal conductivity, mass density and specific heat, and a heat
   source's amount and a waveform's scales (input ``heat``);
 - solvers: ``direct`` and ``bddc_gmres``; sweeps: uniform and adaptive (with
@@ -128,6 +130,7 @@ from gradient_cases import (
     guide_model,
     hybrid_line,
     hybrid_mesh,
+    interface_move,
     junction_law_line,
     junction_line,
     junction_mesh,
@@ -1160,23 +1163,23 @@ def _driven_lumped(d: Designs, cell: Cell, options, seed: int) -> Case:
 def _driven_nodes(d: Designs, cell: Cell, options, seed: int, *, line=None) -> Case:
     """S of the line with every kind of shape term; its interface moves."""
     line = d.shape_line if line is None else line
-    morph = boundary_morph(line, "sub__cover", grows="sub")
+    n, moved = interface_move(line)
     problem, rows = _sweep(cell, SHAPE_FREQUENCIES, GRID, SHAPE_SAMPLES)
 
     def objective(t):
-        s = gfem.solve(line.replace(mesh=morph(t)), problem, options=options).s.values
+        s = gfem.solve(line.replace(mesh=moved(t)), problem, options=options).s.values
         return s_functional(s[jnp.asarray(rows)])
 
     return Case(
         objective,
-        jnp.zeros(morph.n_params),
+        jnp.zeros(n),
         np.random.default_rng(seed),
         step=STEPS["nodes"],
         # the line's curvature in t is small: its remainder reaches the
         # BDDC + GMRES error (1e-6) below 5e-5, a third-order bend above 4e-4
         taylor=2e-4,
         taylor_ratio=2.0,
-        taylor_at=jnp.full(morph.n_params, 1e-5),
+        taylor_at=jnp.full(n, 1e-5),
     )
 
 
