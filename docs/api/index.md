@@ -10,6 +10,7 @@ Every public name is documented once, on the page of the module that owns it.
 gfem/index
 gfem/mesh/index
 gfem/model/index
+gfem/materials/index
 gfem/problems/index
 gfem/solve/index
 gfem/results/index

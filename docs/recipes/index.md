@@ -31,6 +31,7 @@ orphan: true
 - {doc}`mesh-refinement`
 - {doc}`anisotropic-materials`
 - {doc}`dispersive-materials`
+- {doc}`fit-measured-data`
 - {doc}`periodic-cell`
 - {doc}`floquet-ports`
 - {doc}`perfectly-matched-layer`
