@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import jax
@@ -448,6 +449,99 @@ class RationalModel:
             kind="step",
             mode="closed_form",
         )
+
+    def to_spice(self, path: str | Path, *, name: str | None = None) -> Path:
+        r"""Write the model as a SPICE subcircuit that reproduces its S.
+
+        The subcircuit has two pins per port, in `ports` order:
+        ``<port>`` and ``<port>_ref``, with names lower-cased, every
+        character outside ``a-z``, ``0-9`` and ``_`` replaced by ``_``, and
+        ``p_`` put first when the name does not start with a letter. Between
+        the two pins, port :math:`i` is a Norton circuit on its reference
+        impedance :math:`z_i`: driven by power waves on :math:`z_i`, the
+        subcircuit gives the model's S. Tie each ``*_ref`` pin to the
+        port's return (``0`` for ground).
+
+        Only resistors, capacitors, 0 V current-sense sources and linear
+        controlled sources (``R``, ``C``, ``V``, ``G``, ``F`` cards) are
+        used, numbers in exponent form without unit suffixes, and ``*``
+        comments, so one file runs in common SPICE simulators. The header
+        comments give the original port names, the reference impedances,
+        the fitted range, `error`, the gfem version and the time
+        convention.
+
+        Not collective: across ranks a script calls it on rank 0.
+
+        Args:
+            path: The file to write; any suffix (``.sp``, ``.cir``, ``.lib``).
+            name: The subcircuit name, sanitized as the pins are; default
+                the file name without its suffix.
+
+        Returns:
+            The path written.
+
+        Raises:
+            ValueError: The model is not `passive` (a netlist of an active
+                model can make a transient simulation diverge; fit with
+                ``enforce_passivity=True``), two pins get one name or a pin
+                is named ``gnd`` (rename the port), or ``name`` is empty.
+        """
+        from gfem._broadband import _netlist
+
+        path = Path(path)
+        name = self._netlist_name("to_spice", path, name)
+        path.write_text(_netlist.spice(self, name))
+        return path
+
+    def to_verilog_a(self, path: str | Path, *, name: str | None = None) -> Path:
+        r"""Write the model as a Verilog-A module that reproduces its S.
+
+        The module has the pins of `to_spice` (``<port>``, ``<port>_ref`` in
+        `ports` order, sanitized the same way) and the same realization:
+        each pole's states are internal nodes integrated by ``ddt``, never a
+        Laplace filter, whose coefficients overflow at high order. The code
+        is fully unrolled (no arrays, ``genvar`` or ``parameter``), uses
+        flow contributions only with each ``ddt`` alone in its statement,
+        and numbers in exponent form, so it compiles with the strictest
+        Verilog-A front ends. The header comments are those of `to_spice`.
+
+        Not collective: across ranks a script calls it on rank 0.
+
+        Args:
+            path: The file to write, usually ``*.va``.
+            name: The module name, sanitized as the pins are; default the
+                file name without its suffix.
+
+        Returns:
+            The path written.
+
+        Raises:
+            ValueError: As `to_spice`, and when a pin or the module name is
+                a Verilog-A reserved word (``input``, ``output``, ...;
+                rename the port or pass another ``name``).
+        """
+        from gfem._broadband import _netlist
+
+        path = Path(path)
+        name = self._netlist_name("to_verilog_a", path, name)
+        path.write_text(_netlist.verilog_a(self, name))
+        return path
+
+    def _netlist_name(self, method: str, path: Path, name: str | None) -> str:
+        """The sanitized netlist name, after the passivity and pin checks."""
+        from gfem._broadband import _netlist
+
+        if not self.passive:
+            raise ValueError(
+                f"RationalModel.{method}: the model is not passive (a singular "
+                "value of S exceeds 1), and a netlist of it can make a "
+                "transient simulation diverge. Fit with enforce_passivity=True."
+            )
+        _netlist.pins(self.ports)
+        name = path.stem if name is None else name
+        if not name:
+            raise ValueError(f"RationalModel.{method}: name must not be empty.")
+        return _netlist.sanitize(name)
 
     def __repr__(self) -> str:
         band = (
