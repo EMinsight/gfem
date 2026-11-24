@@ -1963,7 +1963,15 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
     The integral is exact for the solved field and the model's element-wise
     permittivity. A field of an adaptive sweep (`gfem.ReducedFields`) is
     exact at the solved frequencies and accurate to the sweep's tolerance in
-    between. Not differentiable in this version.
+    between.
+
+    Differentiable with respect to the field's coefficients, the
+    permittivity of a region without a law (a scalar, per element or per
+    axis), a permittivity law's parameters, a mode field's frequency and the
+    node coordinates. The loss tangent, conductivity and permeability are
+    not read: only the field carries them. The coefficients of an adaptive
+    sweep's field are read but have no gradient (solve with
+    ``sweep="uniform"`` at the frequency you differentiate).
 
     Args:
         field: A time-harmonic electric field (quantity ``"E"``, in H(curl),
@@ -1989,9 +1997,8 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
             (`MaterialField.interpolate` with a permittivity law), which is
             supported on the driven uniform sweep only.
         gfem.DistributedUnsupportedError: The field is a piece across ranks.
-        NonDifferentiableError: ``field`` or ``model`` is computed inside
-            `jax.grad`, `jax.jit` or `jax.vmap` from their arguments; call
-            `electric_energy` outside them.
+        NonDifferentiableError: The field's coefficients, formed from an
+            adaptive sweep, are differentiated.
     """
     from gfem._field import Field
     from gfem.model import Model
@@ -2012,26 +2019,20 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
     if _objective.recording() is not None:
         raise MeshRefinementUnsupportedError(
             "electric_energy",
-            "The objective reads gfem.electric_energy, which has no field "
-            "cotangent, so its error is not estimated. Read the energy of an "
-            "electrostatic result from result.energy.",
+            "The error of gfem.electric_energy is not estimated in this "
+            "version. Read the energy of an electrostatic result from "
+            "result.energy.",
         )
     refuse_blends(model, "electric_energy")
-    if is_traced(field) or is_traced(model):
-        raise NonDifferentiableError(
-            "gfem.electric_energy is not differentiable in this version: its "
-            "field and model must be fixed values, not computed inside jax.grad, "
-            "jax.jit or jax.vmap. Call it outside the function JAX transforms."
-        )
     _check_time_harmonic(
         field,
         "electric_energy",
         static="an electrostatic result has its energy per region in result.energy",
     )
-    engine = importlib.import_module("gfem._engine.energy")
+    energy = importlib.import_module("gfem._energy")
     return {
-        region: jnp.asarray(energy, dtype=float)
-        for region, energy in engine.electric_energy(field, model).items()
+        region: jnp.asarray(value, dtype=float)
+        for region, value in energy.electric_energy(field, model).items()
     }
 
 

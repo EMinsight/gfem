@@ -13,8 +13,10 @@ holding a lossless Lorentz law) and the uniform-field line of
 `eigen_cases` with a Lorentz region at its junction's end.
 """
 
+import dataclasses
 import math
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -293,6 +295,25 @@ def test_electric_energy_where_the_brillouin_weight_is_not_positive_raises(strip
         ValueError, match=r"field at 6 GHz has Re d\(omega eps\)/d omega = .* 'core'"
     ):
         gfem.electric_energy(field, model=model)
+
+
+def test_electric_energy_where_the_brillouin_weight_is_not_positive_raises_under_grad(
+    strip,
+):
+    f = 6 * GHZ
+    model = strip_line(strip, damped(f))
+    field = gfem.solve(model, gfem.Driven(frequency=[f], keep_fields=True)).e_field(
+        f, excite="p1"
+    )
+
+    def objective(scale):
+        scaled = dataclasses.replace(field, coefficients=scale * field.coefficients)
+        return gfem.electric_energy(scaled, model=model)["core"]
+
+    with pytest.raises(
+        ValueError, match=r"field at 6 GHz has Re d\(omega eps\)/d omega = .* 'core'"
+    ):
+        jax.grad(objective)(1.0)
 
 
 @pytest.fixture(scope="module")
