@@ -654,6 +654,10 @@ RAISES_LABELS = {
         )
         for name in ("rise_time", "time_constant")
     },
+    "fit_rational under jax.grad": (
+        "`NetworkParameters.fit_rational`, with respect to S, its reference "
+        "impedance or the fit's weights (the time responses of S differentiate)"
+    ),
     "thermo-optic shift x optical permittivity": (
         "`thermo_optic_shift`, with respect to the optical model's permittivity, "
         "loss tangent, permeability or conductivity (the mode is held constant; "

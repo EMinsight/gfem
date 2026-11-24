@@ -17,7 +17,10 @@ poles and :math:`P` ports)
 
 and :math:`\sigma_{\max}` at one point between consecutive crossings labels
 each interval. The full matrix is used, not the half-size one, which holds
-only for symmetric S.
+only for symmetric S. When :math:`\sigma_{\max}(D)` is near 1 and S near
+unitary over the band (a lossless line), :math:`R` and :math:`Q` are nearly
+singular and the eigenvalues can lose crossings, so samples of
+:math:`\sigma_{\max}` resolving every pole's peak are added to the edges.
 
 Enforcement keeps the poles (so stability) and perturbs the residues by the
 least change of S on the data frequencies (weighted as the fit was). The
@@ -66,6 +69,10 @@ _IMAGINARY = 1e-4
 _ACTIVE = 10
 #: Samples of the largest singular value in a violation, then around its peak.
 _PEAK_SAMPLES = (64, 33)
+#: Uniform samples of the passivity test's guard over twice the largest pole.
+_UNIFORM = 4001
+#: The guard's samples around each pair's resonance, in damping widths.
+_AROUND = np.linspace(-4.0, 4.0, 17)
 
 
 def violations(
@@ -277,7 +284,7 @@ class _Model:
         c = self.c * self.scale
         out = np.zeros((n_poles, n_ports * n_ports), complex)
         out[real] = c[:, : real.size].T
-        pair = c[:, real.size :].T.reshape(pairs.size, 2, -1)
+        pair = c[:, real.size :].T.reshape(pairs.size, 2, n_ports * n_ports)
         out[pairs] = pair[:, 0] + 1j * pair[:, 1]
         out[pairs + 1] = np.conj(out[pairs])
         return out.reshape(n_poles, n_ports, n_ports)
@@ -298,7 +305,12 @@ class _Model:
         """Intervals of scaled frequency where the largest singular value > 1."""
         sd = scipy.linalg.svdvals(self.d, check_finite=False)
         gamma = 1 + 2 * _SLACK if np.any(np.abs(sd - 1) <= _SLACK) else 1.0
-        edges = np.concatenate([[0.0], self._crossings(gamma), [math.inf]])
+        # the samples catch the crossings the eigenvalues lose when the
+        # Hamiltonian is ill-conditioned (sigma(D) near 1, S near unitary
+        # over the band, as for a lossless line); between true crossings
+        # they only split an interval of one label
+        inner = np.union1d(self._crossings(gamma), self._samples())
+        edges = np.concatenate([[0.0], inner[inner > 0], [math.inf]])
         mids = 0.5 * (edges[:-2] + edges[1:-1])
         over = np.append(self.sigma_max(mids) > gamma, sd.max(initial=0.0) > gamma)
         bands: list[tuple[float, float]] = []
@@ -309,6 +321,18 @@ class _Model:
             else:
                 bands.append((lo, hi))
         return bands
+
+    def _samples(self) -> np.ndarray:
+        """Scaled frequencies that resolve every pole's peak.
+
+        A uniform grid to twice the largest pole (the scale), and around
+        each pair's resonance a few points per damping width.
+        """
+        if not self.poles.size:
+            return np.zeros(0)
+        pairs = self.poles.pairs
+        around = pairs.imag[:, None] + np.abs(pairs.real)[:, None] * _AROUND
+        return np.union1d(np.linspace(0.0, 2.0, _UNIFORM), around.reshape(-1))
 
     def _crossings(self, gamma: float) -> np.ndarray:
         """Candidate frequencies where a singular value of S equals ``gamma``."""

@@ -243,6 +243,17 @@ def test_a_constant_term_above_one_is_clipped_below_one_minus_the_margin():
     assert model.passive
 
 
+def test_a_lossless_through_is_a_model_without_poles_clipped_passive():
+    s = np.zeros((len(F20), 2, 2), complex)
+    s[:, 0, 1] = s[:, 1, 0] = 1.0
+
+    model = _net(F20, s).fit_rational()
+
+    assert model.n_poles == 0
+    assert model.passive
+    np.testing.assert_allclose(model.error, 1e-4, rtol=1e-6)
+
+
 def _line(f, delay, z_line, z_port=50.0):
     """S of a lossless line of impedance ``z_line`` and delay between ports."""
     theta = 2 * math.pi * np.asarray(f) * delay
@@ -268,6 +279,21 @@ def test_a_matched_line_of_ten_phase_wraps_takes_about_two_poles_per_wrap(recwar
     assert not [w for w in recwarn if issubclass(w.category, UserWarning)]
     assert model.error <= 1e-3
     assert model.n_poles <= 32
+
+
+# A lossless line is unitary over the band: its fit hovers at sigma = 1 and
+# its D near a through, where the Hamiltonian's eigenvalues lose crossings.
+@pytest.mark.parametrize("wraps", [8, 10])
+def test_the_passive_fit_of_a_lossless_line_stays_below_one_between_samples(wraps):
+    f = 3e12 / 150 * np.arange(1, 151)
+    net = _net(f, _line(f, wraps / f[-1], 50.0))
+
+    model = net.fit_rational()
+
+    assert model.passive
+    dense = np.linspace(0.0, f[-1], 20001)
+    sigma = np.linalg.svd(np.asarray(model.network(dense).values), compute_uv=False)
+    assert sigma.max() <= 1.0
 
 
 def test_a_mismatched_line_of_thirty_wraps_warns_that_the_fit_did_not_converge():

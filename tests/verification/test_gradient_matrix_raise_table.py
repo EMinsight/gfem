@@ -3358,6 +3358,26 @@ def _out_switching_time(name):
     return call
 
 
+def _out_fit_rational(_request):
+    f = np.linspace(1e9, 10e9, 20)
+    pole = -2 * np.pi * 1e9
+
+    def objective(a):
+        s = jnp.zeros((len(f), 2, 2), complex)
+        through = a / (2j * np.pi * f - pole)
+        s = s.at[:, 0, 1].set(through).at[:, 1, 0].set(through)
+        net = gfem.NetworkParameters(
+            values=s,
+            z_ref=jnp.full((len(f), 2), 50.0),
+            frequency=tuple(float(x) for x in f),
+            ports=("p1", "p2"),
+            excited=("p1", "p2"),
+        )
+        return net.fit_rational().error
+
+    jax.make_jaxpr(jax.grad(objective))(1e9)
+
+
 def _out_thermal_nodes(name):
     def call(request):
         model, problem = request.getfixturevalue("thermal_problem_cases")[name]
@@ -3861,6 +3881,12 @@ OUT_OF_SCOPE = [
             rf"gfem\.{name} is a measurement on recorded samples",
         )
         for name in ("rise_time", "time_constant")
+    ),
+    (
+        "fit_rational under jax.grad",
+        _out_fit_rational,
+        gfem.NonDifferentiableError,
+        r"NetworkParameters\.fit_rational relocates poles iteratively",
     ),
     *(
         (
