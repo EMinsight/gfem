@@ -23,6 +23,7 @@ from gfem._checks import is_staging, is_traced
 from gfem._domain import physics_of
 from gfem._dual_supply import _adjoint_ports, _excited
 from gfem._floquet import floquet_ports
+from gfem._sources import INCIDENT
 from gfem._text import hertz
 from gfem.errors import MeshRefinementUnsupportedError, NonDifferentiableError
 from gfem.mesh import _is_model_mesh
@@ -330,6 +331,9 @@ def _check_problem(model: Model, problem: Any) -> None:
             "refine_mesh needs a gfem.Electrostatic, gfem.Driven or "
             f"gfem.Eigenmode problem, got {type(problem).__name__}."
         )
+    if isinstance(problem, Driven) and problem.sources:
+        # before the layer: its remedy, an absorbing face, would meet this next
+        raise _refuse_source("gfem.refine_mesh", problem.sources[0])
     if model.pml is not None and isinstance(problem, (Driven, Eigenmode)):
         # the electrostatic estimator reads the background the solve sees
         raise _pml.refuse_estimate(
@@ -363,6 +367,22 @@ def _check_problem(model: Model, problem: Any) -> None:
             "side of a periodic pair would break its node pairing. Refine the "
             "mesh in your mesher.",
         )
+
+
+def _refuse_source(subject: str, source: Any) -> MeshRefinementUnsupportedError:
+    """The refusal of an estimator or refinement on a problem with a source.
+
+    The estimators' residuals read the model's materials and ports only: a
+    volume or a point source would make them mark the scatterer, or the
+    dipole's position, where the field is right.
+    """
+    feature = "incident field" if isinstance(source, INCIDENT) else "point dipole"
+    return MeshRefinementUnsupportedError(
+        feature,
+        f"{subject} has no path for the {feature} {source.name!r}: its error "
+        f"indicators know nothing of the {feature}'s load, so they would mark "
+        "the field it drives as error. Refine the mesh in your mesher.",
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -796,6 +816,9 @@ def _touching(model: Model, surface: str) -> np.ndarray:
 
 
 def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
+    if isinstance(result, DrivenResult) and result.sources:
+        source = next(iter(result.sources.values()))
+        raise _refuse_source(f"gfem.{type(estimator).__name__}", source)
     if isinstance(estimator, QuantityEstimator) and estimator.objective is None:
         _check_entries(estimator, _entries_of_result(result))
     if isinstance(estimator, QuantityEstimator) and isinstance(result, EigenmodeResult):

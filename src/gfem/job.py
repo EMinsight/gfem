@@ -36,6 +36,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from gfem import _codec, _mpi
+from gfem._background import Background
 from gfem._boundaries import (
     PEC,
     PMC,
@@ -51,6 +52,7 @@ from gfem._boundaries import (
     WavePort,
 )
 from gfem._checks import is_traced
+from gfem._incident import IncidentPart
 from gfem._line_section import LineSection
 from gfem._materials import (
     Blend,
@@ -68,6 +70,14 @@ from gfem._pml import PML
 from gfem._port_section import PortSection
 from gfem._pytree import register_fields
 from gfem._sheet import SheetField
+from gfem._sources import (
+    ElectricDipole,
+    GaussianBeam,
+    IncidentField,
+    MagneticDipole,
+    PlaneWave,
+    qualified,
+)
 from gfem.errors import LinearSolverConvergenceError
 from gfem.measurements import InterfaceParticipation
 from gfem.mesh import (
@@ -733,6 +743,7 @@ def _model_args(model: Model, _: _codec.Context) -> dict[str, Any]:
         "excluded": _excluded_args(model),
         # written only when set: a model without a layer encodes as before
         **({"pml": model.pml} if model.pml is not None else {}),
+        **({"background": model.background} if model.background is not None else {}),
     }
 
 
@@ -773,16 +784,20 @@ def _transient_from_args(args: dict[str, Any], _: _codec.Context) -> TransientTh
 def _field_args(field: Any, _: _codec.Context) -> dict[str, Any]:
     """A field's arguments: a communicator is not part of what it is.
 
-    A layer's reference frequency is written only when set, so that a field
-    without one encodes as before.
+    A layer's reference frequency, an incident column's incident part and
+    the point dipoles are written only when set, so that a field without
+    them encodes as before.
     """
     out = {
         f.name: getattr(field, f.name)
         for f in dataclasses.fields(field)
         if f.name != "_comm"
     }
-    if out.get("_reference_frequency", 0) is None:
-        del out["_reference_frequency"]
+    for name in ("_reference_frequency", "_incident"):
+        if out.get(name, 0) is None:
+            del out[name]
+    if not out.get("_point_sources", 0):
+        out.pop("_point_sources", None)
     return out
 
 
@@ -856,11 +871,12 @@ def _unset_omitted(cls: Any, **defaults: Any) -> _codec.ToArgs:
     def to_args(obj: Any, _: _codec.Context) -> dict[str, Any]:
         args = {n: getattr(obj, n) for n in names}
         for name, default in defaults.items():
-            # a field sequence equals no default: only an empty one is left out
+            # a field sequence or mapping equals no default: only an empty one
+            # is left out; an array is never compared with None
             value = args[name]
             if default is None:  # an array field is unset only when None
                 unset = value is None
-            elif isinstance(default, tuple):
+            elif isinstance(default, (tuple, dict)):
                 unset = not len(value)
             else:
                 unset = value == default
@@ -896,7 +912,7 @@ _codec.register(
     Model,
     to_args=_model_args,
     from_args=_model_from_args,
-    names=("mesh", "materials", "boundaries", "ports", "excluded", "pml"),
+    names=("mesh", "materials", "boundaries", "ports", "excluded", "pml", "background"),
 )
 _codec.register(
     _Excluded,
@@ -983,13 +999,52 @@ _codec.register(
 _codec.register(Blend, to_args=_unset_omitted(Blend, others=(), pixels=None))
 _codec.register(PixelGeometry)
 _codec.register(SolverOptions, to_args=_options_args)
-_codec.register(Driven, to_args=_unset_omitted(Driven, polarization=None))
+_codec.register(Driven, to_args=_unset_omitted(Driven, polarization=None, sources=()))
 _codec.register(PortMode, to_args=_unset_omitted(PortMode, polarization=None))
 _codec.register(
     PortModeResult, to_args=_unset_omitted(PortModeResult, h_field=None, pml=None)
 )
 _codec.register(
-    DrivenResult, to_args=_unset_omitted(DrivenResult, h_fields=(), polarization=None)
+    DrivenResult,
+    to_args=_unset_omitted(
+        DrivenResult,
+        h_fields=(),
+        polarization=None,
+        sources={},
+        port_waves=None,
+        emitted_power={},
+    ),
+)
+for _cls in (PlaneWave, GaussianBeam, ElectricDipole, MagneticDipole):
+    _codec.register(_cls)
+_codec.register(
+    Background, to_args=_unset_omitted(Background, interfaces=(), ground=None)
+)
+_codec.register(
+    IncidentPart, to_args=_unset_omitted(IncidentPart, layers=(), is_incident=False)
+)
+
+
+def _incident_field_args(field: IncidentField, _: _codec.Context) -> dict[str, Any]:
+    raise _codec.UnencodableError(
+        f"the IncidentField {field.name!r} (function {qualified(field.function)}) "
+        "cannot be written: its function is code, not data, and a file without "
+        "it would solve another problem"
+    )
+
+
+def _incident_field_from_args(_args: dict[str, Any], _: _codec.Context) -> Any:
+    raise ValueError(
+        "The file holds an IncidentField, which gfem never writes: its function "
+        "cannot be read from a file."
+    )
+
+
+_codec.register(
+    IncidentField,
+    to_args=_incident_field_args,
+    from_args=_incident_field_from_args,
+    names=("name", "function"),
 )
 # a cross-section's slab thickness only when set, so a 3D result is written as
 # before

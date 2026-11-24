@@ -25,6 +25,13 @@ result reloaded with `gfem.load_result`.
   each volume region, with the model's materials.
 - `region_mean`: a field's mean over named volume regions, exact for the
   solved field (an electric field's, or a potential's).
+- `purcell_factor`: a point dipole's emitted power over its power in the
+  unbounded material at its position.
+- `far_field`: the far-field amplitude of a port, dipole or incident-field
+  column on a grid of directions, with the IEEE 145 radiation outputs
+  (`FarField`).
+- `beam_coupling`: the amplitude a field couples into an incoming beam
+  (a fiber), by reciprocity the S-parameter between the beam and a port.
 
 Measurements run on the CPU and work under `jax.jit` and `jax.vmap`; under
 `jax.grad` they differentiate with respect to the field coefficients (so
@@ -53,10 +60,14 @@ import scipy.constants as const
 
 from gfem import _mpi, _objective, _probe
 from gfem._adjoint.measure import measure
+from gfem._beam_coupling import beam_coupling
 from gfem._checks import check_fixed, is_traced
 from gfem._dim2 import entry_refusal, refuse_entry
+from gfem._far_field import FarField, far_field
 from gfem._materials import Material, _is_law, field_principal_values
+from gfem._purcell import purcell_factor
 from gfem._pytree import register_fields
+from gfem._truncation import truncation
 from gfem.conventions import MODE_ENERGY
 from gfem.errors import MeshRefinementUnsupportedError, NonDifferentiableError
 from gfem.mesh import Mesh
@@ -64,19 +75,30 @@ from gfem.mesh import Mesh
 if TYPE_CHECKING:
     from gfem._field import Field
     from gfem.model import Model
-    from gfem.results import EigenmodeResult, PortModeResult, SteadyThermalResult
+    from gfem.results import (
+        DrivenResult,
+        EigenmodeResult,
+        PortModeResult,
+        SteadyThermalResult,
+    )
 
 __all__ = [
     "INTERFACE_KINDS",
+    "CrossSections",
+    "FarField",
     "InterfaceParticipation",
+    "beam_coupling",
     "characteristic_impedance",
+    "cross_sections",
     "dissipated_power",
     "electric_energy",
     "element_mean",
+    "far_field",
     "heat_flow",
     "heat_flow_per_length",
     "interface_participation",
     "power_flow",
+    "purcell_factor",
     "region_mean",
 ]
 
@@ -759,13 +781,33 @@ def power_flow(
     A field of an adaptive sweep (`gfem.ReducedFields`) is exact at the
     solved frequencies and accurate to the sweep's tolerance in between.
 
+    The total field of an incident-field column (``result.e_field(f,
+    "wave")``) is not fed through a port: its residual holds the pairing
+    :math:`\operatorname{Im}(u_S^H b)/(2\omega\mu_0)` of the incident load
+    :math:`b` with the field on the side's DOFs, which is subtracted, so
+    the power is again exact and, for a side of physical elements, minus
+    the power absorbed inside it: ``-power_flow(total, "absorber",
+    model=model)`` is one region's absorption under the wave. A side
+    holding perfectly-matched-layer elements is refused (the field there is
+    the scattered one), as is the incident part (``part="incident"``),
+    which balances no load. The scattered part (``part="scattered"``) needs
+    no correction.
+
+    On a field of a distributed solve it is a collective call: every rank
+    calls it with the same side and model, each pairs its own elements'
+    terms with its piece of the field, and every rank gets the same number.
+
     Differentiable through the field: inside `jax.grad`, `jax.jit` or
     `jax.vmap` the kept field of a solve (lumped or wave ports) carries the
     gradient, so absorbed, radiated and transmitted power are objectives.
     The model's leaves are read only in the element layer just outside
     ``side``; a traced material field there has no gradient here and
     raises, and any other leaf gets an exact zero from this measurement
-    (its influence arrives through the field).
+    (its influence arrives through the field). The node coordinates (a
+    shape design, `gfem.shape.boundary_morph`) are differentiable too: the
+    element layer moves with its nodes, and the field with them at fixed
+    coefficients; the corrected power of an incident-field column is not
+    (its solve refuses them first).
 
     Args:
         field: A driven electric field (quantity ``"E"``, in H(curl),
@@ -784,16 +826,20 @@ def power_flow(
         ValueError: A name is a surface region; the predicate does not
             return one boolean per tetrahedron; ``side`` selects no element
             of the support, or all of them; the field is not a driven
-            electric field, or was not solved on ``model``; or the
-            surface is within one element of a port's surface.
-        gfem.DistributedUnsupportedError: The field is a piece across ranks.
+            electric field, or was not solved on ``model``; the
+            surface is within one element of a port's surface; or, for an
+            incident-field column, the field is its incident part, the side
+            holds perfectly-matched-layer elements, or the side reaches a
+            wave port's surface.
         NonDifferentiableError: While `jax.grad` traces it: a material
             field with an element in the element layer just outside
             ``side`` (or beside a face that layer's terms read), or the fill
             of a sheet with a face there, is differentiated (move the
             surface one element away from the design region, or wrap the
-            value in `jax.lax.stop_gradient`); the node coordinates or the
-            field's ``omega`` are differentiated; the field is one of an
+            value in `jax.lax.stop_gradient`); the field's ``omega`` is
+            differentiated, or the node coordinates of an incident-field
+            column or beside an anisotropic `gfem.Absorbing` face; the field
+            is one of an
             adaptive sweep (`gfem.ReducedFields`) and is differentiated. And
             whenever the node coordinates are traced and ``side`` is a
             predicate: name its regions.
@@ -804,18 +850,21 @@ def power_flow(
     refuse_entry(getattr(field, "mesh", None), "power_flow")
     if not isinstance(field, Field):
         raise TypeError(f"power_flow needs a gfem.Field, got {type(field).__name__}.")
-    if field._communicator is not None:  # noqa: SLF001
-        _mpi.refuse_feature("power_flow")
     if not isinstance(model, Model):
         raise TypeError(
             f"power_flow needs model= a gfem.Model, got {type(model).__name__}."
         )
-    names = _side_names(side)
+    from gfem._power_flow import side_names
+
+    names = side_names(side, "power_flow")
     _check_driven(field)
     recorder = _objective.recording()
     if recorder is not None:
         return _recorded_power_flow(recorder, field, names, model)
-    if not (is_traced(field) or is_traced(model)):
+    incident = field._incident is not None  # noqa: SLF001
+    # across ranks the kernel's collective host call checks the ranks agree
+    ranked = field._communicator is not None  # noqa: SLF001
+    if not (incident or ranked or is_traced(field) or is_traced(model)):
         engine = importlib.import_module("gfem._engine.power_flow")
         return jnp.asarray(engine.power_flow(field, names, model), dtype=float)
     if callable(names) and is_traced((field.mesh.nodes, model.mesh.nodes)):
@@ -1271,6 +1320,255 @@ def _check_thermal_field(field: Field, model: Model, who: str) -> None:
         raise other
 
 
+# --- cross sections --------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class CrossSections:
+    r"""The extinction, absorption and scattering cross sections of one source.
+
+    Each is a power over the source's intensity, per kept frequency;
+    ``extinction`` is ``absorption + scattering`` exactly.
+
+    Attributes:
+        frequency: The kept frequencies of the source's column, Hz,
+            ``(n_freq,)``.
+        extinction: The power removed from the incident field, m²,
+            ``(n_freq,)``.
+        absorption: The power the scatterer absorbs, m², ``(n_freq,)``.
+        scattering: The power the scattered field carries out, m²,
+            ``(n_freq,)``.
+        intensity: The intensity :math:`I` the powers are divided by, W/m²,
+            ``(n_freq,)``.
+    """
+
+    frequency: np.ndarray
+    extinction: jax.Array
+    absorption: jax.Array
+    scattering: jax.Array
+    intensity: np.ndarray
+
+    def __repr__(self) -> str:
+        try:
+            values = [
+                np.asarray(x)
+                for x in (self.extinction, self.absorption, self.scattering)
+            ]
+        except (TypeError, jax.errors.TracerArrayConversionError):
+            return "CrossSections(traced)"
+        rows = ", ".join(
+            f"{f:.6g} Hz: ext {e:.4g}, abs {a:.4g}, sca {c:.4g} m²"
+            for f, e, a, c in zip(self.frequency, *values, strict=True)
+        )
+        return f"CrossSections({rows})"
+
+
+register_fields(CrossSections, ("extinction", "absorption", "scattering"))
+
+
+def cross_sections(
+    result: DrivenResult,
+    source: str,
+    *,
+    model: Model,
+    intensity: Any = None,
+) -> CrossSections:
+    r"""The extinction, absorption and scattering cross sections of an incident field.
+
+    Read from one exact discrete power balance on the truncation layer (the
+    physical elements touching the PML layer or an `gfem.Absorbing` face),
+    with :math:`u` the solved total field, :math:`b` its load,
+    :math:`e_s` the scattered field and :math:`c = 2\omega\mu_0`:
+
+    .. math::
+
+        P_\mathrm{sca} = \operatorname{flux}(e_s), \quad
+        P_\mathrm{abs} = \operatorname{Im}(u_S^H b)/c - \operatorname{flux}(u),
+        \quad P_\mathrm{ext} = P_\mathrm{abs} + P_\mathrm{sca},
+
+    where :math:`\operatorname{flux}` is `power_flow`'s residual form out
+    of the elements :math:`S` inside the layer and :math:`u_S` the field on
+    their DOFs. Every set of elements holding the scatterer gives the same
+    numbers, so there is no surface to choose. Each cross section is the
+    power over the source's intensity :math:`I`:
+
+    - `gfem.PlaneWave`: :math:`|E_0|^2 / (2\eta)`, :math:`\eta` the wave
+      impedance of the layer it comes from;
+    - `gfem.GaussianBeam`: its focal intensity
+      :math:`I_0 = |E(r_f)|^2 / (2\eta)` at each frequency
+      (`gfem.GaussianBeam.focal_intensity`);
+    - `gfem.IncidentField`: ``intensity=``, required.
+
+    On a layered background (`gfem.Background`) the extinction is the
+    power the scatterer removes from the stack's own field, the incident
+    wave with its reflected and transmitted waves, not from the incident
+    wave alone; the scattered power is what the scattered field carries to
+    the truncation, into every layer. Every layer must be lossless.
+
+    A model reduced by :math:`n` mirror planes (walls the incident field
+    satisfies) reports the meshed part, :math:`2^{-n}` of the full model's
+    cross sections: gfem cannot tell a symmetry plane from a physical wall.
+
+    On a result of a distributed solve it is a collective call: every rank
+    calls it and gets the same cross sections.
+
+    Differentiable through the field: inside `jax.grad` the cross sections
+    of a material design in the scatterer (a `gfem.MaterialField`) carry
+    its gradient; the measurement reads no scatterer material, so no
+    material pass is needed. The source, its intensity and the frequency are
+    static.
+
+    Args:
+        result: A driven result with kept fields, solved with ``source``.
+        source: The name of an incident-field source of the result.
+        model: The model the result was solved with.
+        intensity: W/m², a positive number or one per kept frequency: the
+            intensity of a `gfem.IncidentField`; ``None`` for any other
+            source.
+
+    Returns:
+        A `CrossSections`.
+
+    Raises:
+        KeyError: ``source`` is not a column of the result.
+        ValueError: ``source`` is a port or a point dipole; the result keeps
+            no field of it; ``intensity`` is missing for a
+            `gfem.IncidentField`, given for another source, or not positive
+            and finite; a scatterer region, sheet, lumped port or perfect
+            conductor reaches the truncation layer; the truncation layer
+            reaches a wave port; the model has no background.
+        NotImplementedError: A lossy background, or a lossy layer of a
+            layered one.
+        NonDifferentiableError: While `jax.grad` traces it: a material design
+            with an element in the truncation layer, or the node coordinates.
+    """
+    from gfem.model import Model
+    from gfem.results import DrivenResult
+
+    if not isinstance(result, DrivenResult):
+        raise TypeError(
+            f"cross_sections needs a gfem.DrivenResult, got {type(result).__name__}."
+        )
+    if not isinstance(model, Model):
+        raise TypeError(
+            f"cross_sections needs model= a gfem.Model, got {type(model).__name__}."
+        )
+    kind = _column_kind(result, source)
+    if kind is not None:
+        raise ValueError(
+            f"cross_sections: {source!r} is a {kind} column; cross sections are "
+            "measured for an incident field (gfem.PlaneWave, gfem.GaussianBeam, "
+            "gfem.IncidentField)."
+        )
+    wave = result.sources[source]
+    frequencies = [f for f, label in result.kept if label == source]
+    if not frequencies:
+        raise ValueError(
+            f"cross_sections needs the kept fields of {source!r}: solve with "
+            "Driven(..., keep_fields=True) or keep_fields=[frequencies]."
+        )
+    background = model.background
+    if background is None:
+        raise ValueError(
+            "cross_sections needs the model's background (Model(background=...)): "
+            "pass the model the result was solved with."
+        )
+    xs = importlib.import_module("gfem._engine.cross_sections")
+    xs.check_lossless(background)
+    i0 = _intensity(wave, intensity, frequencies, background)
+    absorbed, scattered = [], []
+    for f in frequencies:
+        field = result.e_field(f, source)
+        if field._incident is None:  # noqa: SLF001
+            raise ValueError(
+                f"The kept field of {source!r} carries no incident part: solve "
+                "again to measure its cross sections."
+            )
+        pf = importlib.import_module("gfem._engine.power_flow")
+        where = pf.surface_of(field, truncation(model).side, model)
+        xs.check_truncation_layer(model, background, where)
+        xs.check_side(model, where, "cross_sections")
+        from gfem._power_flow import balance
+
+        out = balance(field, where, model, mode="cross_sections")
+        absorbed.append(out["absorption"])
+        scattered.append(out["scattering"])
+    absorption = jnp.stack(absorbed) / i0
+    scattering = jnp.stack(scattered) / i0
+    return CrossSections(
+        frequency=np.asarray(frequencies, float),
+        extinction=absorption + scattering,
+        absorption=absorption,
+        scattering=scattering,
+        intensity=i0,
+    )
+
+
+def _column_kind(result: DrivenResult, name: str) -> str | None:
+    """``None`` for an incident-field source, else what the column is.
+
+    Raises:
+        KeyError: ``name`` is no column of the result.
+    """
+    from gfem._sources import INCIDENT
+
+    if name in result.sources:
+        source = result.sources[name]
+        return None if isinstance(source, INCIDENT) else type(source).__name__
+    if name in result.s.excited:
+        return "port"
+    columns = (*result.s.excited, *result.sources)
+    raise KeyError(
+        f"{name!r} is not a column of the result; its ports and sources are "
+        f"{', '.join(map(repr, columns))}."
+    )
+
+
+def _intensity(
+    source: Any, intensity: Any, frequencies: Sequence[float], background: Any
+) -> np.ndarray:
+    """The intensity of ``source`` per kept frequency, W/m² (see `cross_sections`).
+
+    Raises:
+        ValueError: Missing for an `gfem.IncidentField`, given for another
+            source, or not positive and finite.
+    """
+    from gfem import _incident
+
+    n = len(frequencies)
+    own = _incident.intensity(source, background, frequencies)
+    if own is None:
+        if intensity is None:
+            raise ValueError(
+                f"cross_sections of the {type(source).__name__} {source.name!r} needs "
+                "intensity= (W/m², a number or one per kept frequency): gfem "
+                "cannot tell the intensity of a field it only evaluates."
+            )
+        if is_traced(intensity):
+            raise NonDifferentiableError(
+                "cross_sections' intensity is static: wrap it in "
+                "jax.lax.stop_gradient or pass a number."
+            )
+        values = (
+            np.broadcast_to(np.asarray(intensity, float), (n,)).copy()
+            if (np.ndim(intensity) == 0 or np.shape(intensity) == (n,))
+            else None
+        )
+        if values is None or not (np.isfinite(values).all() and (values > 0).all()):
+            raise ValueError(
+                "cross_sections' intensity must be a positive finite number or "
+                f"{n} of them (one per kept frequency), W/m², got {intensity!r}."
+            )
+        return values
+    if intensity is not None:
+        raise ValueError(
+            f"cross_sections takes intensity= for an IncidentField only: the "
+            f"intensity of the {type(source).__name__} {source.name!r} is its "
+            "own (see gfem.cross_sections)."
+        )
+    return own
+
+
 # --- region mean -----------------------------------------------------------------
 
 
@@ -1671,26 +1969,6 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
         region: jnp.asarray(energy, dtype=float)
         for region, energy in engine.electric_energy(field, model).items()
     }
-
-
-def _side_names(
-    side: Any,
-) -> tuple[str, ...] | Callable[[np.ndarray], np.ndarray]:
-    """``side`` as a predicate or a tuple of region names.
-
-    Raises:
-        TypeError: ``side`` is neither.
-    """
-    if isinstance(side, str):
-        return (side,)
-    if callable(side):
-        return side
-    if isinstance(side, Sequence) and side and all(isinstance(s, str) for s in side):
-        return tuple(side)
-    raise TypeError(
-        "power_flow's side must be a volume region name, a sequence of names or "
-        f"a predicate on element centroids, got {side!r}."
-    )
 
 
 def _check_time_harmonic(field: Field, who: str, *, static: str) -> None:

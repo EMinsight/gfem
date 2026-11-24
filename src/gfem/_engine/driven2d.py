@@ -175,14 +175,7 @@ class Driven2DRule(DrivenRule):
                 "excite. Add a gfem.WavePort on a straight exterior line."
             )
         names = model.port_names
-        self.port_names = names
-        self.excite = names if problem.excite is None else problem.excite
-        for name in self.excite:
-            if name not in names:
-                raise ValueError(
-                    f"Driven.excite names port {name!r}, but the model's ports are "
-                    f"{', '.join(map(repr, names))}."
-                )
+        self._init_columns(names, problem)
         self.order_frequency = tuple(problem.frequency)
         self.kept = tuple(problem.frequency.index(f) for f in problem.kept_frequencies)
         self.adaptive = False
@@ -226,6 +219,31 @@ class Driven2DRule(DrivenRule):
         self.split = SweepSplit.of(self)
         _check_low_frequency(model, problem.frequency, None, stacklevel=4)
         _check_skipped_port_modes(model, stacklevel=4)
+
+    def _init_columns(self, names: tuple[str, ...], problem: Driven) -> None:
+        """The excited ports, and the source attributes the shared code reads.
+
+        A 2D `Driven` refuses sources when it is built, so the source
+        attributes are empty and the solve's columns are the excited ports.
+
+        Raises:
+            ValueError: ``problem.excite`` names a port the model lacks.
+        """
+        self.port_names = names
+        self.excite = names if problem.excite is None else problem.excite
+        for name in self.excite:
+            if name not in names:
+                raise ValueError(
+                    f"Driven.excite names port {name!r}, but the model's ports are "
+                    f"{', '.join(map(repr, names))}."
+                )
+        self.sources = ()
+        self.incident = ()
+        self.dipoles = ()
+        self.columns = tuple(self.excite)
+        self.background = None
+        self.layers = ()
+        self.truncation_designs = {}
 
     def operator(self, model: Model) -> DrivenOperator:
         """The model's scalar driven operator; the last model's is kept.

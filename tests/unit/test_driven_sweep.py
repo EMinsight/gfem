@@ -51,6 +51,8 @@ def _rule(frequency=SIX, *, workers=1, fixed_angle=False, wave_ports=()):
         physics="em",
         children=None,
         stretch=None,
+        sources=(),
+        dipoles=(),
     )
     if fixed_angle:
         rule.children = FixedAngleChildren(rule)

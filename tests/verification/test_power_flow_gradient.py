@@ -15,8 +15,26 @@ holds, or that lies away from its surface:
 - the network identity: with the core inside a side that holds port 1,
   and nothing lossy outside it, the power leaving the side is the power
   port 2 takes, |S21|^2, and so are their gradients.
+
+And by the node coordinates, on a dipole below a lossy block in an air box
+wrapped in a perfectly matched layer (`free_space_cases.lid_box`, order 2):
+
+- N1: the power leaving the block, whose element layer moves with a
+  `boundary_morph` of its top face;
+- N2: the power the layer absorbs (a side of layer elements, whose element
+  layer is the truncation layer), and the power leaving the physical
+  region (whose element layer is in the perfectly matched layer, whose
+  stretch is read at the moved quadrature points).
+
+Each at two levels: the measurement alone, at fixed field coefficients, by
+a random move of every node (fourth-order differences to
+:math:`10^{-8}`), and the chain through the solve and the morph
+(:math:`10^{-6}`).
 """
 
+import dataclasses
+
+import free_space_cases as fsc
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -27,6 +45,7 @@ from finite_differences import assert_gradient_matches, unit_directions
 from gradient_cases import core_design, tight, wave_line, wave_mesh
 
 import gfem
+from gfem.shape import boundary_morph
 
 FREQUENCY = 12e9
 #: Fourth-order differences on a relative permittivity of a few.
@@ -222,3 +241,71 @@ def test_the_power_past_the_core_has_the_gradient_of_s21(tem_line):
 
 def _below(x_mm):
     return lambda c: c[:, 0] < x_mm * 1e-3
+
+
+# --- the node coordinates ------------------------------------------------------------
+
+#: A side of the block, of the layer, and of the physical region.
+BLOCK = ("block",)
+LAYER = ("pml",)
+PHYSICAL = ("below", "above", "block")
+#: The measurement alone, relative (fourth-order differences of a function
+#: with no solve in it).
+KERNEL = 1e-8
+#: A dipole in the corner cell below the block, which shares no edge with
+#: it or with the truncation layer, off the faces of its tetrahedra, m.
+CORNER = np.array([0.24, 0.27, 0.22]) * fsc.UM
+#: Node steps, m (edges are 1/6 um).
+NODE_STEP = 1e-9
+
+
+@pytest.fixture(scope="module")
+def lid(tmp_path_factory):
+    model = fsc.lid_box(tmp_path_factory.mktemp("lid") / "lid.msh")
+    model = model.with_material("block", gfem.Material(eps_r=2.0, tan_delta=0.2))
+    dipole = gfem.ElectricDipole("d", position=CORNER, moment=(0, 0, 1e-30))
+    problem = gfem.Driven(fsc.F0, sources=dipole, keep_fields=True)
+    options = gfem.SolverOptions(order=2, linear_solver="direct")
+    return model, problem, options
+
+
+def _at(model, x):
+    """``model`` with its node coordinates ``x``."""
+    mesh = jax.tree_util.tree_unflatten(jax.tree_util.tree_structure(model.mesh), [x])
+    return model.replace(mesh=mesh)
+
+
+@pytest.mark.parametrize(
+    "side", [BLOCK, LAYER, PHYSICAL], ids=["n1", "n2-pml", "n2-adjacent"]
+)
+def test_the_power_at_fixed_coefficients_by_every_node(lid, side):
+    model, problem, options = lid
+    field = gfem.solve(model, problem, options=options).e_field(fsc.F0, "d")
+    x0 = jnp.asarray(model.mesh.nodes)
+
+    def power(x):
+        moved = _at(model, x)
+        at = dataclasses.replace(field, mesh=moved.mesh)
+        return gfem.power_flow(at, side, model=moved)
+
+    assert abs(float(power(x0))) > 0
+    rng = np.random.default_rng(7)
+    directions = unit_directions(rng, x0.shape, 2)
+    assert_gradient_matches(power, x0, directions, step=NODE_STEP, rel=KERNEL)
+
+
+@pytest.mark.parametrize(
+    "side", [BLOCK, LAYER, PHYSICAL], ids=["n1", "n2-pml", "n2-adjacent"]
+)
+def test_the_power_by_a_morph_of_the_block(lid, side):
+    model, problem, options = lid
+    morph = boundary_morph(model, "lid", grows="block")
+
+    def power(t):
+        moved = model.replace(mesh=morph(t))
+        result = gfem.solve(moved, problem, options=options)
+        return gfem.power_flow(result.e_field(fsc.F0, "d"), side, model=moved)
+
+    t = jnp.zeros(morph.n_params)
+    directions = unit_directions(np.random.default_rng(8), t.shape, 2)
+    assert_gradient_matches(power, t, directions, step=NODE_STEP)

@@ -158,7 +158,6 @@ KEYS = (
 METHOD_KEYS = (
     "field_export",
     "load_result_fields",
-    "power_flow",
     "region_mean",
     "element_mean",
     "electric_energy",

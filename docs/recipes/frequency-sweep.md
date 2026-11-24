@@ -30,6 +30,11 @@ result.sweep.sampled_frequencies  # the frequencies solved in full, Hz
   `Driven(excite=...)`, so that gradients are exact at the samples
   ({doc}`adaptive-sweep-gradient`). `excite=` saves solves in a uniform
   sweep, not in an adaptive one.
+- Point dipoles (`Driven(sources=...)`, {doc}`point-dipoles`) sweep too, with
+  or without ports: their emitted power and port waves come from the reduced
+  model at every frequency. An incident field does not: its load is not a
+  fixed vector times a function of frequency, and `Driven` raises
+  `NotImplementedError`.
 - It pays off above about 20 frequencies. Below that, keep the uniform sweep.
 - `result.sweep.solved` marks, frequency by frequency, the ones solved in
   full. The rest come from the reduced model.
@@ -98,6 +103,11 @@ if __name__ == "__main__":
 - Each frequency is still a full solve, so S agrees with a one-worker run to
   the solver tolerance.
 - Gradients work as usual. The adjoint solves run in the main process.
+- Sources work too (`Driven(sources=...)`). The function of a
+  {py:obj}`gfem.IncidentField` must load in a worker: define it at module
+  level in a script or an importable module. A lambda, or a function
+  defined in a notebook or at the interactive prompt, raises `ValueError`
+  before any worker starts; use `frequency_workers=1` there.
 - Wave ports work too. The main process solves their port modes once over the
   whole grid before the workers start, so S and the reference impedances are
   those of a one-worker run, and a {py:obj}`gfem.PortModeError` is raised

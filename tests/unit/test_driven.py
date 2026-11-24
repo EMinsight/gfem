@@ -133,7 +133,7 @@ def test_driven_is_frozen_hashable_and_static_under_jax():
         ({"frequency": -1.0}, ValueError, "> 0 Hz"),
         ({"frequency": []}, ValueError, "one frequency"),
         ({"frequency": 1e9, "sweep": "fast"}, ValueError, "'uniform'"),
-        ({"frequency": 1e9, "excite": []}, ValueError, "at least one port"),
+        ({"frequency": 1e9, "excite": []}, ValueError, "nothing to excite"),
         ({"frequency": 1e9, "excite": ["a", "a"]}, ValueError, "twice"),
         ({"frequency": 1e9, "excite": [1]}, TypeError, "port names"),
     ],

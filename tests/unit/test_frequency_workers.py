@@ -390,7 +390,9 @@ def test_workers_that_miss_at_their_first_frequencies_raise_one_error(line):
 
 
 def test_a_killed_worker_names_its_frequencies():
-    with pytest.raises(RuntimeError, match=r"4e\+09 to 4.5e\+09 Hz.*fewer"):
+    with pytest.raises(
+        RuntimeError, match=r"4e\+09 to 4.5e\+09 Hz.*memory.*loading its inputs.*fewer"
+    ):
         workers.run(os._exit, [(1,)], ["4e+09 to 4.5e+09 Hz"], threads=1)
 
 

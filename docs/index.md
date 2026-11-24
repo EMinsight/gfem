@@ -26,6 +26,8 @@ tutorials/bend
 tutorials/bend3d
 tutorials/metal-bend
 tutorials/metagrating
+tutorials/nanosphere
+tutorials/grating
 tutorials/heater
 tutorials/heater3d
 tutorials/modulator
@@ -83,6 +85,16 @@ recipes/petsc-slepc
 recipes/distributed-solve
 recipes/frequency-sweep
 recipes/gsim
+```
+
+```{toctree}
+:hidden:
+:caption: Free space
+
+recipes/incident-fields
+recipes/cross-sections
+recipes/point-dipoles
+recipes/far-field
 ```
 
 ```{toctree}

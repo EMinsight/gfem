@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import pickle
+import sys
 import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol
@@ -32,6 +34,7 @@ from gfem._engine.solve_request import SolveRequest
 from gfem._engine.sweep_outputs import SweepOutputs
 from gfem._engine.wave_ports import SweptSurface, port_mode_sweeps
 from gfem._linalg import report
+from gfem._sources import IncidentField, qualified
 from gfem._sweep.port_mode import rows_of
 from gfem.errors import LinearSolverConvergenceError
 from gfem.problems import Driven
@@ -54,6 +57,7 @@ __all__ = [
     "Partial",
     "ReducedKept",
     "SweepSplit",
+    "check_loadable",
     "raise_unsolved",
     "solutions_entry",
     "solve_block",
@@ -166,6 +170,7 @@ class FrequencyWorkers:
                 wave_vector=self.problem.wave_vector,
                 wave_vector_frequency=self.problem.wave_vector_frequency,
                 polarization=self.problem.polarization,
+                sources=self.problem.sources,
             )
             for block in indices
         ]
@@ -423,6 +428,8 @@ class SweepSplit:
         stretch: The parent's perfectly matched layer stretch, which the
             port sections of the whole-grid sweep take; ``None`` without a
             layer.
+        n_sources: The source columns after the excited ports'.
+        n_dipoles: The point dipoles among them.
     """
 
     frequency: tuple[float, ...]
@@ -435,6 +442,8 @@ class SweepSplit:
     runner: BlockRunner
     polarization: Polarization | None = None
     stretch: Stretch | None = None
+    n_sources: int = 0
+    n_dipoles: int = 0
 
     @classmethod
     def of(cls, rule: DrivenRule) -> SweepSplit | None:
@@ -455,6 +464,7 @@ class SweepSplit:
                 np.arange(len(frequencies)), rule.options.frequency_workers
             )
             blocks = tuple(block for block in indices if len(block))
+            check_loadable(rule.problem.sources)
             runner = FrequencyWorkers(
                 problem=rule.problem,
                 options=rule.options,
@@ -479,6 +489,8 @@ class SweepSplit:
             runner=runner,
             polarization=rule.problem.polarization,
             stretch=rule.stretch,
+            n_sources=len(rule.sources),
+            n_dipoles=len(rule.dipoles),
         )
 
     def forward(
@@ -518,6 +530,10 @@ class SweepSplit:
                 reused=[],
                 e_field=None,
                 waves=[],
+                port_waves=np.zeros((0, len(self.port_names), self.n_sources), complex)
+                if self.n_sources
+                else None,
+                emitted_power=np.zeros((0, self.n_dipoles)) if self.n_dipoles else None,
             )
         misses = [o.miss for o in outcomes if o.miss is not None]
         if misses:
@@ -727,6 +743,47 @@ def solve_block(
         solution = entry.fields["solution"]
         entry.free()
     return SweepOutputs.read(outputs).without_port_modes(), solution, None, records
+
+
+def check_loadable(sources: Sequence[Any]) -> None:
+    """Raise for a user incident function a spawned frequency worker cannot load.
+
+    A worker unpickles its problem in a new process: a function pickles by
+    reference to its module, so a lambda or a closure does not pickle at all,
+    and a function of an interactive ``__main__`` (a notebook, a REPL,
+    ``python -c``), which has no file, pickles here but kills the worker
+    that imports it. Checked before any worker starts, since a dead worker
+    cannot say why.
+
+    Raises:
+        ValueError: Naming the source.
+    """
+    for source in sources:
+        if not isinstance(source, IncidentField):
+            continue
+        function = source.function
+        why = None
+        try:
+            pickle.dumps(function)
+        except Exception as err:  # noqa: BLE001 - any pickling failure says the same
+            why = f"it does not pickle ({type(err).__name__}: {err})"
+        else:
+            main = sys.modules.get("__main__")
+            if getattr(function, "__module__", None) == "__main__" and not hasattr(
+                main, "__file__"
+            ):
+                why = (
+                    "it is defined in an interactive __main__ (a notebook, a REPL "
+                    "or python -c), which a worker cannot import"
+                )
+        if why is not None:
+            raise ValueError(
+                f"The IncidentField {source.name!r} (function "
+                f"{qualified(function)}) cannot be sent to a frequency worker: "
+                f"{why}. "
+                "Define the function at module level in a script or an "
+                "importable module, or use frequency_workers=1."
+            )
 
 
 def _describe(frequencies: tuple[float, ...]) -> str:

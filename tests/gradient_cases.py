@@ -64,6 +64,7 @@ from wave_port_cases import (
 )
 
 import gfem
+from gfem._boundaries import surfaces_of
 
 #: The two layers of the line designs (name, thickness in mm).
 LAYERS = (("sub", 0.5), ("cover", 0.5))
@@ -270,6 +271,30 @@ WAVE_PORTS = {
 }
 #: Reference-plane offsets (m) of the two ports.
 WAVE_OFFSETS = {"lossless": (0.0, 0.0), "lossy": (0.3e-3, 0.1e-3)}
+
+
+def interface_move(model: gfem.Model, surface: str = "sub__cover"):
+    """A shape design moving ``surface``'s nodes along z, one parameter each.
+
+    Its nodes on port surfaces stay put. For the shape line, whose absorbing
+    side walls touch every element (so a `gfem.shape.boundary_morph`, which
+    holds the elements touching the truncation, would move nothing): the
+    interface's nodes on the walls slide in their planes. Returns ``(n,
+    moved)``, ``moved(t)`` the mesh with the nodes moved by ``t`` (m).
+    """
+    mesh = model.mesh
+    triangles = np.asarray(mesh.triangles)
+    nodes = np.unique(triangles[mesh.elements(surface)])
+    ports = [s for port in model.ports for s in surfaces_of(port)]
+    held = np.unique(np.concatenate([triangles[mesh.elements(s)] for s in ports]))
+    nodes = np.setdiff1d(nodes, held)
+    x0 = jnp.asarray(mesh.nodes)
+    treedef = jax.tree_util.tree_structure(mesh)
+
+    def moved(t):
+        return jax.tree_util.tree_unflatten(treedef, [x0.at[nodes, 2].add(t)])
+
+    return len(nodes), moved
 
 
 def wave_mesh(directory: Path) -> gfem.Mesh:

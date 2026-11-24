@@ -48,3 +48,10 @@ orphan: true
 - {doc}`distributed-solve`
 - {doc}`frequency-sweep`
 - {doc}`gsim`
+
+## Free space
+
+- {doc}`incident-fields`
+- {doc}`cross-sections`
+- {doc}`point-dipoles`
+- {doc}`far-field`

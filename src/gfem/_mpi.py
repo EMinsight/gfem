@@ -182,11 +182,6 @@ _REFUSALS = {
         "Job.run(out=) and call it on one process on the field load_result "
         f"gives, {_COPIES}."
     ),
-    "power_flow": (
-        "gfem.power_flow has no distributed path: write the result with "
-        "Job.run(out=) and call it on one process on the field load_result "
-        f"gives, {_COPIES}."
-    ),
     "dissipated_power": (
         "gfem.dissipated_power has no distributed path: write the result with "
         "Job.run(out=) and call it on one process on the field load_result "
@@ -860,6 +855,8 @@ def entry_check(
         "the options": _text_digest(repr(options)),
         "the ports": _text_digest(repr(model.ports)),
         "the boundaries": _text_digest(repr(model.boundaries)),
+        # the incident columns' loads read it on every rank
+        "the background": _text_digest(repr(getattr(model, "background", None))),
         "the mesh's size": f"{model.mesh.tetrahedra.shape} {model.mesh.nodes.shape}",
     }
     items |= {

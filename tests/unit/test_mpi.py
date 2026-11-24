@@ -830,7 +830,6 @@ def test_every_refusal_key_is_snake_case():
 @pytest.mark.parametrize(
     "key",
     [
-        "power_flow",
         "region_mean",
         "electric_energy",
         "dissipated_power",
@@ -1043,9 +1042,6 @@ def test_a_field_from_ranks_refuses_export_on_a_stub(tmp_path):
             method()
         assert caught.value.feature == "field_export"
         assert "Field.to_vtu" in str(caught.value)
-    with pytest.raises(gfem.DistributedUnsupportedError) as caught:
-        gfem.power_flow(piece, "sub", model=cases.layered_line(tmp_path))
-    assert caught.value.feature == "power_flow"
     with pytest.raises(gfem.DistributedUnsupportedError) as caught:
         gfem.region_mean(piece, "sub")
     assert caught.value.feature == "region_mean"

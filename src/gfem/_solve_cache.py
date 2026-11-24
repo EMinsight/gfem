@@ -659,6 +659,16 @@ REPLAYED = (
 )
 
 
+def _incident_function(problem: Any) -> str | None:
+    """The first user incident function among the problem's sources, named; or None."""
+    from gfem._sources import IncidentField, qualified
+
+    for source in getattr(problem, "sources", ()):
+        if isinstance(source, IncidentField):
+            return f"{source.name!r} (function {qualified(source.function)})"
+    return None
+
+
 class SolveCache:
     """One call's use of the solve cache named by ``cache=``.
 
@@ -802,6 +812,20 @@ class SolveCache:
 
     def _lookup(self, model: Any, problem: Any, options: SolverOptions) -> Any:
         stacklevel = _mpi.outside_gfem()
+        function = _incident_function(problem)
+        if function is not None:
+            # a function's code is not in the key, and its name says nothing of it
+            self._bypass(f"the IncidentField {function}")
+            warnings.warn(
+                f"cache={os.fspath(self.directory)!r} was given, but this solve "
+                f"was neither read from nor stored in it: the IncidentField "
+                f"{function} cannot be keyed, since the key holds data and not "
+                "code. The result is correct. Use gfem.PlaneWave or "
+                "gfem.GaussianBeam, or drop cache= for this call.",
+                SolveCacheWarning,
+                stacklevel=stacklevel,
+            )
+            return None
         try:  # first: an input the key cannot encode leaves the directory alone
             key, self._env = solve_key(model, problem, options)
         except _codec.UnencodableError as err:

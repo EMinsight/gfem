@@ -20,14 +20,30 @@ import numpy as np
 from gfem._boundaries import _temperature
 from gfem._checks import check_fixed, static_float
 from gfem._pytree import register_fields
+from gfem._sources import (
+    DIPOLES,
+    INCIDENT,
+    ElectricDipole,
+    GaussianBeam,
+    IncidentField,
+    MagneticDipole,
+    PlaneWave,
+    Source,
+)
 from gfem.thermal import HeatSource, Trace, _check_finite
 
 __all__ = [
     "DCConduction",
     "Driven",
     "Eigenmode",
+    "ElectricDipole",
     "Electrostatic",
+    "GaussianBeam",
+    "IncidentField",
+    "MagneticDipole",
+    "PlaneWave",
     "PortMode",
+    "Source",
     "SteadyThermal",
     "TransientThermal",
 ]
@@ -730,18 +746,80 @@ def _port_names(value: Any) -> tuple[str, ...] | None:
     names = (value,) if isinstance(value, str) else tuple(value)
     if not all(isinstance(n, str) for n in names):
         raise TypeError(f"Driven.excite takes port names (strings), got {value!r}.")
-    if not names:
-        raise ValueError(
-            "Driven.excite needs at least one port name; None excites every port."
-        )
     if len(set(names)) != len(names):
         raise ValueError(f"Driven.excite lists a port twice: {value!r}.")
     return names
 
 
+_SOURCE_TYPES = (*INCIDENT, *DIPOLES)
+
+
+def _sources(value: Any) -> tuple[Source, ...]:
+    """``sources`` as a tuple of sources with distinct names."""
+    items = (
+        tuple(value)
+        if isinstance(value, Sequence) and not isinstance(value, str)
+        else (value,)
+    )
+    for item in items:
+        if not isinstance(item, _SOURCE_TYPES):
+            raise TypeError(
+                "Driven.sources takes a source or a sequence of them (gfem."
+                "PlaneWave, GaussianBeam, IncidentField, ElectricDipole, "
+                f"MagneticDipole), got {type(item).__name__}."
+            )
+    seen: set[str] = set()
+    for item in items:
+        if item.name in seen:
+            raise ValueError(
+                f"Driven.sources names {item.name!r} twice: each source labels "
+                "its own column and kept fields. Give each a name of its own."
+            )
+        seen.add(item.name)
+    return items
+
+
+def _check_sources(problem: Driven) -> None:
+    """The refusals of ``sources`` that the problem alone shows."""
+    sources = problem.sources
+    if problem.excite == () and not sources:
+        raise ValueError(
+            "Driven.excite=() with no sources leaves nothing to excite: name the "
+            "ports to feed (None feeds every port), or give sources=."
+        )
+    if not sources:
+        return
+    for name in problem.excite or ():
+        if name in {s.name for s in sources}:
+            raise ValueError(
+                f"{name!r} names both an excited port and a source: a name labels "
+                "one column. Rename the source."
+            )
+    if problem.wave_vector is not None:
+        raise NotImplementedError(
+            "Driven.sources with a Bloch wave_vector: incident fields and dipoles "
+            "on a periodic cell are not supported. For a plane wave on a "
+            "periodic cell, use a gfem.FloquetPort."
+        )
+    if problem.polarization is not None:
+        raise NotImplementedError(
+            "Driven.sources solve on a 3D mesh only; a 2D model (polarization="
+            f"{problem.polarization!r}) takes no sources. Solve a slab model, "
+            "one element thick, for a 2D-like geometry."
+        )
+    incident = [s for s in sources if isinstance(s, INCIDENT)]
+    if problem.sweep == "adaptive" and incident:
+        raise NotImplementedError(
+            f"The adaptive sweep cannot take the incident field {incident[0].name!r} "
+            f"({type(incident[0]).__name__}): its load is not a fixed vector times "
+            "a function of frequency. Use sweep='uniform'; dipoles are accepted "
+            "by the adaptive sweep."
+        )
+
+
 @dataclasses.dataclass(frozen=True, init=False)
 class Driven:
-    r"""The frequency-domain response of a model to its ports.
+    r"""The frequency-domain response of a model to its ports and sources.
 
     At each frequency, each excited port in turn is fed 1 W time-averaged
     incident power while every other port is terminated in its own impedance,
@@ -750,6 +828,14 @@ class Driven:
     the scattering matrix (pseudo-waves, each lumped port's reference
     impedance its resistance; see `gfem.NetworkParameters`) and, on request,
     the electric fields (see `gfem.conventions` for their amplitude).
+
+    Each source (an incident field, `gfem.PlaneWave`, `gfem.GaussianBeam` or
+    `gfem.IncidentField`, or a point dipole, `gfem.ElectricDipole` or
+    `gfem.MagneticDipole`) is one more column, solved after the excited
+    ports with every port terminated: its result is the outgoing wave at
+    each port (``DrivenResult.port_waves``), a dipole's emitted power
+    (``DrivenResult.emitted_power``) and, on request, its total field. Port
+    names and source names label the same columns, so they are distinct.
 
     A `WavePort` is fed by its own port mode, solved before the 3D solve to
     ``SolverOptions.port_mode_tolerance``; S is the field's projection on
@@ -776,6 +862,7 @@ class Driven:
             in any order; results keep the order given.
         excite: The port name or names fed in turn, one column of S each, in
             this order. ``None``: every port of the model, in model order.
+            ``()``: no port, with ``sources`` only (S then has no column).
         sweep: ``"uniform"`` solves every frequency in full.
             ``"adaptive"`` solves a few of them in full (every excited port
             at once, and one more right-hand side per port left out of
@@ -828,12 +915,19 @@ class Driven:
             there, since a perfect conductor is a different boundary
             condition for each. ``None`` (the default) on a 3D mesh, whose
             solve holds both.
+        sources: A source or a sequence of them, one column each after the
+            excited ports, in this order, labelled by their names. An
+            incident field needs ``Model(background=...)``, the medium it is
+            a solution of.
 
     Raises:
-        TypeError: ``excite`` is not port names, or ``keep_fields`` is not a
-            bool or frequencies.
+        TypeError: ``excite`` is not port names, ``keep_fields`` is not a
+            bool or frequencies, or ``sources`` holds something else than a
+            source.
         ValueError: A frequency is not finite and positive, ``excite`` is
-            empty or repeats a port, ``sweep`` is unknown, ``samples`` is
+            empty with no sources or repeats a port, two sources share a
+            name, a source is named like an excited port, ``sweep`` is
+            unknown, ``samples`` is
             given without ``sweep="adaptive"``, is empty or repeats a
             frequency, a ``samples`` or ``keep_fields`` frequency is not one
             of ``frequency``, ``wave_vector`` is not a finite 3-vector, or
@@ -846,9 +940,26 @@ class Driven:
             pair, for a k with a component outside the span of the pairs'
             translations, and with
             ``linear_solver="petsc"``; use ``"direct"`` or ``"bddc_gmres"``.
-        NotImplementedError: `gfem.solve` raises it for ``wave_vector`` with
-            ``sweep="adaptive"`` or a GPU ``device``; solve a uniform sweep
-            on the CPU.
+            With ``sources``, `gfem.solve` also raises it for a source named
+            like a port of the model, and for an incident field on a model
+            without ``background``, with no PML layer and no
+            `gfem.Absorbing` face, with an exterior `gfem.Impedance`,
+            `gfem.Conductor` or `gfem.LumpedPort` face, or above
+            :math:`10^{-3}` of its peak where a scatterer meets the layer or
+            an absorbing face, on a wave port face, or across an exterior
+            PEC or PMC wall (`gfem.conventions`, Incident fields). With
+            ``frequency_workers`` above 1, it raises it before spawning any
+            worker for a `gfem.IncidentField` whose function a spawned
+            worker cannot load (a lambda, a closure, or a function of a
+            notebook or REPL).
+        NotImplementedError: ``sources`` with a ``wave_vector`` or a 2D
+            ``polarization``, or an incident field with
+            ``sweep="adaptive"`` (dipoles are accepted). `gfem.solve` raises
+            it for ``wave_vector`` with ``sweep="adaptive"`` or a GPU
+            ``device``; solve a uniform sweep on the CPU; for
+            ``sources`` on a model with a `gfem.Periodic` pair; and for a
+            `gfem.GaussianBeam` in a layered or a lossy background or a
+            `gfem.PlaneWave` from a lossy layer.
         NonDifferentiableError: ``frequency``, ``samples``, ``keep_fields``,
             ``wave_vector`` or ``wave_vector_frequency`` is computed inside
             `jax.grad`, `jax.jit` or `jax.vmap` from their arguments; pass a
@@ -912,6 +1023,7 @@ class Driven:
     wave_vector: tuple[float, float, float] | None = None
     wave_vector_frequency: float | None = None
     polarization: Polarization | None = None
+    sources: tuple[Source, ...] = ()
     _rule: ClassVar[str] = "gfem._engine.driven:DrivenRule"
     #: The rule on a 2D mesh: the scalar field normal to the plane.
     _rule_2d: ClassVar[str] = "gfem._engine.driven2d:Driven2DRule"
@@ -927,6 +1039,7 @@ class Driven:
         wave_vector: Sequence[float] | None = None,
         wave_vector_frequency: float | None = None,
         polarization: Polarization | None = None,
+        sources: Source | Sequence[Source] = (),
     ) -> None:
         """Validate and normalize (see the class docstring)."""
         if sweep not in _SWEEPS:
@@ -947,6 +1060,8 @@ class Driven:
             _wave_vector_frequency(wave_vector_frequency, self.wave_vector),
         )
         object.__setattr__(self, "polarization", polarization)
+        object.__setattr__(self, "sources", _sources(sources))
+        _check_sources(self)
 
     @property
     def kept_frequencies(self) -> tuple[float, ...]:
@@ -956,6 +1071,49 @@ class Driven:
         if self.keep_fields is False:
             return ()
         return self.keep_fields
+
+
+def check_problem(problem: Any, model: Any) -> None:
+    """The refusals of a problem that need the model, before any assembly.
+
+    Raises:
+        ValueError: See `_check_polarization` and `_check_model_sources`.
+        NotImplementedError: See `_check_model_sources`.
+    """
+    _check_polarization(problem, model.mesh.dim)
+    _check_model_sources(problem, model)
+
+
+def _check_model_sources(problem: Any, model: Any) -> None:
+    """The refusals of a driven problem's sources that need the model.
+
+    Raises:
+        ValueError: A source is named like a port of the model, or an
+            incident field has no background stack.
+        NotImplementedError: The model has a periodic pair.
+    """
+    if not isinstance(problem, Driven) or not problem.sources:
+        return
+    ports = set(model.port_names)
+    for source in problem.sources:
+        kind = f"{type(source).__name__} {source.name!r}"
+        if source.name in ports:
+            raise ValueError(
+                f"{source.name!r} names both a port of the model and a source "
+                f"({kind}): a name labels one column. Rename the source."
+            )
+        if model.periodic_translations:
+            raise NotImplementedError(
+                f"The {kind} on a model with periodic pairs: incident fields and "
+                "dipoles on a periodic cell are not supported. For a plane wave "
+                "on a periodic cell, use a gfem.FloquetPort."
+            )
+        if isinstance(source, INCIDENT) and model.background is None:
+            raise ValueError(
+                f"The {kind} is an incident field, the solution of a background "
+                "stack, but the model has none: give Model(background=...), the "
+                "medium the field solves (a gfem.Material when homogeneous)."
+            )
 
 
 def _polarization(value: Any, owner: str) -> None:

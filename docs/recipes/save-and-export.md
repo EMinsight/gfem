@@ -307,8 +307,9 @@ hit 4c0b6f1e9d27a8530f62c1d9b4e7a03f5c8d21e6b9f0a47c3d5e8b1f2a6c904e
 - Some calls solve and store nothing, even with `cache=`: a solve under
   `jax.grad`, `jax.jit` or `jax.vmap` (gradients), a solve that raises (a
   sweep that stopped), and one with an input the cache cannot file, such
-  as a subclass of a gfem class ({py:obj}`gfem.SolveCacheWarning` names
-  it). {py:obj}`gfem.refine_mesh` never uses a cache.
+  as a subclass of a gfem class or a {py:obj}`gfem.IncidentField`, whose
+  function is code, not data ({py:obj}`gfem.SolveCacheWarning` names it;
+  {py:obj}`gfem.PlaneWave` and {py:obj}`gfem.GaussianBeam` are filed). {py:obj}`gfem.refine_mesh` never uses a cache.
 - The directory is created when it does not exist. A directory that exists
   and is not a solve cache is refused before solving.
 - Once the entries pass 10 GiB in total, the least recently used ones are
@@ -372,6 +373,13 @@ and prints a second line, `gfem: note: ...`, that says where it is.
   file records them. An input it cannot record, such as a subclass of a
   gfem class, is never guessed at: that call solves without the cache
   ({py:obj}`gfem.SolveCacheWarning`).
+- Plane waves, Gaussian beams and point dipoles are written with the
+  problem and the result. A {py:obj}`gfem.IncidentField` is not: its
+  function is code, not data, and a file without it would describe another
+  problem, so saving a result or a job that holds one raises `TypeError`
+  naming the source and its function. Save what you read from the result
+  instead (S, cross sections, fields to VTU), or describe the field as a
+  `PlaneWave` or `GaussianBeam` when it is one ({doc}`incident-fields`).
 - Across ranks, write S and the job from rank 0, and call a field's
   `to_vtu` on every rank ({doc}`distributed-solve`, "Write files").
 - A job or result file records the gfem version that wrote it. gfem reads

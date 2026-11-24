@@ -32,6 +32,18 @@ transmon-mesh:
 metagrating-mesh:
     uv run --with gmsh==4.15.2 --with numpy --no-project python tools/metagrating_mesh.py docs/tutorials/data
 
+# Rebuild the grating-coupler tutorial's mesh, docs/tutorials/data/grating.msh (tools/grating_mesh.py, gmsh pinned; a new mesh means re-measuring the tutorial's values).
+grating-mesh:
+    uv run --with gmsh==4.15.2 --no-project python tools/grating_mesh.py docs/tutorials/data
+
+# Rebuild the incident-field and cross-section recipes' sphere mesh, docs/tutorials/data/sphere.msh (tools/sphere_mesh.py, netgen; a new mesh means re-measuring the recipes' values).
+sphere-mesh:
+    PYTHONPATH=tools uv run python tools/sphere_mesh.py docs/tutorials/data
+
+# Rebuild the dipole tutorial's nanosphere mesh, docs/tutorials/data/nanosphere.msh (tools/nanosphere_mesh.py, netgen; a new mesh means re-measuring the tutorial's values).
+nanosphere-mesh:
+    PYTHONPATH=tools uv run python tools/nanosphere_mesh.py docs/tutorials/data
+
 # Rebuild the heater tutorial's cross-sections, docs/tutorials/data/heater_w{2,7p5}.msh, and the thermo-optic recipe's extruded heater_straight.msh (tools/heater_section_mesh.py, gmsh pinned; a new mesh means re-measuring the tutorial's and the recipes' values).
 heater-section-mesh:
     uv run --with gmsh==4.15.2 --no-project python tools/heater_section_mesh.py docs/tutorials/data

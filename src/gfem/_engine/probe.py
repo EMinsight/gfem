@@ -367,19 +367,23 @@ class Probe:
         """The number of field coefficients this rank holds."""
         return int(self._fes.ndof)
 
-    def _evaluate(self, fes: ngs.FESpace, values: np.ndarray) -> np.ndarray:
-        """Values at this rank's points, ``(its points, dim)``."""
+    def _evaluate(
+        self, fes: ngs.FESpace, values: np.ndarray, *, curl: bool = False
+    ) -> np.ndarray:
+        """Values (or curls) at this rank's points, ``(its points, dim)``."""
         gf = ngs.GridFunction(fes)
         if self._mips is None:
-            return np.zeros((0, gf.dim))
+            return np.zeros((0, 3 if curl else gf.dim))
         gf.vec.FV().NumPy()[:] = values
-        out = np.asarray(gf(self._mips))
+        out = np.asarray((ngs.curl(gf) if curl else gf)(self._mips))
         return out.reshape(self._own.size, -1)
 
-    def values(self, coefficients: np.ndarray) -> np.ndarray:
+    def values(self, coefficients: np.ndarray, *, curl: bool = False) -> np.ndarray:
         """``Phi c`` in SI units, ``(m, n_points, dim)`` for ``(m, width)``.
 
-        Under ranks it is collective, with the same bits on every rank.
+        With ``curl``, an H(curl) field's curl at the points instead, per
+        metre more. Under ranks it is collective, with the same bits on every
+        rank.
         """
         c = np.atleast_2d(coefficients)
         if c.shape[1] != self.width:
@@ -394,16 +398,45 @@ class Probe:
         parts = [np.real(c)] + ([np.imag(c)] if np.iscomplexobj(c) else [])
         with self._lock:
             out = [
-                np.stack([self._evaluate(self._fes, row) for row in part])
+                np.stack([self._evaluate(self._fes, row, curl=curl) for row in part])
                 for part in parts
             ]
         values = out[0] if len(out) == 1 else out[0] + 1j * out[1]
-        values = values * self.factor
+        values = values * (self.factor / self._built.scale if curl else self.factor)
         if self.comm is None:
             return values
         whole = np.zeros((c.shape[0], self.n_points, values.shape[2]), values.dtype)
         whole[:, self._own] = values
         return _mpi.reduce_bcast(self.comm, whole)
+
+    def jet(self, coefficients: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """One H(curl) field's value and gradient at the points this rank holds.
+
+        SI units: ``(n_points, 3)`` values and ``(n_points, 3, 3)``
+        gradients, ``[p, i, j]`` the derivative along axis ``j`` of component
+        ``i`` at point ``p``; zeros at the points other ranks hold (no rank
+        communicates, so a sum over ranks counts each point once).
+        ``coefficients`` is this rank's piece.
+        """
+        c = np.asarray(coefficients)[: self.ndof]
+        scale = self._built.scale
+        dtype = complex if np.iscomplexobj(c) else float
+        values = np.zeros((self.n_points, 3), dtype)
+        grads = np.zeros((self.n_points, 3, 3), dtype)
+        if self._mips is None:
+            return values, grads
+        parts = [(1.0, np.real(c))] + ([(1j, np.imag(c))] if dtype is complex else [])
+        with self._lock:
+            for unit, part in parts:
+                gf = ngs.GridFunction(self._fes)
+                gf.vec.FV().NumPy()[:] = part
+                value = np.asarray(gf(self._mips)).reshape(self._own.size, 3)
+                grad = np.asarray(ngs.Grad(gf)(self._mips))
+                values[self._own] += unit * value * self.factor
+                grads[self._own] += (
+                    unit * grad.reshape(self._own.size, 3, 3) * self.factor / scale
+                )
+        return values, grads
 
     def _local_dofs(self) -> tuple:
         if self._local is None:
@@ -451,10 +484,12 @@ class Probe:
         )
         return matrix.tocsr()
 
-    def transpose(self, cotangent: np.ndarray) -> np.ndarray:
+    def transpose(self, cotangent: np.ndarray, *, curl: bool = False) -> np.ndarray:
         """``Phi^T g`` (SI scaling included), ``(m, width)`` for ``(m, n, dim)``.
 
-        Under ranks a ``DISTRIBUTED`` load, and no rank communicates: ``g`` is
+        With ``curl``, the transpose of the curl evaluation instead (an
+        H(curl) field's curl at the points, per square metre). Under ranks a
+        ``DISTRIBUTED`` load, and no rank communicates: ``g`` is
         replicated, and each rank writes only for the points it holds.
         """
         g = np.asarray(cotangent).reshape(-1, self.n_points, cotangent.shape[-1])
@@ -462,12 +497,14 @@ class Probe:
         if self._own.size == 0:
             return out
         g = g[:, self._own]
+        # a curl is one length derivative more than the value
+        factor = self.factor / self._built.scale if curl else self.factor
         with self._lock:
             dfes, cont, disc = self._local_dofs()
             for k in range(cont.shape[1]):
                 unit = np.zeros(dfes.ndof)
                 unit[disc[:, k]] = 1.0
-                shape = self._evaluate(dfes, unit) * self.factor  # (n, dim)
+                shape = self._evaluate(dfes, unit, curl=curl) * factor  # (n, dim)
                 contribution = np.einsum("pd,mpd->mp", shape, g)
                 for j in range(len(g)):
                     out[j, : self.ndof] += np.bincount(

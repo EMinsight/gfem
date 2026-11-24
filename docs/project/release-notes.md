@@ -116,6 +116,48 @@ Linear solvers:
   solver"; the glossary terms p-multigrid, direct set and poor cell; a
   verification section; a one-node section of the performance data.
 
+Free space:
+
+- **Incident fields.** `Driven(sources=...)` takes sources beside the ports,
+  each one more column on the same factorization. `gfem.PlaneWave` (TE, TM,
+  circular or a Jones pair, at any angle), `gfem.GaussianBeam` (an exact beam
+  carrying 1 W) and `gfem.IncidentField` (a field you give as a function)
+  light a model whose `Model(background=...)` is one material or a
+  `gfem.Background`: planar layers along z, optionally over a ground plane,
+  lit from either side and past the critical angle. gfem solves for the
+  total field outside the perfectly matched layer and the scattered field in
+  it; `result.e_field(f, source, part=...)` reads the total, scattered or
+  incident field ({doc}`../recipes/incident-fields`).
+- **Cross sections.** `gfem.cross_sections` gives extinction, absorption and
+  scattering from one exact power balance, and `gfem.power_flow` on an
+  incident field's total field is exact too: minus it is one region's
+  absorption ({doc}`../recipes/cross-sections`).
+- **Point dipoles.** `gfem.ElectricDipole` and `gfem.MagneticDipole`, with
+  `result.emitted_power`, `gfem.purcell_factor`, the port waves they send
+  into each port (beta factors) and the split of their power between ports,
+  the layer and lossy materials ({doc}`../recipes/point-dipoles`). They also
+  run on the adaptive sweep.
+- **Far fields and beam coupling.** `gfem.far_field` returns a
+  `gfem.FarField` with the IEEE 145 antenna quantities (intensity,
+  directivity, gain, realized gain, efficiency, circular components, axial
+  ratio) and the radar cross section, over ground planes too.
+  `gfem.beam_coupling` gives the amplitude a field sends into a fiber's
+  beam ({doc}`../recipes/far-field`).
+- **Gradients.** Every new output differentiates with respect to material
+  fields; `power_flow`, `far_field`, `beam_coupling` and a dipole's emitted
+  power also with respect to node coordinates. `gfem.shape.boundary_morph`
+  now also holds the physical elements touching a perfectly matched layer
+  or an absorbing face, where these measurements read.
+- **Across ranks and workers.** Sources run on frequency workers and across
+  MPI ranks; `power_flow`, `cross_sections`, `far_field` and
+  `beam_coupling` are collective calls there. The solve cache files plane
+  waves, beams and dipoles, and passes an `IncidentField` by with a
+  `gfem.SolveCacheWarning`; a result or job holding one cannot be saved.
+- **Documentation.** Two tutorials, a dipole emitting near a silicon or gold
+  nanosphere and a grating coupler shaped for a fiber; four recipes
+  (incident fields, cross sections, point dipoles, far fields); four
+  sections of the conventions and a "Free space" section of the glossary.
+
 ## 0.2.0 (2026-11-23)
 
 - **Native 2D models.** A gmsh file of triangles at one height reads as a

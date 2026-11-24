@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 import jax
 import numpy as np
 
+from gfem._background import Background, background_of
 from gfem._boundaries import (
     PEC,
     PMC,
@@ -79,6 +80,7 @@ __all__ = [
     "PMC",
     "PML",
     "Absorbing",
+    "Background",
     "Boundary",
     "Conductor",
     "Convection",
@@ -315,6 +317,10 @@ class Model:
             ``None``. Each layer region keeps its background material in
             ``materials``; the stretch axes and thicknesses are read from the
             mesh (see `PML`).
+        background: The background stack (`Background`) of the model's
+            incident fields, or one `Material` for a homogeneous one;
+            ``None`` (the default) for a model without incident fields.
+            Point dipoles do not need one.
 
     Raises:
         RegionNotFoundError: A name is not a region of the mesh.
@@ -338,6 +344,10 @@ class Model:
             the remedy.
         PortGeometryError: A `FloquetPort` surface that is not planar, or
             whose rim is not on the seams of two pairs over whole periods.
+
+    A ``background`` raises as `Background` does: `TypeError` for a layer
+    that is not a `Material`, `NotImplementedError` for one that is a
+    `MaterialField`, has a permittivity law or is anisotropic.
     """
 
     mesh: Mesh
@@ -346,6 +356,7 @@ class Model:
     ports: tuple[Port, ...]
     excluded: tuple[Excluded, ...]
     pml: PML | None
+    background: Background | None
     _layers: Layers | None
     _excluded_by: tuple[tuple[Excluded, ...], ...]
     _domains: tuple[EMDomain, ...]
@@ -361,6 +372,7 @@ class Model:
         ports: Iterable[Port] = (),
         excluded: Iterable[Excluded] | Mapping[str, Iterable[Excluded]] = (),
         pml: PML | None = None,
+        background: Background | Material | None = None,
     ) -> None:
         """Validate and build the model (see the class docstring)."""
         self._build(
@@ -370,11 +382,22 @@ class Model:
             ports=ports,
             excluded=excluded,
             pml=pml,
+            background=background,
             domains=None,
         )
 
     def _build(
-        self, *, mesh, materials, boundaries, ports, excluded, pml, domains, layers=None
+        self,
+        *,
+        mesh,
+        materials,
+        boundaries,
+        ports,
+        excluded,
+        pml,
+        background,
+        domains,
+        layers=None,
     ) -> None:
         if not isinstance(mesh, Mesh):
             raise TypeError(
@@ -414,6 +437,7 @@ class Model:
             _materials(mesh, materials, everywhere, self._fully_excluded("em"), pml),
         )
         set_(self, "pml", pml)
+        set_(self, "background", background_of(background))
         if pml is not None:
             check_regions(mesh, pml, self._fully_excluded("em"), dict(self.materials))
             if layers is None:
@@ -785,7 +809,7 @@ class Model:
         """A new model with some fields changed, validated again.
 
         The fields are ``mesh``, ``materials``, ``boundaries``, ``ports``,
-        ``excluded`` and ``pml``. Shape optimization passes
+        ``excluded``, ``pml`` and ``background``. Shape optimization passes
         ``mesh=moved_mesh``. A new ``excluded`` replaces every physics'
         entries (a list or tuple: the electromagnetic ones, nothing excluded
         for the others); without it, each physics keeps its entries.
@@ -793,7 +817,15 @@ class Model:
         Raises:
             TypeError: An unknown field name.
         """
-        fields = ("mesh", "materials", "boundaries", "ports", "excluded", "pml")
+        fields = (
+            "mesh",
+            "materials",
+            "boundaries",
+            "ports",
+            "excluded",
+            "pml",
+            "background",
+        )
         unknown = sorted(set(changes) - set(fields))
         if unknown:
             raise TypeError(
@@ -877,6 +909,7 @@ class Model:
             self._periodic,
             self.pml,
             self._layers,
+            self.background,
         )
         return children, aux
 
@@ -888,7 +921,7 @@ class Model:
     @classmethod
     def tree_unflatten(cls, aux, children) -> Model:
         """JAX pytree protocol (no validation: the structure is unchanged)."""
-        order, excluded_by, domains, periodic, pml, layers = aux
+        order, excluded_by, domains, periodic, pml, layers, background = aux
         mesh, materials, boundaries, ports = children
         new = object.__new__(cls)
         set_ = object.__setattr__
@@ -903,6 +936,7 @@ class Model:
         set_(new, "_periodic", periodic)
         set_(new, "pml", pml)
         set_(new, "_layers", layers)
+        set_(new, "background", background)
         return new
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -932,6 +966,8 @@ class Model:
         if self.pml is not None and self._layers is not None:
             lines.append(f"  pml: {self.pml!r}")
             lines += [f"    {line}" for line in describe(self._layers, self.mesh)]
+        if self.background is not None:
+            lines.append(f"  background: {self.background!r}")
         if self.default_pmc:
             lines.append(
                 "  default PMC (electromagnetic problems): "

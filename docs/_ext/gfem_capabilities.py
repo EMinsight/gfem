@@ -172,6 +172,20 @@ ROWS = {
         recipe="recipes/electromagnetic-heating",
         front=False,
     ),
+    # sources: Capabilities page only; their node coordinates raise where
+    # the plain driven row's differentiate, so each has its own row
+    "driven_incident": Row(
+        "Driven, incident field",
+        "kept fields and cross sections",
+        recipe="recipes/cross-sections",
+        front=False,
+    ),
+    "driven_dipole": Row(
+        "Driven, electric dipole", "emitted power and port waves", front=False
+    ),
+    "driven_magnetic_dipole": Row(
+        "Driven, magnetic dipole", "emitted power and port waves", front=False
+    ),
     # thermal and DC conduction: Capabilities page only
     "steady_thermal": Row(
         "Steady thermal",
@@ -246,6 +260,13 @@ PROBLEMS = {
     # a perfectly matched layer: a model option on the driven and eigenmode rows
     "driven_pml": Problem("driven", "s.values", "wave"),
     "eigenmode_pml": Problem("eigenmode", "omega"),
+    # sources: a plane wave on a scatterer (no port; its kept field), and an
+    # electric or magnetic dipole beside a wave port (its emitted power)
+    "driven_planewave": Problem("driven_incident", "e_fields.0.coefficients"),
+    "driven_dipole": Problem("driven_dipole", "emitted_power.d", "wave"),
+    "driven_magnetic_dipole": Problem(
+        "driven_magnetic_dipole", "emitted_power.d", "wave"
+    ),
     # the loss of a driven field (also beside a law), and its heat under a drive
     "dissipated_power": Problem("dissipated_power", "lower"),
     "dissipated_power_law": Problem("dissipated_power", "lower"),
@@ -475,12 +496,34 @@ RAISES_LABELS = {
         "The electric energy of a field per region (`electric_energy`), with "
         "respect to the field or the model"
     ),
+    "cross_sections x design in the truncation layer": (
+        "Cross sections (`cross_sections`), with respect to a material field "
+        "with elements in the truncation layer (the elements touching the "
+        "perfectly matched layer or an absorbing face)"
+    ),
+    "design in the far-field layer": (
+        "A far field (`far_field`) whose layer just outside its side holds a "
+        "design region"
+    ),
+    "design in the beam_coupling layer": (
+        "A beam coupling (`beam_coupling`) whose layer just outside its side "
+        "holds a design region"
+    ),
+    "beam_coupling with an IncidentField on a moved layer": (
+        "A beam coupling (`beam_coupling`) into a `gfem.IncidentField` beam "
+        "once node coordinates of its layer have moved"
+    ),
+    "traced beam parameters in beam_coupling's test beam": (
+        "A beam coupling (`beam_coupling`), with respect to the parameters of "
+        "its `gfem.GaussianBeam` (waist, focus, angles, polarization)"
+    ),
     "power_flow x material in its layer": (
         "The power through a surface (`power_flow`), with respect to a material "
         "field with elements in the element layer just outside its side"
     ),
-    "power_flow x node coordinates": (
-        "The power through a surface (`power_flow`), with respect to node coordinates"
+    "cross_sections x node coordinates": (
+        "Cross sections (`cross_sections`), with respect to node coordinates (the "
+        "incident-field solve refuses them first)"
     ),
     "heat_flow x node coordinates": (
         "The heat through a surface (`heat_flow`, `heat_flow_per_length`), with "
@@ -1050,7 +1093,6 @@ REFUSAL_LABELS = {
     ),
     "field_export": "`Field.to_meshio`, `Field.to_pyvista`",
     "load_result_fields": "`load_result` of a bundle with fields",
-    "power_flow": "`power_flow`",
     "region_mean": "`region_mean`",
     "element_mean": "`element_mean`",
     "electric_energy": "`electric_energy`",

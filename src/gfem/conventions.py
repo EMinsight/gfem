@@ -452,6 +452,179 @@ potential has :math:`V_\pi L = \lambda / (2\, |s_a - s_b|)`, with :math:`s`
 each arm's ``delta_n_eff_per_volt``. Solve the mode on an optical window
 that reaches the electrodes' inner edges: the shift weighs the mode's tail
 there.
+
+Incident fields
+---------------
+A `gfem.PlaneWave` or `gfem.GaussianBeam` travels along
+
+.. math::
+
+    \hat k = (\sin\theta\cos\phi, \sin\theta\sin\phi, \cos\theta),
+
+the propagation direction in spherical angles from :math:`+z`, in rad:
+:math:`\theta < \pi/2` travels up, :math:`\theta > \pi/2` down (30° off
+the normal from above is :math:`\theta = \pi - 30°`).
+
+- Polarization basis: TM (p) is :math:`\hat\theta = \partial_\theta \hat k
+  = (\cos\theta\cos\phi, \cos\theta\sin\phi, -\sin\theta)`, TE (s) is
+  :math:`\hat\phi = \hat z \times \hat\kappa = (-\sin\phi, \cos\phi, 0)`
+  with :math:`\hat\kappa = (\cos\phi, \sin\phi, 0)`; :math:`(\hat\theta,
+  \hat\phi, \hat k)` is right-handed. Along :math:`\pm z`, :math:`\phi`
+  still fixes the plane of incidence: TM is :math:`(\cos\phi, \sin\phi, 0)`
+  at :math:`\theta = 0` and :math:`-(\cos\phi, \sin\phi, 0)` at
+  :math:`\theta = \pi`.
+- Floquet references: TE equals a `gfem.FloquetPort`'s TE reference in
+  every direction. TM's tangential part is :math:`\cos\theta\,\hat\kappa`,
+  along the Floquet TM reference for a wave going up and opposite to it for
+  a wave going down.
+- A polarization is a Jones pair :math:`(a_\mathrm{TM}, a_\mathrm{TE})`,
+  normalized: the field direction is :math:`(a_\mathrm{TM}\hat\theta +
+  a_\mathrm{TE}\hat\phi) / \lVert a\rVert`. ``"TM"`` is :math:`(1, 0)`,
+  ``"TE"`` :math:`(0, 1)`, ``"RCP"`` :math:`(1, -i)/\sqrt2` and ``"LCP"``
+  :math:`(1, i)/\sqrt2`, IEEE handedness under :math:`e^{+i\omega t}`: with
+  the thumb along :math:`\hat k`, the real field of RCP turns from
+  :math:`\hat\theta` to :math:`\hat\phi` (right hand), as for the Floquet
+  ports' circular combination.
+- Plane wave amplitude: :math:`E_\mathrm{inc}(r) = E_0\, \hat e\,
+  e^{-i k \hat k \cdot r}` in a homogeneous background of wavenumber
+  :math:`k`, with :math:`E_0` (``amplitude``) the peak field in V/m in the
+  layer the wave comes from, complex for a phase, and :math:`r` the model
+  coordinates: the phase is referred to the model origin, as the Floquet
+  in-plane phase is.
+- Layered background (`gfem.Background` of several layers, or over a
+  ground plane): the incident field is the stack's whole solution for that
+  plane wave, its reflected and transmitted waves included. The wave comes
+  from the incidence layer (the bottom for :math:`\theta < \pi/2`, the top
+  for :math:`\theta > \pi/2`), which must be lossless; :math:`E_0` and its
+  phase at the model origin are those of the incident wave in that layer,
+  extended over all space. Its lateral wave vector is real, so total
+  internal reflection gives an evanescent field across the other layers. A
+  layer's :math:`\varepsilon_r(1 - i\tan\delta) - i\sigma/(\omega
+  \varepsilon_0)` is evaluated at each frequency.
+- Gaussian beam: 1 W (`INCIDENT_POWER`) time-averaged power through any
+  plane normal to its axis, and the field at the focus real and positive
+  along the polarization (zero phase at the focus); the waist is a length,
+  the same at every frequency.
+- Total field = incident field + scattered field. A kept field of a source
+  column is the total field; the scattered field is outgoing at the
+  truncation. In a perfectly matched layer the kept field of an incident
+  column is the scattered field: the incident field is zero there. Its
+  incident part (``DrivenResult.e_field(..., part="incident")``) is the
+  incident field interpolated on the kept field's space outside the layer,
+  and its scattered part the kept field minus it, so the three add exactly.
+- Truncation and walls: where the incident field is dropped or must hold a
+  wall, it must stay at most :math:`10^{-3}` of its peak over the physical
+  region: where a scatterer (an element whose region's material differs
+  from the background stack at its height, a material field always, or a
+  sheet, conductor or lumped face) meets the layer or an absorbing face, on
+  a wave port face, and as :math:`|n\times E|` on an exterior PEC wall or
+  :math:`\eta|n\times H|` on an exterior PMC wall (named, or by default).
+- Port waves: in a source column every port is terminated in its reference
+  impedance, and ``DrivenResult.port_waves`` is the outgoing pseudo-wave
+  :math:`b` at each port, in √W as a column of S: on a real ``z_ref``,
+  :math:`|b|^2` is the power in W the source sends into the port.
+
+Point dipoles
+-------------
+A `gfem.ElectricDipole` of moment :math:`p` (C·m) at :math:`r_0` is the
+current :math:`J = i\omega p\, \delta(r - r_0)` under :math:`e^{+i\omega t}`;
+a `gfem.MagneticDipole` of moment :math:`m` (A·m²) is the current
+:math:`J = \nabla \times (m\, \delta(r - r_0))`, i.e. the magnetic current
+:math:`M = i\omega\mu_0 m\, \delta(r - r_0)`. Both moments are peak
+phasors, the same at every frequency. An antenna current moment :math:`Il`
+(A·m) is :math:`p = Il / (i\omega)`.
+
+- Emitted power: the time-averaged power the dipole gives the field,
+
+  .. math::
+
+      P = -\frac{\omega}{2} \operatorname{Im}\left(p^* \cdot E(r_0)\right),
+
+  positive for a dipole that radiates or drives a lossy medium; gfem pairs
+  the dipole's load with the discrete solution, which is finite although the
+  exact field at :math:`r_0` is not. Its real counterpart, the
+  self-reaction, has no limit and is never reported.
+- Bulk power: the emitted power of the same dipole in the unbounded,
+  lossless material at :math:`r_0`, with :math:`n = \sqrt{\varepsilon_r
+  \mu_r}` and :math:`c` the speed of light in vacuum,
+
+  .. math::
+
+      P_0^{(p)} = \frac{\mu_0 \mu_r n\, \omega^4 |p|^2}{12 \pi c}, \qquad
+      P_0^{(m)} = \frac{\mu_0 \varepsilon_r n\, \omega^4 |m|^2}{12 \pi c^3}.
+
+- Purcell factor: :math:`F = P / P_0`. In a non-magnetic medium the partial
+  local density of states along :math:`p` is :math:`\rho_p = \rho_0 F`, with
+  :math:`\rho_0 = \omega^2 n / (\pi^2 c^3)`.
+
+Far fields
+----------
+`gfem.far_field` reads the field radiated into the exterior medium, the
+model's background (one constant, isotropic, lossless `gfem.Material`), of
+wavenumber :math:`k = n\omega/c` and wave impedance :math:`\eta =
+\eta_0\sqrt{\mu_r/\varepsilon_r}`.
+
+- Far-field amplitude: under :math:`e^{+i\omega t}` an outgoing wave is
+  :math:`e^{-ikr}/r`, and
+
+  .. math::
+
+      F(\hat r) = \lim_{r\to\infty} r\,e^{+ikr} E(r\hat r),
+
+  in V, with :math:`r` measured from the model origin, the phase reference.
+  :math:`\hat r` is given by the same angles as an incident field's
+  :math:`\hat k`, and :math:`F = F_\theta\hat\theta + F_\phi\hat\phi`
+  in that basis. For an incident-field column it is the scattered field's.
+- Circular components: :math:`F_R = (F_\theta + iF_\phi)/\sqrt2` and
+  :math:`F_L = (F_\theta - iF_\phi)/\sqrt2`, the field's components along
+  ``"RCP"`` and ``"LCP"`` (IEEE handedness); axial ratio
+  :math:`(|F_R| + |F_L|)/\big||F_R| - |F_L|\big|`, 1 for circular and
+  infinite for linear polarization.
+- Radiation intensity :math:`U = |F|^2/(2\eta)` in W/sr (peak phasors);
+  radiated power :math:`P_\mathrm{rad}`, the power flowing out through the
+  far-field layer. The IEEE 145 ratios: directivity :math:`D = 4\pi
+  U/P_\mathrm{rad}`, gain :math:`G = 4\pi U/P_\mathrm{acc}`, realized gain
+  :math:`G_r = 4\pi U/P_\mathrm{inc}`, radiation efficiency
+  :math:`P_\mathrm{rad}/P_\mathrm{acc}`. For a port column
+  :math:`P_\mathrm{inc}` is `INCIDENT_POWER` and :math:`P_\mathrm{acc} = 1 -
+  |S_{ii}|^2`, so :math:`G_r = 4\pi U`; for a point dipole both are its
+  emitted power.
+- Bistatic radar cross section of a `gfem.PlaneWave` column, in m²:
+  :math:`\sigma(\hat r) = 4\pi|F(\hat r)|^2/|E_0|^2`.
+
+Port waves and beam coupling
+----------------------------
+A source column's port waves (``DrivenResult.port_waves``) and
+`gfem.beam_coupling` are amplitudes in √W, like S for a port fed
+`INCIDENT_POWER`.
+
+- Port wave: :math:`b`, the outgoing wave at a port for the source's
+  column. On a real reference (a photonic `gfem.WavePort` without a voltage
+  path on a lossless guide, whose modal waves carry 1 W) :math:`|b|^2` is
+  the power the source sends into the port, in W; with a voltage path, or
+  on a lossy guide, :math:`b` is a pseudo-wave, like S, and :math:`|b|^2` is
+  not exactly a power.
+- Beam coupling: :math:`c`, the amplitude a field couples into an incoming
+  beam :math:`w` (described travelling toward the device, as a fiber
+  launches it) through the element layer :math:`L` just outside a side of
+  P1 indicator :math:`\chi`, in the beam's medium of permeability
+  :math:`\mu`:
+
+  .. math::
+
+      c = \frac{1}{4i\omega\mu\sqrt P}\int_L \Big[
+          E\cdot(\nabla\chi\times\nabla\times w)
+          + (\nabla\times E)\cdot(\nabla\chi\times w)\Big]\,dV,
+      \qquad
+      P = \frac{1}{2\omega\mu}\operatorname{Im}\int_L
+          \nabla\chi\cdot(w\times\overline{\nabla\times w})\,dV,
+
+  with :math:`P` the beam's power into the side, so that :math:`c` refers
+  to the beam scaled to 1 W through the side. Its phase is the beam's (a
+  `gfem.GaussianBeam`'s zero focal phase). By reciprocity, for a port
+  column :math:`c` is the port wave :math:`b` of the beam's column when the
+  beam lights the device; :math:`|c|^2` is a coupled power on a real
+  reference, a pseudo-wave otherwise, as for :math:`b`.
 """
 
 from __future__ import annotations

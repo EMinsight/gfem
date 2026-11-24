@@ -219,12 +219,15 @@ def _nodes_raw(directory):
     return objective, x0, directions, STEPS["nodes"]
 
 
-def _nodes_morph(directory):
+def _nodes_interface(directory):
+    # the interface moves along z, node by node: the line's absorbing side
+    # walls touch every element, so a boundary_morph, which holds the elements
+    # touching the truncation, would move nothing (wave_nodes keeps a morph)
     line = cases.shape_line(Path(directory))
-    morph = boundary_morph(line, "sub__cover", grows="sub")
-    t = jnp.zeros(morph.n_params)
+    n, moved = cases.interface_move(line)
+    t = jnp.zeros(n)
     directions = unit_directions(np.random.default_rng(3), t.shape, 2)
-    return _shape_objective(line, morph), t, directions, STEPS["nodes"]
+    return _shape_objective(line, moved), t, directions, STEPS["nodes"]
 
 
 def _wave_row(port, directory, name="eps_r", seed=4, **problem):
@@ -290,7 +293,7 @@ ROWS = {
     "fill_impedance": lambda d: _fill_row("impedance", 8, d),
     "lumped": _lumped_row,
     "nodes_raw": _nodes_raw,
-    "nodes_morph": _nodes_morph,
+    "nodes_interface": _nodes_interface,
     "wave_lossless": lambda d: _wave_row("lossless", d),
     "wave_lossy": lambda d: _wave_row("lossy", d),
     "wave_mixed": lambda d: _wave_row("mixed", d),

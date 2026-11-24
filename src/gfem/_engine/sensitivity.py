@@ -296,6 +296,9 @@ class Term:
             position within an element (a perfectly matched layer's
             stretch, a fixed function of space): the node pass then adds
             the coefficient's change at the moved quadrature points.
+        elements: For the node pass, the NGSolve elements a volume or trace
+            term's form is restricted to (a ``BitArray`` of volume or
+            surface elements, a measurement's element layer); ``None``: all.
     """
 
     name: str
@@ -320,6 +323,7 @@ class Term:
     law: str | None = None
     points: str | None = None
     position: bool = False
+    elements: Any = None
 
 
 def _dot(u: ngs.CoefficientFunction, v: ngs.CoefficientFunction) -> ngs.CF:
@@ -1106,14 +1110,15 @@ def _position_part(term: Term, u: Any, v: Any, slopes: list) -> list:
 
 
 def _volume_shape(
-    terms: Sequence[tuple[Term, complex]], pair: FieldPair, w: Any
+    terms: Sequence[tuple[Term, complex]], pair: FieldPair, w: Any, elements: Any = None
 ) -> Any:
     """``int Re(sum_t theta_t sum_k T_t(left_k, right_k)) : grad W``, one pair.
 
     On the pair's fields as they are (complex fields stay complex: no
     ``DiffShape``, no splitting). Value terms are integrated on the pinned
     rule; curl and gradient terms, products of first derivatives, on the
-    exact rule of their lower degree (`quadrature.dx_derivatives`).
+    exact rule of their lower degree (`quadrature.dx_derivatives`), on the
+    NGSolve ``elements`` the terms share (`Term.elements`; ``None``: all).
 
     A term whose coefficient varies in position (`Term.position`) adds
     ``int Re(theta_t ((W . grad) C u) . v)`` (curls for a curl term): its
@@ -1147,13 +1152,17 @@ def _volume_shape(
     for derivatives, total in totals.items():
         tensor = total.real if total.is_complex else total
         rule = quadrature.dx_derivatives if derivatives else quadrature.dx
-        part = ngs.InnerProduct(gw, tensor) * rule(pair.order, definedon=pair.domain)
+        dx = rule(pair.order, definedon=pair.domain, definedonelements=elements)
+        part = ngs.InnerProduct(gw, tensor) * dx
         out = part if out is None else out + part
     if moved[0] is not None:
         scalar = sum(
             (m.real if m.is_complex else m) * w[j] for j, m in enumerate(moved)
         )
-        part = scalar * quadrature.dx(pair.order, definedon=pair.domain)
+        dx = quadrature.dx(
+            pair.order, definedon=pair.domain, definedonelements=elements
+        )
+        part = scalar * dx
         out = part if out is None else out + part
     return out
 
@@ -1204,7 +1213,9 @@ def _trace_shape(terms: Sequence[tuple[Term, complex]], pair: FieldPair, w: Any)
                 integrand = factor * term.coefficient * total
                 if integrand.is_complex:
                     integrand = integrand.real
-                ds = quadrature.ds(pair.order, definedon=term.region)
+                ds = quadrature.ds(
+                    pair.order, definedon=term.region, definedonelements=term.elements
+                )
                 part = integrand * ds
                 out = part if out is None else out + part
     return out
@@ -1269,7 +1280,8 @@ def _node_pass(
     form = ngs.LinearForm(space)
     empty = True
     for pair in pairs:
-        volume, traces, surface = [], [], []
+        volume: dict[int, list] = {}
+        traces, surface = [], []
         for term in terms:
             theta = pair.weights.get(term.name)
             if theta is None or theta == 0:
@@ -1284,9 +1296,9 @@ def _node_pass(
             elif term.kind in ("trace", "curl trace"):
                 traces.append(weighted)
             else:
-                volume.append(weighted)
+                volume.setdefault(id(term.elements), []).append(weighted)
         for part in (
-            _volume_shape(volume, pair, w) if volume else None,
+            *(_volume_shape(v, pair, w, v[0][0].elements) for v in volume.values()),
             _trace_shape(traces, pair, w) if traces else None,
             _surface_shape(surface, pair, w, comm) if surface else None,
         ):

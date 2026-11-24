@@ -5,8 +5,8 @@ v0.1.
 
 ## What you can solve
 
-- **Problems**: {py:obj}`gfem.Driven` (the response of a model to its ports over a
-  frequency grid, uniform or adaptive sweep), {py:obj}`gfem.Eigenmode` (resonant
+- **Problems**: {py:obj}`gfem.Driven` (the response of a model to its ports
+  and sources over a frequency grid, uniform or adaptive sweep), {py:obj}`gfem.Eigenmode` (resonant
   modes nearest a target frequency, with their Q; lumped and wave ports, a
   wave port on one process with a target above its mode's cutoff; with a
   permittivity law, outside the law's
@@ -42,6 +42,21 @@ v0.1.
 - **Open space**: {py:obj}`gfem.PML` on meshed layer regions around the air
   box: absorbs outgoing waves at any angle, for driven and eigenmode solves,
   wave ports and periodic cells ({doc}`recipes/perfectly-matched-layer`).
+- **Free space**: sources beside the ports, each a column of the same
+  factorization (`Driven(sources=...)`): incident fields on a
+  {term}`background stack` (`Model(background=...)`, one material or a
+  planar {py:obj}`gfem.Background` of layers, optionally over a ground
+  plane), as {py:obj}`gfem.PlaneWave` (TE, TM, circular or Jones, oblique,
+  past the critical angle too), {py:obj}`gfem.GaussianBeam` (an exact beam
+  carrying 1 W) or {py:obj}`gfem.IncidentField` (a field you give as a
+  function); and point dipoles, {py:obj}`gfem.ElectricDipole` and
+  {py:obj}`gfem.MagneticDipole`. Results: the total, scattered and
+  incident fields, {py:obj}`gfem.cross_sections`, `emitted_power`,
+  {py:obj}`gfem.purcell_factor`, port waves, the far field with the IEEE
+  145 antenna quantities and the radar cross section
+  ({py:obj}`gfem.far_field`), and {py:obj}`gfem.beam_coupling` into a fiber's
+  beam ({doc}`recipes/incident-fields`, {doc}`recipes/cross-sections`,
+  {doc}`recipes/point-dipoles`, {doc}`recipes/far-field`).
 - **Materials and designs**: {py:obj}`gfem.Material` per region (isotropic, or
   anisotropic: real symmetric tensors on shared principal axes,
   {doc}`recipes/anisotropic-materials`), {py:obj}`gfem.MaterialField` per
@@ -54,7 +69,7 @@ v0.1.
   {py:obj}`gfem.interface_participation`, {py:obj}`gfem.power_flow`,
   {py:obj}`gfem.dissipated_power` (a driven field's loss per region and
   metal surface) and {py:obj}`gfem.electric_energy`
-  ({doc}`recipes/measurements`).
+  ({doc}`recipes/measurements`); the free-space measurements above.
 - **Quantum metrics**: {py:obj}`gfem.quantum.dressed_modes` (the dressed
   frequencies, Lamb shifts, anharmonicities and dispersive shifts of one
   junction on the solved modes) and `EigenmodeResult.sheet_participation`
@@ -235,6 +250,23 @@ returning a wrong value:
   inside its iterations. The fields inside the
   layer are not physical; energies, participations and port power count the
   physical regions. Details: {doc}`recipes/perfectly-matched-layer`.
+- **Free space**: 3D only. An incident field needs a perfectly matched
+  layer or absorbing faces, scatterers clear of them where it is not
+  negligible, exterior walls it satisfies and ports outside it; it is
+  refused on periodic models, on the adaptive sweep and by mesh
+  refinement. The {term}`incidence layer` and a Gaussian beam's medium are
+  lossless; a beam travels in one material, not a stack. A stack's layers
+  are constant, isotropic materials whose planes no tetrahedron crosses. A
+  dipole sits inside one lossless, isotropic material (not a
+  `MaterialField`), off interfaces, boundary faces, ports and the layer;
+  node gradients take electric dipoles only. Cross sections need a lossless background and a
+  {term}`truncation layer` of background only; the far field needs a
+  {term}`far-field layer` in one lossless, isotropic exterior medium, and
+  no layered exterior. A result or job holding an `IncidentField` cannot
+  be saved, and the solve cache passes it by. Gradients flow to material
+  fields; node coordinates are not differentiable under an incident field.
+  Details: {doc}`recipes/incident-fields`, {doc}`recipes/point-dipoles`,
+  {doc}`recipes/far-field`.
 - **Unrequested port modes**: a propagating mode that no wave port on its
   surface requests is partly reflected at the port, not converted; request
   it to see where its power goes ({py:obj}`gfem.SkippedPortModeWarning`

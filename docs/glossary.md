@@ -11,8 +11,9 @@ Problem type
   {term}`port mode <Port mode problem>` problem.
 
 Driven problem
-  A frequency-domain full-wave analysis excited through {term}`ports <Port>`,
-  producing network parameters and fields at given frequencies.
+  A frequency-domain full-wave analysis excited through {term}`ports <Port>`
+  and {term}`sources <Source>`, producing fields at given frequencies, and
+  network parameters when ports are excited.
 
 Adaptive sweep
   A driven frequency sweep that solves the full problem at a few
@@ -789,6 +790,154 @@ Error estimate
   {gfem-effectivity}`quantity high` times (order 2); each other
   {term}`estimate kind` has its own range ({doc}`verification`). Neither
   sees the faceting of curved surfaces.
+```
+
+## Free space
+
+```{glossary}
+Incident field
+  The field a {term}`source` would have in the {term}`background stack` alone,
+  with no {term}`scatterer`: a plane wave, a Gaussian beam or a field given by a
+  function (`gfem.PlaneWave`, `gfem.GaussianBeam`, `gfem.IncidentField`).
+
+Scattered field
+  The {term}`total field` minus the {term}`incident field`; it is outgoing at
+  the truncation (a {term}`perfectly matched layer` or absorbing faces).
+
+Total field
+  The incident plus the scattered field: the field a source column keeps, and
+  the one every measurement reads by default.
+
+Background stack
+  The planar layers normal to z, each a constant isotropic material, whose
+  exact solution is the {term}`incident field` (`Model(background=...)`,
+  `gfem.Background`), optionally ending below on a PEC ground plane; a
+  homogeneous background is a one-layer stack.
+
+Incidence layer
+  The layer of the {term}`background stack` a plane wave comes from: the
+  bottom one for $\theta < \pi/2$, the top one for $\theta > \pi/2$. It
+  must be lossless; the wave's amplitude and phase are given there.
+
+Scatterer
+  Where the model differs from the {term}`background stack` at the same
+  height: its elements of another material, and its sheets, conductors and
+  lumped ports.
+
+Source
+  A {term}`driven problem`'s excitation that is not a {term}`port`: an
+  {term}`incident field` or a {term}`point dipole` (`Driven(sources=...)`). It
+  adds a column to the solve and is never part of the device.
+
+Excitation
+  An {term}`excited port` or a {term}`source`: one column of a driven solve,
+  whose name labels its kept fields and its results.
+
+Port wave
+  The outgoing wave at a {term}`port` in a {term}`source`'s column, in √W
+  (`DrivenResult.port_wave`); its squared modulus is the power the source sends
+  into the port.
+
+Point dipole
+  An electric or magnetic point current at one position
+  (`gfem.ElectricDipole`, `gfem.MagneticDipole`).
+
+Emitted power
+  The time-averaged power a {term}`point dipole` gives the field
+  (`DrivenResult.emitted_power`): what it radiates plus what nearby lossy
+  materials absorb.
+
+Cross sections
+  The powers a {term}`scatterer` removes from an {term}`incident field`
+  (extinction), absorbs (absorption) and sends out in the
+  {term}`scattered field` (scattering), each divided by the
+  {term}`incident intensity`, in m² (`gfem.cross_sections`); extinction is
+  absorption plus scattering.
+
+Incident intensity
+  The power per unit area that {term}`cross sections` are divided by: a plane
+  wave's $|E_0|^2/(2\eta)$, a Gaussian beam's {term}`focal intensity`, or the
+  value given for an incident field from a function.
+
+Gaussian beam
+  A focused beam carrying 1 W through any plane across its axis, given by
+  its {term}`waist`, focus and direction (`gfem.GaussianBeam`): an exact
+  solution of Maxwell's equations in a homogeneous lossless background whose
+  paraxial limit is the fundamental Gaussian beam.
+
+Waist
+  The $1/e$ field radius $w_0$ of a {term}`Gaussian beam` at its focus, in m,
+  the same at every frequency.
+
+Focal intensity
+  $I_0 = |E(r_f)|^2/(2\eta)$ at the focus $r_f$ of a Gaussian beam carrying
+  1 W, with $\eta$ the wave impedance of the background
+  (`gfem.GaussianBeam.focal_intensity`).
+
+Incident contact
+  The largest {term}`incident field` where a {term}`scatterer` meets a
+  {term}`perfectly matched layer` or an absorbing face, or on a wave port face,
+  relative to its peak in the model: it must stay below $10^{-3}$, since the
+  incident field is dropped there.
+
+Truncation layer
+  The physical elements that touch a {term}`perfectly matched layer` or an
+  absorbing face: where `gfem.cross_sections` reads its power balance, so it
+  must hold only the {term}`background stack`.
+
+Bulk power
+  The {term}`emitted power` of the same {term}`point dipole` in the unbounded,
+  lossless material at its position: the closed form the {term}`Purcell
+  factor` divides by.
+
+Purcell factor
+  The {term}`emitted power` of a {term}`point dipole` over its {term}`bulk
+  power` (`gfem.purcell_factor`): how much the structure around it speeds up its
+  emission.
+
+Beta factor
+  The share of a {term}`point dipole`'s {term}`emitted power` that goes into one
+  guided mode: the squared modulus of its {term}`port wave` at that mode's port,
+  over the emitted power.
+
+Radiative efficiency
+  The share of a {term}`point dipole`'s {term}`emitted power` that leaves the
+  model (through ports, a {term}`perfectly matched layer` or absorbing faces)
+  rather than being absorbed by lossy materials.
+
+Exterior medium
+  The constant, isotropic, lossless material a field radiates into, the
+  model's background: its wavenumber and wave impedance scale the
+  {term}`far-field amplitude`.
+
+Far-field amplitude
+  The field far from every source with its outgoing spherical factor
+  $e^{-ikr}/r$ removed, in V, per direction (`gfem.far_field`, `FarField`).
+
+Far-field layer
+  The elements just outside the side `gfem.far_field` reads, all in the
+  {term}`exterior medium`; by default the physical elements that touch a
+  {term}`perfectly matched layer` or an absorbing face.
+
+Radiation intensity
+  The power radiated per unit solid angle, $|F|^2/(2\eta)$ in W/sr.
+
+Directivity
+  $4\pi$ times the {term}`radiation intensity` over the radiated power. The
+  gain divides by the accepted power instead, the realized gain by the
+  incident power, and the radiation efficiency is the radiated over the
+  accepted power (IEEE 145).
+
+Ground plane
+  A flat PEC or PMC exterior face that the {term}`far-field layer` meets: the
+  far field of the half-space above it includes the image of every source.
+
+Beam coupling
+  The amplitude, in √W, that a driven field sends into an incoming beam (a
+  fiber's), with the beam scaled to 1 W through the side it is read on
+  (`gfem.beam_coupling`); by reciprocity, for a port's field, the
+  {term}`port wave` the port receives when that beam lights the device. Its
+  squared modulus is the coupled power on a real reference.
 ```
 
 ## Thermal

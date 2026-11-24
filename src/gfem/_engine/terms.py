@@ -477,10 +477,14 @@ def _tangential(
     return _Tangential(boundary_region(built, surfaces), order, faces)
 
 
-def _bits(mask: np.ndarray | None, order: np.ndarray, what: str) -> Any:
+def _bits(
+    mask: np.ndarray | None, order: np.ndarray, what: str, *, part: bool = False
+) -> Any:
     """The NGSolve element bits of a mask over gfem ``what`` (``None``: all).
 
-    NGSolve element ``i`` is gfem element ``order[i]``.
+    NGSolve element ``i`` is gfem element ``order[i]``. With ``part`` the
+    NGSolve mesh is a rank's part, ``order`` covers its elements only, and
+    the mask is still over the whole gfem mesh.
 
     Raises:
         ValueError: The mask is not one boolean per gfem element.
@@ -488,10 +492,15 @@ def _bits(mask: np.ndarray | None, order: np.ndarray, what: str) -> Any:
     if mask is None:
         return None
     mask = np.asarray(mask)
-    if mask.dtype != bool or mask.shape != order.shape:
+    if part:
+        fits = mask.ndim == 1 and (len(order) == 0 or int(order.max()) < len(mask))
+    else:
+        fits = mask.shape == order.shape
+    if mask.dtype != bool or not fits:
+        count = "the whole mesh's" if part else str(len(order))
         raise ValueError(
             f"A driven piece restriction needs one boolean per {what} "
-            f"({len(order)}), got an array of {mask.dtype} of shape {mask.shape}."
+            f"({count}), got an array of {mask.dtype} of shape {mask.shape}."
         )
     return ngs.BitArray(mask[order].tolist())
 
@@ -529,7 +538,7 @@ def susceptibility_pieces(
     lossless Drude terms only gives a polynomial piece (`polynomial_law`).
     """
     scale = built.scale
-    tets = _bits(elements, built.cell_order, "tetrahedron")
+    tets = _bits(elements, built.cell_order, "tetrahedron", part=built.comm is not None)
     dx = quadrature.dx(order, definedonelements=tets)
 
     def k2(w: complex) -> complex:
@@ -592,7 +601,7 @@ def blend_pieces(
     limit is in the mass. ``elements`` restricts the form as in `pieces`.
     """
     scale = built.scale
-    tets = _bits(elements, built.cell_order, "tetrahedron")
+    tets = _bits(elements, built.cell_order, "tetrahedron", part=built.comm is not None)
     dx = quadrature.dx(order, definedonelements=tets)
 
     def k2(w: complex) -> complex:
@@ -680,7 +689,7 @@ def conductivity_piece(
     """
     scale = built.scale
     k = lambda w: wavenumber(w, scale)  # noqa: E731
-    tets = _bits(elements, built.cell_order, "tetrahedron")
+    tets = _bits(elements, built.cell_order, "tetrahedron", part=built.comm is not None)
     dx = quadrature.dx(order, definedonelements=tets)
     active = model._domain.active  # noqa: SLF001
     # an anisotropic material gives its 3x3 tensor
@@ -750,8 +759,8 @@ def pieces(
     """
     scale = built.scale
     k = lambda w: wavenumber(w, scale)  # noqa: E731
-    tets = _bits(elements, built.cell_order, "tetrahedron")
-    tris = _bits(faces, built.facet_order, "triangle")
+    tets = _bits(elements, built.cell_order, "tetrahedron", part=built.comm is not None)
+    tris = _bits(faces, built.facet_order, "triangle", part=built.comm is not None)
     dx = quadrature.dx(order, definedonelements=tets)
 
     # each piece carries its coefficient and, next to it, the coefficient's

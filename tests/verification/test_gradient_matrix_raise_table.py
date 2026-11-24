@@ -347,6 +347,85 @@ EXPECTED |= {
     for kind in [("nodes",)] + [("material", "slab", p) for p in ALL_PROPERTIES]
 }
 
+# Point dipoles in the air of the layer's line (beside its wave port, every
+# column kept): an electric dipole of real moment, and a magnetic one. The
+# emitted power, the dipole's port waves and both columns' kept coefficients
+# differentiate like S in the slab's electromagnetic properties and the fill
+# of a conducting sheet on its front face and, for the
+# electric dipole, in the node coordinates (its load moves with its element);
+# a magnetic dipole's load has no node derivative, so every output raises in
+# the nodes. The port mode, z_ref and the fields' omega are constants, and
+# the thermal properties exact zeros.
+#: The fill of the conducting sheet on the slab's front face.
+DIPOLE_FILL = ("boundary", 1, "fill", "fill")
+_DIPOLE_DEPENDENT = (
+    "s.values",
+    "port_waves",
+    "emitted_power.d",
+    *(f"e_fields.{k}.coefficients" for k in (0, 1)),
+)
+for _problem, _nodes in (
+    ("driven_dipole", GRADIENT),
+    ("driven_magnetic_dipole", RAISES),
+):
+    EXPECTED |= {
+        (_problem, out, kind): (
+            (
+                _nodes
+                if _nodes == RAISES
+                else GRADIENT
+                if out in _DIPOLE_DEPENDENT or out.endswith("mesh.nodes")
+                else ZERO
+            )
+            if kind == ("nodes",)
+            else GRADIENT
+            if out in _DIPOLE_DEPENDENT
+            and (kind == DIPOLE_FILL or kind[2] in EM_PROPERTIES)
+            else ZERO
+        )
+        for out in (
+            *_DIPOLE_DEPENDENT,
+            "s.z_ref",
+            *(f"port_modes.p1.{leaf}" for leaf in WAVE_PORT_MODE_OUTPUTS),
+            *(
+                f"e_fields.{k}.{leaf}"
+                for k in (0, 1)
+                for leaf in ("mesh.nodes", "omega")
+            ),
+        )
+        for kind in [
+            ("nodes",),
+            *(("material", "slab", p) for p in ALL_PROPERTIES),
+            DIPOLE_FILL,
+        ]
+    }
+# A plane wave on a dielectric cube in an air box wrapped in a layer, no port:
+# the kept field differentiates in the cube's electromagnetic properties and
+# the fill of a conducting sheet on its +x face (the load reads the background,
+# never the cube or its sheet); S is empty. The node coordinates raise: the
+# load is the wave's interpolant on the mesh.
+PLANEWAVE_FILL = ("boundary", 0, "fill", "fill")
+EXPECTED |= {
+    ("driven_planewave", out, kind): (
+        RAISES
+        if kind == ("nodes",)
+        else GRADIENT
+        if out == "e_fields.0.coefficients"
+        and (kind == PLANEWAVE_FILL or kind[2] in EM_PROPERTIES)
+        else ZERO
+    )
+    for out in (
+        "s.values",
+        "s.z_ref",
+        *(f"e_fields.0.{leaf}" for leaf in ("coefficients", "mesh.nodes", "omega")),
+    )
+    for kind in [
+        ("nodes",),
+        *(("material", "scat", p) for p in ALL_PROPERTIES),
+        PLANEWAVE_FILL,
+    ]
+}
+
 # Floquet ports (F1's slab between Floquet ports on both faces, the design
 # the slab, away from both faces; plain and at a conical Bloch wave vector):
 # S differentiates like the periodic line's, in the materials and the node
@@ -1169,6 +1248,74 @@ def pml_model(tmp_path_factory):
     )
 
 
+def _cube(c):
+    if ((c > 0.25) & (c < 0.75)).all():
+        return "scat"
+    return "air" if ((c > 0) & (c < 1)).all() else "pml"
+
+
+def _cube_sheet(c):
+    """The cube scatterer's +x face: an interior sheet."""
+    inside = 0.25 < c[1] < 0.75 and 0.25 < c[2] < 0.75
+    return "sheet" if abs(c[0] - 0.75) < 1e-9 and inside else ""
+
+
+def _source_sheet(mesh, surface):
+    """A conducting sheet of per-face fill: the source rows' fill input."""
+    fill = gfem.SheetField(fill=np.linspace(0.2, 0.9, len(mesh.elements(surface))))
+    return gfem.Conductor(surface, 100.0, 1e-6, fill=fill)
+
+
+@pytest.fixture(scope="module")
+def planewave_case(tmp_path_factory):
+    sides = ("-x", "+x", "-y", "+y", "-z", "+z")
+    path = pml_cases.box(
+        tmp_path_factory.mktemp("planewave") / "box.msh",
+        sides,
+        thickness=0.25,
+        cells=4,
+        volume=_cube,
+        surface=_cube_sheet,
+    )
+    mesh = gfem.Mesh.from_gmsh(path)
+    model = gfem.Model(
+        mesh,
+        materials={
+            "air": gfem.Material(),
+            "pml": gfem.Material(),
+            "scat": _field(mesh, "scat"),
+        },
+        boundaries=[_source_sheet(mesh, "sheet")],
+        pml=gfem.PML("pml"),
+        background=gfem.Material(),
+    )
+    wave = gfem.PlaneWave("w", theta=0.4, phi=0.3, polarization="TM")
+    return model, gfem.Driven(frequency=pml_cases.F0, sources=wave, keep_fields=True)
+
+
+#: In the line's air, off the faces of its grid (um).
+DIPOLE_POSITION = np.array([0.07, 0.13, 0.3]) * 1e-6
+
+
+@pytest.fixture(scope="module")
+def dipole_model(pml_model):
+    # the layer's line with a conducting sheet on the slab's front face
+    sheet = _source_sheet(pml_model.mesh, "front")
+    return pml_model.replace(boundaries=[*pml_model.boundaries, sheet])
+
+
+def _dipole_cases(model):
+    electric = gfem.ElectricDipole("d", position=DIPOLE_POSITION, moment=(0, 1e-28, 0))
+    magnetic = gfem.MagneticDipole("d", position=DIPOLE_POSITION, moment=(1e-20, 0, 0))
+    return {
+        name: (model, gfem.Driven(pml_cases.F0, keep_fields=True, sources=dipole))
+        for name, dipole in (
+            ("driven_dipole", electric),
+            ("driven_magnetic_dipole", magnetic),
+        )
+    }
+
+
 @pytest.fixture(scope="module")
 def eigen_pml_case(tmp_path_factory):
     # the leaky guide, weakly lossy, its core a material field (a gentle ramp,
@@ -1852,7 +1999,9 @@ def cases(model, driven_model, eigen_model, wave_cases, request):
             request.getfixturevalue("pml_model"),
             gfem.Driven(frequency=pml_cases.F0),
         ),
+        **_dipole_cases(request.getfixturevalue("dipole_model")),
         "eigenmode_pml": request.getfixturevalue("eigen_pml_case"),
+        "driven_planewave": request.getfixturevalue("planewave_case"),
         **request.getfixturevalue("sheet_cases"),
         **request.getfixturevalue("lumped_cases"),
         **request.getfixturevalue("driven_periodic_cases"),
@@ -2023,6 +2172,81 @@ def _out_lumped_port_resistance(request):
         return jnp.sum(jnp.abs(s) ** 2)
 
     jax.grad(objective)(50.0)
+
+
+def _out_far_field_layer_design(request):
+    # the far field reads the field over its layer in the exterior medium: a
+    # design there is refused (a side around one cell of the scatterer)
+    model, problem = request.getfixturevalue("planewave_case")
+    eps = jnp.asarray(model.materials["scat"].eps_r)
+
+    def one_cell(c):
+        return ((c > 0.25e-6) & (c < 0.5e-6)).all(axis=1)
+
+    def objective(e):
+        moved = model.with_material("scat", gfem.MaterialField(eps_r=e))
+        result = gfem.solve(moved, problem)
+        ff = gfem.far_field(result, "w", 0.3, 0.2, model=moved, side=one_cell)
+        return ff.rcs[0]
+
+    jax.grad(objective)(eps)
+
+
+#: A beam coming down onto the unit cube, for the beam-coupling rows.
+_COUPLING_BEAM = dict(focus=(0.5e-6, 0.5e-6, 1e-6), theta=np.pi, polarization="TM")
+
+
+def _out_beam_coupling_layer_design(request):
+    # the coupling reads the beam's medium over its layer: a design there is
+    # refused (a side around one cell of the scatterer)
+    model, problem = request.getfixturevalue("planewave_case")
+    eps = jnp.asarray(model.materials["scat"].eps_r)
+    beam = gfem.GaussianBeam("b", waist=0.3e-6, **_COUPLING_BEAM)
+
+    def one_cell(c):
+        return ((c > 0.25e-6) & (c < 0.5e-6)).all(axis=1)
+
+    def objective(e):
+        moved = model.with_material("scat", gfem.MaterialField(eps_r=e))
+        result = gfem.solve(moved, problem)
+        c = gfem.beam_coupling(result, "w", beam, model=moved, side=one_cell)
+        return jnp.abs(c[0]) ** 2
+
+    jax.grad(objective)(eps)
+
+
+def _down_wave(points, frequency):
+    """A plane wave coming down along -z, along x, 1 V/m."""
+    k = 2 * np.pi * frequency / 299792458.0
+    e = np.zeros((len(points), 3), complex)
+    e[:, 0] = np.exp(1j * k * points[:, 2])
+    return e
+
+
+def _out_beam_coupling_incident_field_on_a_moved_layer(request):
+    # an IncidentField beam is interpolated on the imported mesh: once its
+    # layer's nodes move it would move with them, so the host forward refuses
+    model, _ = request.getfixturevalue("planewave_case")
+    nodes = np.asarray(model.mesh.nodes)
+    inner = ((nodes > 1e-15) & (nodes < 1e-6 - 1e-15)).all(axis=1)
+    moved = nodes + np.where(inner[:, None], [0.0, 0.0, 1e-9], 0.0)
+    model = model.replace(mesh=gfem.Mesh(jnp.asarray(moved), model.mesh._topology))
+    dipole = gfem.ElectricDipole(
+        "d", position=(0.1e-6, 0.12e-6, 0.14e-6), moment=(1e-30, 0, 0)
+    )
+    result = gfem.solve(
+        model, gfem.Driven(pml_cases.F0, sources=dipole, keep_fields=True)
+    )
+    gfem.beam_coupling(result, "d", gfem.IncidentField("down", _down_wave), model=model)
+
+
+def _out_beam_coupling_traced_beam(_request):
+    # a beam's parameters are fixed values (raised by the constructor)
+    def objective(waist):
+        beam = gfem.GaussianBeam("b", waist=waist, **_COUPLING_BEAM)
+        return beam.waist
+
+    jax.grad(objective)(0.3e-6)
 
 
 def _out_floquet_port_offset(_request):
@@ -2364,18 +2588,66 @@ def _out_power_flow_of_a_material_in_its_layer(request):
     jax.make_jaxpr(jax.grad(objective))(eps)
 
 
-def _out_power_flow_in_the_node_coordinates(request):
-    model = request.getfixturevalue("wave_model")
-    problem = gfem.Driven(frequency=20e9, keep_fields=True)
+def _cut_off_wave(points, frequency):
+    """A wave along +z, zero from x = 0.7 um on: none where the slab meets the layer."""
+    k = 2 * np.pi * frequency / pml_cases.C0
+    x = points[:, 0] * 1e6
+    window = np.where(x < 0.7, np.cos(np.clip(x - 0.6, 0, 0.1) * 5 * np.pi) ** 2, 0)
+    return (np.exp(-1j * k * points[:, 2]) * window)[:, None] * np.array([0, 1, 0])
+
+
+def _out_cross_sections_of_a_design_in_the_truncation_layer(request):
+    # a slab at the cube's +x end touches the layer: the cross sections read
+    # its elements, so its material cannot be differentiated there
+    def volume(c):
+        if c[0] > 0.75 and ((c > 0) & (c < 1)).all():
+            return "slab"
+        return "air" if ((c > 0) & (c < 1)).all() else "pml"
+
+    path = pml_cases.box(
+        request.getfixturevalue("tmp_path") / "slab.msh",
+        ("-x", "+x", "-y", "+y", "-z", "+z"),
+        thickness=0.25,
+        cells=4,
+        volume=volume,
+    )
+    mesh = gfem.Mesh.from_gmsh(path)
+    model = gfem.Model(
+        mesh,
+        materials={
+            "air": gfem.Material(),
+            "pml": gfem.Material(),
+            "slab": _field(mesh, "slab"),
+        },
+        pml=gfem.PML("pml"),
+        background=gfem.Material(),
+    )
+    wave = gfem.IncidentField("w", _cut_off_wave)
+    problem = gfem.Driven(frequency=pml_cases.F0, sources=wave, keep_fields=True)
+    result = gfem.solve(model, problem, options=gfem.SolverOptions(order=1))
+
+    def objective(e):
+        m = model.with_material("slab", gfem.MaterialField(eps_r=e))
+        xs = gfem.cross_sections(result, "w", model=m, intensity=1.0)
+        return xs.scattering[0]
+
+    jax.make_jaxpr(jax.grad(objective))(model.materials["slab"].eps_r)
+
+
+def _out_cross_sections_in_the_node_coordinates(request):
+    # the absorption reads the incident load, whose interpolant has no node
+    # derivative: the solve of the incident column refuses the nodes first
+    model, problem = request.getfixturevalue("planewave_case")
 
     def objective(nodes):
         mesh = jax.tree_util.tree_unflatten(
             jax.tree_util.tree_structure(model.mesh), [nodes]
         )
-        frozen = model.replace(mesh=jax.lax.stop_gradient(mesh))
-        field = gfem.solve(frozen, problem).e_field(20e9, "p1")
-        field = dataclasses.replace(field, mesh=mesh)
-        return gfem.power_flow(field, "core", model=frozen)
+        moved = model.replace(mesh=mesh)
+        result = gfem.solve(moved, problem)
+        return gfem.cross_sections(result, "w", model=moved, intensity=1.0).absorption[
+            0
+        ]
 
     jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
 
@@ -3139,6 +3411,30 @@ OUT_OF_SCOPE = [
         r"LumpedPort\.resistance is a fixed value.*inductance and capacitance",
     ),
     (
+        "design in the far-field layer",
+        _out_far_field_layer_design,
+        ValueError,
+        r"far-field layer just outside this side holds the design region 'scat'",
+    ),
+    (
+        "design in the beam_coupling layer",
+        _out_beam_coupling_layer_design,
+        ValueError,
+        r"beam_coupling's layer just outside the side holds region 'scat'",
+    ),
+    (
+        "beam_coupling with an IncidentField on a moved layer",
+        _out_beam_coupling_incident_field_on_a_moved_layer,
+        ValueError,
+        r"IncidentField 'down' as interpolated on the imported mesh.*have moved",
+    ),
+    (
+        "traced beam parameters in beam_coupling's test beam",
+        _out_beam_coupling_traced_beam,
+        gfem.NonDifferentiableError,
+        r"GaussianBeam\.waist is a fixed value",
+    ),
+    (
         "FloquetPort offset",
         _out_floquet_port_offset,
         gfem.NonDifferentiableError,
@@ -3257,16 +3553,22 @@ OUT_OF_SCOPE = [
         r"gfem\.electric_energy is not differentiable",
     ),
     (
+        "cross_sections x design in the truncation layer",
+        _out_cross_sections_of_a_design_in_the_truncation_layer,
+        gfem.NonDifferentiableError,
+        r"cross_sections with respect to the material of region 'slab'.*truncation",
+    ),
+    (
         "power_flow x material in its layer",
         _out_power_flow_of_a_material_in_its_layer,
         gfem.NonDifferentiableError,
         r"materials\['core'\]\.eps_r.*element layer.*move the surface",
     ),
     (
-        "power_flow x node coordinates",
-        _out_power_flow_in_the_node_coordinates,
+        "cross_sections x node coordinates",
+        _out_cross_sections_in_the_node_coordinates,
         gfem.NonDifferentiableError,
-        r"mesh node coordinates.*stop_gradient",
+        r"incident field 'w' enters the load.*node coordinates",
     ),
     (
         "heat_flow x node coordinates",

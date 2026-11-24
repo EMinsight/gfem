@@ -310,6 +310,90 @@ Tests: [closed forms](https://github.com/benvial/gfem/blob/main/tests/verificati
 [identities and refusals](https://github.com/benvial/gfem/blob/main/tests/unit/test_pml.py),
 [gradients](https://github.com/benvial/gfem/blob/main/tests/verification/test_pml_gradient.py).
 
+## Free space
+
+Incident fields, point dipoles and the measurements read from them are
+checked at order 3 against closed forms, against identities the physics must
+obey, and against finite differences:
+
+- **Spheres under a plane wave.** A lossy, a lossless and a perfectly
+  conducting sphere lit at 30° in TE and TM, solved as two columns of one
+  factorization: their extinction, absorption and scattering cross sections
+  match the Mie series at the radius of the sphere of equal volume, a
+  lossless sphere absorbs nothing, and a model cut by a symmetry plane
+  reports half of each. A wide Gaussian beam over its focal intensity gives
+  the plane wave's cross sections.
+- **The optical theorem.** The extinction read from the forward far-field
+  amplitude matches the power balance of the cross sections.
+- **A particle on a layered substrate.** A lossy particle on a film over
+  glass, lit from the air and from the glass past the critical angle (the
+  particle then sits in the evanescent tail): extinction is absorption plus
+  scattering, and each part is the same on any side holding the particle.
+  The stack's own field matches Fresnel's coefficients at one interface, in
+  total internal reflection too, Airy's sum for a lossy film and the
+  standing wave over a ground plane, and a lossless stack conserves its
+  normal power flux; with no particle, the scattered field vanishes to
+  round-off whatever the incidence.
+- **A Gaussian beam.** It solves Maxwell's equations (by finite
+  differences), is the superposition of plane waves it is built from, and
+  carries 1 W through any plane across its axis; its discrete residual in a
+  box falls under refinement in the element size and in the order.
+- **Dipoles in a homogeneous medium.** Electric and magnetic dipoles in
+  vacuum and in a dielectric emit the bulk power of the medium, so their
+  Purcell factor is 1.
+- **Dipoles above a ground plane.** Normal and tangential dipoles at several
+  heights above a perfect conductor and above a magnetic wall emit what
+  image theory gives, and their far fields are those of the dipole and its
+  image.
+- **A dipole in a two-mode guide.** The power it sends into each guided mode
+  over its emitted power, the beta factor, matches the guide's modal closed
+  form, and the guided powers add up to the emitted power.
+- **A dipole's power split.** What the ports carry away, what the layer takes
+  and what lossy materials absorb add up to the emitted power, to round-off.
+- **The far field of a Hertzian dipole.** Its pattern matches the closed
+  form, the intensity integrated over the sphere is the radiated power, the
+  peak directivity is 1.5, and two crossed dipoles in quadrature radiate
+  circular polarization along their axis, of axial ratio 1.
+- **A fiber over a grating coupler.** The coupling of the port-fed field into
+  the fiber's beam equals the wave the port receives when that beam lights
+  the grating (reciprocity), and it does not depend on the plane it is read
+  on. A dipole couples into a Gaussian beam as reciprocity gives from the
+  beam's field at the dipole.
+
+Gradients match finite differences: the Purcell factor and the beta factor
+by a design's permittivity, the emitted power by a boundary morph that moves
+the dipole's element and on an adaptive sweep, the cross sections under
+plane waves and a Gaussian beam, a plane wave's port wave and kept fields by
+the scatterer's permittivity and by its permittivity law's parameters, the
+radar cross section and the directivity by a design, the beam coupling by a
+design, and the power through a surface, the far field and the beam coupling
+by node coordinates (a morph of the device and a move of every node). Every
+refusal of a source or of its measurements is a test of its own. Across
+three MPI ranks, a plane wave on a homogeneous background and on a layered
+substrate, an electric dipole held by a rank other than the first, and every
+measurement read from them (cross sections, power through a surface, far
+fields, beam coupling, emitted power, Purcell factor and its gradient) equal
+one process's.
+
+All of these run on every change to gfem, with two exceptions. Two cases
+run before each release: the spheres on a refined mesh, against the Mie
+series and in their bistatic radar cross section, and a dipole above a glass
+half-space against Sommerfeld's reflection integrals. The checks across
+ranks need the {term}`MPI PETSc stack` and run twice a week.
+
+Tests: [spheres](https://github.com/benvial/gfem/blob/main/tests/verification/test_free_space_mie.py),
+[far fields of spheres](https://github.com/benvial/gfem/blob/main/tests/verification/test_far_field_mie.py),
+[layered substrate](https://github.com/benvial/gfem/blob/main/tests/verification/test_layered.py),
+[stack fields](https://github.com/benvial/gfem/blob/main/tests/unit/test_transfer_matrix.py),
+[Gaussian beam](https://github.com/benvial/gfem/blob/main/tests/unit/test_gaussian_beam.py),
+[dipoles](https://github.com/benvial/gfem/blob/main/tests/verification/test_dipoles.py),
+[far fields](https://github.com/benvial/gfem/blob/main/tests/verification/test_far_field.py),
+[beam coupling](https://github.com/benvial/gfem/blob/main/tests/verification/test_beam_coupling.py),
+[gradients](https://github.com/benvial/gfem/blob/main/tests/verification/test_free_space_gradient.py),
+[far-field gradients](https://github.com/benvial/gfem/blob/main/tests/verification/test_far_field_gradient.py),
+[dipole over glass](https://github.com/benvial/gfem/blob/main/tests/reference/test_layered_dipole.py),
+[across ranks](https://github.com/benvial/gfem/blob/main/tests/mpi/test_free_space.py).
+
 ## Anisotropic materials
 
 - An absorbing boundary ending a biaxial, magnetic slab reflects as the

@@ -174,6 +174,14 @@ p_box = gfem.power_flow(e, "design", model=model)
 - **With a perfectly matched layer**, `side` set to the layer regions gives
   the power they absorb; a surface that cuts through the layer has no
   physical meaning ({doc}`perfectly-matched-layer`).
+- **Under an incident field.** On the total field of an incident-field
+  column (`r.e_field(f, "wave")`, {doc}`incident-fields`) the incident load
+  is not a port, and its share of the residual is subtracted, so the number
+  is again exact: minus the power leaving a side of physical elements is
+  what that side absorbs, one region at a time. A side holding perfectly
+  matched layer elements raises (the field there is the scattered one), and
+  so does `part="incident"`, which balances no load; the scattered part
+  (`part="scattered"`) is the power the {term}`scattered field` carries out.
 - **Keep the surface off the ports.** A port's term needs its excitation,
   which a field does not record: a surface within one element of a port's
   surface raises `ValueError`. Move it one element away, or put the port's
@@ -181,6 +189,9 @@ p_box = gfem.power_flow(e, "design", model=model)
 - **The model the field was solved with** is a required input: the residual
   reads its materials and boundaries. Pass the same model: gfem does not
   detect a design solved with other `MaterialField` values.
+- **Across ranks.** On a field of a {term}`distributed solve` it is a
+  collective call: call it on every rank with the same side and model, and
+  every rank gets the same number ({doc}`distributed-solve`).
 - **Several ports fed at once.** `power_flow` is quadratic in the field, and
   the kept fields add up: for incident waves `a1` and `a2` (in sqrt(W)) at two
   ports, at one frequency,
@@ -211,9 +222,11 @@ p_box = gfem.power_flow(e, "design", model=model)
   their gradient there is not available: a material field with an element in
   that layer, traced, raises `gfem.NonDifferentiableError`. Keep the surface
   one element away from the design region (inside `side` is fine), or wrap
-  the value in `jax.lax.stop_gradient`. Node coordinates are not
-  differentiable here either; when they are traced (a `jax.jit` over the
-  model), name the side's regions instead of a predicate. A field of an adaptive sweep raises: its
+  the value in `jax.lax.stop_gradient`. The power is differentiable with
+  respect to the node coordinates too (a shape design,
+  {doc}`shape-gradient`): the element layer moves with its nodes. When they
+  are traced (a `jax.jit` over the model), name the side's regions instead
+  of a predicate. A field of an adaptive sweep raises: its
   frozen basis gives no exact gradient of the power; use `sweep="uniform"`.
 
 :::{note}

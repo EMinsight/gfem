@@ -42,6 +42,11 @@ GRID = {
     # the heat kernel has no shape terms
     "dissipated_power": (V, V, V, R),
     "electromagnetic_heating": (V, V, V, R),
+    # sources: the plane wave's load and the magnetic dipole's have no node
+    # derivative
+    "driven_incident": (V, V, V, R),
+    "driven_dipole": (V, V, V, V),
+    "driven_magnetic_dipole": (V, V, V, R),
     "steady_thermal": (Z, Z, Z, R),
     "transient_thermal": (Z, Z, Z, R),
     "dc_conduction": (Z, V, Z, R),
@@ -281,7 +286,8 @@ def test_raising_cells_name_their_error(derived):
 
 def test_raises_list_is_the_out_of_scope_rows_off_the_grid(derived):
     rows = {r["key"]: r for r in derived["raises"]}
-    assert len(rows) == 78
+    assert len(rows) == 83
+    assert rows["design in the far-field layer"]["error"] == "ValueError"
     assert "electrostatic x sheet fill" not in rows
     for knob in ("target_reflection", "reference_frequency"):
         layer = rows[f"PML target reflection ({knob})"]
@@ -363,7 +369,7 @@ def _derive(data, cells=None, expected=None, out_of_scope=None):
 
 
 def test_unchanged_data_derives(data):
-    assert len(_derive(data)["rows"]) == 17
+    assert len(_derive(data)["rows"]) == 20
 
 
 def test_a_new_problem_in_the_cells_fails(data):

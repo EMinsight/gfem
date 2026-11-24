@@ -112,7 +112,8 @@ def run(
 
     Raises:
         RuntimeError: A worker stopped without a result (killed, e.g. for
-            lack of memory). A worker's own exception is re-raised as is.
+            lack of memory, or dead while loading its inputs). A worker's
+            own exception is re-raised as is.
     """
     context = multiprocessing.get_context("spawn")
     # a queue and its feeder threads only while a row is drawn
@@ -143,7 +144,8 @@ def run(
                     raise RuntimeError(
                         f"The frequency worker solving {label} stopped without a "
                         "result: it was killed, most likely for lack of memory (each "
-                        "worker holds one solve). Use fewer "
+                        "worker holds one solve), or it died loading its inputs (a "
+                        "function it could not import). Use fewer "
                         "SolverOptions.frequency_workers, or frequency_workers=1."
                     ) from err
         if feed is not None:
