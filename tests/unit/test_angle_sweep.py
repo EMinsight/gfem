@@ -7,7 +7,6 @@ both faces) and coarse F2 (a lamellar grating) at p = 2 with the direct solver.
 
 import logging
 import math
-import re
 import warnings
 
 import numpy as np
@@ -50,9 +49,7 @@ def solves(monkeypatch):
 
 def test_s1_a_bad_angle_at_the_last_position_raises_before_any_solve(f1, solves):
     with pytest.raises(ValueError, match=r"theta must be in \[-pi/2, pi/2\]"):
-        dif.angle_sweep(
-            f1, [F0], surface=TOP, theta=[0.1, 0.2, 2.0], options=OPTS
-        )
+        dif.angle_sweep(f1, [F0], surface=TOP, theta=[0.1, 0.2, 2.0], options=OPTS)
     assert solves == []
 
 
@@ -74,7 +71,7 @@ def test_s1_sw2_excite_none_needs_a_specular_port_on_the_surface(f1, solves):
     with pytest.raises(ValueError) as error:
         dif.angle_sweep(model, [F0], surface=TOP, theta=[0.1], options=OPTS)
     text = str(error.value)
-    assert text.startswith("angle_sweep: excite=None excites the specular Floquet ports")
+    assert text.startswith("angle_sweep: excite=None excites the specular Floquet")
     assert "'z_max' has none" in text
     assert "gfem.diffraction.floquet_ports(model, 'z_max', frequency" in text
     assert solves == []
@@ -82,9 +79,7 @@ def test_s1_sw2_excite_none_needs_a_specular_port_on_the_surface(f1, solves):
 
 def test_s1_sw3_an_excited_port_must_propagate_at_every_incidence(f1, solves):
     with pytest.raises(ValueError) as error:
-        dif.angle_sweep(
-            f1, [F0], surface=TOP, theta=[0.1, math.pi / 2], options=OPTS
-        )
+        dif.angle_sweep(f1, [F0], surface=TOP, theta=[0.1, math.pi / 2], options=OPTS)
     text = str(error.value)
     assert text.startswith(
         "angle_sweep: at incidence 1 (theta = 90°, phi = 0°): FloquetPort 'R_TE'"
@@ -95,9 +90,7 @@ def test_s1_sw3_an_excited_port_must_propagate_at_every_incidence(f1, solves):
 
 def test_s1_an_unknown_excite_name_raises_before_any_solve(f1, solves):
     with pytest.raises(ValueError, match="names port 'nope'"):
-        dif.angle_sweep(
-            f1, [F0], surface=TOP, theta=[0.1], excite="nope", options=OPTS
-        )
+        dif.angle_sweep(f1, [F0], surface=TOP, theta=[0.1], excite="nope", options=OPTS)
     assert solves == []
 
 
@@ -145,9 +138,7 @@ def test_s3_normal_incidence_and_repeats_are_solved_once(f1, solves):
     assert sweep.theta == tuple(theta)
     assert sweep[0] is sweep[1]
     assert sweep[2] is sweep[3]
-    plain = gfem.solve(
-        f1, gfem.Driven([F0], excite=["R_TE", "R_TM"]), options=opts
-    )
+    plain = gfem.solve(f1, gfem.Driven([F0], excite=["R_TE", "R_TM"]), options=opts)
     assert np.array_equal(np.asarray(sweep[0].s.values), np.asarray(plain.s.values))
 
 
@@ -168,9 +159,7 @@ def test_s4_an_error_propagates_and_the_rerun_resumes_from_it(
     theta = [0.1, 0.2, 0.3]
     cache = tmp_path / "cache"
     with pytest.raises(RuntimeError, match="injected"):
-        dif.angle_sweep(
-            f1, [F0], surface=TOP, theta=theta, options=OPTS, cache=cache
-        )
+        dif.angle_sweep(f1, [F0], surface=TOP, theta=theta, options=OPTS, cache=cache)
     state.update(calls=0, fail_at=-1)
     with caplog.at_level(logging.INFO, logger="gfem.solve_cache"):
         sweep = dif.angle_sweep(
@@ -220,9 +209,7 @@ def test_s5_the_outputs_of_a_sweep_are_the_stacked_member_outputs(sweep, f1):
         b = dif.power_balance(member, TOP, polarization="unpolarized", model=f1)
         j = dif.jones(member, TOP, TOP, model=f1)
         assert np.array_equal(np.asarray(eff.values[i]), np.asarray(e.values))
-        assert np.array_equal(
-            np.asarray(bal.absorptance[i]), np.asarray(b.absorptance)
-        )
+        assert np.array_equal(np.asarray(bal.absorptance[i]), np.asarray(b.absorptance))
         assert np.array_equal(np.asarray(jon.values[i]), np.asarray(j.values))
     assert eff.values.shape[0] == 3
 

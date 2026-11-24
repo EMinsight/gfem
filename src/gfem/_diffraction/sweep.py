@@ -115,9 +115,7 @@ def _flat_angles(theta: Any, phi: Any) -> tuple[np.ndarray, np.ndarray]:
     if np.size(theta) == 0:
         raise ValueError(f"{who}: theta is empty: give at least one incidence.")
     try:
-        t, p = np.broadcast_arrays(
-            np.asarray(theta, float), np.asarray(phi, float)
-        )
+        t, p = np.broadcast_arrays(np.asarray(theta, float), np.asarray(phi, float))
         ok = t.ndim <= 1
     except ValueError:
         ok = False

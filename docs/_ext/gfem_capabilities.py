@@ -449,6 +449,10 @@ RAISES_LABELS = {
         "of the measurement; to optimize it, combine the columns of a Jones "
         "matrix with your own vector)"
     ),
+    "angle_sweep under a traced angle": (
+        "`gfem.diffraction.angle_sweep`, with respect to the incidence angles "
+        "(each incidence is a constant of its solve)"
+    ),
     "driven x material of a Floquet port's half-space": (
         "Driven S-parameters, with respect to the material of the half-space "
         "behind a Floquet port (it fixes the diffraction orders)"

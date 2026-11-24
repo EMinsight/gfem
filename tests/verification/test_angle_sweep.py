@@ -88,9 +88,7 @@ def f2_sweep(tmp_path_factory):
     ]
     ports = [
         *dif.floquet_ports(base, TOP, F0, wave_vector=ks, wave_vector_frequency=F0),
-        *dif.floquet_ports(
-            base, "z_min", F0, wave_vector=ks, wave_vector_frequency=F0
-        ),
+        *dif.floquet_ports(base, "z_min", F0, wave_vector=ks, wave_vector_frequency=F0),
     ]
     model = base.replace(ports=ports)
     sweep = dif.angle_sweep(

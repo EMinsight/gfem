@@ -3291,6 +3291,19 @@ def _out_diffraction_polarization(request):
     jax.make_jaxpr(jax.grad(objective))(1.0)
 
 
+def _out_angle_sweep_traced_angle(request):
+    # each incidence is a constant of its solve: refused before any solve
+    from gfem import diffraction as dif
+
+    model, _ = request.getfixturevalue("driven_floquet_cases")["driven_floquet_plain"]
+
+    def objective(t):
+        sweep = dif.angle_sweep(model, [pc.F1_FREQUENCY], surface="z_max", theta=t)
+        return sweep[0].s.values.real.sum()
+
+    jax.grad(objective)(0.3)
+
+
 def _out_eigenmode_floquet_port(request):
     # an order's propagation constant at a complex frequency: refused
     model = request.getfixturevalue("floquet_cell")
@@ -4121,6 +4134,12 @@ OUT_OF_SCOPE = [
         _out_diffraction_polarization,
         gfem.NonDifferentiableError,
         r"efficiencies: polarization must be fixed numbers",
+    ),
+    (
+        "angle_sweep under a traced angle",
+        _out_angle_sweep_traced_angle,
+        gfem.NonDifferentiableError,
+        r"angle_sweep: theta and phi must be fixed numbers",
     ),
     # periodic eigenmode rows
     (
