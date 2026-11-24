@@ -270,6 +270,34 @@ jobs:
     - name: Unit tier
       run: uv run --no-sync pytest -m unit
 
+  sax-newest:
+    # pip resolves gfem[sax] to the newest SAX, which caps JAX below 0.10; the
+    # lock and the lowest job never see that pair. Runs the tests that touch
+    # SAX or scikit-rf: add each new one to the list.
+    name: unit, newest SAX as pip resolves it (ubuntu, py3.12)
+    if: inputs.tests == ''
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - uses: astral-sh/setup-uv@v6
+      with:
+        version: ${{ env.UV_VERSION }}
+        python-version: "3.12"
+    - name: Install
+      run: |
+        uv venv .venv-sax --python 3.12
+        uv pip install --python .venv-sax ".[sax,skrf]" "sax>=0.17" pytest
+    - name: SAX is live
+      run: >-
+        .venv-sax/bin/python -c "import importlib.metadata as md, sax, klujax, skrf;
+        print({p: md.version(p) for p in ('sax', 'klujax', 'jax', 'scikit-rf')})"
+    - name: SAX unit tests
+      run: >-
+        .venv-sax/bin/python -m pytest -rs tests/unit/test_import.py
+        tests/unit/test_to_sdict.py tests/unit/test_to_skrf.py
+        tests/unit/test_sax_component.py tests/unit/test_sax_circuits.py
+        tests/unit/test_docs_sax_recipe.py
+
   build:
     name: build wheel and sdist
     if: inputs.tests == ''
@@ -315,6 +343,10 @@ jobs:
         # The MPI extra is Linux x86_64 only (no-op on macOS).
         - {os: ubuntu-latest, python: "3.12", extra: mpi}
         - {os: macos-latest, python: "3.12", extra: mpi}
+        # klujax, which SAX pulls in, is native on all three.
+        - {os: ubuntu-latest, python: "3.12", extra: sax}
+        - {os: macos-latest, python: "3.12", extra: sax}
+        - {os: windows-latest, python: "3.12", extra: sax}
     defaults:
       run:
         shell: bash

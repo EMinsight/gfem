@@ -18,12 +18,14 @@ from numpy.typing import ArrayLike
 
 from gfem import _objective
 from gfem._checks import is_traced, static_float
+from gfem._circuit_ports import Circuit, check_circuit, circuit_ports, circuit_z0
 from gfem._field import Field, FieldMap, ReducedFields
 from gfem._pytree import register_fields
 from gfem._sources import INCIDENT, Source
 from gfem._text import hertz, hertz_band
 
 if TYPE_CHECKING:
+    import skrf.network
     import xarray
 
     from gfem._engine.line_mode import ModeSpace
@@ -592,7 +594,9 @@ class PortModeField:
     Peak phasor of the mode carrying 1 W time-averaged power through the
     port (1 W/m through a line port of a 2D mesh), propagating into the solve
     domain as :math:`e^{-\gamma s}`, :math:`s` the distance along the inward
-    port normal. Fields follow :math:`e^{+i\omega t}`.
+    port normal. Fields follow :math:`e^{+i\omega t}`. Under the port's
+    ``polarity`` the field at its point along its direction is real and
+    positive at every frequency.
 
     Attributes:
         quantity: ``"E"``; on a line port, ``"Ez"`` or ``"Hz"``.
@@ -1045,6 +1049,188 @@ class NetworkParameters:
             excited=self.ports,
         )
 
+    def to_sdict(
+        self,
+        *,
+        circuit: Circuit,
+        ports: Mapping[str, str] | None = None,
+        z0: Any = None,
+    ) -> dict[tuple[str, str], jax.Array]:
+        r"""S between circuit ports as a SAX dictionary (an ``SDict``).
+
+        A plain ``dict`` keyed ``(input, output)`` by circuit port name:
+        ``sd["o1", "o2"]`` is :math:`S_{21}`, the wave out of the port named
+        ``"o2"`` when the port named ``"o1"`` is fed, over `frequency` in its
+        order, shape ``(n_freq,)``. It holds every pair of exposed ports,
+        zeros included, because SAX reads a missing key as zero; gfem does not
+        import SAX. Written in `jax.numpy`, so it differentiates like S.
+
+        The exposed ports' sub-network comes first: their rows and columns
+        of S, with their ``z_ref``. The other ports terminate the device as
+        in the solve (a wave port absorbs its mode, a lumped port is its own
+        R, L and C). Then ``circuit`` sets the conventions:
+
+        - ``"optical"``: SAX's photonic models are :math:`e^{-i\omega t}`,
+          so the dictionary holds :math:`\overline{S}`, the same fields in
+          that convention. S keeps its normalization (unit modal power on a
+          wave port).
+        - ``"rf"``: SAX's RF models are :math:`e^{+i\omega t}`, as gfem, and
+          share one real reference impedance, which an ``SDict`` does not
+          carry. S is renormalized (`renormalize`) from the ports' own
+          ``z_ref`` to ``z0``, 50 ohm unless given, SAX's RF default.
+
+        Only names reach this method, not the ports: the sign of a wave
+        port's row and column of S is physical only when the port has a
+        polarity reference (``WavePort(polarity=)``) or a ``voltage_path``.
+        Otherwise the mode's default sign depends on the mesh, and so does
+        the interference a circuit computes from it.
+
+        Args:
+            circuit: ``"optical"`` or ``"rf"``, the kind of SAX circuit
+                that uses the dictionary; never inferred, because the wrong
+                one still composes, with wrong interference.
+            ports: gfem port name -> circuit port name, e.g.
+                ``{"p1": "o1", "p2": "o2"}``, in the order the keys are
+                listed. A circuit port name is a Python identifier, or
+                ``name@mode`` (SAX multimode) for every port or none. Ports
+                left out are terminated, not exposed. ``None`` exposes every
+                port under its own name.
+            z0: For ``"rf"``, the reference impedance S is renormalized
+                to, ohm, one positive real scalar; ``None`` means 50 ohm. It
+                may be traced. Refused for ``"optical"``.
+
+        Returns:
+            ``{(input, output): S over frequency}`` for every pair of
+            exposed ports.
+
+        Raises:
+            ValueError: ``circuit`` is neither kind; a name in ``ports`` is
+                not a port, a circuit port name is invalid or repeated;
+                an exposed port was not excited (its column of S is
+                unknown); ``z0`` is given for ``"optical"`` or is not one
+                positive real value; or, for ``"rf"``, an exposed port has no
+                reference impedance (checked on concrete values).
+        """
+        check_circuit(circuit, "the time convention and the normalization of S")
+        exposed = circuit_ports(ports, self.ports)
+        sub = self._subnetwork(tuple(exposed), "to_sdict()")
+        if circuit == "rf":
+            z0 = circuit_z0(z0)
+            if not is_traced(sub.z_ref):
+                _require_reference(sub, "An RF circuit renormalizes S to z0")
+            sub = sub.renormalize(z0)
+        elif z0 is not None:
+            raise ValueError(
+                "z0 is the reference impedance of an RF circuit; an optical "
+                "circuit keeps S as solved (unit modal power), so drop z0= or "
+                "use circuit='rf'."
+            )
+        values = jnp.asarray(sub.values)
+        if circuit == "optical":
+            # gfem's e^{+i w t} phasors -> SAX's photonic e^{-i w t}
+            values = jnp.conj(values)
+        names = list(exposed.values())
+        return {
+            (c_in, c_out): values[:, i_out, i_in]
+            for i_in, c_in in enumerate(names)
+            for i_out, c_out in enumerate(names)
+        }
+
+    def to_skrf(
+        self, *, ports: Sequence[str] | None = None, name: str | None = None
+    ) -> skrf.network.Network:
+        r"""S as a scikit-rf `~skrf.network.Network`, on the ports' own references.
+
+        scikit-rf uses gfem's :math:`e^{+i\omega t}` and pseudo-waves on a
+        complex reference per port and frequency (``s_def="pseudo"``), so S
+        and `z_ref` pass unchanged: the network's ``z``, ``y`` and
+        ``renormalize`` are exact. Rows are put in increasing frequency, as
+        scikit-rf expects, whatever the order of `frequency`, and the port
+        names are the network's ``port_names``. Not differentiable: S is
+        copied to NumPy. Needs the ``skrf`` extra:
+        ``pip install "gfem[skrf]"``.
+
+        For one real reference, renormalize the network itself, e.g.
+        ``nw.renormalize(50.0)``. scikit-rf's ``Network.a`` (ABCD) assumes
+        power waves: it is wrong on a complex pseudo-wave reference and
+        right after renormalizing to a real one.
+
+        Args:
+            ports: The ports to export, in order; the other ports terminate
+                the device as in the solve, so a model with an internal
+                lumped load (a port with only L or C) exports the rest.
+                ``None`` exports every port.
+            name: The network's name.
+
+        Returns:
+            The network of the chosen ports.
+
+        Raises:
+            ImportError: scikit-rf is not installed.
+            TypeError: The values are computed inside `jax.grad`, `jax.jit`
+                or `jax.vmap`; export the result outside them.
+            ValueError: ``ports`` names a port that does not exist or repeats
+                one, a chosen port was not excited, or a chosen port has no
+                reference impedance (scikit-rf could not label S with it).
+        """
+        if is_traced(self.values) or is_traced(self.z_ref):
+            raise TypeError(
+                "NetworkParameters.to_skrf needs concrete values and cannot run "
+                "under jax.jit, jax.grad or jax.vmap; export the result outside "
+                "the transformed function."
+            )
+        try:
+            rf = importlib.import_module("skrf")
+        except ImportError:
+            raise ImportError(
+                'NetworkParameters.to_skrf needs scikit-rf: pip install "gfem[skrf]".'
+            ) from None
+        sub = self._subnetwork(_port_selection(ports, self.ports), "to_skrf()")
+        _require_reference(
+            sub,
+            "scikit-rf labels S with it",
+            " A network of wave ports without voltage_path can be written under "
+            "a nominal label with to_touchstone(z0=).",
+        )
+        order = np.argsort(self.frequency, kind="stable")
+        network = rf.Network(
+            f=np.asarray(self.frequency)[order],
+            s=np.asarray(sub.values)[order],
+            z0=np.asarray(sub.z_ref)[order],
+            s_def="pseudo",
+        )
+        if name is not None:
+            network.name = name
+        # an attribute, because scikit-rf 1.x ignores the port_names keyword
+        network.port_names = list(sub.ports)
+        return network
+
+    def _subnetwork(self, ports: tuple[str, ...], what: str) -> NetworkParameters:
+        """The network of ``ports`` with the other ports terminated as solved.
+
+        Rows and columns of S in ``ports`` order, with their ``z_ref``.
+
+        Raises:
+            ValueError: A port in ``ports`` was not excited.
+        """
+        missing = [p for p in ports if p not in self.excited]
+        if missing:
+            raise ValueError(
+                f"{what} needs the column of S of every exposed port, but "
+                f"{', '.join(map(repr, missing))} was not excited (the excited "
+                f"ports are {', '.join(map(repr, self.excited))}). Solve with "
+                "Driven(excite=None), or leave the port out of ports=."
+            )
+        rows = np.array([self.ports.index(p) for p in ports])
+        cols = np.array([self.excited.index(p) for p in ports])
+        return NetworkParameters(
+            values=jnp.asarray(self.values)[:, rows][:, :, cols],
+            z_ref=jnp.asarray(self.z_ref)[:, rows],
+            frequency=self.frequency,
+            ports=ports,
+            excited=ports,
+        )
+
     def to_xarray(self) -> xarray.Dataset:
         """S and the reference impedances as an `xarray.Dataset`.
 
@@ -1400,6 +1586,53 @@ def _pseudo(z: jax.Array) -> jax.Array:
 def _diag(v: jax.Array) -> jax.Array:
     """``(n_freq, n)`` -> stacked diagonal matrices ``(n_freq, n, n)``."""
     return v[:, :, None] * jnp.eye(v.shape[-1])
+
+
+def _require_reference(net: NetworkParameters, why: str, also: str = "") -> None:
+    """Raise if a port of ``net`` has no reference impedance (a NaN ``z_ref``).
+
+    ``why`` says what needs one; ``also`` is one more remedy sentence.
+    """
+    nan = np.isnan(np.asarray(net.z_ref)).any(axis=0)
+    missing = [p for p, bad in zip(net.ports, nan, strict=True) if bad]
+    if missing:
+        raise ValueError(
+            f"Port {', '.join(map(repr, missing))} has no reference impedance "
+            "(z_ref is NaN): a LumpedPort without a resistance, a WavePort "
+            "without a voltage_path, or a FloquetPort whose order is evanescent. "
+            f"{why} and needs one: give the port a resistance or a voltage_path, "
+            f"or leave it out of ports= to keep it inside the device.{also}"
+        )
+
+
+def _port_selection(ports: Sequence[str] | None, names: tuple[str, ...]) -> tuple:
+    """``ports`` checked: port names in the given order, every port if ``None``.
+
+    Raises:
+        TypeError: ``ports`` is one string, not a sequence of names.
+        ValueError: ``ports`` is empty, repeats a port or names one that
+            does not exist.
+    """
+    if ports is None:
+        return names
+    if isinstance(ports, str):
+        raise TypeError(
+            f"ports= is a sequence of port names, e.g. [{ports!r}]; got the "
+            f"string {ports!r}."
+        )
+    chosen = tuple(ports)
+    listed = ", ".join(map(repr, names))
+    if not chosen:
+        raise ValueError(f"ports= selects no port; the ports are {listed}.")
+    unknown = [p for p in chosen if p not in names]
+    if unknown:
+        raise ValueError(
+            f"No port {', '.join(map(repr, unknown))}; the ports are {listed}."
+        )
+    repeated = sorted({p for p in chosen if chosen.count(p) > 1})
+    if repeated:
+        raise ValueError(f"Port {', '.join(map(repr, repeated))} is listed twice.")
+    return chosen
 
 
 def _touchstone_z0(z0: object) -> float:

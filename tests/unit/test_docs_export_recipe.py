@@ -13,6 +13,7 @@ keys elided: they change with every edit of gfem's code.
 """
 
 import hashlib
+import importlib.util
 import json
 import logging
 import os
@@ -32,6 +33,7 @@ import gfem
 PAGE = dp.DOCS / "recipes" / "save-and-export.md"
 Z_LINE = 376.73 / 6
 CACHE = "Solve once, read it back"
+SKRF = "S to scikit-rf"
 KEY = re.compile(r"\b(?:[0-9a-f]{64}|[0-9a-f]{12})\b")
 
 
@@ -55,10 +57,12 @@ def _run(command: str) -> None:
 @pytest.fixture(scope="module")
 def page(tmp_path_factory):
     workdir = tmp_path_factory.mktemp("save_and_export")
+    # the scikit-rf section needs the extra; the rest of the page does not
+    skip = () if importlib.util.find_spec("skrf") else (SKRF,)
     log = logging.getLogger("gfem.solve_cache")
     handlers, level = list(log.handlers), log.level
     try:
-        yield workdir, dp.run_page(PAGE, workdir, shell=_run)
+        yield workdir, dp.run_page(PAGE, workdir, shell=_run, skip=skip)
     finally:
         # the page turns the logger on for the reader's session, not the tests'
         log.handlers[:] = handlers
@@ -117,7 +121,7 @@ def _cache_blocks(ran) -> list[dp.Example]:
 
 def test_every_section_with_a_number_prints_it(ran):
     printing = {example.section for example in ran if example.printed.strip()}
-    assert printing == {
+    assert printing - {SKRF} == {
         "S to a Touchstone file",
         "S to xarray",
         "Fields to ParaView or PyVista",
@@ -140,6 +144,16 @@ def test_the_touchstone_files_hold_s_and_its_50_ohm_form(ran, workdir, s):
     ).renormalize(Z_LINE)
     assert np.asarray(back.values) == pytest.approx(values, abs=1e-12)
     assert "True" in ran[1].printed
+
+
+def test_the_scikit_rf_network_is_s_on_the_ports_own_references(ran, s):
+    pytest.importorskip("skrf")
+    (example,) = [e for e in ran if e.section == SKRF]
+    assert example.printed.split() == ["pseudo", "62.7883", "True"]
+    nw = s.to_skrf(name="line")
+    assert nw.s_def == "pseudo"
+    assert nw.z0[0, 0].real == pytest.approx(Z_LINE, abs=5e-5)
+    assert nw.s == pytest.approx(np.asarray(s.values), abs=1e-15)
 
 
 def test_the_xarray_dataset_and_its_netcdf_file(ran, workdir, s):

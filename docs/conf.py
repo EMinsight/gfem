@@ -215,6 +215,9 @@ nitpick_ignore = [
             # SolverOptions.petsc_options' types, which its Attributes text describes
             "PetscValue",
             "PetscOptions",
+            "Polarity",  # WavePort.polarity: a point and a direction
+            "Circuit",  # SaxComponent's circuit kind, "optical" or "rf"
+            "gfem._circuit_ports.Circuit",
         )
     ],
     # The private base of the dispersion terms (shown as "Bases:"), and the
@@ -239,6 +242,7 @@ intersphinx_mapping = {
     "scipy": ("https://docs.scipy.org/doc/scipy", None),
     "jax": ("https://docs.jax.dev/en/latest", None),
     "xarray": ("https://docs.xarray.dev/en/stable", None),
+    "skrf": ("https://scikit-rf.readthedocs.io/en/latest", None),
 }
 # --- end API reference ----------------------------------------------------------
 
@@ -272,7 +276,7 @@ gfem_install = {
     "extra": 'pip install "gfem[{extra}]"',
 }
 # The extras get-started.md installs, in its table's order.
-gfem_extras = ("mkl", "cuda12", "xarray", "viz", "mpi", "log")
+gfem_extras = ("mkl", "cuda12", "xarray", "viz", "mpi", "log", "sax", "skrf")
 
 
 def _status(version: str) -> str:

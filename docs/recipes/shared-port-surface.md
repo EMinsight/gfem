@@ -58,13 +58,16 @@ the saved job.
   request different `mode`s and give the same `pec_edges`; a
   {py:obj}`gfem.LumpedPort` or a boundary condition cannot share the surface
   with them. `gfem.Model` raises `ValueError` otherwise.
-- **Per port.** `offset` and `voltage_path` belong to each port. Each mode is
-  de-embedded with its own propagation constant. A `voltage_path` fixes that
-  mode's sign (`Re V > 0` along the path) and gives its `z_ref`. Without one,
-  a mesh-dependent rule fixes the sign of the port's row and column of S.
-  `|S|` and every power are unaffected, but the phase of a cross-mode entry
-  is then not comparable between meshes: give a `voltage_path` to compare
-  phases.
+- **Per port.** `offset`, `voltage_path` and `polarity` belong to each port.
+  Each mode is de-embedded with its own propagation constant. A
+  `voltage_path` fixes that mode's sign (`Re V > 0` along the path) and gives
+  its `z_ref`. Without one, a mesh-dependent rule fixes the sign of the
+  port's row and column of S, and in 3D so does the model's orientation in
+  the global frame. `|S|` and every power are unaffected, but the phase of a
+  cross-mode entry is then not comparable between meshes: give a
+  `voltage_path` to compare phases. A `polarity` fixes a mode's sign without
+  defining a voltage, one arrow per port (TE0 and TM0 on one surface take
+  different arrows): use it to compare phases, or in a circuit.
 - **`mode` is a rank, not a polarization.** It is the mode's rank at the
   lowest frequency of the solve, 1 being the most confined (the largest
   effective index). Check which rank is TM0 before naming a port after it:

@@ -81,9 +81,12 @@ reference, a line matched to its own characteristic impedance has
   symmetry by the ratio of their normalizations on a lossy line.
   ``WavePort(offset=d)`` refers S to a plane :math:`d` inside the
   domain: :math:`S_{ij}` times :math:`e^{\gamma_i d_i} e^{\gamma_j d_j}`.
-  Without a ``voltage_path``, the sign of a wave port's row and column of
-  S is fixed by a mesh-dependent rule; every :math:`|S|` and power is
-  unaffected.
+  Without a ``voltage_path`` or a ``polarity``, the sign of a wave port's
+  row and column of S is fixed by a mesh-dependent rule and, in 3D, by the
+  model's orientation in the global frame; every :math:`|S|` and power is
+  unaffected. With a ``polarity``, the mode's field at the given point
+  along the given direction (the field normal to the plane on a line port)
+  is real and positive at every frequency.
 - ``NetworkParameters.y()``, ``.z()`` and ``.renormalize(z_new)`` use the
   pseudo-wave formulas; ``to_touchstone`` labels a file with ``z_ref`` only
   when it is one real value, and otherwise needs ``z0=`` to renormalize
@@ -687,6 +690,27 @@ A source column's port waves (``DrivenResult.port_waves``) and
   column :math:`c` is the port wave :math:`b` of the beam's column when the
   beam lights the device; :math:`|c|^2` is a coupled power on a real
   reference, a pseudo-wave otherwise, as for :math:`b`.
+
+Circuit components
+------------------
+`gfem.SaxComponent` and `gfem.NetworkParameters.to_sdict` hand S to a SAX
+circuit as ``{(input, output): S}`` over circuit port names, so
+``sd["o1", "o2"]`` is :math:`S_{21}`. The circuit's kind sets the convention:
+
+- ``"optical"``: SAX's photonic models are :math:`e^{-i\omega t}`, so S is
+  returned complex-conjugated, :math:`\overline{S}`, with the normalization
+  of S (unit modal power on a wave port). The circuit's wavelength is ``wl``
+  in µm.
+- ``"rf"``: SAX's RF models are :math:`e^{+i\omega t}`, as gfem, so S keeps
+  its time convention. It is renormalized to one real reference impedance
+  ``z0`` (ohm, 50 by default) shared by every model of the circuit, and the
+  circuit's frequency is ``f`` in Hz.
+
+The sign of a wave port's row and column of S is physical only with a
+``polarity`` reference or a ``voltage_path``, which a component requires on
+every wave port it exposes. Between the frequencies of its band a component
+interpolates the real and imaginary parts of S, so a circuit's derivative
+with respect to ``wl`` or ``f`` is the interpolant's.
 """
 
 from __future__ import annotations

@@ -26,6 +26,7 @@ from gfem._boundaries import (
     Impedance,
     LumpedPort,
     Periodic,
+    Polarity,
     Port,
     WavePort,
     sheet_of,
@@ -518,6 +519,8 @@ class Model:
             if isinstance(item, WavePort):
                 for edge in item.pec_edges:
                     check_surface(mesh, edge, f"WavePort {item.name!r} pec_edges")
+                if item.polarity is not None:
+                    _check_polarity(item.name, item.polarity, mesh.dim)
         _check_one_per_surface(taken)
         self._check_fixed_temperatures()
 
@@ -1138,6 +1141,32 @@ def _items(values: Any, kinds: tuple[type, ...], what: str) -> tuple:
             names = ", ".join(k.__name__ for k in kinds)
             raise TypeError(f"{what} takes {names}; got {item!r}.")
     return items
+
+
+def _check_polarity(
+    name: str,
+    polarity: Polarity,
+    dim: int,
+) -> None:
+    """A polarity's point has the mesh's dimension; a line port's arrow is ±z."""
+    point, direction = polarity
+    owner = f"WavePort {name!r} polarity"
+    if dim == 3 and len(point) != 3:
+        raise ValueError(
+            f"{owner}: the mesh is 3D, so the point needs 3 coordinates (x, y, z) "
+            f"in m, got {point!r}."
+        )
+    if dim == 2:
+        if len(point) != 2:
+            raise ValueError(
+                f"{owner}: the mesh is 2D, so the point is (x, y) in m on the "
+                f"port's line, got {point!r}."
+            )
+        if abs(direction[2]) != 1.0:
+            raise ValueError(
+                f"{owner}: on a line port the direction is '+z' or '-z' (the "
+                f"solved field is normal to the plane), got {direction!r}."
+            )
 
 
 def _check_one_per_surface(taken: dict[tuple[str, str], list]) -> None:

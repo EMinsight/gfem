@@ -7,6 +7,7 @@ orphan: true
 ## Gradients
 
 - {doc}`s-parameter-gradient`
+- {doc}`sax-circuit`
 - {doc}`capacitance-gradient`
 - {doc}`eigenmode-gradient`
 - {doc}`quantum-metrics`

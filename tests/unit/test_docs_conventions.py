@@ -91,6 +91,11 @@ def test_a_driven_field_carries_what_the_port_does_not_reflect(ran):
     assert through == pytest.approx(unreflected, abs=2e-6)
 
 
+def test_a_circuit_receives_the_conjugate_when_photonic_and_the_50_ohm_s_when_rf(ran):
+    (example,) = [e for e in ran if e.section == "SAX circuits"]
+    assert example.printed.split() == ["True", "True"]
+
+
 def test_a_decaying_mode_has_a_positive_imaginary_frequency(ran):
     (example,) = [example for example in ran if example.section == "Sign of loss"]
     assert example.printed.split()[1] == "True"
