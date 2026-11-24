@@ -8,3 +8,7 @@ Floquet surface.
 from __future__ import annotations
 
 __all__: list[str] = []
+
+from gfem._diffraction.aperture import ApertureField, propagate
+
+__all__ += ["ApertureField", "propagate"]

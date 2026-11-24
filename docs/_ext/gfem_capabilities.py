@@ -451,6 +451,10 @@ RAISES_LABELS = {
         "Driven S-parameters, with respect to node coordinates on a Floquet "
         "port's surface"
     ),
+    "propagate x distance": (
+        "`gfem.diffraction.propagate`, with respect to the propagation distance "
+        "or the padding (the transfer function is built once, outside the trace)"
+    ),
     "Model.bloch_wave_vector under a traced angle": (
         "`Model.bloch_wave_vector`, with respect to the incidence angles (the "
         "incidence of a Floquet port is a constant of the solve)"
