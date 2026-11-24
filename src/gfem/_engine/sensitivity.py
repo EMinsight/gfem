@@ -571,6 +571,7 @@ def energy_term(
 
 #: Operator families whose rules' terms the node pass reads.
 SHAPE_FORMS = frozenset({"electrostatic", "driven", "eigenmode", "piezoelectric"})
+SHAPE_FORMS = frozenset({"electrostatic", "driven", "eigenmode", "port mode"})
 #: Operator families whose pairs carry the sheet pieces' weights (by name).
 SHEET_FORMS = frozenset({"driven", "eigenmode", "port mode"})
 #: Operator families whose pairs carry the lumped pieces' weights (by name).

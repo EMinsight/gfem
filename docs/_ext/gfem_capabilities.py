@@ -483,7 +483,8 @@ RAISES_LABELS = {
         "port's mode reads"
     ),
     "driven x nodes of a port surface": (
-        "Driven S-parameters, with respect to node coordinates on a port surface"
+        "Driven S-parameters, with respect to node coordinates on a lumped or "
+        "Floquet port surface"
     ),
     "eigenmode x nodes of a port surface": (
         "Eigenmode results, with respect to node coordinates on a port surface"

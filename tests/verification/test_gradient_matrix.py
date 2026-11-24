@@ -205,6 +205,8 @@ from periodic_cases import (
 )
 
 import gfem
+from gfem import _pml
+from gfem._port_section import port_section
 from gfem.shape import boundary_morph
 from gfem.thermal import _tet_volumes
 
@@ -576,7 +578,7 @@ def _blend_cells() -> list[Cell]:
 
 #: The face cells' inputs by variant: a design at the wave port faces.
 FACE_INPUTS = {
-    "face_lossless": ("eps_r",),
+    "face_lossless": ("eps_r", "nodes"),
     "face_lossy": (
         "eps_r",
         "conductivity",
@@ -584,10 +586,11 @@ FACE_INPUTS = {
         "mu_r",
         "eps_r_axes",
         "law",
+        "nodes",
     ),
-    "face_path": ("eps_r",),
+    "face_path": ("eps_r", "nodes"),
     "face_absorbing": ("eps_r", "law"),
-    "face_shared": ("eps_r",),
+    "face_shared": ("eps_r", "nodes"),
 }
 
 
@@ -803,6 +806,9 @@ def _port_mode_cells() -> list[Cell]:
         # a hybrid mode of a shared port surface, a layer cutting the face
         Cell("port_mode", "eps_r", "direct", variant="shared"),
         Cell("port_mode", "eps_r", "direct", variant="pml"),
+        # the face stretches in its plane; the strip's nodes inside the layer
+        Cell("port_mode", "nodes", "direct"),
+        Cell("port_mode", "nodes", "direct", variant="pml"),
         # the sheet's fill and the Impedance's R, L, C beside the face
         Cell("port_mode", "fill", "direct", variant="conductor"),
         Cell("port_mode", "fill", "direct", variant="impedance"),
@@ -2793,6 +2799,35 @@ def _face_material(d: Designs, cell: Cell, options, seed: int) -> Case:
     return Case(objective, p0, rng, step=STEPS[name], taylor=taylor)
 
 
+def _face_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """S, gamma and Z_PV as the port faces stretch in their plane.
+
+    The top plate moves with the wave ports' faces sliding (their gap grows
+    and shrinks); with a voltage path, a side wall does (the path is a fixed
+    set of points between the plates, which must stay).
+    """
+    options = _face_options(options)
+    mesh, model, problem, rows, paths = _face_problem(d, cell)
+    functional = _face_objective(rows, paths, shared=cell.variant == "face_shared")
+    ports = tuple(p.name for p in model.ports if isinstance(p, gfem.WavePort))
+    surface = "side" if paths else "top"
+    morph = boundary_morph(model, surface, sliding_ports=ports)
+    del mesh
+
+    def objective(t):
+        moved = model.replace(mesh=morph(t))
+        return functional(gfem.solve(moved, problem, options=options))
+
+    return Case(
+        objective,
+        jnp.zeros(morph.n_params),
+        np.random.default_rng(seed),
+        step=STEPS["nodes"],
+        taylor=4e-5,
+        taylor_at=jnp.full(morph.n_params, 1e-5),
+    )
+
+
 def _face_law(d: Designs, cell: Cell, options, seed: int) -> Case:
     """S, gamma and Z_PV in the law parameters of the lower layer (`COVER_LAW`)."""
     options = _face_options(options)
@@ -2876,7 +2911,12 @@ FACE_BUILDERS = {
         ("driven_wave", name, variant): _face_material
         for variant, names in FACE_INPUTS.items()
         for name in names
-        if name != "law"
+        if name not in ("law", "nodes")
+    },
+    **{
+        ("driven_wave", "nodes", variant): _face_nodes
+        for variant, names in FACE_INPUTS.items()
+        if "nodes" in names
     },
     **{
         ("driven_wave", "law", variant): _face_law
@@ -4030,7 +4070,77 @@ def _port_mode_law(
     return _law_case(objective, COVER_LAW, seed)
 
 
+def _port_mode_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """Gamma and Z_PV of p1 as the side walls move, with the faces sliding."""
+    if cell.variant == "pml":
+        return _port_mode_pml_nodes(d, cell, options, seed)
+    options = _port_mode_tight(options)
+    model = port_mode_line(d.wave_mesh, gfem.Material(eps_r=4.0, tan_delta=0.05))
+    problem = gfem.PortMode("p1", PORT_MODE_FREQUENCIES)
+    morph = boundary_morph(model, "side", sliding_ports=("p1", "p2"))
+
+    def objective(t):
+        result = gfem.solve(model.replace(mesh=morph(t)), problem, options=options)
+        return port_mode_functional(result, PORT_MODE_FREQUENCIES, field=False)
+
+    return Case(
+        objective,
+        jnp.zeros(morph.n_params),
+        np.random.default_rng(seed),
+        step=STEPS["nodes"],
+        taylor=4e-5,
+        taylor_at=jnp.full(morph.n_params, 1e-5),
+    )
+
+
+def _port_mode_pml_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:  # noqa: ARG001
+    """The strip's face nodes inside the layer move in the face's plane."""
+    options = _port_mode_tight(options)
+    path = pml_cases.strip_guide(
+        d._dir("portmode_strip_nodes") / "strip.msh", 0.4, quarter=False, length=0.15
+    )
+    model = pml_cases.strip_model(path)
+    problem = gfem.PortMode("p1", pml_cases.STRIP_F)
+    mesh = model.mesh
+    section = port_section(
+        model, model.ports[0], _pml.stretch(model, [pml_cases.STRIP_F])
+    )
+    assert section.layer is not None
+    used = np.unique(mesh.triangles[section.faces])
+    nodes0 = np.asarray(mesh.nodes)
+    layer = used[np.unique(section.triangles[section.layer])]
+    # deep in the layer: the forward refuses a tetrahedron moved past its inner face
+    sides = section.stretch.layers.sides
+    depth = np.max([s.sign * (nodes0[layer, s.axis] - s.face) for s in sides], axis=0)
+    inside = layer[depth > 1e-7]
+    assert len(inside)
+    frame = section.frame[:2]
+    treedef = jax.tree_util.tree_structure(mesh)
+
+    def objective(t):
+        # t in millimetres, in the face's two directions
+        shift = (jnp.reshape(t, (-1, 2)) @ jnp.asarray(frame)) * 1e-3
+        moved = jnp.asarray(nodes0).at[inside].add(shift)
+        result = gfem.solve(
+            model.replace(mesh=jax.tree_util.tree_unflatten(treedef, [moved])),
+            problem,
+            options=options,
+        )
+        return port_mode_functional(result, [pml_cases.STRIP_F], field=False)
+
+    n = 2 * len(inside)
+    return Case(
+        objective,
+        jnp.zeros(n),
+        np.random.default_rng(seed),
+        step=STEPS["nodes"],
+        taylor=3e-5,
+        taylor_at=jnp.full(n, 1e-6),
+    )
+
+
 PORT_MODE_BUILDERS = {
+    ("port_mode", "nodes"): _port_mode_nodes,
     **{
         ("port_mode", name): _port_mode_lower
         for name in ("eps_r", "conductivity", "tan_delta", "mu_r", "eps_r_axes")
@@ -4121,6 +4231,7 @@ FAMILIES = [
     Cell("driven_wave", "eps_r", "direct", "uniform", "lossy"),
     # a design at the wave port faces: the port pass rebuilds its 2D factors
     Cell("driven_wave", "eps_r", "direct", "uniform", "face_lossy"),
+    Cell("driven_wave", "nodes", "direct", "uniform", "face_lossy"),
     Cell("port_mode", "eps_r", "direct"),
     Cell("eigenmode", "conductivity", "direct"),
     Cell("eigenmode", "fill", "direct"),
@@ -4898,7 +5009,35 @@ FACE_ADAPTIVE_CELLS = [
     Cell("driven_wave", "eps_r", "direct", "adaptive", "face_lossy"),
     Cell("driven_wave", "conductivity", "direct", "adaptive", "face_lossy"),
     Cell("driven_wave", "eps_r", "direct", "adaptive", "face_path"),
+    # the faces stretch in their plane (sliding wave ports)
+    Cell("driven_wave", "nodes", "direct", "adaptive", "face_lossless"),
+    Cell("driven_wave", "nodes", "direct", "adaptive", "face_lossy"),
 ]
+
+
+def _face_adaptive_nodes(  # noqa: PLR0917
+    model, options, adaptive, uniform, rows, paths, seed
+) -> Case:
+    """The faces stretch in their plane (the top plate moves, the ports slide)."""
+    ports = tuple(p.name for p in model.ports if isinstance(p, gfem.WavePort))
+    morph = boundary_morph(model, "top", sliding_ports=ports)
+
+    def objective_on(problem, rows):
+        functional = _face_objective(rows, paths, shared=False)
+        return lambda t: functional(
+            gfem.solve(model.replace(mesh=morph(t)), problem, options=options)
+        )
+
+    case = Case(
+        objective_on(adaptive, rows),
+        jnp.zeros(morph.n_params),
+        np.random.default_rng(seed),
+        step=STEPS["nodes"],
+        taylor=4e-5,
+        taylor_at=jnp.full(morph.n_params, 1e-5),
+    )
+    case.reference = objective_on(uniform, list(range(len(rows))))
+    return case
 
 
 def _face_adaptive_case(d: Designs, cell: Cell, seed: int) -> Case:
@@ -4915,6 +5054,10 @@ def _face_adaptive_case(d: Designs, cell: Cell, seed: int) -> Case:
     adaptive = gfem.Driven(frequency=GRID, sweep="adaptive", samples=WAVE_SAMPLES)
     uniform = gfem.Driven(frequency=WAVE_SAMPLES)
     rows = [GRID.index(f) for f in WAVE_SAMPLES]
+    if cell.input == "nodes":
+        return _face_adaptive_nodes(
+            model, options, adaptive, uniform, rows, paths, seed
+        )
     name = _property(cell.input)
     n = len(mesh.elements("lo"))
     values = {"eps_r": ramp(mesh, "lo", 3.5, 4.5)}

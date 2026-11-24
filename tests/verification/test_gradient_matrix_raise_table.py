@@ -131,7 +131,7 @@ EM_PROPERTIES = ("eps_r", "mu_r", "tan_delta", "conductivity")
 # differentiate with respect to the material, law, fill and Impedance inputs
 # its section reads, a diagnostic (residual) raises, constants (frequency,
 # solved) and the thermal properties get exact zeros. The node coordinates
-# raise (the face's shape terms are not differentiated yet). These cases
+# of the face move the mode like any other input. These cases
 # run in `test_port_face_raise_table`, one item per case.
 PORT_MODE_OUTPUTS = ("frequency", "gamma", "Z_PV", "residual", "solved")
 PORT_FACE_CASES = (
@@ -156,8 +156,6 @@ def _port_mode_outcome(out, kind, *, path, zero=()):
     whose cotangent is an exact zero); ``zero``: the kinds the mode never
     reads (a lumped port's own L and C).
     """
-    if kind == ("nodes",):
-        return RAISES
     if kind[0] == "material" and kind[2] not in EM_PROPERTIES:
         return ZERO
     if out == "residual":
@@ -400,8 +398,8 @@ EXPECTED |= {
 # modes' gamma and, where a port has a voltage path, Z_PV and z_ref
 # differentiate with respect to every electromagnetic input a port's section
 # reads. The residual of a mode is a diagnostic: it raises beside such a design.
-# A thermal property is not read: exact zeros. The node coordinates, held by
-# the port pass of this version, move S alone.
+# A thermal property is not read: exact zeros. The node coordinates of the
+# faces move the modes like any other input.
 #: The 2-term law of the face region of `driven_wave_face_law`.
 FACE_LAW = gfem.PermittivityLaw(
     eps_inf=2.0,
@@ -428,8 +426,6 @@ FACE_KINDS = {
 
 def _face_outcome(name, out, kind):
     """The outcome of port-face case ``name``'s leaf ``out`` in input ``kind``."""
-    if kind == ("nodes",):
-        return GRADIENT if out == "s.values" else ZERO
     if kind[0] == "material" and kind[2] not in EM_PROPERTIES:
         return ZERO
     leaf = out.rsplit(".", 1)[-1]
@@ -2395,6 +2391,29 @@ SHARED_SURFACE_PROBLEM = gfem.Driven(frequency=60e9, excite="p1_m1")
 PROBLEMS = {
     "electrostatic": gfem.Electrostatic(terminals={"top": "top"}, ground="bottom"),
 }
+
+
+# A wave port's face nodes are inputs of its mode wherever the design is: gamma
+# follows them, a diagnostic raises, and the rest (a constant, an impedance
+# without a path) is an exact zero.
+LOSSLESS_WAVE_CASES = (
+    "driven_wave",
+    "driven_wave_shared",
+    "driven_pml",
+    "driven_dipole",
+)
+for _key in list(EXPECTED):
+    _name, _out, _kind = _key
+    if (
+        _kind == ("nodes",)
+        and _out.startswith("port_modes.")
+        and _name not in PORT_FACE_NAMES
+        and EXPECTED[_key] != RAISES
+    ):
+        _leaf = _out.rsplit(".", 1)[-1]
+        # (the objective reads the real part: a lossless mode's gamma is imaginary)
+        _gamma = ZERO if _name in LOSSLESS_WAVE_CASES else GRADIENT
+        EXPECTED[_key] = {"gamma": _gamma, "residual": RAISES}.get(_leaf, ZERO)
 
 
 def _cells(cases):

@@ -92,12 +92,15 @@ class FormPair:
             for a coupling form (its rows); ``None`` for a functional.
         right: The trial-side vector on the free DOFs.
         weight: The complex weight.
+        tag: A label of where the pair came from (``"robin"`` for the Robin
+            term), which a report of the node cotangent keeps apart.
     """
 
     form: str
     left: np.ndarray | None
     right: np.ndarray
     weight: complex
+    tag: str = ""
 
 
 @dataclasses.dataclass(eq=False)

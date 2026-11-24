@@ -37,6 +37,7 @@ GRID = {
     "piezoelectric": (V, Z, R, V),
     # the face nodes are not differentiated yet
     "port_mode": (V, V, V, R),
+    "port_mode": (V, V, V, V),
     "driven_periodic_plain": (V, V, V, V),
     "driven_periodic_bloch": (V, V, V, V),
     "eigenmode_periodic_plain": (V, V, V, V),
@@ -315,7 +316,7 @@ def test_only_the_four_problem_types_are_front_page_rows(derived):
 def test_raising_cells_name_their_error(derived):
     sheet = _cell(derived, "electrostatic", "fill")
     assert sheet["label"] == "raises NotImplementedError"
-    assert _cell(derived, "port_mode", "nodes")["label"] == "raises"
+    assert _cell(derived, "port_mode", "nodes")["label"] == "FD-verified"
     assert _cell(derived, "electrostatic", "conductivity")["label"] == "exact zero"
 
 

@@ -1767,10 +1767,26 @@ class DrivenRule:
         See `operator_terms`.
 
         Raises:
-            PortGeometryError: ``nodes`` and a node of a port surface has
-                moved.
+            PortGeometryError: ``nodes`` and a node of a lumped or Floquet
+                port surface has moved (or of a wave port's, where the port
+                pass does not differentiate its face).
         """
-        return operator_terms(model, self.operator(model), nodes=nodes)
+        return operator_terms(
+            model,
+            self.operator(model),
+            nodes=nodes,
+            waves=self.wave_faces_held,
+        )
+
+    @property
+    def wave_faces_held(self) -> str | None:
+        """Who holds the wave ports' faces in the node pass, or ``None``.
+
+        The port pass differentiates a moved face on the uniform and the
+        adaptive sweep without a Bloch wave vector; under one the faces stay
+        held.
+        """
+        return None if self.problem.wave_vector is None else "bloch"
 
     def lumped_terms(self, model: Model) -> list[Term]:
         """The pieces that move with a lumped value, as the lumped pass reads them.
@@ -1898,6 +1914,8 @@ class DrivenRule:
         """
         if name == "port_residual":
             ports = [p for k in kinds for p in self.port_design.reading(k)]
+            if ("nodes",) in kinds:  # a face's nodes are inputs of every mode
+                ports += self.wave_ports
             if not ports:
                 return None
             return (
@@ -1983,6 +2001,7 @@ class DrivenRule:
         nodes = bool(self.dipoles) and (wanted is None or ("nodes",) in wanted)
         self._explicit_nodes = None
         self._explicit_inputs = {}
+        self._port_nodes_report = {}
         pairs: list[FieldPair | None] = [None] * len(frequencies)
         port_terms: list[Integrated] = []
         rebuilt = not isinstance(entry.handle, _Kept)  # frequency workers keep none
@@ -2044,6 +2063,7 @@ class DrivenRule:
             if port_pass.active:
                 found = port_pass.finish()
                 port_terms, self._explicit_inputs = found.integrated, found.explicit
+                self._add_port_nodes(found)
         if rebuilt:
             # as a rerun forward's (`gfem._adjoint.solve_vjp`): the kept state
             # this backward built goes down to the budget, no entry evicted
@@ -2136,6 +2156,7 @@ class DrivenRule:
         ct_p = cotangents.get("emitted_power")
         nodes = bool(self.dipoles) and (wanted is None or ("nodes",) in wanted)
         self._explicit_nodes = None
+        self._port_nodes_report = {}
         accumulated: dict[str, np.ndarray] = {}
         with task_manager(self.options.threads):
             op = self.operator(model)
@@ -2218,7 +2239,16 @@ class DrivenRule:
             return []
         found = port_pass.finish()
         self._explicit_inputs = found.explicit
+        self._add_port_nodes(found)
         return found.integrated
+
+    def _add_port_nodes(self, found: Any) -> None:
+        """Add the port pass's face node cotangent to `explicit_nodes`."""
+        self._port_nodes_report = found.report
+        if found.nodes is None:
+            return
+        held = self._explicit_nodes
+        self._explicit_nodes = found.nodes if held is None else held + found.nodes
 
     def _adaptive_ports(
         self, model: Model, wanted: frozenset | None, *, sources: bool
@@ -2230,11 +2260,13 @@ class DrivenRule:
         sources or a wanted input a wave port's mode reads need it; the pass is
         ``None`` where no surface reads a wanted input.
         """
-        reads = (
-            bool(self.port_design.groups)
-            if wanted is None
-            else any(self.port_design.reading(k) for k in wanted)
-        )
+        groups = bool(self.port_design.groups)
+        if wanted is None:
+            reads = groups
+        else:  # a face's nodes are inputs of its port's mode too
+            reads = (("nodes",) in wanted and groups) or any(
+                self.port_design.reading(k) for k in wanted
+            )
         if not (reads or sources):
             return None, None
         system, ports = self.system(model)
@@ -2482,7 +2514,13 @@ class DrivenRule:
         )
 
 
-def operator_terms(model: Model, op: DrivenOperator, *, nodes: bool) -> list[Term]:
+def operator_terms(
+    model: Model,
+    op: DrivenOperator,
+    *,
+    nodes: bool,
+    waves: str | None = "eigenmode",
+) -> list[Term]:
     """The pieces of ``model``'s driven operator as the kernel sees them.
 
     One `Term` per piece, latent ones included, but the ports': a port's
@@ -2498,12 +2536,17 @@ def operator_terms(model: Model, op: DrivenOperator, *, nodes: bool) -> list[Ter
         nodes: Whether the node pass reads the terms: the ports' nodes must
             then be held (a material or fill gradient checks no port
             geometry).
+        waves: Who holds the wave ports' faces (see
+            `check_ports_held`): the driven backward's port pass
+            carries their node derivative (`gfem._engine.port_pass`), so it
+            holds none; the eigenmode rule holds them.
 
     Raises:
-        PortGeometryError: ``nodes`` and a node of a port surface has moved.
+        PortGeometryError: ``nodes`` and a node of a port surface has moved
+            (of a wave port's only where ``waves`` holds it).
     """
     if nodes:
-        check_ports_held(model)
+        check_ports_held(model, waves=waves)
     out = []
     for piece in (*op.pieces, *op.latent):
         if piece.kind == "port":
@@ -2581,14 +2624,54 @@ def real_space(model: Model, op: DrivenOperator) -> ngs.FESpace:
     )
 
 
-def check_ports_held(model: Model) -> None:
-    """Raise unless every port surface's nodes sit at their imported positions.
+#: Why a moved lumped or Floquet port surface is refused.
+_HELD_REASON = (
+    "shape gradients hold lumped and Floquet port surfaces fixed. Keep the "
+    "displacement zero there: gfem.shape.boundary_morph holds them for you."
+)
+#: Who holds the wave port faces, by the refusal's context, and the remedy.
+_WAVE_HOLDERS = {
+    "eigenmode": (
+        "an Eigenmode solve",
+        (
+            "A gfem.Driven solve differentiates a moved wave port face "
+            "(gfem.shape.boundary_morph(..., sliding_ports=...))."
+        ),
+    ),
+    "adaptive": (
+        "an adaptive sweep",
+        (
+            "A gfem.Driven solve on a uniform sweep differentiates a moved wave "
+            "port face (gfem.shape.boundary_morph(..., sliding_ports=...))."
+        ),
+    ),
+    "bloch": (
+        "a Bloch wave vector",
+        (
+            "A gfem.Driven solve without one differentiates a moved wave port face "
+            "(gfem.shape.boundary_morph(..., sliding_ports=...))."
+        ),
+    ),
+}
 
-    Shape gradients treat each port's geometry (its terms, excitation and
-    voltage) as frozen: exact for every displacement that holds the ports.
+
+def _reason(waves: str | None) -> str:
+    """Why a moved wave port face is refused, held by ``waves``."""
+    holder, remedy = _WAVE_HOLDERS[waves or "eigenmode"]
+    return f"{holder} holds wave port faces. {remedy}"
+
+
+def check_ports_held(model: Model, *, waves: str | None = "eigenmode") -> None:
+    """Raise unless the port surfaces' nodes sit at their imported positions.
+
+    Shape gradients treat a lumped or Floquet port's geometry (its terms,
+    excitation and voltage) as frozen: exact for every displacement that
+    holds the ports. A wave port's face is held only where ``waves`` names
+    who holds it (``"eigenmode"``, ``"adaptive"`` or ``"bloch"``): the driven
+    port pass differentiates a moved face (``None``).
 
     Raises:
-        PortGeometryError: A node of a port surface has moved.
+        PortGeometryError: A node of a held port surface has moved.
     """
     mesh = model.mesh
     nodes = np.asarray(mesh.nodes)
@@ -2596,6 +2679,9 @@ def check_ports_held(model: Model) -> None:
     if not moved.any():
         return
     for port in model.ports:
+        wave = isinstance(port, WavePort)
+        if wave and waves is None:
+            continue
         for surface in surfaces_of(port):
             on = mesh.triangles[mesh.triangle_tags == mesh.region(surface).tag]
             off = np.unique(on)[moved[np.unique(on)]]
@@ -2607,10 +2693,7 @@ def check_ports_held(model: Model) -> None:
                     f"{type(port).__name__} {port.name!r}: {len(off)} node(s) of its "
                     f"surface {surface!r} moved (up to {distance:.3g} m), so gfem "
                     "cannot differentiate the solve with respect to the node "
-                    "coordinates: shape gradients hold every port's geometry fixed. "
-                    "Keep the displacement zero on port surfaces: "
-                    "gfem.shape.boundary_morph holds the model's ports (and "
-                    "fixed= surfaces) for you."
+                    f"coordinates: {_reason(waves) if wave else _HELD_REASON}"
                 )
 
 

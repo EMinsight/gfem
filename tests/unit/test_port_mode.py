@@ -750,6 +750,26 @@ def test_a_voltage_path_off_the_port_plane_raises(plate_mesh):
         gfem.solve(model, gfem.PortMode("p1", 1e9))
 
 
+def test_a_voltage_path_beyond_the_port_section_raises(plate_mesh):
+    # a path longer than the gap integrates points where the mode has no field
+    model = plate(plate_mesh, path=False)
+    long = ((W / 2, 0.0, 0.0), (W / 2, 1.2 * D, 0.0))
+    model = model.replace(
+        ports=[gfem.WavePort("p1", "port1", voltage_path=long), model.ports[1]]
+    )
+    with pytest.raises(ValueError, match=r"voltage_path.*outside the port section"):
+        gfem.solve(model, gfem.PortMode("p1", 1e9))
+
+
+def test_a_voltage_path_across_the_whole_gap_is_accepted(plate_mesh):
+    model = plate(plate_mesh, path=False)
+    full = ((W / 2, 0.0, 0.0), (W / 2, D, 0.0))
+    model = model.replace(
+        ports=[gfem.WavePort("p1", "port1", voltage_path=full), model.ports[1]]
+    )
+    assert np.isfinite(gfem.solve(model, gfem.PortMode("p1", 1e9)).Z_PV).all()
+
+
 def _fill(mesh, **values):
     n = len(mesh.elements("fill"))
     return gfem.MaterialField(**{k: jnp.full(n, v) for k, v in values.items()})

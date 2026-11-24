@@ -45,6 +45,7 @@ from gfem._engine.port_mode_sensitivity import (
     SectionKernel,
     law_cotangents,
 )
+from gfem._engine.port_mode_shape import ShapeForm, voltage_eulerian
 
 __all__ = ["ModePass", "mode_pass"]
 
@@ -61,13 +62,16 @@ class ModePass:
         section: The coefficients' cotangents, summed over the rows (the
             normalization's explicit form terms included).
         laws: The gradient by each permittivity-law parameter, by input kind.
+        points: The cotangent of the section's points, ``(n_points, 2)`` per
+            local unit, or ``None`` when the node coordinates are not wanted.
     """
 
     section: SectionCotangents | LineCotangents
     laws: dict[tuple, float]
+    points: np.ndarray | None = None
 
 
-def mode_pass(  # noqa: PLR0915
+def mode_pass(  # noqa: PLR0912, PLR0915
     space: PortModeSpace | LineModeSpace,
     *,
     frequency: np.ndarray,
@@ -81,6 +85,8 @@ def mode_pass(  # noqa: PLR0915
     ct_z_pv: np.ndarray | None,
     ct_field: np.ndarray | None,
     who: str,
+    nodes: bool = False,
+    voltage_rule: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> ModePass:
     r"""The section cotangents of a mode's outputs.
 
@@ -98,6 +104,11 @@ def mode_pass(  # noqa: PLR0915
         ct_z_pv: ``(n,)`` the cotangent of :math:`Z_{PV}`, or ``None``.
         ct_field: ``(n, n_dof)`` the cotangent of the field vector, or ``None``.
         who: The port, for messages.
+        nodes: Whether to also return the cotangent of the section's points
+            (`ModePass.points`).
+        voltage_rule: The voltage path's plane points and weights
+            (`gfem._sweep.port_mode._voltage_rule`), for its Eulerian node
+            derivative; ``None`` without a path.
 
     Raises:
         PortModeError: An adjoint solve missed (`gfem._engine.port_mode_adjoint`).
@@ -136,6 +147,10 @@ def mode_pass(  # noqa: PLR0915
     )
     x_bar = np.zeros_like(x)
     pairs_forms: list = []
+    planar = isinstance(space, PortModeSpace)
+    shape = ShapeForm(space) if nodes and planar else None
+    points = len(space.section.points) if shape is not None else 0
+    shape_points = np.zeros((points, 2))
     if needs:
         # polish the reduced rows: the derivative is the exact mode's
         for i in range(n):
@@ -185,6 +200,19 @@ def mode_pass(  # noqa: PLR0915
         pairs_forms = pulled.pairs
         x_bar = pulled.y
         cg = cg + pulled.gamma
+        if (
+            isinstance(space, PortModeSpace)
+            and shape is not None
+            and has_path
+            and voltage_rule is not None
+        ):
+            # the path's points stay put while the mesh moves
+            for i in range(n):
+                if v_bar[i] != 0:
+                    z_full = space.full(norm_rows.z[i])
+                    shape_points += voltage_eulerian(
+                        space, z_full, *voltage_rule, v_bar[i]
+                    )
     gamma = 1j * np.sqrt(-lam_r + 0j)
     lam_bar = cg / (2 * gamma)
 
@@ -205,13 +233,19 @@ def mode_pass(  # noqa: PLR0915
             who=who,
         )
         row = kernel.at(k0[i]).cotangents([(q, x[i], lam_r[i])])
+        if shape is not None:
+            shape.add_pencil(q, x[i], lam_r[i], space.pencil.theta(k0[i]))
         if isinstance(space, PortModeSpace):
             for key, value in law_cotangents(space.section, row, omega[i]).items():
                 laws[key] = laws.get(key, 0.0) + value
         total.add(row)
     if pairs_forms:
         total.add(kernel.explicit(pairs_forms))
-    return ModePass(total, laws)
+    if shape is None:
+        return ModePass(total, laws)
+    for pair in pairs_forms:
+        shape.add_pair(pair)
+    return ModePass(total, laws, shape.result() + shape_points)
 
 
 def _kernel_and_total(

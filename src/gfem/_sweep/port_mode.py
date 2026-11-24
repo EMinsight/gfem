@@ -78,6 +78,7 @@ from gfem._engine.port_mode_sensitivity import (
     integrated,
     owner_tetrahedra,
 )
+from gfem._engine.port_mode_shape import chain_to_nodes
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import Term, is_thermal_value
 from gfem._engine.solve_request import SolveRequest
@@ -319,6 +320,7 @@ class PortModeRule:
             self._index = 0
         self._model = model
         self._explicit: dict[tuple, Any] = {}
+        self._nodes: np.ndarray | None = None
         dispersion.warn_fitted_range(
             model,
             problem.frequency,
@@ -377,14 +379,15 @@ class PortModeRule:
     def unsupported_input(self, kind: tuple) -> str | None:
         """Why a read input cannot be differentiated here, or ``None``.
 
-        The node coordinates (a wave port's face, or a line's) are not.
+        A line port's mode has no node derivative in this version; a wave
+        port's face is differentiated by the section's shape kernel.
         """
-        if kind[0] == "nodes":
-            return (
-                "the port mode problem does not differentiate the node "
-                "coordinates in this version"
-            )
         if self._model.mesh.dim == 2:
+            if kind[0] == "nodes":
+                return (
+                    "the port mode problem of a line port does not differentiate "
+                    "the node coordinates in this version"
+                )
             return None
         return anisotropic_absorbing(self._model, lead_port(self._ports))
 
@@ -464,7 +467,7 @@ class PortModeRule:
         entry: Entry,
         cotangents: dict[str, np.ndarray],
         *,
-        wanted: frozenset,  # noqa: ARG002 - the rule reads every wanted kind
+        wanted: frozenset,
     ) -> list:
         """The cotangents of the section's coefficients as owner-tetrahedron integrals.
 
@@ -474,10 +477,12 @@ class PortModeRule:
         (laws, sheet fills, `Impedance` values) is kept for `explicit_inputs`.
         """
         self._explicit = {}
+        self._nodes = None
         pairs: list = []
+        nodes = ("nodes",) in wanted
 
         def compute() -> dict[str, np.ndarray]:
-            pairs.extend(self._pass(model, entry, cotangents))
+            pairs.extend(self._pass(model, entry, cotangents, nodes=nodes))
             return {}
 
         _mpi.on_root(self.comm, compute, results=(PortModeError,))
@@ -488,6 +493,8 @@ class PortModeRule:
         model: Model,
         entry: Entry,
         cotangents: dict[str, np.ndarray],
+        *,
+        nodes: bool = False,
     ) -> list:
         sweeps = entry.sweeps  # ty: ignore[unresolved-attribute]
         sweep = sweeps[self._ports.index(self.port)]
@@ -513,12 +520,21 @@ class PortModeRule:
             ct_z_pv=cotangents.get("Z_PV"),
             ct_field=cotangents.get("field"),
             who=f"WavePort {self.port.name!r}",
+            nodes=nodes,
+            voltage_rule=rule,
         )
         if isinstance(space, LineModeSpace):
             self._explicit = {}
             return [
                 line_integrated(section, done.section, len(model.mesh.volume_elements))  # ty: ignore[invalid-argument-type]
             ]
+        if done.points is not None:
+            self._nodes = chain_to_nodes(
+                section,
+                model.mesh.triangles,
+                done.points,
+                len(model.mesh.imported_nodes),
+            )
         cot: Any = done.section
         # a law's triangles take eps_inf through the law, not through the mass
         if section.law_index is not None:
@@ -538,6 +554,15 @@ class PortModeRule:
     def explicit_inputs(self) -> dict[tuple, Any]:
         """The gradients by input kind the section computed itself."""
         return self._explicit
+
+    def explicit_nodes(self) -> np.ndarray | None:
+        """The node cotangent of the port face, ``(n_nodes, 3)`` per metre.
+
+        The section kernel's (`gfem._engine.port_mode_shape`), chained to the
+        face's nodes: the mode has no 3D volume term, so it is all of the
+        gradient by the node coordinates. ``None`` without a node cotangent.
+        """
+        return self._nodes
 
     def terms(self, model: Model, *, nodes: bool) -> list:
         """The driven operator's material terms, for the owner-tetrahedron integrals."""
@@ -1766,8 +1791,8 @@ def _voltage_rule(
     and ``subject`` what reads it, for messages.
 
     Raises:
-        ValueError: The path leaves the port plane or passes through a
-            perfectly matched layer.
+        ValueError: The path leaves the port plane, has points outside the
+            port section or passes through a perfectly matched layer.
     """
     path = np.asarray(path, float)
     _local, dist = section.to_local(path)
@@ -1785,8 +1810,46 @@ def _voltage_rule(
             pts.append(section.to_local(p + np.outer(s, q - p))[0])
             wts.append(np.outer(w / (2 * _PIECES), d_local))
     pts = np.concatenate(pts)
+    _refuse_outside_path(section, pts, name, what, subject)
     _refuse_layer_path(section, pts, name, what, subject)
     return pts, np.concatenate(wts)
+
+
+#: Barycentric slack of a path point at the rim of the port section.
+_RIM_TOL = 1e-6
+
+
+def _refuse_outside_path(
+    section: PortSection, local: np.ndarray, name: str, what: str, subject: str
+) -> None:
+    """Raise if a path has points outside the port section's triangles.
+
+    The path is a fixed set of points that the field is read at: off the
+    section the mode has no field, and a design that moves the face under a
+    path would integrate a segment that is no longer there.
+    """
+    pts = section.points
+    tri = section.triangles
+    a = pts[tri[:, 0]]
+    e1, e2 = pts[tri[:, 1]] - a, pts[tri[:, 2]] - a
+    det = e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]
+    step = max(1, 2_000_000 // max(len(tri), 1))
+    outside = []
+    for start in range(0, len(local), step):
+        d = local[start : start + step, None, :] - a[None]
+        l1 = (d[..., 0] * e2[:, 1] - d[..., 1] * e2[:, 0]) / det
+        l2 = (e1[:, 0] * d[..., 1] - e1[:, 1] * d[..., 0]) / det
+        inside = (l1 >= -_RIM_TOL) & (l2 >= -_RIM_TOL) & (1 - l1 - l2 >= -_RIM_TOL)
+        outside.extend(start + np.flatnonzero(~inside.any(axis=1)))
+    if not outside:
+        return
+    first = section.to_global(local[outside[:1]])[0]
+    raise ValueError(
+        f"{subject}: {what} on port {name!r} has {len(outside)} of its sample "
+        f"points outside the port section, the first at ({first[0]:.6g}, "
+        f"{first[1]:.6g}, {first[2]:.6g}) m. The mode has no field there: keep the "
+        "path on the port face, between the conductors it joins."
+    )
 
 
 def _refuse_layer_path(
