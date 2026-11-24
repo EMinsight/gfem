@@ -6,6 +6,8 @@ tetrahedra), whose corner singularity keeps its field error estimate near
 """
 
 import dataclasses
+import logging
+import pickle
 import sys
 import types
 import warnings
@@ -804,3 +806,102 @@ def test_the_public_names_are_exported():
     ):
         assert name in gfem.__all__
         assert hasattr(gfem, name)
+
+
+# --- the refinement cycle records --------------------------------------------
+
+
+FIELDS = ("tetrahedra", "dofs", "estimate", "value", "marked")
+
+
+def _cycle_records(caplog):
+    return [r for r in caplog.records if r.name == "gfem.mesh_refinement"]
+
+
+@pytest.fixture
+def cycle_records(caplog):
+    caplog.set_level(logging.INFO, logger="gfem.mesh_refinement")
+    return lambda: _cycle_records(caplog)
+
+
+def test_each_refinement_cycle_logs_one_record_of_its_cycle(coax, cycle_records):
+    with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
+        ref = _refine(coax, max_cycles=2, tolerance=1e-3)
+    records = cycle_records()
+    assert [r.cycle for r in records] == [0, 1, 2]
+    assert [r.stop for r in records] == [None, None, "max_cycles"]
+    for record, cycle in zip(records, ref.cycles, strict=True):
+        assert record.levelno == logging.INFO
+        assert record.tolerance == 1e-3
+        assert {name: getattr(record, name) for name in FIELDS} == {
+            name: getattr(cycle, name) for name in FIELDS
+        }
+        # a queue handler across processes pickles the record
+        assert not hasattr(record, "modes")
+        pickle.dumps(record)
+    first = records[0].getMessage()
+    assert first.startswith("mesh refinement cycle 0: 72 tetrahedra, ")
+    assert f"estimate {ref.cycles[0].estimate:.3g} (tolerance 0.001)" in first
+    assert first.endswith(f"marked {ref.cycles[0].marked}")
+    assert records[-1].getMessage().endswith(", marked 0, stopped: max_cycles")
+
+
+def test_the_max_tetrahedra_stop_logs_the_marked_cycle(coax, cycle_records):
+    with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
+        ref = _refine(coax, max_tetrahedra=80)
+    (record,) = cycle_records()
+    assert (record.cycle, record.stop) == (0, "max_tetrahedra")
+    assert record.marked == ref.cycles[0].marked > 0
+
+
+def test_the_tolerance_stop_logs_the_settled_cycle(tmp_path, cycle_records):
+    model = _plate(tmp_path, {"a": gfem.Material(), "b": gfem.Material(eps_r=3.0)})
+    gfem.refine_mesh(model, PLATE, options=OPTIONS)
+    (record,) = cycle_records()
+    assert (record.cycle, record.stop, record.marked) == (0, "tolerance", 0)
+
+
+def test_a_non_finite_estimate_stop_logs_the_cycle(coax, monkeypatch, cycle_records):
+    from gfem import refinement
+
+    monkeypatch.setattr(refinement, "_estimates", _NonFinite(refinement._estimates))
+    with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
+        _refine(coax, tolerance=1e-3)
+    (record,) = cycle_records()
+    assert record.stop == "non-finite estimate"
+    assert record.getMessage().endswith("stopped: non-finite estimate")
+
+
+def test_a_failed_solve_logs_no_record_for_the_unsolved_mesh(
+    coax, monkeypatch, cycle_records
+):
+    error = gfem.LinearSolverConvergenceError("GMRES stopped at 1e-3")
+    monkeypatch.setattr("gfem.refinement._solve", _Failing(error, fail_on=3))
+    with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
+        ref = _refine(coax, tolerance=1e-3)
+    assert ref.stop == "solve failed"
+    records = cycle_records()
+    assert [(r.cycle, r.stop) for r in records] == [(0, None), (1, None)]
+
+
+def test_a_tuple_of_estimators_logs_tuples(coax, cycle_records):
+    estimators = (gfem.QuantityEstimator(capacitance=("inner", "inner")),)
+    with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
+        ref = _refine(coax, estimator=estimators, tolerance=(1e-4,), max_cycles=0)
+    (record,) = cycle_records()
+    assert record.tolerance == (1e-4,)
+    assert record.estimate == ref.cycles[0].estimate
+    assert record.value == ref.cycles[0].value
+    assert isinstance(record.estimate, tuple)
+    (a,) = record.estimate
+    assert f"estimate ({a:.3g}) (tolerance (0.0001))" in record.getMessage()
+
+
+def test_no_cycle_record_is_built_when_the_logger_is_off(coax, monkeypatch):
+    logger = logging.getLogger("gfem.mesh_refinement")
+    monkeypatch.setattr(logger, "isEnabledFor", lambda _level: False)
+    monkeypatch.setattr(
+        logger, "info", lambda *_, **__: pytest.fail("a record was built while off")
+    )
+    with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
+        _refine(coax, max_cycles=1, tolerance=1e-3)

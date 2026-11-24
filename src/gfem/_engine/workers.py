@@ -23,15 +23,17 @@ from __future__ import annotations
 import contextlib
 import multiprocessing
 import os
+import queue as queues
 import threading
 from collections.abc import Callable, Generator, Sequence
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from typing import Any
 
 import jax
 import numpy as np
 
+from gfem import _progress
 from gfem._engine.runtime import solve_threads
 from gfem.model import Model
 
@@ -92,6 +94,7 @@ def run(
     *,
     threads: int,
     keywords: Sequence[dict[str, Any]] | None = None,
+    row: _progress.ProgressRow | None = None,
 ) -> list[Any]:
     """``function(*a, **k)`` for each ``a`` of ``arguments``, in its own worker.
 
@@ -101,6 +104,8 @@ def run(
         labels: What each worker solves, for errors (e.g. its frequencies).
         threads: Each worker's threads (`worker_threads`).
         keywords: One keyword-argument dict per worker; none by default.
+        row: The parent's progress row (`gfem._progress.task`) the workers'
+            advances count on, or ``None``. Only a live row gets a queue.
 
     Returns:
         The workers' results, in ``arguments`` order.
@@ -110,25 +115,63 @@ def run(
             lack of memory). A worker's own exception is re-raised as is.
     """
     context = multiprocessing.get_context("spawn")
-    with contextlib.ExitStack() as stack:
-        futures = []
-        # a pool starts its process on the first submit
-        with _worker_environment(threads):
-            for i, args in enumerate(arguments):
-                pool = stack.enter_context(
-                    ProcessPoolExecutor(max_workers=1, mp_context=context)
-                )
-                kwargs = keywords[i] if keywords is not None else {}
-                futures.append(pool.submit(function, *args, **kwargs))
-        out = []
-        for future, label in zip(futures, labels, strict=True):
-            try:
-                out.append(future.result())
-            except BrokenProcessPool as err:
-                raise RuntimeError(
-                    f"The frequency worker solving {label} stopped without a "
-                    "result: it was killed, most likely for lack of memory (each "
-                    "worker holds one solve). Use fewer "
-                    "SolverOptions.frequency_workers, or frequency_workers=1."
-                ) from err
+    # a queue and its feeder threads only while a row is drawn
+    feed = (context.Queue(), row) if isinstance(row, _progress.Row) else None
+    pool_options: dict[str, Any] = {}
+    if feed is not None:
+        pool_options = {"initializer": _progress.forward_to, "initargs": feed[:1]}
+    try:
+        with contextlib.ExitStack() as stack:
+            futures = []
+            # a pool starts its process on the first submit
+            with _worker_environment(threads):
+                for i, args in enumerate(arguments):
+                    pool = stack.enter_context(
+                        ProcessPoolExecutor(
+                            max_workers=1, mp_context=context, **pool_options
+                        )
+                    )
+                    kwargs = keywords[i] if keywords is not None else {}
+                    futures.append(pool.submit(function, *args, **kwargs))
+            if feed is not None:
+                _advance_until_done(futures, *feed)
+            out = []
+            for future, label in zip(futures, labels, strict=True):
+                try:
+                    out.append(future.result())
+                except BrokenProcessPool as err:
+                    raise RuntimeError(
+                        f"The frequency worker solving {label} stopped without a "
+                        "result: it was killed, most likely for lack of memory (each "
+                        "worker holds one solve). Use fewer "
+                        "SolverOptions.frequency_workers, or frequency_workers=1."
+                    ) from err
+        if feed is not None:
+            # a worker's feeder thread flushes its last advances as it exits,
+            # which the pools' shutdown above waited for
+            _drain(*feed)
+    finally:
+        # on every path: a block's error leaves no queue feeder behind
+        if feed is not None:
+            feed[0].close()
     return out
+
+
+def _advance_until_done(
+    futures: Sequence[Future], forwarded: Any, row: _progress.ProgressRow
+) -> None:
+    """Advance ``row`` by the workers' advances until every future is done."""
+    pending = set(futures)
+    while pending:
+        _, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+        _drain(forwarded, row)
+
+
+def _drain(forwarded: Any, row: _progress.ProgressRow) -> None:
+    """Advance ``row`` by each advance waiting on ``forwarded``."""
+    while True:
+        try:
+            n, fields = forwarded.get_nowait()
+        except queues.Empty:
+            return
+        row.advance(n, **fields)

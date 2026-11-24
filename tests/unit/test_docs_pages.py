@@ -257,6 +257,8 @@ USER_TERMS = (
     "Voltage-length product",
     "Electro-optic overlap factor",
     "Electrode clearance",
+    "Log display",
+    "Progress row",
 )
 
 

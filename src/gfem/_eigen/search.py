@@ -22,12 +22,13 @@ from typing import Protocol
 import numpy as np
 import scipy.constants as const
 
-from gfem import _mpi
+from gfem import _mpi, _progress
 from gfem._eigen.adjoint import polish
 from gfem._eigen.operator import EigenOperator
 from gfem._eigen.reach import GapSet, ModeReach, _close
 from gfem._eigen.refine import TRUSTED, Refined, refine
 from gfem._eigen.seed import MIN_SUBSPACE, SeedBoundReached
+from gfem._linalg import report
 from gfem._linalg.layout import ONE_PROCESS, DofLayout
 from gfem._text import hertz
 from gfem.errors import EigenmodeConvergenceError, LinearSolverConvergenceError
@@ -206,6 +207,29 @@ class ModeSearch:
             LinearSolverConvergenceError: A shift solve of an iterative
                 linear solver did not converge.
         """
+        # stage notes only: how many seed solves and refinements a search
+        # takes is not known in advance
+        with _progress.task(_progress.MODE_SEARCH) as row:
+            return self._find(
+                eop,
+                project,
+                sigma,
+                guard=guard,
+                polish_isolated=polish_isolated,
+                row=row,
+            )
+
+    def _find(
+        self,
+        eop: EigenOperator,
+        project,
+        sigma: float,
+        *,
+        guard: bool,
+        polish_isolated: bool,
+        row: _progress.ProgressRow,
+    ) -> FoundModes:
+        """`find`, its stages noted on the mode search's ``row``."""
         n_modes = self.n_modes
         seed_tolerance = self.eigen_tolerance
         # the companion problem also holds each mode's mirror root
@@ -228,20 +252,29 @@ class ModeSearch:
         # the k of the pairs the attempt's selection dropped as modes of the
         # layer
         dropped: list[complex] = []
-        for _ in range(_ATTEMPTS):
+        for attempt in range(1, _ATTEMPTS + 1):
             if eop.shift != sigma:
                 # a retry is a seed solve: at the target, on a
                 # factorization counted for the seed (refinement
                 # reshifted it)
                 eop.reshift(sigma, solves=MIN_SUBSPACE)
             dropped = []
+            row.note(seed_solve=f"{attempt}/{_ATTEMPTS}")
             try:
                 k, vectors = self.eigen_solver(eop, project, nev, tol=seed_tolerance)
             except SeedBoundReached as err:
                 bound = err
                 k, vectors = err.k, err.vectors
             modes, failed, found, pool, ritz = self._select(
-                eop, k, vectors, sigma, guard=guard, dropped=dropped
+                eop, k, vectors, sigma, guard=guard, dropped=dropped, row=row
+            )
+            report.seed_solve(
+                attempt=attempt,
+                pairs=nev,
+                returned=len(k),
+                modes=len(modes),
+                wanted=n_modes,
+                bound=bound is not None,
             )
             if len(modes) == n_modes or failed or bound is not None:
                 break
@@ -307,7 +340,7 @@ class ModeSearch:
             out.append(m)
         return out, failed
 
-    def _select(
+    def _select(  # noqa: PLR0915 - one selection loop over the seeds
         self,
         op: EigenOperator,
         k: np.ndarray,
@@ -316,6 +349,7 @@ class ModeSearch:
         *,
         guard: bool = False,
         dropped: list[complex],
+        row: _progress.ProgressRow,
     ) -> tuple[list[Refined], list[Refined], Refined | None, np.ndarray, np.ndarray]:
         """Refine the seeds nearest ``sigma`` until ``n_modes`` distinct ones.
 
@@ -341,7 +375,8 @@ class ModeSearch:
         mode, or the nearest mode cut off when there is one. It is
         best-effort: none is found when no remaining seed converges to a
         mode. A seed or converged pair of a perfectly matched layer
-        (`_in_layer`) is dropped, its ``k`` recorded in ``dropped``.
+        (`_in_layer`) is dropped, its ``k`` recorded in ``dropped``. Each
+        seed's refinement is noted on the mode search's progress ``row``.
 
         Returns:
             The accepted modes, nearest ``sigma`` first (at most
@@ -398,10 +433,11 @@ class ModeSearch:
                 return twin
             return None
 
-        for j in seeds:
+        for n, j in enumerate(seeds, 1):
             full = len(accepted) >= n_modes
             if full and not guard:
                 break
+            row.note(mode_refinement=f"{n}/{len(seeds)}")
             seed = complex(k[j])
             far = _contraction(seed, op.shift, k) > _CONTRACTION
             mode = self.refine(

@@ -18,6 +18,7 @@ import contextlib
 import dataclasses
 import hashlib
 import itertools
+import logging
 import os
 import re
 import sys
@@ -39,6 +40,9 @@ from gfem.errors import (
     RegionNotFoundError,
     SolverUnavailableError,
 )
+
+# an explicit name: a private module path would leak into users' filters
+_log = logging.getLogger("gfem.mpi")
 
 __all__ = [
     "AGREED_ERRORS",
@@ -75,11 +79,15 @@ __all__ = [
     "section",
     "static_comm",
     "warn",
+    "world_rank",
 ]
 
 #: In launcher order. Never ``SLURM_NTASKS``, which a batch script with no launcher
 #: also has, and never a task id.
 _TASK_VARIABLES = ("OMPI_COMM_WORLD_SIZE", "SLURM_STEP_NUM_TASKS", "PMI_SIZE")
+#: A task's rank. ``PMI_RANK`` before ``SLURM_PROCID``: an ``mpiexec`` inside a
+#: one-task Slurm step gives every rank ``SLURM_PROCID=0``.
+_RANK_VARIABLES = ("OMPI_COMM_WORLD_RANK", "PMI_RANK", "SLURM_PROCID")
 
 
 class AgreedError(RuntimeError):
@@ -231,6 +239,26 @@ def launched_tasks(environ: collections.abc.Mapping[str, str] | None = None) -> 
     if mpi is not None and mpi.Is_initialized() and not mpi.Is_finalized():
         tasks = max(tasks, mpi.COMM_WORLD.size)
     return tasks
+
+
+def world_rank(environ: collections.abc.Mapping[str, str] | None = None) -> int:
+    """This process's rank among the launched tasks, without importing mpi4py.
+
+    The first launcher variable set decides; else mpi4py's world rank if it is
+    already loaded; else 0.
+
+    Args:
+        environ: The environment; ``None`` reads ``os.environ``.
+    """
+    environ = os.environ if environ is None else environ
+    for name in _RANK_VARIABLES:
+        value = environ.get(name, "")
+        if value.isdecimal():
+            return int(value)
+    mpi = sys.modules.get("mpi4py.MPI")
+    if mpi is not None and mpi.Is_initialized() and not mpi.Is_finalized():
+        return mpi.COMM_WORLD.rank
+    return 0
 
 
 def _load_mpi() -> Any:
@@ -731,10 +759,14 @@ _entry_calls: collections.Counter[int | None] = collections.Counter()
 
 
 def meet(comm: Any, call: str) -> None:
-    """Wait for every rank in Python, saying so on stderr after `ENTRY_PATIENCE`.
+    """Wait for every rank in Python, saying so after `ENTRY_PATIENCE`.
 
     `if rank == 0: gfem.solve(...)` hangs in the first collective with nothing to
-    say. A slow rank is legitimate, so this only reports: it never aborts.
+    say. A slow rank is legitimate, so this only reports: it never aborts. The report
+    is one WARNING record on the ``gfem.mpi`` logger, with ``extra`` ``rank``,
+    ``call`` and ``patience``, not a warning: the wait is rank-local and a warning
+    may only be decided on an agreed value. With no logging configured, Python's
+    last-resort handler prints its bare message on stderr.
     """
     if comm is None:
         return
@@ -744,11 +776,13 @@ def meet(comm: Any, call: str) -> None:
     while not request.Test():
         if not told and time.monotonic() - start > ENTRY_PATIENCE:
             told = True
-            print(  # noqa: T201
-                f"gfem: rank {comm.rank}: waiting over {ENTRY_PATIENCE:g} s for the "
-                f"other ranks at {call}: every rank must make the same gfem calls.",
-                file=sys.stderr,
-                flush=True,
+            _log.warning(
+                "gfem: rank %d: waiting over %g s for the other ranks at %s: every "
+                "rank must make the same gfem calls.",
+                comm.rank,
+                ENTRY_PATIENCE,
+                call,
+                extra={"rank": comm.rank, "call": call, "patience": ENTRY_PATIENCE},
             )
         time.sleep(pause)
         pause = min(2 * pause, 0.05)

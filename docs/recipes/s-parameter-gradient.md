@@ -186,16 +186,15 @@ To see what each design reused, read `result.sweep.iterations` (the Krylov
 iterations of each excited port, per frequency; empty for a solve on fresh
 factors) and `result.sweep.preconditioner_reused` (per frequency) on a result
 solved outside JAX transformations; under them both are `None`. To see every
-solve, those under `jax.grad` included, turn on the logger `"gfem.solver"`:
+solve, those under `jax.grad` included, turn on the {term}`log display`
+({doc}`watch-a-solve`):
 
 ```python
-import logging
-
-logging.basicConfig()
-logging.getLogger("gfem.solver").setLevel(logging.INFO)
+gfem.log.enable()
 ```
 
-Each record names the frequency, the direction (`forward` or `backward`), the
+It prints one line per record of the logger `"gfem.solver"` on stderr. Each
+record names the frequency, the direction (`forward` or `backward`), the
 solver and what it did (`factorized`, `refactorized`, `reused`), and, for a
 design that factorized again, its `reason`. When `"auto"` resolves, one more
 record says which solver it chose and why.

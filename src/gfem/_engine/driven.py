@@ -86,7 +86,7 @@ import numpy as np
 import scipy.constants
 import scipy.sparse
 
-from gfem import _floquet, _mpi, _pml, _timing
+from gfem import _floquet, _mpi, _pml, _progress, _timing
 from gfem._adjoint import adjoint_tolerance
 from gfem._boundaries import (
     FloquetPort,
@@ -1106,10 +1106,13 @@ class DrivenRule:
             s = np.zeros((len(frequencies), len(self.port_names), width), complex)
             # the first frequency starts from the previous design
             previous, design = None, self.systems.design_guess(system)
-            with system.sweep(
-                solves=len(frequencies),
-                pool_budget=retain_budget(self.options.retain_memory),
-            ) as sweep:
+            with (
+                system.sweep(
+                    solves=len(frequencies),
+                    pool_budget=retain_budget(self.options.retain_memory),
+                ) as sweep,
+                _progress.task(_progress.UNIFORM_SWEEP, total=len(frequencies)) as row,
+            ):
                 for n, f in enumerate(frequencies):
                     omega = 2 * math.pi * f
                     rhs = ports.rhs(omega)
@@ -1143,6 +1146,7 @@ class DrivenRule:
                         # results keep fields on the unpaired space
                         fields.append(np.array(system.operator.expand(x), complex))
                     s[n] = ports.outgoing(omega, x)
+                    row.advance(frequency=f, iterations=its)
                 if keep and miss is None:
                     system.keep_base(sweep)
         # no backward pass will prepare from the pieces
@@ -1202,8 +1206,14 @@ class DrivenRule:
         with task_manager(self.options.threads, self.comm):
             system, ports = self.system(model)
             try:
-                with system.sweep(solves=len(self.problem.frequency)) as sweep:
-                    for f in self.problem.frequency:
+                frequencies = self.problem.frequency
+                with (
+                    system.sweep(solves=len(frequencies)) as sweep,
+                    _progress.task(
+                        _progress.UNIFORM_SWEEP_ADJOINT, total=len(frequencies)
+                    ) as row,
+                ):
+                    for f in frequencies:
                         rhs = ports.rhs(2 * math.pi * f)
                         x = None if solutions is None else solutions[f]
                         self._solve_adjoints(
@@ -1217,6 +1227,7 @@ class DrivenRule:
                             loads=adjoint_loads,
                             into=adjoints,
                         )
+                        row.advance(frequency=f)
             finally:
                 system.free()
         return adjoints
@@ -1716,37 +1727,41 @@ class DrivenRule:
             op = system.operator
             domain = em_region(model, op.built)
             omegas = [2 * math.pi * f for f in frequencies]
-            for n in system.adjoint_order(omegas):
-                f = frequencies[n]
-                omega = 2 * math.pi * f
-                x = solution[:, n * width : (n + 1) * width]
-                if ct_s is not None:
-                    split = ports.pullback(n, omega, ct_s[n], x)
-                    adjoint, load = split.free, split.loads
-                    undefined = split.undefined
-                else:
-                    adjoint, load = np.zeros_like(x), np.zeros_like(x)
-                    undefined = np.zeros(width, bool)
-                if ct_e is not None and n in self.kept:
-                    k = self.kept.index(n)
-                    g = np.asarray(ct_e)[:, k * width : (k + 1) * width]
-                    if self.comm is not None:  # a rank's rows, then its padding
-                        g = g[: op.field_ndof]
-                    # the field is P x: its cotangent loads P^T g
-                    load += g if op.expansion is None else op.expansion.field.T @ g
-                # a rank without port DOFs would skip a collective solve
-                if _mpi.agree_any(self.comm, flag=bool(load.any())):
-                    try:
-                        adjoint += system.solve_adjoint(n, omega, load)
-                    except LinearSolverConvergenceError as err:
-                        raise _adjoint_error(f, err) from err
-                adjoint[:, undefined] = np.nan
-                pairs[n] = op.pair(
-                    -adjoint,
-                    x,
-                    weights=op.weights(omega, laws=laws),
-                    domain=domain,
-                )
+            with _progress.task(
+                _progress.UNIFORM_SWEEP_ADJOINT, total=len(frequencies)
+            ) as row:
+                for n in system.adjoint_order(omegas):
+                    f = frequencies[n]
+                    omega = 2 * math.pi * f
+                    x = solution[:, n * width : (n + 1) * width]
+                    if ct_s is not None:
+                        split = ports.pullback(n, omega, ct_s[n], x)
+                        adjoint, load = split.free, split.loads
+                        undefined = split.undefined
+                    else:
+                        adjoint, load = np.zeros_like(x), np.zeros_like(x)
+                        undefined = np.zeros(width, bool)
+                    if ct_e is not None and n in self.kept:
+                        k = self.kept.index(n)
+                        g = np.asarray(ct_e)[:, k * width : (k + 1) * width]
+                        if self.comm is not None:  # a rank's rows, then its padding
+                            g = g[: op.field_ndof]
+                        # the field is P x: its cotangent loads P^T g
+                        load += g if op.expansion is None else op.expansion.field.T @ g
+                    # a rank without port DOFs would skip a collective solve
+                    if _mpi.agree_any(self.comm, flag=bool(load.any())):
+                        try:
+                            adjoint += system.solve_adjoint(n, omega, load)
+                        except LinearSolverConvergenceError as err:
+                            raise _adjoint_error(f, err) from err
+                    adjoint[:, undefined] = np.nan
+                    pairs[n] = op.pair(
+                        -adjoint,
+                        x,
+                        weights=op.weights(omega, laws=laws),
+                        domain=domain,
+                    )
+                    row.advance(frequency=f)
         if rebuilt:
             # as a rerun forward's (`gfem._adjoint.solve_vjp`): the kept state
             # this backward built goes down to the budget, no entry evicted

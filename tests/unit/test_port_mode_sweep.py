@@ -6,6 +6,7 @@ small waveguide fixtures; the CPW and hybrid-waveguide accuracy targets are in
 the verification tier.
 """
 
+import logging
 import math
 import re
 import warnings
@@ -340,3 +341,58 @@ def test_a_joint_sweep_of_one_surface_shares_its_solves_and_basis(slab_mesh):
             np.testing.assert_allclose(
                 sweep.gamma[i], np.asarray(lone.gamma)[0], rtol=1e-9
             )
+
+
+# --- the sweep's record ------------------------------------------------------------
+
+
+def _sweep_records(caplog):
+    return [
+        r
+        for r in caplog.records
+        if r.name == "gfem.solver" and getattr(r, "exact_solves", None) is not None
+    ]
+
+
+def test_a_settled_sweep_logs_one_record_of_its_size(slab_mesh, caplog):
+    caplog.set_level(logging.INFO, logger="gfem.solver")
+    gfem.solve(slab(slab_mesh), gfem.PortMode("p1", [10e9, 15e9, 20e9]))
+    (record,) = _sweep_records(caplog)
+    # up to three frequencies: each solved exactly, then one check of the grid
+    assert (record.ports, record.frequencies, record.exact_solves, record.rounds) == (
+        ("p1",),
+        3,
+        3,
+        1,
+    )
+    assert record.levelno == logging.INFO
+    assert record.getMessage() == (
+        "port mode sweep for p1 over 3 frequencies: 3 exact solves, 1 rounds"
+    )
+
+
+def test_a_joint_sweep_logs_one_record_naming_its_ports(slab_mesh, caplog):
+    model = slab(slab_mesh)
+    space = PortModeSpace(port_section(model, model.ports[0]), 2)
+    caplog.set_level(logging.INFO, logger="gfem.solver")
+    te, _ = port_mode_sweep(space, JOINT, [1, 2], tolerance=1e-6, ports=shared_ports())
+    (record,) = _sweep_records(caplog)
+    assert record.ports == ("in_TE0", "in_TM0")
+    assert record.frequencies == len(JOINT)
+    assert record.exact_solves >= np.asarray(te.solved).sum()
+    assert record.rounds >= 1
+    assert record.getMessage().startswith(
+        f"port mode sweep for in_TE0, in_TM0 over {len(JOINT)} frequencies: "
+    )
+
+
+def test_no_sweep_record_is_built_when_the_logger_is_off(slab_mesh, monkeypatch):
+    from gfem._linalg import report
+
+    monkeypatch.setattr(report.LOGGER, "isEnabledFor", lambda _level: False)
+    monkeypatch.setattr(
+        report.LOGGER,
+        "info",
+        lambda *_, **__: pytest.fail("a record was built while off"),
+    )
+    gfem.solve(slab(slab_mesh), gfem.PortMode("p1", [10e9, 15e9, 20e9]))

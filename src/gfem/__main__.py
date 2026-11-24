@@ -3,6 +3,10 @@
 ``--cache CACHE`` reads the result from a solve cache, or stores it there,
 as ``Job.run(cache=...)`` does.
 
+``--log LEVEL`` (DEBUG, INFO, WARNING, ERROR or CRITICAL, in any case) shows
+gfem's log records at LEVEL and above on stderr for the run, as
+``gfem.log.enable(LEVEL)`` does; without it the output is unchanged.
+
 Exit codes: 0 on success; 1 when the job cannot be read or solved (the
 error message goes to stderr: a changed mesh file, a newer schema version,
 a device that cannot run, a physics error, ...); 2 for command-line usage
@@ -27,6 +31,7 @@ from pathlib import Path
 
 def _parser() -> argparse.ArgumentParser:
     from gfem import __version__
+    from gfem.log import _LEVELS
 
     parser = argparse.ArgumentParser(
         prog="gfem",
@@ -64,6 +69,14 @@ def _parser() -> argparse.ArgumentParser:
         "was solved there before, store it otherwise (created when missing); "
         "result.json is written either way and records the hit or miss",
     )
+    run.add_argument(
+        "--log",
+        type=str.upper,
+        choices=_LEVELS,
+        metavar="LEVEL",
+        help="show gfem's log records at LEVEL and above on stderr: "
+        "DEBUG, INFO, WARNING, ERROR or CRITICAL, in any case",
+    )
     return parser
 
 
@@ -77,6 +90,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
 
+    from gfem import log
+
+    if args.log is not None:
+        # Before the communicator is resolved: the display reads the world rank
+        # from the launcher's environment, and records emitted while the job is
+        # read are shown too.
+        log.enable(args.log)
+    try:
+        return _run(parser, args)
+    finally:
+        # A no-op without --log; an in-process caller keeps no handler on gfem.
+        log.disable()
+
+
+def _run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     from gfem import _mpi
     from gfem.errors import SolverUnavailableError
     from gfem.job import Job

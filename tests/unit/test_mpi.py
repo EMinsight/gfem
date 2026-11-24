@@ -1152,3 +1152,94 @@ def test_ranks_compare_a_pieces_cotangent_by_shape_and_any_other_by_value():
     replicated = solve_vjp._replicated_cotangents(cotangents, {"potential"})
     np.testing.assert_array_equal(replicated["the cotangent of potential"], [5, 2])
     np.testing.assert_array_equal(replicated["the cotangent of capacitance"], np.eye(2))
+
+
+# --- rank-local diagnostics --------------------------------------------------------
+
+
+class _Waiting:
+    """A communicator whose entry barrier completes on the fourth test."""
+
+    rank = 2
+
+    def __init__(self) -> None:
+        self.tests = 0
+
+    def Ibarrier(self):  # noqa: N802
+        return self
+
+    def Test(self) -> bool:  # noqa: N802
+        self.tests += 1
+        return self.tests > 3
+
+
+WAITED = (
+    "gfem: rank 2: waiting over 0 s for the other ranks at solve: every rank must "
+    "make the same gfem calls."
+)
+
+
+def test_meet_logs_a_long_wait_once_on_gfem_mpi(monkeypatch, caplog):
+    monkeypatch.setattr(_mpi, "ENTRY_PATIENCE", 0.0)
+    with caplog.at_level("WARNING", logger="gfem.mpi"):
+        _mpi.meet(_Waiting(), "solve")
+    [record] = [r for r in caplog.records if r.name == "gfem.mpi"]
+    assert record.levelname == "WARNING"
+    assert record.getMessage() == WAITED
+    assert (record.rank, record.call, record.patience) == (2, "solve", 0.0)
+
+
+def test_meet_with_no_logging_configured_prints_the_bare_wait_message():
+    code = """
+        from gfem import _mpi
+
+        class Waiting:
+            rank = 2
+            tests = 0
+
+            def Ibarrier(self):
+                return self
+
+            def Test(self):
+                self.tests += 1
+                return self.tests > 3
+
+        _mpi.ENTRY_PATIENCE = 0.0
+        _mpi.meet(Waiting(), "solve")
+    """
+    child = _child(code, Path(gfem.__file__).parents[1])
+    assert child.returncode == 0, child.stderr
+    assert child.stderr == WAITED + "\n"
+
+
+def test_checked_logs_a_rank_local_failure_on_gfem_mesh(monkeypatch, caplog):
+    mesh_module = importlib.import_module("gfem._engine.mesh")
+
+    def planted(*_args):
+        raise RuntimeError("planted")
+
+    received = mesh_module._Received(
+        ngmesh=None,
+        domains=(),
+        node_order=np.zeros(0, dtype=np.int64),
+        tets=np.zeros((0, 4), dtype=np.int64),
+        tris=np.zeros((0, 3), dtype=np.int64),
+    )
+    monkeypatch.setattr(mesh_module, "_receive", lambda *_args: received)
+    monkeypatch.setattr(mesh_module, "_match", planted)
+    monkeypatch.setattr(_mpi, "reduce_bcast", lambda _comm, values: values)
+    mesh = types.SimpleNamespace(
+        nodes=[], tetrahedra=None, triangles=None, triangle_tags=np.array([1, 2])
+    )
+    comm = types.SimpleNamespace(rank=0, size=1)
+    with (
+        caplog.at_level("WARNING", logger="gfem.mesh"),
+        pytest.raises(_mpi.AgreedError, match="logged its traceback"),
+    ):
+        mesh_module._checked(mesh, comm, (), 0)
+    [record] = [r for r in caplog.records if r.name == "gfem.mesh"]
+    assert record.levelname == "WARNING"
+    assert record.getMessage() == "gfem: rank 0: the periodic mesh check raised:"
+    assert record.rank == 0
+    assert record.exc_info is not None
+    assert str(record.exc_info[1]) == "planted"

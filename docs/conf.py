@@ -268,7 +268,7 @@ gfem_install = {
     "extra": 'pip install "gfem[{extra}]"',
 }
 # The extras get-started.md installs, in its table's order.
-gfem_extras = ("mkl", "cuda12", "xarray", "viz", "mpi")
+gfem_extras = ("mkl", "cuda12", "xarray", "viz", "mpi", "log")
 
 
 def _status(version: str) -> str:
@@ -305,6 +305,7 @@ myst_substitutions = {
     + "\n```",
     # The recipes' install blocks, from the same source as get-started's.
     "install_mpi": f"```bash\n{gfem_install['extra'].format(extra='mpi')}\n```",
+    "install_log": f"```bash\n{gfem_install['extra'].format(extra='log')}\n```",
     "install_cuda": "```bash\n"
     + gfem_install["extra"].format(extra="cuda12")
     + "  # CUDA 12 drivers\n"

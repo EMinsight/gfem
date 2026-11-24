@@ -9,8 +9,7 @@ from __future__ import annotations
 import collections.abc
 import contextlib
 import dataclasses
-import sys
-import traceback
+import logging
 import weakref
 from typing import Any
 
@@ -27,6 +26,9 @@ from gfem._engine.seam_check import (
 )
 from gfem._periodic import Pairing, check_nodes, pair_names
 from gfem.mesh import LENGTH_UNITS, Mesh
+
+# an explicit name: a private module path would leak into users' filters
+_log = logging.getLogger("gfem.mesh")
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -390,7 +392,7 @@ def _checked(mesh: Mesh, comm: Any, pairs: tuple[Pairing, ...], seed: int) -> _T
     check raised.
 
     Raises:
-        gfem._mpi.AgreedError: The check raised on some rank, which printed it.
+        gfem._mpi.AgreedError: The check raised on some rank, which logged it.
     """
     received = _receive(mesh, comm, pairs, seed)
     n_nodes = len(mesh.nodes)
@@ -405,20 +407,19 @@ def _checked(mesh: Mesh, comm: Any, pairs: tuple[Pairing, ...], seed: int) -> _T
             local[:4] = seam_counts(received.ngmesh)  # `SeamCounts`'s order
         local[4 : 4 + len(tags)] = surface_counts(mesh.triangle_tags, tri_order, tags)
     except Exception:  # noqa: BLE001
-        print(  # noqa: T201
-            f"gfem: rank {comm.rank}: the periodic mesh check raised:",
-            file=sys.stderr,
-            flush=True,
+        _log.warning(
+            "gfem: rank %d: the periodic mesh check raised:",
+            comm.rank,
+            extra={"rank": comm.rank},
+            exc_info=True,
         )
-        traceback.print_exc()
-        sys.stderr.flush()
         local[4 + len(tags) + comm.rank] = 1
     total = _mpi.reduce_bcast(comm, local)
     failed = np.flatnonzero(total[4 + len(tags) :])
     if len(failed):
         raise _mpi.AgreedError(
             "The periodic mesh check raised on ranks "
-            f"{', '.join(map(str, failed))}; each printed its traceback."
+            f"{', '.join(map(str, failed))}; each logged its traceback."
         )
     want = expected_surface_counts(mesh.triangle_tags, tags, paired)
     seam = SeamCounts(*total[:4].tolist())

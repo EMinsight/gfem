@@ -324,6 +324,9 @@ print(sorted(times.seconds), times.ndof)
   `frequency_workers` the workers' records are logged in your process; the
   workers run side by side, so their seconds can add up to more than the wall
   time.
+- To read the phases as they come rather than sum them,
+  `gfem.log.enable(timing=True)` prints one line per record on stderr
+  ({doc}`watch-a-solve`).
 
 ## Check your results
 

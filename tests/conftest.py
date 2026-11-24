@@ -151,6 +151,15 @@ def _skip_without_mpi(items: list[pytest.Item]) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _log_display_off():
+    """Turn the log display off after each test, so no test inherits one."""
+    yield
+    log = sys.modules.get("gfem.log")
+    if log is not None:
+        log.disable()
+
+
+@pytest.fixture(autouse=True)
 def _bitwise_threads(request, monkeypatch):
     """One solve thread for a ``bitwise`` test where PARDISO is missing."""
     if request.node.get_closest_marker("bitwise") is None:

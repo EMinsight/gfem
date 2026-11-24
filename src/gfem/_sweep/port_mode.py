@@ -50,7 +50,7 @@ import numpy as np
 import scipy.constants
 import scipy.linalg
 
-from gfem import _mpi, _pml
+from gfem import _mpi, _pml, _progress
 from gfem._boundaries import (
     FloquetPort,
     WavePort,
@@ -63,6 +63,7 @@ from gfem._engine.line_mode import ModeSpace, mode_space
 from gfem._engine.port_mode import PortModeSpace
 from gfem._engine.runtime import task_manager
 from gfem._engine.solve_request import SolveRequest
+from gfem._linalg import report
 from gfem._linalg.superlu import backward_error, shift_invert_eigs
 from gfem._line_section import LineSection
 from gfem._port_section import PLANE_RTOL, PortSection, port_section
@@ -603,10 +604,19 @@ class _Greedy:
         # exact solves: candidates and the positions (in shift-inverted order) kept
         self.candidates: dict[int, _Candidates] = {}
         self.pick: dict[int, list[int]] = {}
+        # the sweep's size, for its record
+        self.exact_solves = 0
+        self.rounds = 0
 
     # --- driver ---------------------------------------------------------------
 
     def run(self) -> None:
+        # the row counts the output frequencies that pass, so it can go down
+        # after a re-selection
+        with _progress.task(_progress.PORT_MODE_SWEEP, total=len(self.f)) as row:
+            self._run(row)
+
+    def _run(self, row: _progress.ProgressRow) -> None:
         n = len(self.f)
         first = self._solve(0)
         if len(first.lam) < max(self.modes):
@@ -625,9 +635,16 @@ class _Greedy:
             if passed is None:  # a sample was re-selected
                 self._rebuild()
                 continue
+            row.update(completed=int(passed.sum()), exact_solves=self.exact_solves)
             if passed.all():
                 for k in range(len(self.modes)):
                     self._warn_crossing(k)
+                report.port_mode_sweep(
+                    ports=list(dict.fromkeys(p.name for p in self.ports)),
+                    frequencies=n,
+                    exact_solves=self.exact_solves,
+                    rounds=self.rounds,
+                )
                 return
             # the worst mode at each frequency decides where to enrich
             excess = (self.residual / self.floor).max(axis=0)
@@ -643,6 +660,7 @@ class _Greedy:
 
     def _solve(self, j: int) -> _Candidates:
         space, mode = self.space, max(self.modes)
+        self.exact_solves += 1
         a, b = space.pencil.at(self.k0[j])
         n = a.shape[0]
         first = max(6, 2 * mode + 4)
@@ -834,6 +852,7 @@ class _Greedy:
             Which frequencies pass the guard, or ``None`` when an exact sample
             was re-selected (the basis must be rebuilt).
         """
+        self.rounds += 1
         n, n_modes = len(self.f), len(self.modes)
         solved = np.flatnonzero(self.solved)
         passed = np.zeros(n, bool)

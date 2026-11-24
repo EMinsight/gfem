@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, Protocol
 
 import numpy as np
 
-from gfem import _timing
+from gfem import _progress, _timing
 from gfem._engine import workers
 from gfem._engine.cache import Entry
 from gfem._engine.runtime import task_manager
@@ -170,22 +170,24 @@ class FrequencyWorkers:
             for block in indices
         ]
         parts = workers.model_parts(model)
-        results = workers.run(
-            solve_block,
-            [(*parts, problem, options, keep) for problem in problems],
-            [_describe(problem.frequency) for problem in problems],
-            threads=threads,
-            keywords=[
-                {
-                    "port_modes": block.port_modes,
-                    "order_frequency": tuple(frequencies),
-                    "log": report.LOGGER.isEnabledFor(logging.INFO)
-                    or _timing.LOGGER.isEnabledFor(logging.INFO),
-                    "gauge": self.gauge,
-                }
-                for block in blocks
-            ],
-        )
+        with _progress.task(_progress.UNIFORM_SWEEP, total=len(frequencies)) as row:
+            results = workers.run(
+                solve_block,
+                [(*parts, problem, options, keep) for problem in problems],
+                [_describe(problem.frequency) for problem in problems],
+                threads=threads,
+                row=row,
+                keywords=[
+                    {
+                        "port_modes": block.port_modes,
+                        "order_frequency": tuple(frequencies),
+                        "log": report.LOGGER.isEnabledFor(logging.INFO)
+                        or _timing.LOGGER.isEnabledFor(logging.INFO),
+                        "gauge": self.gauge,
+                    }
+                    for block in blocks
+                ],
+            )
         for r in results:
             report.replay(r[3])
         # each block stopped at its first miss: its solved rows lead it
@@ -285,33 +287,36 @@ class FixedAngleChildren:
         ``adjoints``; its handles are freed before the next frequency.
         """
         outcomes: list[BlockOutcome] = []
-        for block in blocks:
-            (n,) = block.indices
-            rule = self.child(model, n)
-            rows_n = block.port_modes
-            # the backward rebuilds frequency n's system on the same rows
-            self.handed[n] = rows_n
-            child = dataclasses.replace(
-                request,
-                keeps_partial=True,
-                port_modes=rows_n,
-                adjoints=request.adjoints,
-            )
-            try:
-                outputs, entry = rule.forward(model, keep=keep, request=child)
-            except LinearSolverConvergenceError as err:
-                partial = err._partial  # noqa: SLF001
-                miss = (n, str(err) if partial is None else partial.reason)
-                outcomes.append(BlockOutcome(block.indices, None, None, miss, err))
-                break
-            finally:
-                rule.forget_operator()
-            out = SweepOutputs.read(outputs).without_port_modes()
-            solution = None
-            if entry is not None:
-                solution = entry.fields["solution"]
-                entry.free()
-            outcomes.append(BlockOutcome(block.indices, out, solution, None, None))
+        with _progress.task(
+            _progress.UNIFORM_SWEEP, total=sum(len(b.indices) for b in blocks)
+        ):
+            for block in blocks:
+                (n,) = block.indices
+                rule = self.child(model, n)
+                rows_n = block.port_modes
+                # the backward rebuilds frequency n's system on the same rows
+                self.handed[n] = rows_n
+                child = dataclasses.replace(
+                    request,
+                    keeps_partial=True,
+                    port_modes=rows_n,
+                    adjoints=request.adjoints,
+                )
+                try:
+                    outputs, entry = rule.forward(model, keep=keep, request=child)
+                except LinearSolverConvergenceError as err:
+                    partial = err._partial  # noqa: SLF001
+                    miss = (n, str(err) if partial is None else partial.reason)
+                    outcomes.append(BlockOutcome(block.indices, None, None, miss, err))
+                    break
+                finally:
+                    rule.forget_operator()
+                out = SweepOutputs.read(outputs).without_port_modes()
+                solution = None
+                if entry is not None:
+                    solution = entry.fields["solution"]
+                    entry.free()
+                outcomes.append(BlockOutcome(block.indices, out, solution, None, None))
         return outcomes
 
     def backward(
@@ -338,34 +343,40 @@ class FixedAngleChildren:
         ct_s = cotangents.get("s")
         ct_e = cotangents.get("e_field")
         pairs: list[FieldPair] = []
-        for n in range(len(parent.problem.frequency)):
-            rule = self.child(model, n)
-            part: dict[str, np.ndarray] = {}
-            if ct_s is not None:
-                part["s"] = np.asarray(ct_s)[n : n + 1]
-            if ct_e is not None and n in parent.kept:
-                k = parent.kept.index(n)
-                part["e_field"] = np.asarray(ct_e)[:, k * width : (k + 1) * width]
-            if not part:
-                continue
-            sub = Entry(
-                physics=parent.physics,
-                fields={"solution": solution[:, n * width : (n + 1) * width]},
-            )
-            try:
-                pairs.extend(
-                    rule.backward(
-                        model,
-                        sub,
-                        part,
-                        wanted=wanted,
-                        port_modes=self.handed.get(n),
-                    )
+        frequencies = parent.problem.frequency
+        with _progress.task(
+            _progress.UNIFORM_SWEEP_ADJOINT, total=len(frequencies)
+        ) as row:
+            for n in range(len(frequencies)):
+                rule = self.child(model, n)
+                part: dict[str, np.ndarray] = {}
+                if ct_s is not None:
+                    part["s"] = np.asarray(ct_s)[n : n + 1]
+                if ct_e is not None and n in parent.kept:
+                    k = parent.kept.index(n)
+                    part["e_field"] = np.asarray(ct_e)[:, k * width : (k + 1) * width]
+                if not part:
+                    # no adjoint to solve: the frequency is done
+                    row.advance(frequency=frequencies[n])
+                    continue
+                sub = Entry(
+                    physics=parent.physics,
+                    fields={"solution": solution[:, n * width : (n + 1) * width]},
                 )
-            finally:
-                if isinstance(sub.handle, _Kept):
-                    sub.handle.free()
-                rule.forget_operator()
+                try:
+                    pairs.extend(
+                        rule.backward(
+                            model,
+                            sub,
+                            part,
+                            wanted=wanted,
+                            port_modes=self.handed.get(n),
+                        )
+                    )
+                finally:
+                    if isinstance(sub.handle, _Kept):
+                        sub.handle.free()
+                    rule.forget_operator()
         return pairs
 
 

@@ -8,7 +8,9 @@ worker sweep pays the workers' start-up (seconds), so the tests are few.
 """
 
 import logging
+import multiprocessing
 import os
+import queue
 import warnings
 from pathlib import Path
 
@@ -26,9 +28,11 @@ from gradient_cases import (
     wave_line,
     wave_mesh,
 )
+from recording_board import RecordingBoard
 from solver_misses import cannot_converge_at
 
 import gfem
+from gfem import _progress
 from gfem._engine import cache, driven, runtime, workers
 from gfem._engine.driven import DrivenRule
 from gfem._engine.driven_sweep import solve_block
@@ -271,7 +275,7 @@ SIX = (3e9, 3.5e9, 4e9, 4.5e9, 5e9, 5.5e9)  # two blocks of three
 def _in_process(monkeypatch):
     """Run each worker's block in this process, so test seams reach it."""
 
-    def run(function, arguments, _labels, *, threads, keywords=None):  # noqa: ARG001
+    def run(function, arguments, _labels, *, threads, keywords=None, row=None):  # noqa: ARG001
         keywords = keywords or [{}] * len(arguments)
         return [function(*a, **k) for a, k in zip(arguments, keywords, strict=True)]
 
@@ -281,7 +285,7 @@ def _in_process(monkeypatch):
 def test_a_worker_keeps_nothing_and_plans_once(line, monkeypatch):
     handed = []
 
-    def run(function, arguments, _labels, *, threads, keywords=None):  # noqa: ARG001
+    def run(function, arguments, _labels, *, threads, keywords=None, row=None):  # noqa: ARG001
         handed.extend(a[-2].retain_memory for a in arguments)
         keywords = keywords or [{}] * len(arguments)
         return [function(*a, **k) for a, k in zip(arguments, keywords, strict=True)]
@@ -314,7 +318,7 @@ def _count_factorizations(monkeypatch) -> list[int]:
 def test_workers_solve_with_the_parents_auto_choice(line, monkeypatch, fits):
     handed = []
 
-    def run(function, arguments, _labels, *, threads, keywords=None):  # noqa: ARG001
+    def run(function, arguments, _labels, *, threads, keywords=None, row=None):  # noqa: ARG001
         handed.extend(a[-2].linear_solver for a in arguments)
         keywords = keywords or [{}] * len(arguments)
         return [function(*a, **k) for a, k in zip(arguments, keywords, strict=True)]
@@ -407,6 +411,103 @@ def test_a_worker_starts_with_its_share_of_threads(monkeypatch):
     # the parent's own environment is left as it was
     assert os.environ["OMP_NUM_THREADS"] == "7"
     assert "MKL_NUM_THREADS" not in os.environ
+
+
+# ---------------------------------------------------------------- progress
+
+
+def test_a_worker_forwards_its_rows_advances_and_not_its_phases(monkeypatch):
+    monkeypatch.setattr(_progress, "_LIVE", None)
+    forwarded = queue.Queue()
+    _progress.forward_to(forwarded)
+    with _progress.task("uniform sweep", total=2) as row:
+        with _progress.phase("solve"):
+            row.advance(frequency=3e9, iterations=(4,))
+        row.advance(frequency=3.5e9)
+    items = []
+    while not forwarded.empty():
+        items.append(forwarded.get_nowait())
+    assert items == [
+        (1, {"frequency": 3e9, "iterations": (4,)}),
+        (1, {"frequency": 3.5e9}),
+    ]
+
+
+def test_a_worker_forwards_only_its_uniform_sweep_rows_advances(monkeypatch):
+    # the parent advances its uniform sweep row by what it gets: a row of
+    # another loop run in the worker would count units of another kind
+    monkeypatch.setattr(_progress, "_LIVE", None)
+    forwarded = queue.Queue()
+    _progress.forward_to(forwarded)
+    with _progress.task("mode search") as other:
+        other.advance(attempt=1)
+        with _progress.task("uniform sweep", total=1) as row:
+            row.advance(frequency=3e9)
+        other.advance(attempt=2)
+    assert forwarded.get_nowait() == (1, {"frequency": 3e9})
+    assert forwarded.empty()
+
+
+def test_two_workers_advance_the_parents_row_once_per_frequency(line, monkeypatch):
+    problem = gfem.Driven(FREQUENCIES)
+    # off: no queue is made and the pools start without an initializer
+    context = multiprocessing.get_context("spawn")
+    queues = []
+    make_queue = context.Queue
+
+    def spy_queue(*args, **kwargs):
+        queues.append(1)
+        return make_queue(*args, **kwargs)
+
+    monkeypatch.setattr(context, "Queue", spy_queue)
+    initializers = []
+    pool = workers.ProcessPoolExecutor
+
+    def spy_pool(*args, **kwargs):
+        initializers.append(kwargs.get("initializer"))
+        return pool(*args, **kwargs)
+
+    monkeypatch.setattr(workers, "ProcessPoolExecutor", spy_pool)
+    off, _ = _forward(line, problem, linear_solver="direct", frequency_workers=2)
+    assert queues == []
+    assert initializers == [None, None]
+    board = RecordingBoard()
+    monkeypatch.setattr(_progress, "_LIVE", _progress.Live(board))
+    on, _ = _forward(line, problem, linear_solver="direct", frequency_workers=2)
+    assert board.summary() == [("uniform sweep", 4, 4, True)]
+    frequencies = sorted(e[3]["frequency"] for e in board.events if e[0] == "advance")
+    assert frequencies == list(FREQUENCIES)
+    # threaded factorizations are not bitwise reproducible between two runs, so
+    # the progress feed is held to the same tolerance as the other worker checks
+    np.testing.assert_allclose(on["s"], off["s"], rtol=0, atol=1e-12)
+
+
+def test_with_progress_the_first_blocks_error_is_raised(monkeypatch):
+    board = RecordingBoard()
+    monkeypatch.setattr(_progress, "_LIVE", _progress.Live(board))
+    # the second block fails first; the error raised is still the first block's
+    arguments = [
+        ("import time; time.sleep(1); raise ValueError('first')",),
+        ("raise KeyError('second')",),
+    ]
+    # the queue the workers forward through is closed even so
+    context = multiprocessing.get_context("spawn")
+    made = []
+    make_queue = context.Queue
+
+    def spy_queue(*args, **kwargs):
+        made.append(make_queue(*args, **kwargs))
+        return made[-1]
+
+    monkeypatch.setattr(context, "Queue", spy_queue)
+    with (
+        _progress.task("uniform sweep", total=2) as row,
+        pytest.raises(ValueError, match="first"),
+    ):
+        workers.run(exec, arguments, ["block 0", "block 1"], threads=1, row=row)
+    assert board.summary() == [("uniform sweep", 2, 0, True)]
+    (forwarded,) = made
+    assert forwarded._closed
 
 
 def test_worker_threads_split_the_cores_this_process_may_use(monkeypatch):

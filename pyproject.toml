@@ -50,6 +50,9 @@ cuda12 = [
 cuda13 = [
   "nvmath-python[cu13]>=1.0,<1.1; (sys_platform == 'linux' and platform_machine == 'x86_64') or sys_platform == 'win32'",
 ]
+# rich for the log display's lines and progress rows (`gfem.log.enable`); without
+# it the display falls back to plain text.
+log = ["rich>=14.2"]
 # MKL PARDISO with METIS ordering for the CPU direct solver. Proprietary: `mkl`
 # is under the Intel Simplified Software License, and the `intel-openmp` and
 # `intel-cmplr-lib-ur` it pulls in under the Intel End User License Agreement
@@ -96,7 +99,7 @@ site = [
   "trame-pyvista",
   "trame-vtk",
 ]
-test = ["pytest>=8.3", "pytest-cov>=6.0", "xarray>=2024.10"]
+test = ["pytest>=8.3", "pytest-cov>=6.0", "rich>=14.2", "xarray>=2024.10"]
 
 [build-system]
 requires = ["uv_build>=0.13,<0.14"]
