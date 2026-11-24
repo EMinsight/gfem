@@ -20,6 +20,7 @@ import jax.numpy as jnp
 import numpy as np
 import periodic_cases as pc
 import pytest
+import scipy.sparse as sp
 from strip2d import write_strip
 
 import gfem
@@ -622,6 +623,29 @@ CONNECTIONS = {
         [-1, -1],
         [False, False],
     ),
+    # a lone mode rivals a split pair's span, and the partner of its own
+    # pair joins the set: no mode gets two partners
+    "a lone mode rivalling a pair": (
+        [
+            [0.62, 0.778, 0.0, 0.102],
+            [0.655, 0.438, 0.941, 0.537],
+            [0.655, 0.438, 0.941, 0.537],
+            [0.376, 0.4, 0.0, 0.764],
+        ],
+        [16.455, 18.042, 18.042, 20.418],
+        [14.784, 17.456, 18.465, 22.585],
+        [0, 1, 2, 3],
+        [False, False, False, True],
+    ),
+    # three members of a group cut by n_bands continue into a pair: its two
+    # lowest, in frequency order
+    "unequal groups": (
+        [[0.853, 0.853], [0.853, 0.853], [0.853, 0.853]],
+        [1.0, 1.0, 1.0009],
+        [2.0, 2.001],
+        [0, 1],
+        [False, False],
+    ),
 }
 
 
@@ -669,6 +693,59 @@ def test_a_mode_with_no_partner_inside_the_window_is_lost_not_one_at_the_top():
     assert not tracked.lost.any()
     tracked = tracking.track([o], w, np.array([True, True]), np.array([False] * 2))
     assert tracked.lost.tolist() == [[True, False, False], [True, False, False]]
+
+
+def _pair_basis(angle: float) -> np.ndarray:
+    """A pair's two fields in coordinates 0 and 1, rotated by ``angle``, complex."""
+    c, s = math.cos(angle), math.sin(angle)
+    out = np.zeros((4, 2), dtype=complex)
+    out[:2] = [[c, -s * 1j], [s, c * 1j]]
+    return out * np.exp(0.7j)
+
+
+@pytest.mark.parametrize("angle", [0.0, 0.4, math.pi / 4, 1.3])
+def test_overlaps_with_a_split_pair_take_its_span_whatever_its_basis(angle):
+    mass = sp.diags([1.0, 2.0, 1.0, 3.0]).tocsr()
+    root = np.sqrt([1.0, 2.0, 1.0, 3.0])[:, None]
+    pair = _pair_basis(angle) / root
+    # a lone mode with 0.6 of its norm in the pair's span, split evenly
+    # between the members at angle 0 (0.42 each), and a lone mode alone
+    lone = np.array([[0.6 / math.sqrt(2)], [0.6 / math.sqrt(2)], [0.8], [0.0]]) / root
+    a = np.hstack([lone, np.eye(4)[:, [3]] / root])
+    b = np.hstack([pair, np.eye(4)[:, [3]] / root * 2j])
+    o = tracking.overlaps(
+        mass, a, b, np.array([1.0, 3.0]), np.array([2.0, 2.0002, 3.0])
+    )
+    np.testing.assert_allclose(o, [[0.6, 0.6, 0.0], [0.0, 0.0, 1.0]], atol=1e-14)
+    # pair to pair: one span, in two bases
+    other = _pair_basis(0.9) / root
+    o = tracking.overlaps(mass, pair, other, np.array([2.0, 2.0]), np.array([2.0, 2.0]))
+    np.testing.assert_allclose(o, np.ones((2, 2)), atol=1e-14)
+
+
+def test_a_gamma_whose_neighbours_disagree_is_not_filled_and_is_lost():
+    # one mode goes to zero from the left, none from the right
+    w = np.array([[0.5, 1.0, 2.0], [1.0, 2.0, 3.0], [1.1, 2.1, 3.1]])
+    into = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float) + 0.02
+    out = np.eye(3) * 0.97
+    tracked = tracking.track(
+        [into, out], w, np.array([True] * 3), np.array([False, True, False])
+    )
+    assert tracked.static.tolist() == [0, 0, 0]
+    assert tracked.lost[1].all()
+    assert {k for k, _, _ in tracked.lost_at} == {0, 1}
+
+
+def test_no_band_continues_a_mode_the_static_bands_pushed_out():
+    # Γ first: one band goes to zero there, so its highest mode is band 3,
+    # outside the diagram; the mode it continues into connects to none
+    w = np.array([[1.0, 2.0, 3.0], [0.5, 1.0, 2.0]])
+    o = np.array([[0, 1, 0], [0, 0, 0], [0, 0, 1]], dtype=float) * 0.97 + 0.02
+    tracked = tracking.track([o], w, np.array([True] * 2), np.array([True, False]))
+    assert tracked.static.tolist() == [1, 0]
+    assert tracked.connection.tolist() == [[-1, -1, -1], [0, 1, -1]]
+    # Γ's band 2 (its second mode) continues nowhere: lost; band 2 beyond is not
+    assert np.argwhere(tracked.lost).tolist() == [[0, 2]]
 
 
 # --- a small diagram: order, Γ fill, fields and flags -------------------------------

@@ -10,14 +10,18 @@ the band at the previous wave vector it continues, from the overlap
 
 of the two modes' fields in the mass :math:`M` weighted by
 :math:`\mathrm{Re}\,\varepsilon_r` on the unpaired space. A modulus makes the
-arbitrary global phase of each mode irrelevant. Everything here reads host
-numbers: the fields and frequencies of the solves with their gradients
-stopped.
+arbitrary global phase of each mode irrelevant. Modes within a relative
+frequency of ``GROUP_RTOL`` form a group whose basis the solver picks at
+random (a degenerate cluster, or a pair the mesh splits): between groups the
+overlap is taken between their spans, so it does not depend on that basis.
+Everything here reads host numbers: the fields and frequencies of the solves
+with their gradients stopped.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import math
 from collections.abc import Sequence
 
 import ngsolve as ngs
@@ -25,6 +29,7 @@ import numpy as np
 import scipy.optimize
 import scipy.sparse as sp
 
+from gfem._eigen.velocity import GROUP_RTOL, groups
 from gfem.model import Model
 
 #: A mode continues another when their overlap is at least this: more than a
@@ -70,12 +75,51 @@ def mass_matrix(model: Model, order: int) -> sp.csr_matrix:
     )
 
 
-def overlaps(mass: sp.csr_matrix, a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """``|<a_i, b_j>_M| / (|a_i| |b_j|)`` for the columns of ``a`` and ``b``."""
-    num = np.abs(a.conj().T @ (mass @ b))
-    na = np.sqrt(np.real(np.sum(a.conj() * (mass @ a), axis=0)))
-    nb = np.sqrt(np.real(np.sum(b.conj() * (mass @ b), axis=0)))
-    return num / np.outer(na, nb)
+def overlaps(
+    mass: sp.csr_matrix,
+    a: np.ndarray,
+    b: np.ndarray,
+    w_a: np.ndarray,
+    w_b: np.ndarray,
+) -> np.ndarray:
+    r"""The overlaps between the modes ``a`` and ``b``, group by group.
+
+    The modes (columns) of each side form groups within ``GROUP_RTOL`` of
+    their frequencies ``w_a`` and ``w_b``. For groups :math:`P` and
+    :math:`Q`, the singular values of
+
+    .. math::
+
+        K_{PQ} = G_P^{-1/2} A_P^H M B_Q G_Q^{-1/2}
+
+    with :math:`G` each group's Gram matrix in :math:`M`, are the cosines
+    of the angles between the two spans, whatever basis the solver picked
+    inside either group. Every pair of members gets their root mean square,
+    :math:`\lVert K_{PQ}\rVert_F / \sqrt{\min(p, q)}`. Between two lone modes
+    it is :math:`O_{ij}`; between a lone mode and a group, the norm of the
+    mode's projection onto the group's span.
+    """
+    cross = a.conj().T @ (mass @ b)
+    out = np.zeros(cross.shape)
+    sides = [
+        [
+            (g, _inverse_sqrt(x[:, g].conj().T @ (mass @ x[:, g])))
+            for g in groups(w, GROUP_RTOL)
+        ]
+        for x, w in ((a, w_a), (b, w_b))
+    ]
+    for p, root_p in sides[0]:
+        for q, root_q in sides[1]:
+            k = root_p @ cross[np.ix_(p, q)] @ root_q
+            out[np.ix_(p, q)] = np.linalg.norm(k) / math.sqrt(min(len(p), len(q)))
+    return out
+
+
+def _inverse_sqrt(gram: np.ndarray) -> np.ndarray:
+    """:math:`G^{-1/2}` of a Hermitian positive definite Gram matrix."""
+    values, vectors = np.linalg.eigh(gram)
+    values = np.maximum(values, values.max() * np.finfo(float).eps)
+    return (vectors / np.sqrt(values)) @ vectors.conj().T
 
 
 def gamma_equivalent(wave_vector: np.ndarray, translations: np.ndarray) -> bool:
@@ -91,10 +135,11 @@ def connect(
 
     A one-to-one pairing maximising :math:`\sum O_{ij}^2` over the pairs
     with :math:`O_{ij} \ge 1/2`. A pair is decided by overlap when it beats
-    every other entry of its row and of its column by at least 0.05; the
-    modes of a group of rival pairs (a degenerate cluster, a near-degenerate
-    pair the mesh splits) are paired in ascending frequency instead, when
-    both sides hold as many.
+    every other entry of its row and of its column by at least 0.05. Rival
+    pairs, with each member's partner, form a set (members of one group of
+    `overlaps` always do, their overlaps tie): it keeps as many pairs as the
+    assignment made, between its lowest modes on each side in ascending
+    frequency.
 
     Args:
         overlap: ``(n_prev, n_cur)``, the modes in ascending
@@ -135,16 +180,31 @@ def connect(
         if rivals:
             for x in [("r", i), ("c", int(j)), *rivals]:
                 parent[find(x)] = find(("r", i))
-    groups: dict[tuple[str, int], tuple[list[int], list[int]]] = {}
+    rivals_sets: dict[tuple[str, int], tuple[set[int], set[int]]] = {}
     for kind, idx in list(parent):
-        members = groups.setdefault(find((kind, idx)), ([], []))
-        members[0 if kind == "r" else 1].append(idx)
-    for rows_in, cols_in in groups.values():
-        by_overlap[cols_in] = False
-        if len(rows_in) == len(cols_in):
-            by_frequency = sorted(rows_in, key=lambda i: (w_prev[i], i))
-            link[sorted(cols_in, key=lambda j: (w_cur[j], j))] = by_frequency
+        members = rivals_sets.setdefault(find((kind, idx)), (set(), set()))
+        members[0 if kind == "r" else 1].add(idx)
+    for rows_in, cols_in in rivals_sets.values():
+        _close(link, rows_in, cols_in)
+        cols = sorted(cols_in, key=lambda j: (w_cur[j], j))
+        n_pairs = int((link[cols] >= 0).sum())
+        by_overlap[cols] = False
+        link[cols] = -1
+        rows = sorted(rows_in, key=lambda i: (w_prev[i], i))[:n_pairs]
+        link[cols[:n_pairs]] = rows
     return link, by_overlap
+
+
+def _close(link: np.ndarray, rows: set[int], cols: set[int]) -> None:
+    """Add to a rival set the partner of each of its members, until none is new."""
+    while True:
+        new_rows = {int(link[j]) for j in cols if link[j] >= 0} - rows
+        new_cols = {int(j) for j in np.flatnonzero(link >= 0) if link[j] in rows}
+        new_cols -= cols
+        if not (new_rows or new_cols):
+            return
+        rows |= new_rows
+        cols |= new_cols
 
 
 @dataclasses.dataclass(frozen=True)
@@ -187,20 +247,22 @@ def _static_bands(
     matched_prev: list[np.ndarray],
     matched_cur: list[np.ndarray],
     use: np.ndarray,
-) -> tuple[np.ndarray, dict[tuple[int, int], list[int]]]:
+) -> tuple[np.ndarray, dict[tuple[int, int], list[int]], dict[int, int]]:
     """The static bands of each wave vector in ``use``, from its neighbours.
 
     The number is that of unmatched modes of a neighbour that lie below the
-    lowest mode found there. The neighbours must agree, else no fill and
-    those modes are lost.
+    lowest mode found there. The neighbours must agree, else no fill: the
+    band numbers there are off by a count unknown.
 
     Returns:
-        The count per wave vector, and, per ``(wave vector, neighbour)``, the
-        neighbour's modes that go to zero.
+        The count per wave vector; per ``(wave vector, neighbour)``, the
+        neighbour's modes that go to zero; per wave vector whose neighbours
+        disagree, one of them.
     """
     n_k, n = w.shape
     s = np.zeros(n_k, dtype=int)
     below: dict[tuple[int, int], list[int]] = {}
+    disagree: dict[int, int] = {}
     for g in map(int, np.flatnonzero(use)):
         sides = {}
         if g > 0:  # the previous wave vector's modes
@@ -216,7 +278,9 @@ def _static_bands(
             s[g] = min(counts.pop(), n)
             for q, modes in low.items():
                 below[g, q] = modes
-    return s, below
+        elif counts:
+            disagree[g] = min(low)
+    return s, below, disagree
 
 
 def track(
@@ -245,7 +309,7 @@ def track(
         taken = np.zeros(n, bool)
         taken[link[link >= 0]] = True
         matched_prev.append(taken)
-    s, below = _static_bands(w, matched_prev, matched_cur, gamma & anchored)
+    s, below, disagree = _static_bands(w, matched_prev, matched_cur, gamma & anchored)
     connection = np.full((n_k, n), -1, dtype=int)
     by_overlap = np.zeros((n_k, n), dtype=bool)
     lost = np.zeros((n_k, n), dtype=bool)
@@ -259,7 +323,8 @@ def track(
     for i, (link, by) in enumerate(zip(links, bys, strict=True)):
         cur, prev = i + 1, i
         for j in np.flatnonzero(link >= 0):
-            if j + s[cur] < n:
+            # a partner the static bands pushed out is not in the diagram
+            if j + s[cur] < n and link[j] + s[prev] < n:
                 connection[cur, j + s[cur]] = link[j] + s[prev]
                 by_overlap[cur, j + s[cur]] = by[j]
         # a static band continues from (or into) the modes that go to zero
@@ -275,6 +340,9 @@ def track(
         for j in _interior(matched_prev[i], bool(anchored[prev])):
             if j not in out_of:
                 flag(prev, j, cur)
+    for g, other in disagree.items():
+        for band in range(n):
+            flag(g, band, other)
     return Tracking(
         s,
         connection,

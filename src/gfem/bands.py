@@ -468,7 +468,8 @@ class BandDiagram:
             window, and every band of the first wave vector).
         connection_by_overlap: ``(n_k, n_bands)`` True where the field
             overlap decided the connection; False where frequency order
-            did (a degenerate or near-degenerate group), or where there is
+            did (a band of a degenerate or near-degenerate group, whose
+            overlap is taken with the group's span), or where there is
             none. A static band connects to the neighbouring band that goes
             to zero by frequency order.
         static: ``(n_k, n_bands)`` a band filled in at :math:`\omega = 0`
@@ -476,7 +477,8 @@ class BandDiagram:
             cell's static fields: the bands that go to zero there.
         lost: ``(n_k, n_bands)`` a band inside the window with no partner at
             a neighbouring wave vector: the path is too coarse there, or the
-            solve missed a mode (`gfem.LostBandWarning`).
+            solve missed a mode (`gfem.LostBandWarning`); and every band of a
+            Γ whose neighbours disagree on how many bands go to zero there.
         anchored: ``(n_k,)`` the band window is anchored: the target is below
             half the highest frequency found there, so the bands found are
             the lowest ones and band ``n`` is the ``n``-th lowest
@@ -865,7 +867,9 @@ def band_diagram(
             axis=1,
         )
         if previous is not None:
-            overlap.append(tracking.overlaps(mass, previous, x))
+            overlap.append(
+                tracking.overlaps(mass, previous, x, found[-2].w.real, one.w.real)
+            )
         previous = x
         if i not in kept:
             one.fields = ()
