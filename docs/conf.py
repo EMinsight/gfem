@@ -272,7 +272,7 @@ gfem_install = {
     "extra": 'pip install "gfem[{extra}]"',
 }
 # The extras get-started.md installs, in its table's order.
-gfem_extras = ("mkl", "cuda12", "xarray", "viz", "mpi", "log")
+gfem_extras = ("mkl", "cuda12", "xarray", "viz", "mpi", "log", "sax", "skrf")
 
 
 def _status(version: str) -> str:

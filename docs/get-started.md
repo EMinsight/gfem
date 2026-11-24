@@ -122,6 +122,8 @@ An extra goes in brackets after `gfem` in the same install line:
 | `viz` | Fields as PyVista grids (`.to_pyvista()`). | all |
 | `mpi` | One driven, electrostatic or eigenmode solve across the ranks of an MPI job; Open MPI comes from your machine. See {doc}`recipes/distributed-solve`. | Linux x86_64 |
 | `log` | Coloured log lines and progress rows while a solve runs; see {doc}`recipes/watch-a-solve`. | all |
+| `sax` | SAX, to place solves in SAX circuits (`SaxComponent`); gfem builds the S dictionary without it. | all |
+| `skrf` | scikit-rf, to export S as a scikit-rf network (`.to_skrf()`). | all |
 
 On a platform outside its list, an extra installs nothing and gfem solves with
 the plain install's CPU solvers.

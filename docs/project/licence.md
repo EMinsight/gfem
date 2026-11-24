@@ -25,6 +25,11 @@ OSI-licensed: only the optional extras below pull proprietary vendor wheels.
 - `mpi` pulls mpi4py (BSD-3-Clause). It brings no MPI library: Open MPI comes from
   the machine, and is not gfem's to ship. PyPI's `openmpi` wheel is not part of
   the extra.
+- `sax` pulls SAX (Apache-2.0) and klujax (LGPL-2.1), which statically links
+  SuiteSparse KLU and BTF (LGPL-2.1 or later) and AMD and COLAMD
+  (BSD-3-Clause) into its binary; the rest of its tree is under permissive
+  licences or MPL-2.0. gfem itself never imports SAX or klujax.
+- `skrf` pulls scikit-rf (BSD-3-Clause).
 
 ## PETSc and SLEPc
 
