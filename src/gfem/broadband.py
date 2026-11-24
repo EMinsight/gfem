@@ -15,6 +15,7 @@ Both start from S on the frequencies of a result (`gfem.NetworkParameters`).
 from __future__ import annotations
 
 import dataclasses
+import functools
 import math
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -342,11 +343,12 @@ class RationalModel:
         """The number of poles, counting both poles of a pair."""
         return int(self.poles.size)
 
-    @property
+    @functools.cached_property
     def passive(self) -> bool:
         """Whether S has no singular value above 1 at any frequency.
 
-        Computed from the model as it is (Hamiltonian test), not stored.
+        Computed from the model as it is (Hamiltonian test), on first use;
+        the model is immutable, so the answer is kept.
         """
         from gfem._broadband._passivity import violations
 
