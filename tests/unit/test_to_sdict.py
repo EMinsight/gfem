@@ -5,16 +5,13 @@ arrays (conjugated for an optical circuit) or closed forms: a load's
 pseudo-wave reflection and a transmission line's ABCD matrix.
 """
 
-import math
-
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from circuit_cases import F, line_abcd
 
 import gfem
-
-F = (3e9, 1e9, 2e9)
 
 # S[f, to, from] of a lossy, non-reciprocal 2-port, one matrix per frequency
 S2 = np.array(
@@ -53,13 +50,6 @@ def test_optical_gives_every_pair_conjugated_keyed_input_then_output():
     assert all(isinstance(v, jax.Array) and v.shape == (3,) for v in sd.values())
 
 
-def _line(f, z0=80.0, eps=4.0, length=0.01):
-    """ABCD matrix of a lossless line of impedance ``z0``."""
-    beta = 2 * math.pi * f / 299_792_458.0 * math.sqrt(eps)
-    c, s = math.cos(beta * length), math.sin(beta * length)
-    return np.array([[c, 1j * z0 * s], [1j * s / z0, c]])
-
-
 def _s_from_abcd(m, r):
     """S of an ABCD matrix on a real reference ``r`` at both ports."""
     (a, b), (c, d) = m
@@ -74,9 +64,9 @@ def _s_from_abcd(m, r):
 
 def test_rf_gives_s_on_50_ohm_by_default_unconjugated():
     # the line is solved on 30 ohm ports; the circuit sees it on 50 ohm
-    net = _net([_s_from_abcd(_line(f), 30.0) for f in F], 30.0)
+    net = _net([_s_from_abcd(line_abcd(f), 30.0) for f in F], 30.0)
     sd = net.to_sdict(circuit="rf", ports={"p1": "in", "p2": "out"})
-    want = np.array([_s_from_abcd(_line(f), 50.0) for f in F])
+    want = np.array([_s_from_abcd(line_abcd(f), 50.0) for f in F])
     np.testing.assert_allclose(sd["in", "out"], want[:, 1, 0], rtol=1e-12)
     np.testing.assert_allclose(sd["in", "in"], want[:, 0, 0], rtol=1e-12, atol=1e-15)
     np.testing.assert_allclose(sd["out", "in"], want[:, 0, 1], rtol=1e-12)

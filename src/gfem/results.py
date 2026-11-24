@@ -5,7 +5,6 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import math
-import re
 from collections.abc import Callable, Mapping, Sequence
 from importlib.metadata import version
 from pathlib import Path
@@ -19,6 +18,7 @@ from numpy.typing import ArrayLike
 
 from gfem import _objective
 from gfem._checks import is_traced, static_float
+from gfem._circuit_ports import Circuit, check_circuit, circuit_ports, circuit_z0
 from gfem._field import Field, FieldMap, ReducedFields
 from gfem._pytree import register_fields
 from gfem._sources import INCIDENT, Source
@@ -1052,7 +1052,7 @@ class NetworkParameters:
     def to_sdict(
         self,
         *,
-        circuit: Literal["optical", "rf"],
+        circuit: Circuit,
         ports: Mapping[str, str] | None = None,
         z0: Any = None,
     ) -> dict[tuple[str, str], jax.Array]:
@@ -1095,9 +1095,9 @@ class NetworkParameters:
                 ``name@mode`` (SAX multimode) for every port or none. Ports
                 left out are terminated, not exposed. ``None`` exposes every
                 port under its own name.
-            z0: For ``"rf"``, the real reference impedance S is
-                renormalized to, ohm (> 0, scalar); ``None`` means 50 ohm.
-                It may be traced. Refused for ``"optical"``.
+            z0: For ``"rf"``, the reference impedance S is renormalized
+                to, ohm, one positive real scalar; ``None`` means 50 ohm. It
+                may be traced. Refused for ``"optical"``.
 
         Returns:
             ``{(input, output): S over frequency}`` for every pair of
@@ -1108,19 +1108,14 @@ class NetworkParameters:
                 not a port, a circuit port name is invalid or repeated;
                 an exposed port was not excited (its column of S is
                 unknown); ``z0`` is given for ``"optical"`` or is not one
-                real value > 0; or, for ``"rf"``, an exposed port has no
+                positive real value; or, for ``"rf"``, an exposed port has no
                 reference impedance (checked on concrete values).
         """
-        if circuit not in ("optical", "rf"):
-            raise ValueError(
-                f"circuit must be 'optical' or 'rf', got {circuit!r}: it sets the "
-                "time convention and the normalization of S, so it is never "
-                "inferred."
-            )
-        exposed = _circuit_ports(ports, self.ports)
+        check_circuit(circuit, "the time convention and the normalization of S")
+        exposed = circuit_ports(ports, self.ports)
         sub = self._subnetwork(tuple(exposed), "to_sdict()")
         if circuit == "rf":
-            z0 = _circuit_z0(z0)
+            z0 = circuit_z0(z0)
             if not is_traced(sub.z_ref):
                 _require_reference(sub, "An RF circuit renormalizes S to z0")
             sub = sub.renormalize(z0)
@@ -1591,99 +1586,6 @@ def _pseudo(z: jax.Array) -> jax.Array:
 def _diag(v: jax.Array) -> jax.Array:
     """``(n_freq, n)`` -> stacked diagonal matrices ``(n_freq, n, n)``."""
     return v[:, :, None] * jnp.eye(v.shape[-1])
-
-
-def _circuit_ports(
-    ports: Mapping[str, str] | None, names: Sequence[str]
-) -> dict[str, str]:
-    """``ports`` checked: gfem port name -> circuit port name, in the given order.
-
-    ``None`` keeps every port under its own name. A circuit port name is an
-    identifier, or ``identifier@mode`` (SAX multimode) for every port or none.
-
-    Raises:
-        TypeError: ``ports`` is not a mapping.
-        ValueError: ``ports`` is empty, names a port that does not exist, or
-            gives an invalid or repeated circuit port name.
-    """
-    listed = ", ".join(map(repr, names))
-    if ports is None:
-        bad = [p for p in names if not _is_circuit_name(p)]
-        if bad:
-            raise ValueError(
-                f"Port {bad[0]!r} cannot be a circuit port name (an identifier, "
-                "or name@mode); rename it in the circuit with ports=, e.g. "
-                f"ports={{{bad[0]!r}: 'o1'}}."
-            )
-        exposed = {p: p for p in names}
-    else:
-        if not isinstance(ports, Mapping):
-            raise TypeError(
-                "ports= maps gfem port names to circuit port names, e.g. "
-                f"{{{names[0]!r}: 'o1'}}; got {type(ports).__name__}."
-            )
-        exposed = dict(ports)
-        if not exposed:
-            raise ValueError(f"ports= exposes no port; the ports are {listed}.")
-        unknown = [p for p in exposed if p not in names]
-        if unknown:
-            raise ValueError(
-                f"No port {', '.join(map(repr, unknown))}; the ports are {listed}."
-            )
-        bad = [c for c in exposed.values() if not _is_circuit_name(c)]
-        if bad:
-            raise ValueError(
-                f"Circuit port name {bad[0]!r} is not an identifier or name@mode "
-                "(SAX needs one, e.g. 'o1' or 'o1@TE0')."
-            )
-        names_given = list(exposed.values())
-        repeated = sorted({c for c in names_given if names_given.count(c) > 1})
-        if repeated:
-            raise ValueError(
-                f"Circuit port name {', '.join(map(repr, repeated))} is given to "
-                "more than one port; each exposed port needs its own."
-            )
-    moded = ["@" in c for c in exposed.values()]
-    if any(moded) and not all(moded):
-        raise ValueError(
-            "Either every circuit port name is name@mode or none is (SAX cannot "
-            f"join single-mode and multimode ports); got {list(exposed.values())}."
-        )
-    return exposed
-
-
-def _is_circuit_name(name: object) -> bool:
-    """``name`` is an identifier, or ``identifier@mode``."""
-    if not isinstance(name, str):
-        return False
-    base, at, mode = name.partition("@")
-    return base.isidentifier() and (not at or re.fullmatch(r"\w+", mode) is not None)
-
-
-def _circuit_z0(z0: Any) -> Any:
-    """An RF circuit's ``z0`` checked: one real value > 0, 50 ohm if ``None``.
-
-    A traced value is checked for its dtype and shape only.
-
-    Raises:
-        ValueError: ``z0`` is complex, not a number, not a scalar, or a
-            concrete value that is not finite and > 0.
-    """
-    if z0 is None:
-        return 50.0
-    try:
-        real = jnp.result_type(z0).kind in "iuf" and jnp.ndim(z0) == 0
-    except TypeError:
-        real = False
-    if real and not is_traced(z0):
-        value = float(z0)
-        real = math.isfinite(value) and value > 0
-    if not real or isinstance(z0, bool):
-        raise ValueError(
-            "z0 must be one real reference impedance > 0 ohm, the one every "
-            f"port of the RF circuit shares, got {z0!r}."
-        )
-    return z0
 
 
 def _require_reference(net: NetworkParameters, why: str, also: str = "") -> None:

@@ -12,7 +12,6 @@ import gc
 import inspect
 import sys
 import types
-from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -21,6 +20,7 @@ import pytest
 from circuit_cases import (
     BAND,
     C0,
+    LINE,
     OPTIONS,
     count_solves,
     design_eps,
@@ -33,7 +33,6 @@ from periodic_cases import f1, f1_mesh
 
 import gfem
 
-LINE = Path(__file__).parents[2] / "docs" / "tutorials" / "data" / "line.msh"
 PORTS = {"p1": "o1", "p2": "o2"}
 PAIRS = {("o1", "o1"), ("o1", "o2"), ("o2", "o1"), ("o2", "o2")}
 
@@ -503,6 +502,45 @@ def test_a_wavelength_outside_the_band_raises_eagerly_and_is_nan_traced(componen
     assert np.isfinite(jax.grad(power)(1.55))
 
 
+@pytest.mark.parametrize("circuit", ["optical", "rf"])
+def test_a_frequency_outside_the_band_raises_before_any_solve(mesh, canned, circuit):
+    if circuit == "rf":
+
+        def line_at(*, r=50.0):
+            return _lumped_line(p1=gfem.LumpedPort("p1", "port1", "+z", resistance=r))
+
+        component = _rf(line_at)
+        design, outside = {"r": 75.0}, {"f": 9e9}
+    else:
+        component = gfem.SaxComponent(slab_function(mesh), _template(), circuit=circuit)
+        design, outside = {"eps": design_eps(mesh) * 1.01}, {"wl": 1.7}
+    n = len(canned)
+    with pytest.raises(ValueError, match="outside the component's band"):
+        component(**design, **outside)
+    assert len(canned) == n  # the new design was not solved
+
+
+@pytest.mark.usefixtures("canned")
+@pytest.mark.parametrize("band", [BAND, BAND[[0, -1]]], ids=["five", "two"])
+def test_the_wavelength_gradient_at_the_band_ends_is_the_entrys_slope(mesh, band):
+    component = gfem.SaxComponent(
+        slab_function(mesh), gfem.Driven(band, polarization="Ez"), circuit="optical"
+    )
+
+    def entry(wl):
+        # canned S_12 = (1 + 2j) f / f_min, conjugated: its real part is linear in f
+        return jnp.real(component(wl=wl)["p2", "p1"])
+
+    def slope(wl):
+        # d/d wl of f / f_min, with f = c / wl
+        return -C0 / (wl**2 * 1e-6) / band.min()
+
+    ends = [C0 / band.max() * 1e6, C0 / band.min() * 1e6]
+    # a two-frequency band's default is one of its ends
+    for wl in [*ends, component.settings["wl"]]:
+        assert float(jax.grad(entry)(wl)) == pytest.approx(slope(wl), rel=1e-9)
+
+
 @pytest.mark.usefixtures("canned")
 def test_a_one_frequency_band_admits_only_its_frequency(mesh):
     component = gfem.SaxComponent(
@@ -620,6 +658,49 @@ def _unshared(component):
         return jnp.abs(a) ** 2 + 2 * jnp.abs(b) ** 2
 
     return fom
+
+
+def _jitted(component):
+    """`_pair` with each instance in a `jax.jit` body closing over the design."""
+
+    def fom(eps):
+        a = jax.jit(lambda wl: component(eps=eps, wl=wl)["o1", "o2"])(1.52)
+        b = jax.jit(lambda wl: component(eps=eps, wl=wl)["o1", "o2"])(1.58)
+        return jnp.abs(a) ** 2 + 2 * jnp.abs(b) ** 2
+
+    return fom
+
+
+def _mapped(component):
+    """`_pair` with one instance in a `jax.lax.map` body, the other outside."""
+
+    def fom(eps):
+        wls = jnp.array([1.52])
+        a = jax.lax.map(lambda wl: component(eps=eps, wl=wl)["o1", "o2"], wls)[0]
+        b = component(eps=eps, wl=1.58)["o1", "o2"]
+        return jnp.abs(a) ** 2 + 2 * jnp.abs(b) ** 2
+
+    return fom
+
+
+@pytest.mark.parametrize("closure", [_jitted, _mapped], ids=["jit", "lax.map"])
+def test_a_design_closed_over_by_a_staged_body_is_solved_in_its_trace(mesh, closure):
+    # the body's solve gives that trace's values: a later call in another
+    # trace must not be handed them
+    component = gfem.SaxComponent(
+        slab_function(mesh),
+        _template(),
+        circuit="optical",
+        ports=PORTS,
+        options=OPTIONS,
+    )
+    eps = jnp.asarray(design_eps(mesh)) * 1.02
+    reference = jax.grad(_pair(component))(eps)
+    np.testing.assert_allclose(
+        jax.grad(closure(component))(eps), reference, rtol=1e-9, atol=0
+    )
+    gc.collect()
+    assert not component._traced
 
 
 @pytest.mark.parametrize("staged", [False, True], ids=["grad", "jit-grad"])

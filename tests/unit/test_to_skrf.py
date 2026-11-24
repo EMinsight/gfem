@@ -6,26 +6,17 @@ of a transmission line's ABCD matrix, converted by Z11 = A / C,
 Z12 = det / C, Z21 = 1 / C, Z22 = D / C.
 """
 
-import math
 import sys
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from circuit_cases import F, line_abcd
 
 import gfem
 
 rf = pytest.importorskip("skrf")
-
-F = (3e9, 1e9, 2e9)
-
-
-def _line(f, z0=80.0, eps=4.0, length=0.01):
-    """ABCD matrix of a lossless line of impedance ``z0``."""
-    beta = 2 * math.pi * f / 299_792_458.0 * math.sqrt(eps)
-    c, s = math.cos(beta * length), math.sin(beta * length)
-    return np.array([[c, 1j * z0 * s], [1j * s / z0, c]])
 
 
 def _z_from_abcd(m):
@@ -47,7 +38,10 @@ Z_REF = np.array([[40 - 5j, 55 + 8j], [42 - 3j, 52 + 6j], [45 - 1j, 50 + 4j]])
 @pytest.fixture
 def line():
     s = np.array(
-        [_s_from_z(_z_from_abcd(_line(f)), z) for f, z in zip(F, Z_REF, strict=True)]
+        [
+            _s_from_z(_z_from_abcd(line_abcd(f)), z)
+            for f, z in zip(F, Z_REF, strict=True)
+        ]
     )
     return gfem.NetworkParameters(
         values=jnp.asarray(s),
@@ -62,7 +56,7 @@ def test_network_has_the_lines_impedance_on_the_ports_own_references(line):
     nw = line.to_skrf(name="line")
     order = np.argsort(F)
     np.testing.assert_array_equal(nw.f, np.sort(F))
-    want = np.array([_z_from_abcd(_line(f)) for f in np.sort(F)])
+    want = np.array([_z_from_abcd(line_abcd(f)) for f in np.sort(F)])
     np.testing.assert_allclose(nw.z, want, rtol=1e-12)
     np.testing.assert_array_equal(nw.z0, Z_REF[order])
     np.testing.assert_array_equal(nw.s, np.asarray(line.values)[order])
@@ -84,7 +78,7 @@ def test_a_sub_network_leaves_an_internal_load_inside(line):
     )
     nw = net.to_skrf(ports=["out", "in"])
     assert list(nw.port_names) == ["out", "in"]
-    want = np.array([_z_from_abcd(_line(f)) for f in np.sort(F)])
+    want = np.array([_z_from_abcd(line_abcd(f)) for f in np.sort(F)])
     np.testing.assert_allclose(nw.z, want[:, ::-1, ::-1], rtol=1e-12)
     with pytest.raises(ValueError, match=r"'c' was not excited"):
         net.to_skrf()

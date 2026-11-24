@@ -480,6 +480,10 @@ Direction = (
     | tuple[float, float, float]
 )
 
+#: A wave port's polarity reference as stored: the point (m; 3 coordinates,
+#: or 2 on a line port) and the unit direction.
+Polarity = tuple[tuple[float, ...], tuple[float, float, float]]
+
 
 def _port_name(name: Any, owner: str) -> str:
     if not isinstance(name, str):
@@ -689,7 +693,7 @@ class WavePort:
             default sign (see `gfem.conventions`).
 
     Raises:
-        ValueError: ``mode`` is not an integer >= 1, ``offset`` is negative,
+        ValueError: ``mode`` is not a positive integer, ``offset`` is negative,
             ``voltage_path`` is not two or more 3-vectors, ``polarity`` is
             not a point of 2 or 3 finite coordinates and a direction, or both
             ``polarity`` and ``voltage_path`` are given.
@@ -704,7 +708,7 @@ class WavePort:
     offset: float = 0.0
     voltage_path: tuple[tuple[float, float, float], ...] | None = None
     pec_edges: tuple[str, ...] = ()
-    polarity: tuple[tuple[float, ...], tuple[float, float, float]] | None = None
+    polarity: Polarity | None = None
     _physics: ClassVar[str] = "em"
 
     def __post_init__(self) -> None:
@@ -740,9 +744,7 @@ class WavePort:
             object.__setattr__(self, "polarity", _polarity(self.polarity, owner))
 
 
-def _polarity(
-    value: Any, owner: str
-) -> tuple[tuple[float, ...], tuple[float, float, float]]:
+def _polarity(value: Any, owner: str) -> Polarity:
     owner = f"{owner} polarity"
     check_fixed(value, f"{owner}: the point and direction must be fixed numbers")
     if not isinstance(value, (tuple, list)) or len(value) != 2:
