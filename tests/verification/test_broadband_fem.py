@@ -209,16 +209,18 @@ def test_v3_a_long_wave_port_line_is_the_exact_tem_line(long_line):
 
 
 def test_v3_the_fit_takes_about_two_poles_per_wrap(long_line):
-    # the TEM mode's Z_PV is one real value, up to the mode solve's round-off
+    # the TEM mode's Z_PV is one real value, up to the mode solve's round-off,
+    # and the fit keeps it as it is, at each port's mean
     z_ref = np.asarray(long_line.z_ref)
-    assert np.abs(z_ref.imag).max() == 0
-    np.testing.assert_allclose(z_ref.real, z_ref.real[0, 0], rtol=1e-10)
-    # exactly constant only to the last bits, so it is passed as z0
-    model = long_line.fit_rational(z0=float(z_ref.real[0, 0]))
+    spread = np.ptp(z_ref.real, axis=0).max() / np.abs(z_ref).max()
+    model = long_line.fit_rational()
+    np.testing.assert_allclose(model.z_ref, z_ref.real.mean(axis=0), rtol=1e-15)
     on_50 = long_line.fit_rational(z0=50.0)
     print(  # noqa: T201
-        f"\nV3: {model.n_poles} poles, error {model.error:.2e}; on 50 ohm "
-        f"{on_50.n_poles} poles, error {on_50.error:.2e}"
+        f"\nV3: Z_PV {model.z_ref.tolist()} ohm, relative spread {spread:.1e}, "
+        f"imaginary {np.abs(z_ref.imag).max():.1e} ohm; {model.n_poles} poles, "
+        f"error {model.error:.2e}; on 50 ohm {on_50.n_poles} poles, error "
+        f"{on_50.error:.2e}"
     )
     assert model.n_poles <= 32  # 24
     assert model.error <= 1e-3

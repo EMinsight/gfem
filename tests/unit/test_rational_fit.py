@@ -405,6 +405,29 @@ def test_a_complex_or_frequency_dependent_reference_needs_z0(z_ref):
         _fit(_small(z_ref=z_ref))
 
 
+def _near_50(spread=0.0, imag=0.0):
+    """A 50 ohm ``z_ref`` ``(20, 2)`` off by ``spread`` and ``imag`` relative."""
+    ramp = np.linspace(-0.5, 0.5, len(F20))[:, None] * np.array([1.0, -1.0])
+    return 50.0 * (1 + spread * ramp) + 50j * imag * ramp
+
+
+@pytest.mark.parametrize(
+    ("spread", "imag"), [(1e-13, 0.0), (0.0, 1e-13)], ids=["spread", "imaginary"]
+)
+def test_a_reference_constant_to_round_off_is_its_mean_real_value(spread, imag):
+    # a TEM wave port's Z_PV varies across frequency by about 1e-13 relative
+    model = _fit(_small(z_ref=_near_50(spread, imag)))
+    np.testing.assert_allclose(model.z_ref, [50.0, 50.0], rtol=1e-15)
+
+
+@pytest.mark.parametrize(
+    ("spread", "imag"), [(1e-6, 0.0), (0.0, 1e-6)], ids=["spread", "imaginary"]
+)
+def test_a_reference_off_by_more_than_round_off_needs_z0(spread, imag):
+    with pytest.raises(ValueError, match=r"z0=50\.0"):
+        _fit(_small(z_ref=_near_50(spread, imag)))
+
+
 def test_z0_renormalizes_s_before_the_fit():
     # a 75 ohm line, one phase wrap, on a complex reference at port 2
     on_50 = _net(LINE_F, _line(LINE_F, 1 / LINE_F[-1], 75.0))

@@ -27,6 +27,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from gfem._broadband._reference import constant_real
 from gfem._checks import is_traced, static_float
 from gfem._pytree import readonly
 from gfem._text import hertz, hertz_band
@@ -255,8 +256,9 @@ def _reference(
     """S on one real reference per port, that reference ``(n_ports,)``, excited.
 
     ``z0`` given: S renormalized to it (every port excited). Otherwise
-    ``z_ref`` must be one real value per port over frequency, or NaN for every
-    port (S on unit modal power; the reference stays NaN).
+    ``z_ref`` must be one real value per port over frequency, to round-off
+    (the port's mean real value), or NaN for every port (S on unit modal
+    power; the reference stays NaN).
     """
     n_ports = len(net.ports)
     z_ref = net.z_ref
@@ -283,12 +285,14 @@ def _reference(
         return renormalized.values, z, renormalized.excited
     if is_traced(z_ref):
         # inside a transformation the reference cannot be inspected; it is
-        # read as real and constant, as it is checked to be outside one
-        return net.values, jnp.real(z_ref[0]), net.excited
+        # read as real and constant, as it is checked to be outside one, and
+        # takes the same mean value
+        return net.values, jnp.real(z_ref).mean(axis=0), net.excited
     arr = np.asarray(z_ref)
     if np.isnan(arr).all():
         return net.values, jnp.full(n_ports, jnp.nan), net.excited
-    if not ((arr == arr[0]).all() and (np.imag(arr) == 0).all()):
+    constant = constant_real(arr)
+    if constant is None:
         found = np.unique(np.round(arr, 12))
         raise ValueError(
             f"{what} needs one real reference impedance per port, constant over "
@@ -296,7 +300,7 @@ def _reference(
             "WavePort's Z_PV is complex and frequency dependent). Pass z0= "
             "(e.g. z0=50.0) to renormalize S to one reference first."
         )
-    return net.values, jnp.asarray(np.real(arr[0])), net.excited
+    return net.values, jnp.asarray(constant), net.excited
 
 
 def _check_defined(

@@ -306,6 +306,44 @@ def test_a_reference_that_is_not_one_real_value_is_refused(z_ref):
     assert np.asarray(net.step_response(z0=50.0).z_ref).tolist() == [50.0]
 
 
+def _near(z, n, spread=0.0, imag=0.0):
+    """``z`` ohm over ``n`` frequencies, off by ``spread`` and ``imag`` relative."""
+    ramp = np.linspace(-0.5, 0.5, n)
+    return z * (1 + spread * ramp) + 1j * z * imag * ramp
+
+
+@pytest.mark.parametrize(
+    ("spread", "imag"), [(1e-13, 0.0), (0.0, 1e-13)], ids=["spread", "imaginary"]
+)
+def test_a_reference_constant_to_round_off_is_its_mean_real_value(spread, imag):
+    # a TEM wave port's Z_PV varies across frequency by about 1e-13 relative
+    f = _harmonic(100)
+    z_ref = np.stack([_near(50.0, f.size, spread, imag), _near(75.0, f.size)], -1)
+    s = np.zeros((f.size, 2, 2), complex)
+    s[:, 0, 0] = _s11(f)
+    net = _net(s, f, z_ref=z_ref, ports=("a", "b"))
+    step = net.step_response()
+    np.testing.assert_allclose(np.asarray(step.z_ref), [50.0, 75.0], rtol=1e-15)
+    exact = _line(f).step_response()
+    np.testing.assert_allclose(
+        np.asarray(step["a", "a"]), np.asarray(exact["p1", "p1"]), atol=1e-12
+    )
+    impulse = net.impulse_response()
+    np.testing.assert_allclose(np.asarray(impulse.z_ref), [50.0, 75.0], rtol=1e-15)
+
+
+@pytest.mark.parametrize(
+    ("spread", "imag"), [(1e-6, 0.0), (0.0, 1e-6)], ids=["spread", "imaginary"]
+)
+def test_a_reference_off_by_more_than_round_off_is_refused(spread, imag):
+    f = _harmonic(100)
+    net = _net(_s11(f), f, z_ref=_near(50.0, f.size, spread, imag)[:, None])
+    with pytest.raises(ValueError, match=r"z0=50\.0"):
+        net.step_response()
+    with pytest.raises(ValueError, match=r"z0=50\.0"):
+        net.impulse_response()
+
+
 def test_a_reference_missing_on_some_ports_is_refused():
     f = _harmonic(100)
     s = np.zeros((f.size, 2, 2), complex)

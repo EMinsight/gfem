@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import scipy.linalg
 
+from gfem._broadband._reference import constant_real
 from gfem._checks import is_traced, static_float
 from gfem._linalg.gmres import _ONE_BLAS_THREAD, scipy_openblas
 from gfem._text import hertz, hertz_band
@@ -244,7 +245,8 @@ def _reference(
     """S on one constant real reference per port, and that reference.
 
     The flag says whether the reference is a nominal label. The rules are
-    those of `NetworkParameters.to_touchstone`.
+    those of `NetworkParameters.to_touchstone`, except that a reference real
+    and constant to round-off counts as constant, at its mean real value.
     """
     z_ref = np.asarray(net.z_ref)
     if np.isnan(z_ref).all() and np.isfinite(s).all():
@@ -270,14 +272,15 @@ def _reference(
             "FloquetPort drop the port or narrow the grid."
         )
     if z0 is None:
-        if np.any(np.imag(z_ref) != 0) or np.any(z_ref != z_ref[:1]):
+        constant = constant_real(z_ref)
+        if constant is None:
             found = np.unique(np.round(z_ref, 12))
             raise ValueError(
                 "A rational model needs one constant real reference impedance "
                 f"per port, but z_ref takes the values {found.tolist()} ohm. "
                 "Pass z0= (e.g. z0=50.0) to renormalize S to it before the fit."
             )
-        return s, np.real(z_ref[0]).astype(float), False
+        return s, constant, False
     z = _z0(z0, net.ports)
     return np.asarray(net.renormalize(z).values), z, False
 

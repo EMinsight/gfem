@@ -1200,12 +1200,14 @@ class NetworkParameters:
         :math:`N` poles and :math:`P` ports.
 
         The model has one constant real reference impedance per port, fixed
-        here, with the rules of `to_touchstone`: a real `z_ref` constant over
-        frequency is kept; otherwise ``z0`` is needed and S is renormalized to
-        it first; a network in which no port has a reference impedance (wave
-        ports without ``voltage_path``) is fitted unchanged under ``z0`` as a
-        nominal label. Not collective: deterministic host work, the same on
-        every rank. Not differentiable.
+        here: a `z_ref` real and constant over frequency is kept, each port
+        at its mean real value (real and constant to a relative
+        :math:`10^{-9}`, as a TEM wave port's :math:`Z_{PV}` is up to the
+        mode solve's round-off); otherwise ``z0`` is needed and S is
+        renormalized to it first; a network in which no port has a reference
+        impedance (wave ports without ``voltage_path``) is fitted unchanged
+        under ``z0`` as a nominal label. Not collective: deterministic host
+        work, the same on every rank. Not differentiable.
 
         Args:
             tolerance: Target of the largest per-element RMS error, > 0.
@@ -1297,8 +1299,9 @@ class NetworkParameters:
             z0: Reference impedance to renormalize S to first, ohm (real,
                 :math:`> 0`; one value or one per port in `ports` order;
                 needs every port excited). Without it, `z_ref` must be one
-                real value per port over frequency, or NaN for every port
-                (the response of S on unit modal power).
+                real value per port over frequency, to a relative
+                :math:`10^{-9}` (each port then on its mean real value), or
+                NaN for every port (the response of S on unit modal power).
 
         Raises:
             ValueError: The grid is not harmonic (low pass) or not evenly
