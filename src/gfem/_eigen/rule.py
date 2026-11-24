@@ -1438,7 +1438,7 @@ class EigenmodeRule:
         on its ratios, one adjoint solve on the kept eigen operator and two
         pairs, ``(2 lam, x)`` on the pieces and the explicit energy pair;
         the explicit terms of the lumped ports' values are kept for
-        `explicit_lumped`.
+        `explicit_inputs`.
 
         Raises:
             DegenerateModeError: The ``omega`` cotangents on a cluster's
@@ -1786,8 +1786,8 @@ class EigenmodeRule:
         """
         return lumped_terms(self.driven(model))
 
-    def explicit_lumped(self) -> dict[tuple, float]:
-        """The last backward's explicit terms in the lumped values, by input kind.
+    def explicit_inputs(self) -> dict[tuple, Any]:
+        """The last backward's explicit terms by input kind (lumped values only).
 
         The lumped pass contracts the pairs with the pieces that move with
         a lumped value: the implicit part ``2 Re(lam^T dT/dp x)``, and a
@@ -1797,6 +1797,8 @@ class EigenmodeRule:
         (and so in every ratio and, through ``mu1``, the normalized field).
         These are scalars, by ``("port", index, "inductance" |
         "capacitance")``, which `solve_vjp` adds to the lumped pass's values.
+        The channel takes the cotangent of any input kind the same way (a
+        law, a sheet fill, an impedance value).
         """
         return dict(self._explicit)
 

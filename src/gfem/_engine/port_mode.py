@@ -168,6 +168,46 @@ def law_absorbing_theta(
     return theta
 
 
+@dataclasses.dataclass(frozen=True)
+class FormItem:
+    r"""One term of the port mode pencil.
+
+    The pencil is the sum of its items, ``A`` and ``B`` slot by slot; every
+    pass over the pencil walks the same list.
+
+    Attributes:
+        slot: The pencil matrix it adds to: 0, 1, 2 for the scalars 1,
+            :math:`-k_0^2`, :math:`i k_0`, then one per extra scalar.
+        side: ``"A"`` or ``"B"``.
+        kind: The form. ``"curl"``: :math:`c\,\operatorname{curl} e_t
+            \operatorname{curl} v_t`; ``"grad_t"``: :math:`(c\,w_t)\cdot w_v` with
+            :math:`w = e_t + \nabla e_n`; ``"value_t"``: :math:`(c\,e_t)\cdot
+            v_t`; ``"value_n"``: :math:`c\,e_n v_n`; ``"edge_t"``,
+            ``"edge_n"``: the same products of the traces along a boundary
+            group.
+        coefficient: The coefficient :math:`c` (``None``: 1).
+        region: ``"dx"`` (the triangles) or the name of a boundary group.
+        input: What the coefficient reads: ``("eps",)``, ``("sigma",)``,
+            ``("nu",)``, ``("absorbing",)`` (the admittance, which reads both
+            :math:`\varepsilon` and :math:`\nu`), ``("law", g)`` and
+            ``("absorbing_law", g)`` (the indicator of law ``g``, and the
+            admittance beside it), ``("fill", g)`` (a conductor group's edge
+            fill) and ``("impedance", g, name)`` (the weight of an
+            `Impedance` group's ``"resistance"``, ``"inductance"`` or
+            ``"capacitance"``).
+        weight: A real factor of the item (``None``: none): the conductivity's
+            :math:`\eta_0 s`, an impedance value's weight.
+    """
+
+    slot: int
+    side: str
+    kind: str
+    coefficient: Any
+    region: str
+    input: tuple
+    weight: float | None = None
+
+
 class PortModeSpace:
     """The discrete port mode problem of one `PortSection`.
 
@@ -181,6 +221,7 @@ class PortModeSpace:
         free: Indices of the free (non-Dirichlet) DOFs.
         n_t: Number of Nédélec DOFs (the first block of ``space``).
         pencil: The affine pieces of ``A`` and ``B``.
+        form_items: The `FormItem` list the pencil is assembled from.
     """
 
     quantity = "E"
@@ -220,67 +261,110 @@ class PortModeSpace:
     # --- assembly -------------------------------------------------------------
 
     def _assemble(self) -> Pencil:
+        items, extra, slopes = self._form_list()
+        self.form_items = items
+        n = 3 + len(extra)
+        forms = {side: [[] for _ in range(n)] for side in ("A", "B")}
+        for item in items:
+            forms[item.side][item.slot].append(self._integrand(item))
+        a = tuple(self._matrix(f) for f in forms["A"])
+        b = tuple(self._matrix(f) for f in forms["B"])
+        return Pencil(a=a, b=b, extra=tuple(extra), slopes=tuple(slopes))
+
+    def _form_list(
+        self,
+    ) -> tuple[list[FormItem], list[Callable[[float], complex]], list[Any]]:
+        """The pencil's form items, and the scalar and slope of each extra slot.
+
+        The one list that assembly reads (`_integrand`): a pass that
+        differentiates the pencil's coefficients or the section's nodes walks
+        the same items, so it cannot read a different pencil.
+        """
         c = self._coef
-        (et, en), (vt, vn) = self.space.TnT()
-        q = quadrature.degree(self.order)
-        dx = ngs.dx(intrules={ngs.TRIG: ngs.IntegrationRule(ngs.TRIG, q)})
-        ds_abc = ngs.ds(
-            "absorbing.*", intrules={ngs.SEGM: ngs.IntegrationRule(ngs.SEGM, q)}
-        )
         sigma_scale = Z0 * self.section.scale
-        wt = et + ngs.grad(en)
-        wv = vt + ngs.grad(vn)
-        has_abc = len(_admittance_groups(self.section)) > 0
-        abc_t = c["Y_tau"] * et.Trace() * vt.Trace() * ds_abc if has_abc else None
-        abc_n = c["Y_n"] * en.Trace() * vn.Trace() * ds_abc if has_abc else None
-        forms_a = [
-            [c["nu_nn"] * ngs.curl(et) * ngs.curl(vt) * dx],
-            [(c["eps_tt"] * et) * vt * dx],
-            [sigma_scale * (c["sigma_tt"] * et) * vt * dx, abc_t],
+        items = [
+            FormItem(0, "A", "curl", c["nu_nn"], "dx", ("nu",)),
+            FormItem(1, "A", "value_t", c["eps_tt"], "dx", ("eps",)),
+            FormItem(2, "A", "value_t", c["sigma_tt"], "dx", ("sigma",), sigma_scale),
+            FormItem(0, "B", "grad_t", c["nu_tt"], "dx", ("nu",)),
+            FormItem(1, "B", "value_n", c["eps_nn"], "dx", ("eps",)),
+            FormItem(2, "B", "value_n", c["sigma_nn"], "dx", ("sigma",), sigma_scale),
         ]
-        forms_b = [
-            [(c["nu_tt"] * wt) * wv * dx],
-            [c["eps_nn"] * en * vn * dx],
-            [sigma_scale * c["sigma_nn"] * en * vn * dx, abc_n],
-        ]
-        extra, slopes = [], []
+        if len(_admittance_groups(self.section)) > 0:
+            items += [
+                FormItem(2, "A", "edge_t", c["Y_tau"], "absorbing.*", ("absorbing",)),
+                FormItem(2, "B", "edge_n", c["Y_n"], "absorbing.*", ("absorbing",)),
+            ]
+        extra: list[Callable[[float], complex]] = []
+        slopes: list[Any] = []
         fill = _edge_fill(self.mesh, self.section)
         for g, (item, factor) in enumerate(self.section.impedance_terms):
-            ds = ngs.ds(
-                f"impedance{g}", intrules={ngs.SEGM: ngs.IntegrationRule(ngs.SEGM, q)}
-            )
-            edge_t = fill * et.Trace() * vt.Trace() * ds
-            edge_n = fill * en.Trace() * vn.Trace() * ds
+            region = f"impedance{g}"
             if isinstance(item, Conductor):
-                forms_a.append([edge_t])
-                forms_b.append([edge_n])
+                slot = 3 + len(extra)
+                items += [
+                    FormItem(slot, "A", "edge_t", fill, region, ("fill", g)),
+                    FormItem(slot, "B", "edge_n", fill, region, ("fill", g)),
+                ]
                 extra.append(self._conductor_theta(item, factor))
                 slopes.append(self._conductor_slope(item, factor))
                 continue
-            for slot, weight in self._impedance_weights(item):
-                forms_a[slot].append(weight * edge_t)
-                forms_b[slot].append(weight * edge_n)
+            for slot, name, weight in self._impedance_weights(item):
+                read = ("impedance", g, name)
+                items += [
+                    FormItem(slot, "A", "edge_t", fill, region, read, weight),
+                    FormItem(slot, "B", "edge_n", fill, region, read, weight),
+                ]
         index = self.section.law_index
         absorbing_law = self.section.absorbing_law
         for g, (_, law) in enumerate(self.section.laws):
+            slot = 3 + len(extra)
             inside = _p0(self.mesh, (np.asarray(index) == g).astype(float))
-            forms_a.append([inside * et * vt * dx])
-            forms_b.append([inside * en * vn * dx])
+            items += [
+                FormItem(slot, "A", "value_t", inside, "dx", ("law", g)),
+                FormItem(slot, "B", "value_n", inside, "dx", ("law", g)),
+            ]
             extra.append(law_theta(law, self.section.scale))
             slopes.append(law_slope(law, self.section.scale))
             if absorbing_law is not None and (absorbing_law == g).any():
-                ds = ngs.ds(
-                    f"law{g}", intrules={ngs.SEGM: ngs.IntegrationRule(ngs.SEGM, q)}
-                )
-                forms_a.append([et.Trace() * vt.Trace() * ds])
-                forms_b.append([en.Trace() * vn.Trace() * ds])
+                slot = 3 + len(extra)
+                read = ("absorbing_law", g)
+                items += [
+                    FormItem(slot, "A", "edge_t", None, f"law{g}", read),
+                    FormItem(slot, "B", "edge_n", None, f"law{g}", read),
+                ]
                 rows = np.asarray(index) == g
                 mu = 1 / float(self.section.nu_nn[rows][0].real)
                 extra.append(law_absorbing_theta(law, mu, self.section.scale))
                 slopes.append(None)  # reads Re eps: not analytic
-        a = tuple(self._matrix(f) for f in forms_a)
-        b = tuple(self._matrix(f) for f in forms_b)
-        return Pencil(a=a, b=b, extra=tuple(extra), slopes=tuple(slopes))
+        return items, extra, slopes
+
+    def _integrand(self, item: FormItem) -> Any:
+        """The bilinear form term of one item (`FormItem` lists the kinds)."""
+        (et, en), (vt, vn) = self.space.TnT()
+        q = quadrature.degree(self.order)
+        c, w, kind = item.coefficient, item.weight, item.kind
+        if item.region == "dx":
+            measure = ngs.dx(intrules={ngs.TRIG: ngs.IntegrationRule(ngs.TRIG, q)})
+        else:
+            measure = ngs.ds(
+                item.region, intrules={ngs.SEGM: ngs.IntegrationRule(ngs.SEGM, q)}
+            )
+        if kind == "curl":
+            return c * ngs.curl(et) * ngs.curl(vt) * measure
+        if kind == "grad_t":
+            return (c * (et + ngs.grad(en))) * (vt + ngs.grad(vn)) * measure
+        if kind == "value_t":
+            # the weight multiplies the coefficient's product, not the form
+            return (c * et if w is None else w * (c * et)) * vt * measure
+        if kind == "value_n":
+            return (c if w is None else w * c) * en * vn * measure
+        trace, test = (et, vt) if kind == "edge_t" else (en, vn)
+        if c is None:
+            edge = trace.Trace() * test.Trace() * measure
+        else:
+            edge = c * trace.Trace() * test.Trace() * measure
+        return edge if w is None else w * edge
 
     def _conductor_theta(
         self, item: Conductor, factor: float
@@ -314,16 +398,24 @@ class PortModeSpace:
 
         return slope
 
-    def _impedance_weights(self, item) -> list[tuple[int, float]]:
-        """(pencil slot, weight) of an `Impedance` edge's R, L and C."""
+    def _impedance_weights(self, item) -> list[tuple[int, str, float]]:
+        """(pencil slot, name, weight) of an `Impedance` edge's R, L and C."""
         scale = self.section.scale
         out = []
         if item.resistance is not None:
-            out.append((2, Z0 / item.resistance))
+            out.append((2, "resistance", Z0 / item.resistance))
         if item.inductance is not None:
-            out.append((0, scipy.constants.mu_0 * scale / item.inductance))
+            out.append(
+                (0, "inductance", scipy.constants.mu_0 * scale / item.inductance)
+            )
         if item.capacitance is not None:
-            out.append((1, item.capacitance / (scipy.constants.epsilon_0 * scale)))
+            out.append(
+                (
+                    1,
+                    "capacitance",
+                    item.capacitance / (scipy.constants.epsilon_0 * scale),
+                )
+            )
         return out
 
     def _matrix(self, integrands) -> sp.csr_matrix:

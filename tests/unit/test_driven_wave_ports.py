@@ -1543,6 +1543,25 @@ def test_evicted_kept_state_is_rebuilt_not_read_stale(tmp_path, monkeypatch):
     cache.ENTRIES.clear()
 
 
+def test_the_surface_keeps_the_face_trace_maps_that_lift_its_columns(turned_wr28):
+    model, op, surface = turned_wr28
+    trace = surface.trace
+    sweep = surface.ports[0].sweep
+    idx3, idx2 = trace_dofs(model, sweep.space.section, sweep.space, op.built, op.space)
+    free = op.space.FreeDofs()
+    keep = np.array([free[i] for i in idx3], bool)
+    np.testing.assert_array_equal(trace.idx3, idx3[keep])
+    np.testing.assert_array_equal(trace.idx2, idx2[keep])
+    assert trace.writers.shape == (op.space.ndof,)
+    assert (trace.writers[trace.idx3] >= 1).all()
+    # the surface's vectors are the lift of its 2D columns
+    r = np.random.default_rng(0).standard_normal((len(sweep.space.free), 3))
+    lifted = trace.lift(r)
+    expected = np.zeros_like(lifted)
+    expected[trace.idx3] = r[trace.idx2] / trace.writers[trace.idx3, None]
+    np.testing.assert_array_equal(lifted, expected)
+
+
 # --- reciprocity: alike or unlike port faces -------------------------------------
 
 LAYER_L, LAYER_W, LAYER_H = 4.0, 2.0, 1.0  # mm

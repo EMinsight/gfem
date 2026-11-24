@@ -88,10 +88,12 @@ from gfem.model import Model
 from gfem.problems import Polarization
 
 __all__ = [
+    "FaceTrace",
     "PortSurfaceCoupling",
     "SweptSurface",
     "WavePortCoupling",
     "deembedding",
+    "face_trace",
     "face_vectors",
     "line_robin_pieces",
     "port_mode_sweeps",
@@ -181,6 +183,32 @@ class WavePortCoupling:
         return complex(deembedding(self.sweep.gamma[k], self.port.offset))
 
 
+@dataclasses.dataclass(frozen=True, eq=False)
+class FaceTrace:
+    """How the port mode's 2D DOFs sit in the 3D space: the face trace maps.
+
+    The 3D field's tangential trace on the port has, on 2D DOF ``idx2[k]``,
+    the coefficient of 3D DOF ``idx3[k]`` (`trace_dofs`, kept to this rank's
+    free DOFs).
+
+    Attributes:
+        idx3: The 3D free DOFs on the port face.
+        idx2: The 2D DOFs matching ``idx3``.
+        writers: ``(ndof,)`` how many ranks write each 3D DOF (1 on a DOF
+            of the face on one rank, more on an interface DOF).
+    """
+
+    idx3: np.ndarray
+    idx2: np.ndarray
+    writers: np.ndarray
+
+    def lift(self, r: np.ndarray) -> np.ndarray:
+        """The 3D vectors ``(ndof, 2 m)`` of 2D columns ``r`` ``(n_free_2d, 2 m)``."""
+        vectors = np.zeros((len(self.writers), r.shape[1]), r.dtype)
+        vectors[self.idx3] = r[self.idx2] / self.writers[self.idx3, None]
+        return vectors
+
+
 @dataclasses.dataclass(eq=False)
 class PortSurfaceCoupling:
     """The terms the wave ports of one surface share, over the output grid.
@@ -201,6 +229,8 @@ class PortSurfaceCoupling:
         extra: Further Robin pieces of a line port whose weight ``w``
             depends on the frequency (`line_robin_pieces`); empty on a 3D
             port.
+        trace: The face trace maps that built ``vectors`` from the 2D
+            columns, kept so a pass over the face reads the same maps.
     """
 
     piece: terms.Piece
@@ -208,6 +238,7 @@ class PortSurfaceCoupling:
     reaction: np.ndarray
     ports: tuple[WavePortCoupling, ...]
     extra: tuple[terms.Piece, ...] = ()
+    trace: FaceTrace | None = None
 
     @property
     def pieces(self) -> tuple[terms.Piece, ...]:
@@ -445,7 +476,8 @@ def wave_port_couplings(
         lead = lead_port(group)
         section = modes.section
         r, reaction = columns["r"], columns["reaction"]
-        vectors = face_vectors(model, modes, built, space, layout)(r)
+        trace = face_trace(model, modes, built, space, layout)
+        vectors = trace.lift(r)
         scale = section.scale
         phis = [_phi(sweep, scale) for sweep in sweeps]
         dual, r_kk = _dual(reaction, [s.coords for s in sweeps], phis)
@@ -479,7 +511,12 @@ def wave_port_couplings(
             )
             out.append(
                 PortSurfaceCoupling(
-                    piece, vectors, reaction, tuple(ports), extra=tuple(extra)
+                    piece,
+                    vectors,
+                    reaction,
+                    tuple(ports),
+                    extra=tuple(extra),
+                    trace=trace,
                 )
             )
             continue
@@ -492,8 +529,38 @@ def wave_port_couplings(
             theta=terms.Tabulated(omegas, gamma0),
             stretch=section.stretch,
         )
-        out.append(PortSurfaceCoupling(piece, vectors, reaction, tuple(ports)))
+        out.append(
+            PortSurfaceCoupling(piece, vectors, reaction, tuple(ports), trace=trace)
+        )
     return out
+
+
+def face_trace(
+    model: Model,
+    modes: ModeSpace,
+    built: EngineMesh,
+    space: ngs.FESpace,
+    layout: DofLayout = ONE_PROCESS,
+) -> FaceTrace:
+    """The face trace maps of a surface's 2D DOFs in the 3D space.
+
+    Collective under ranks (once, here); the maps are local.
+
+    Args:
+        model: The model.
+        modes: The surface's discrete port mode problem.
+        built: The model's engine mesh.
+        space: The 3D driven space.
+        layout: How ``space`` lies across ranks.
+    """
+    idx3, idx2 = trace_dofs(model, modes.section, modes, built, space)
+    free = free_mask(space.FreeDofs(), space.ndof)
+    idx3, idx2 = idx3[free[idx3]], idx2[free[idx3]]
+    # never behind a test on len(idx3): the exchange is collective
+    writers = np.zeros(space.ndof)
+    writers[idx3] = 1.0
+    writers = np.real(layout.exchange(writers))
+    return FaceTrace(idx3, idx2, writers)
 
 
 def face_vectors(
@@ -503,7 +570,7 @@ def face_vectors(
     space: ngs.FESpace,
     layout: DofLayout = ONE_PROCESS,
 ) -> Callable[[np.ndarray], np.ndarray]:
-    """How a surface's 2D columns become its 3D ``vectors``.
+    """How a surface's 2D columns become its 3D ``vectors`` (`FaceTrace.lift`).
 
     Collective under ranks (once, here); the returned map is local.
 
@@ -518,20 +585,7 @@ def face_vectors(
         The map from ``r`` ``(n_free_2d, 2 m)`` (`port_columns`) to ``vectors``
         ``(ndof, 2 m)``, zero on the 3D space's fixed DOFs.
     """
-    idx3, idx2 = trace_dofs(model, modes.section, modes, built, space)
-    free = free_mask(space.FreeDofs(), space.ndof)
-    idx3, idx2 = idx3[free[idx3]], idx2[free[idx3]]
-    # never behind a test on len(idx3): the exchange is collective
-    writers = np.zeros(space.ndof)
-    writers[idx3] = 1.0
-    writers = np.real(layout.exchange(writers))
-
-    def lift(r: np.ndarray) -> np.ndarray:
-        vectors = np.zeros((space.ndof, r.shape[1]), r.dtype)
-        vectors[idx3] = r[idx2] / writers[idx3, None]
-        return vectors
-
-    return lift
+    return face_trace(model, modes, built, space, layout).lift
 
 
 def line_robin_pieces(

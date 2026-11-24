@@ -10,7 +10,7 @@ import structured_meshes as sm
 
 import gfem
 from gfem._adjoint import adjoint_tolerance, solve_vjp
-from gfem._adjoint.solve_vjp import _add_explicit_lumped
+from gfem._adjoint.solve_vjp import _add_explicit_inputs
 from gfem._pytree import register_fields
 
 
@@ -95,11 +95,11 @@ def test_adjoint_tolerance_defaults_to_the_forward_tolerance():
     assert adjoint_tolerance(options) == 1e-11
 
 
-def test_explicit_lumped_terms_add_to_the_wanted_lumped_values():
+def test_explicit_terms_add_to_the_wanted_lumped_values():
     port_l = ("port", 0, "inductance")
     port_c = ("port", 0, "capacitance")
     out = {port_l: np.asarray(1.0)}
-    _add_explicit_lumped(
+    _add_explicit_inputs(
         out, {port_l: 2.0, port_c: 5.0}, wants={port_l, ("material", "box", "eps_r")}
     )
     # an unwanted kind's explicit term has nothing to add to
@@ -109,4 +109,19 @@ def test_explicit_lumped_terms_add_to_the_wanted_lumped_values():
 def test_an_explicit_lumped_term_of_a_wanted_kind_without_its_pass_is_a_bug():
     kind = ("port", 0, "inductance")
     with pytest.raises(RuntimeError, match=r"port.*0.*inductance"):
-        _add_explicit_lumped({}, {kind: 2.0}, wants={kind})
+        _add_explicit_inputs({}, {kind: 2.0}, wants={kind})
+
+
+def test_an_explicit_term_of_any_other_kind_adds_or_stands_alone_as_an_array():
+    law = ("law", "air", 0, "delta_eps")
+    fill = ("boundary", 1, "fill", "fill")
+    unwanted = ("law", "air", "eps_inf")
+    out = {law: np.asarray([1.0, 2.0])}
+    _add_explicit_inputs(
+        out,
+        {law: np.asarray([0.5, 0.5]), fill: np.asarray([3.0]), unwanted: 7.0},
+        wants={law, fill},
+    )
+    np.testing.assert_array_equal(out[law], [1.5, 2.5])
+    np.testing.assert_array_equal(out[fill], [3.0])
+    assert unwanted not in out
