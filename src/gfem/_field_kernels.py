@@ -99,16 +99,23 @@ def reduced_reason(quantity: str) -> str:
     )
 
 
-def field_role(name: str, field: Field, *, omega: str, reduced: str) -> Role:
+def field_role(
+    name: str,
+    field: Field,
+    *,
+    omega: str,
+    reduced: str,
+    nodes: str | None = NODES_REASON,
+) -> Role:
     """The role of a driven field's input ``name`` (a `FIELD_INPUTS` value).
 
     ``omega`` is why the field's frequency has no gradient, ``reduced`` why
-    an adaptive sweep's field has none (`reduced_reason`).
+    an adaptive sweep's field has none (`reduced_reason`), ``nodes`` why its
+    node coordinates have none (``None`` for a measurement that
+    differentiates them).
     """
     if name == "nodes":
-        return Role(
-            "read", NODES_REASON, "the mesh node coordinates (field.mesh.nodes)"
-        )
+        return Role("read", nodes, "the mesh node coordinates (field.mesh.nodes)")
     if name == "omega":
         return Role("read", omega, "the field's omega")
     if field._reduced:  # noqa: SLF001

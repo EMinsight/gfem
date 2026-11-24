@@ -32,10 +32,19 @@ import scipy.constants as const
 
 from gfem import _incident, _pml
 from gfem._adjoint.measure import measure
-from gfem._adjoint.solve_vjp import input_kind
 from gfem._checks import check_fixed, is_traced
 from gfem._dim2 import refuse_entry
-from gfem._power_flow import _model_role, _Role, concrete_field, side_names
+from gfem._field_kernels import (
+    Role,
+    RoleKernel,
+    design_key,
+    field_inputs,
+    field_role,
+    model_inputs,
+    rebuild,
+    reduced_reason,
+)
+from gfem._power_flow import _model_role, concrete_field, side_names
 from gfem._pytree import register_fields
 from gfem._sources import DIPOLES, INCIDENT
 from gfem.errors import NonDifferentiableError
@@ -50,7 +59,11 @@ if TYPE_CHECKING:
 
 __all__ = ["FarField", "far_field"]
 
-_FIELD_INPUTS = {"coefficients": "coefficients", "mesh": "nodes", "omega": "omega"}
+#: Why a field's frequency has no gradient.
+_FREQUENCY_REASON = (
+    "a field's angular frequency is fixed: differentiate the solve's "
+    "frequency through the kept field instead"
+)
 
 
 def engine() -> Any:
@@ -436,28 +449,35 @@ def _measure(
     basis: tuple[np.ndarray, ...],
 ) -> tuple[jax.Array, jax.Array]:
     """``(amplitude (n_dir, 2), radiated power)`` of one field."""
-    f_paths, f_def = jax.tree_util.tree_flatten_with_path(field)
-    m_paths, m_def = jax.tree_util.tree_flatten_with_path(model)
     inputs: dict[str, Any] = {}
-    roles: dict[str, _Role] = {}
-    for path, leaf in f_paths:
-        key = _FIELD_INPUTS[path[0].name]
-        inputs[key] = leaf
-        roles[key] = field_role(key, field)
-    for path, leaf in m_paths:
-        key = "model" + jax.tree_util.keystr(tuple(path))
-        inputs[key] = leaf
-        kind = input_kind(path, "model")
-        roles[key] = (
-            _Role("read", None, "the mesh node coordinates (model.mesh.nodes)")
+    roles: dict[str, Role] = {}
+    field_def = field_inputs(
+        field,
+        inputs,
+        roles,
+        lambda name: field_role(
+            name,
+            field,
+            omega=_FREQUENCY_REASON,
+            reduced=reduced_reason("far field"),
+            nodes=None,
+        ),
+    )
+    model_def, _ = model_inputs(
+        model,
+        inputs,
+        roles,
+        lambda kind: (
+            Role("read", None, "the mesh node coordinates (model.mesh.nodes)")
             if kind[0] == "nodes"
             else _model_role(kind, model, where)
-        )
+        ),
+    )
     kernel = _FarFieldKernel(
         comm=field._communicator,  # noqa: SLF001
         roles=roles,
-        field_def=(f_def, tuple(_FIELD_INPUTS[p[0].name] for p, _ in f_paths)),
-        model_def=(m_def, tuple(n for n in inputs if n.startswith("model"))),
+        field_def=field_def,
+        model_def=model_def,
         topology=field.mesh._topology,  # noqa: SLF001
         layer=layer,
         where=where,
@@ -468,34 +488,7 @@ def _measure(
     return out["amplitude"], out["power"]
 
 
-def field_role(name: str, field: Field) -> _Role:
-    """The role of a field input."""
-    if name == "nodes":
-        return _Role("read", None, "the mesh node coordinates (field.mesh.nodes)")
-    if name == "omega":
-        return _Role(
-            "read",
-            (
-                "a field's angular frequency is fixed: differentiate the solve's "
-                "frequency through the kept field instead"
-            ),
-            "the field's omega",
-        )
-    if field._reduced:  # noqa: SLF001
-        return _Role(
-            "read",
-            (
-                "the field is formed from an adaptive sweep's frozen reduced "
-                "basis, which holds no adjoint of the far field, so the "
-                "frozen-basis gradient is not the solve's: solve with "
-                'sweep="uniform" at the frequency whose far field you differentiate'
-            ),
-            "the coefficients of a field of an adaptive sweep (gfem.ReducedFields)",
-        )
-    return _Role("read", None, "the field coefficients")
-
-
-class _FarFieldKernel:
+class _FarFieldKernel(RoleKernel):
     """The far-field amplitude and the radiated power of one field.
 
     Under ranks (``comm``) a collective host call: the coefficients are a
@@ -512,7 +505,7 @@ class _FarFieldKernel:
         self,
         *,
         comm: Any,
-        roles: dict[str, _Role],
+        roles: dict[str, Role],
         field_def: tuple[Any, tuple[str, ...]],
         model_def: tuple[Any, tuple[str, ...]],
         topology: Any,
@@ -536,23 +529,10 @@ class _FarFieldKernel:
         }
         self._flux: tuple[bytes, Any] | None = None
 
-    def role(self, name: str) -> str:
-        return self.roles[name].role
-
-    def unsupported(self, name: str) -> str | None:
-        return self.roles[name].unsupported
-
-    def describe(self, name: str) -> str:
-        return self.roles[name].description
-
     # --- host -------------------------------------------------------------------
 
     def _unflatten(self, values: dict[str, np.ndarray]) -> tuple[Field, Model]:
-        f_def, f_names = self.field_def
-        m_def, m_names = self.model_def
-        field = jax.tree.unflatten(f_def, [values[n] for n in f_names])
-        model = jax.tree.unflatten(m_def, [values[n] for n in m_names])
-        return field, model
+        return rebuild(self.field_def, values), rebuild(self.model_def, values)
 
     def _probe(self, nodes: np.ndarray, field: Field) -> Any:
         from gfem._engine import probe
@@ -568,8 +548,7 @@ class _FarFieldKernel:
         self, values: dict[str, np.ndarray], model: Model, field: Field
     ) -> Any:
         pf = importlib.import_module("gfem._engine.power_flow")
-        m_names = self.model_def[1]
-        key = b"".join(np.ascontiguousarray(values[n]).tobytes() for n in m_names)
+        key = design_key(values, self.model_def[1])
         if self._flux is None or self._flux[0] != key:
             stretch = _pml.field_stretch(model, field)
             flux = pf.build(

@@ -67,6 +67,7 @@ from gfem._sources import GaussianBeam, IncidentField
 from gfem.mesh import Mesh
 
 if TYPE_CHECKING:
+    from gfem._engine.sides import SideSpec
     from gfem._field import Field
     from gfem.model import Model
 
@@ -119,7 +120,7 @@ class CouplingLayer:
 def coupling_layer(
     field: Field,
     model: Model,
-    side: tuple[str, ...] | Callable[[np.ndarray], np.ndarray] | None,
+    side: SideSpec | None,
     beam: GaussianBeam | IncidentField,
     frequency: float,
     *,

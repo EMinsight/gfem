@@ -29,8 +29,8 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
-from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, overload
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, ClassVar, overload
 
 import jax
 import jax.numpy as jnp
@@ -38,14 +38,25 @@ import numpy as np
 
 from gfem import _pml
 from gfem._adjoint.measure import measure
-from gfem._adjoint.solve_vjp import input_kind
 from gfem._boundaries import THERMAL_VALUES, surfaces_of
 from gfem._checks import is_traced
+from gfem._field_kernels import (
+    Role,
+    RoleKernel,
+    design_key,
+    engine,
+    field_inputs,
+    field_role,
+    model_inputs,
+    rebuild,
+    reduced_reason,
+)
 from gfem._probe import NODES_REASON
 from gfem.mesh import _at_imported_nodes
 
 if TYPE_CHECKING:
     from gfem._engine.power_flow import Surface
+    from gfem._engine.sides import SideSpec
     from gfem._field import Field
     from gfem.model import Model
 
@@ -54,31 +65,19 @@ __all__ = ["LAYER_REMEDY", "balance", "concrete_field", "power_flow"]
 #: How to keep a design out of the surface's element layer (the measure
 #: wrapper adds jax.lax.stop_gradient as the other way out).
 LAYER_REMEDY = "move the surface one element away from the design region"
-_FIELD_INPUTS = {"coefficients": "coefficients", "mesh": "nodes", "omega": "omega"}
 
-
-class _Role(NamedTuple):
-    """What the power does with one input."""
-
-    #: ``"read"`` or ``"unread"`` (an exact zero).
-    role: str
-    #: Why a read input is not differentiable; ``None`` if it is.
-    unsupported: str | None
-    #: The input, as the user knows it.
-    description: str
+#: Why a field's frequency has no gradient.
+_FREQUENCY_REASON = (
+    "a field's angular frequency is fixed: differentiate the solve's "
+    "frequency through the kept field instead"
+)
 
 
 @overload
-def side_names(
-    side: Any, who: str
-) -> tuple[str, ...] | Callable[[np.ndarray], np.ndarray]: ...
+def side_names(side: Any, who: str) -> SideSpec: ...
 @overload
-def side_names(
-    side: Any, who: str, *, default: str
-) -> tuple[str, ...] | Callable[[np.ndarray], np.ndarray] | None: ...
-def side_names(
-    side: Any, who: str, *, default: str | None = None
-) -> tuple[str, ...] | Callable[[np.ndarray], np.ndarray] | None:
+def side_names(side: Any, who: str, *, default: str) -> SideSpec | None: ...
+def side_names(side: Any, who: str, *, default: str | None = None) -> SideSpec | None:
     """A measurement's ``side`` as a tuple of region names or a predicate.
 
     Args:
@@ -107,14 +106,9 @@ def side_names(
     )
 
 
-def engine() -> Any:
-    """The NGSolve power flow module, imported on first use."""
-    return importlib.import_module("gfem._engine.power_flow")
-
-
 def power_flow(
     field: Field,
-    side: tuple[str, ...] | Callable[[np.ndarray], np.ndarray],
+    side: SideSpec,
     model: Model,
 ) -> jax.Array:
     """`gfem.power_flow` on a field or model that may hold JAX tracers.
@@ -122,7 +116,7 @@ def power_flow(
     The total field of an incident-field column (one carrying its load
     reference) has its load pairing subtracted (`corrected_where`).
     """
-    pf = engine()
+    pf = engine("power_flow")
     where = pf.surface(concrete_field(field), side, model)
     part = field._incident  # noqa: SLF001
     if part is not None:
@@ -185,31 +179,41 @@ def balance(
     mode: str = "power",
 ) -> dict[str, jax.Array]:
     """The kernel's outputs on a surface (see `_PowerFlowKernel`)."""
-    pf = engine()
+    pf = engine("power_flow")
     if not is_traced((field.mesh.nodes, model.mesh.nodes)):
         pf.check_nodes(field, model)
-    f_paths, f_def = jax.tree_util.tree_flatten_with_path(field)
-    m_paths, m_def = jax.tree_util.tree_flatten_with_path(model)
     inputs: dict[str, Any] = {}
-    roles: dict[str, _Role] = {}
-    for path, leaf in f_paths:
-        name = _FIELD_INPUTS[path[0].name]
-        inputs[name] = leaf
-        roles[name] = _field_role(name, field, mode, model)
-    for path, leaf in m_paths:
-        name = "model" + jax.tree_util.keystr(tuple(path))
-        inputs[name] = leaf
-        kind = input_kind(path, "model")
-        roles[name] = (
+    roles: dict[str, Role] = {}
+    field_def = field_inputs(
+        field,
+        inputs,
+        roles,
+        lambda name: (
+            _nodes_role("field", mode, model)
+            if name == "nodes"
+            else field_role(
+                name,
+                field,
+                omega=_FREQUENCY_REASON,
+                reduced=reduced_reason("power"),
+            )
+        ),
+    )
+    model_def, _ = model_inputs(
+        model,
+        inputs,
+        roles,
+        lambda kind: (
             _nodes_role("model", mode, model)
             if kind[0] == "nodes"
             else _model_role(kind, model, where)
-        )
+        ),
+    )
     kernel = _PowerFlowKernel(
         comm=field._communicator,  # noqa: SLF001
         roles=roles,
-        field_def=(f_def, tuple(_FIELD_INPUTS[p[0].name] for p, _ in f_paths)),
-        model_def=(m_def, tuple(n for n in inputs if n.startswith("model"))),
+        field_def=field_def,
+        model_def=model_def,
         where=where,
         order=field.order,
         mode=mode,
@@ -224,73 +228,46 @@ INCIDENT_NODES_REASON = (
 )
 
 
-def _nodes_role(owner: str, mode: str, model: Model) -> _Role:
+def _nodes_role(owner: str, mode: str, model: Model) -> Role:
     """The role of the node coordinates of the field or of the model."""
     described = f"the mesh node coordinates ({owner}.mesh.nodes)"
     if mode != "power":
-        return _Role("read", INCIDENT_NODES_REASON, described)
+        return Role("read", INCIDENT_NODES_REASON, described)
     terms = importlib.import_module("gfem._engine.terms")
-    return _Role("read", terms.absorbing_shape_unsupported(model), described)
+    return Role("read", terms.absorbing_shape_unsupported(model), described)
 
 
-def _field_role(name: str, field: Field, mode: str, model: Model) -> _Role:
-    """The role of a field input."""
-    if name == "nodes":
-        return _nodes_role("field", mode, model)
-    if name == "omega":
-        return _Role(
-            "read",
-            (
-                "a field's angular frequency is fixed: differentiate the solve's "
-                "frequency through the kept field instead"
-            ),
-            "the field's omega",
-        )
-    if field._reduced:  # noqa: SLF001
-        return _Role(
-            "read",
-            (
-                "the field is formed from an adaptive sweep's frozen reduced "
-                "basis, which holds no adjoint of the power, so the frozen-basis "
-                'gradient is not the solve\'s: solve with sweep="uniform" at the '
-                "frequency whose power you differentiate"
-            ),
-            "the coefficients of a field of an adaptive sweep (gfem.ReducedFields)",
-        )
-    return _Role("read", None, "the field coefficients")
-
-
-def _model_role(kind: tuple[Any, ...], model: Model, where: Surface) -> _Role:
+def _model_role(kind: tuple[Any, ...], model: Model, where: Surface) -> Role:
     """The role of a model leaf, by its `input_kind`."""
     mesh = model.mesh
     if kind[0] == "nodes":
-        return _Role(
+        return Role(
             "read", NODES_REASON, "the mesh node coordinates (model.mesh.nodes)"
         )
     if kind[0] == "material":
         region = kind[1]
         described = f"model.materials[{region!r}].{kind[2]}"
         if where.read_elements(mesh)[mesh.elements(region)].any():
-            return _Role(
+            return Role(
                 "read",
                 f"region {region!r} has elements in the element layer just "
                 "outside the side, whose materials the power reads; " + LAYER_REMEDY,
                 described,
             )
-        return _Role("unread", None, described)
+        return Role("unread", None, described)
     if kind[0] == "boundary" and kind[2] not in THERMAL_VALUES:
         boundary = model.boundaries[kind[1]]
         described = f"model.boundaries[{kind[1]}]" + "".join(f".{k}" for k in kind[2:])
         for name in surfaces_of(boundary):
             if where.faces[mesh.elements(name)].any():
-                return _Role(
+                return Role(
                     "read",
                     f"surface {name!r} has faces in the element layer just "
                     "outside the side, whose terms the power reads; " + LAYER_REMEDY,
                     described,
                 )
-        return _Role("unread", None, described)
-    return _Role("unread", None, "model." + ".".join(str(k) for k in kind))
+        return Role("unread", None, described)
+    return Role("unread", None, "model." + ".".join(str(k) for k in kind))
 
 
 _SCALAR = jax.ShapeDtypeStruct((), jnp.float64)
@@ -305,7 +282,7 @@ _OUTPUTS = {
 }
 
 
-class _PowerFlowKernel:
+class _PowerFlowKernel(RoleKernel):
     """The power through a fixed surface, and its pullback on the field.
 
     Under ranks (``comm``) a collective host call: the coefficients are a
@@ -318,7 +295,7 @@ class _PowerFlowKernel:
         self,
         *,
         comm: Any,
-        roles: dict[str, _Role],
+        roles: dict[str, Role],
         field_def: tuple[Any, tuple[str, ...]],
         model_def: tuple[Any, tuple[str, ...]],
         where: Surface,
@@ -339,24 +316,13 @@ class _PowerFlowKernel:
         # the operator of the last design state (forward and backward share it)
         self._cached: tuple[bytes, Any] | None = None
 
-    def role(self, name: str) -> str:
-        return self.roles[name].role
-
-    def unsupported(self, name: str) -> str | None:
-        return self.roles[name].unsupported
-
-    def describe(self, name: str) -> str:
-        return self.roles[name].description
-
     def _host(self, values: dict[str, np.ndarray]) -> tuple[Any, Any, np.ndarray]:
         """The flux, the incident reading (or ``None``) and the coefficients."""
-        pf = engine()
-        f_def, f_names = self.field_def
-        m_def, m_names = self.model_def
-        field = jax.tree.unflatten(f_def, [values[n] for n in f_names])
-        model = jax.tree.unflatten(m_def, [values[n] for n in m_names])
+        pf = engine("power_flow")
+        field = rebuild(self.field_def, values)
+        model = rebuild(self.model_def, values)
         pf.check_nodes(field, model)
-        key = b"".join(np.ascontiguousarray(values[n]).tobytes() for n in m_names)
+        key = design_key(values, self.model_def[1])
         key += np.ascontiguousarray(values["omega"]).tobytes()
         if self._cached is None or self._cached[0] != key:
             stretch = _pml.field_stretch(model, field)
@@ -399,9 +365,8 @@ class _PowerFlowKernel:
         The field's and the model's node coordinates are one position (the
         host refuses others), so the gradient is given once.
         """
-        m_def, m_names = self.model_def
-        model = jax.tree.unflatten(m_def, [values[n] for n in m_names])
-        grad = ct * engine().node_pullback(
+        model = rebuild(self.model_def, values)
+        grad = ct * engine("power_flow").node_pullback(
             flux, model, self.where, e, omega, comm=self.comm
         )
         out = {n: np.zeros(np.shape(values[n])) for n in names}
