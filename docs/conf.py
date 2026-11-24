@@ -215,6 +215,9 @@ nitpick_ignore = [
             # SolverOptions.petsc_options' types, which its Attributes text describes
             "PetscValue",
             "PetscOptions",
+            "Polarity",  # WavePort.polarity: a point and a direction
+            "Circuit",  # SaxComponent's circuit kind, "optical" or "rf"
+            "gfem._circuit_ports.Circuit",
         )
     ],
     # The private base of the dispersion terms (shown as "Bases:"), and the
