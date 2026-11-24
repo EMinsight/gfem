@@ -752,11 +752,16 @@ def _fitted_laws(
     """``(key, label, law, range)`` of each law of ``model`` with a fitted range.
 
     The law regions in ``model.materials`` order, a blend's law ends in
-    place of its region; ``regions`` keeps those regions only.
+    place of its region; ``regions`` keeps those regions only. A region with
+    no element in the solve domain (excluded from electromagnetic solves,
+    kept for another physics) is never read, as in `law_regions`.
     """
+    mesh, active = model.mesh, model._domain.active  # noqa: SLF001
     found: list[tuple[str, str, object]] = []
     for region, material in model.materials.items():
         if regions is not None and region not in regions:
+            continue
+        if not active[mesh.elements(region)].any():
             continue
         if isinstance(material, Material):
             name = f" ({material.name})" if material.name else ""

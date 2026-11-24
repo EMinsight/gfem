@@ -317,6 +317,25 @@ def test_a_port_mode_reads_only_the_regions_beside_its_port():
     assert [m.split(":")[0] for m in messages] == ["region 'feed'"]
 
 
+def test_a_law_region_outside_the_solve_domain_is_not_read(line):
+    # a heater kept for the thermal solve only: the driven solve never reads it
+    model = gfem.Model(
+        line,
+        materials={
+            "dielectric": gfem.Material(eps_r=4.0),
+            "core": gfem.Material(eps_r=FITTED, name=NAME),
+        },
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z"),
+        ],
+        excluded={"em": ("core",)},
+    )
+    _, messages = _solve_noting(model, gfem.Driven(frequency=[1 * GHZ, 12 * GHZ]))
+    assert messages == []
+
+
 ELECTROSTATIC = gfem.Electrostatic(terminals={"top": "top"}, ground="bottom")
 
 
