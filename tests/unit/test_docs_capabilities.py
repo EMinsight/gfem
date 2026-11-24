@@ -149,6 +149,7 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
         ("dissipated_power", ["loss tangent"], 1),
         ("dissipated_power", ["lumped values"], 1),
         ("dissipated_power", ["permittivity-law parameters"], 1),
+        ("dissipated_power", ["density of a metal-dielectric blend"], 2),
         ("electromagnetic_heating", ["lumped values"], 1),
         ("electromagnetic_heating", ["thermal conductivity"], 1),
         ("electromagnetic_heating", ["incident powers and phases"], 1),
@@ -199,6 +200,10 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
         (
             "Dissipated power with respect to the permittivity-law parameters "
             "(direct solver)"
+        ),
+        (
+            "Dissipated power with respect to the density of a metal-dielectric "
+            "blend (direct solver)"
         ),
         "Electromagnetic heating with respect to the lumped values (direct solver)",
         (
@@ -291,7 +296,7 @@ def test_raising_cells_name_their_error(derived):
 
 def test_raises_list_is_the_out_of_scope_rows_off_the_grid(derived):
     rows = {r["key"]: r for r in derived["raises"]}
-    assert len(rows) == 84
+    assert len(rows) == 80
     assert rows["design in the far-field layer"]["error"] == "ValueError"
     fit = rows["fit_rational under jax.grad"]
     assert fit["error"] == "NonDifferentiableError"

@@ -277,6 +277,7 @@ PROBLEMS = {
     # the loss of a driven field (also beside a law), and its heat under a drive
     "dissipated_power": Problem("dissipated_power", "lower"),
     "dissipated_power_law": Problem("dissipated_power", "lower"),
+    "dissipated_power_blend": Problem("dissipated_power", "lower"),
     "electromagnetic_heating": Problem("electromagnetic_heating", "rise.coefficients"),
     # thermal and DC conduction; the heat through a sink and a cut, steady
     # and transient, on the thermal rows
@@ -327,6 +328,8 @@ OFF_GRID = {
     "heat": "heat-source amount and waveform scales",
     # an electromagnetic heat source's drive, ("drive", ...)
     "drive": "incident powers and phases",
+    # a thermal boundary's value, ("boundary", <index>, <value>)
+    "boundary_value": "thermal boundary values",
 }
 #: The off-grid inputs listed together, one phrase per group and row.
 OFF_GRID_GROUPS = (
@@ -338,6 +341,7 @@ OFF_GRID_GROUPS = (
     ("thermo_optic_coefficient",),
     ("heat",),
     ("drive",),
+    ("boundary_value",),
 )
 #: The material properties among them (the others have no value forms).
 OFF_GRID_PROPERTIES = ("mu_r", "tan_delta")
@@ -353,6 +357,9 @@ LUMPED_VALUES = {
     "port": ("inductance", "capacitance"),
     "boundary": ("resistance", "inductance", "capacitance"),
 }
+#: The thermal boundary values among EXPECTED's ("boundary", <index>, <value>)
+#: input kinds: the off-grid input "boundary_value".
+THERMAL_BOUNDARY_VALUES = ("temperature", "coefficient", "ambient", "flux")
 MATERIAL_PROPERTIES = {
     "eps_r": "eps_r",
     "conductivity": "conductivity",
@@ -636,18 +643,6 @@ RAISES_LABELS = {
         "an `Impedance`'s values"
     ),
     **{
-        f"thermal boundary {what}": (
-            f"Thermal problems, with respect to `{what}` (a fixed value; "
-            "raised when the boundary is built)"
-        )
-        for what in (
-            "FixedTemperature.temperature",
-            "Convection.coefficient",
-            "Convection.ambient",
-            "HeatFlux.flux",
-        )
-    },
-    **{
         f"TransientThermal {what}": (
             f"`TransientThermal`, with respect to its {words} (a fixed value of "
             "the time grid; raised when the problem is built)"
@@ -717,7 +712,15 @@ def _input_column(kind) -> str | None:
         return MATERIAL_PROPERTIES[kind[2]]
     if len(kind) == 4 and kind[0] == "boundary" and kind[2:] == ("fill", "fill"):
         return "fill"
-    if _off_grid_input(kind) in ("lumped", "law", "blend", "heat", "drive", "rise"):
+    if _off_grid_input(kind) in (
+        "lumped",
+        "law",
+        "blend",
+        "heat",
+        "drive",
+        "rise",
+        "boundary_value",
+    ):
         return None
     raise CapabilitiesError(
         f"{RAISE_TEST}: input kind {kind!r} is not in the Capabilities mapping "
@@ -745,7 +748,10 @@ def _off_grid_input(kind: tuple) -> str | None:
         return "lumped"
     if len(kind) == 3 and kind[0] == "material" and kind[2] in OFF_GRID:
         return kind[2]
-    return None
+    thermal_value = (
+        len(kind) == 3 and kind[0] == "boundary" and kind[2] in THERMAL_BOUNDARY_VALUES
+    )
+    return "boundary_value" if thermal_value else None
 
 
 def _claiming_rows(problem: Problem, leaf: str) -> list[str]:

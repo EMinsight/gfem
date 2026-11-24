@@ -373,7 +373,10 @@ class FixedTemperature:
 
     Attributes:
         surface: The surface region's name.
-        temperature: The temperature, absolute, in K (> 0).
+        temperature: The temperature, absolute, in K (> 0). May be traced by
+            JAX: the gradient of a thermal result with respect to it is the
+            adjoint's reaction on the surface. Two touching surfaces with one
+            traced value give the gradient of that common value.
     """
 
     surface: str
@@ -397,7 +400,9 @@ class Convection:
     Attributes:
         surface: The surface region's name.
         coefficient: The heat transfer coefficient h, W/(m^2 K), > 0.
-        ambient: The ambient temperature, absolute, in K (> 0).
+        ambient: The ambient temperature, absolute, in K (> 0). Both
+            ``coefficient`` and ``ambient`` may be traced by JAX; the rise
+            reads only ``coefficient``.
     """
 
     surface: str
@@ -421,7 +426,8 @@ class HeatFlux:
 
     Attributes:
         surface: The surface region's name.
-        flux: W/m^2, any sign, positive into the thermal domain.
+        flux: W/m^2, any sign, positive into the thermal domain. May be
+            traced by JAX, also at 0; the rise does not read it.
     """
 
     surface: str

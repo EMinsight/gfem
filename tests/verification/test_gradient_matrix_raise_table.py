@@ -925,17 +925,18 @@ EXPECTED |= {
 # fill; the node coordinates raise (the forms have no shape terms), for
 # every output, since the solve itself is traced.
 #: The thermal boundary values of the thermal and DC cases (a fixed
-#: temperature, a convection's coefficient and ambient). Steady thermal reads
-#: them (the temperature reads all three, the rise only the coefficient); DC
-#: conduction does not read them (exact zeros); transient thermal reads them
-#: as steady does (the rises only the coefficient, the source-free temperature
-#: all three).
+#: temperature, a convection's coefficient and ambient, a heat flux). Steady
+#: thermal reads them (the temperature reads all four, the rise only the
+#: coefficient); DC conduction does not read them (exact zeros); transient
+#: thermal reads them as steady does (the rises only the coefficient, the
+#: source-free temperature all four).
 THERMAL_VALUE_KINDS = [
     ("boundary", 1, "temperature"),
     ("boundary", 2, "coefficient"),
     ("boundary", 2, "ambient"),
+    ("boundary", 3, "flux"),
 ]
-_T_FIXED, _H, _T_AMBIENT = THERMAL_VALUE_KINDS
+_T_FIXED, _H, _T_AMBIENT, _FLUX = THERMAL_VALUE_KINDS
 THERMAL_KINDS = [
     ("nodes",),
     *(("material", "lower", p) for p in ALL_PROPERTIES),
@@ -952,7 +953,7 @@ SCALES = ("problem", "._scales")
 #: Per problem: each result leaf's inputs read (GRADIENT), the rest ZERO.
 THERMAL_READS = {
     "steady_thermal": {
-        "temperature.coefficients": {_K, AMOUNT, _T_FIXED, _H, _T_AMBIENT},
+        "temperature.coefficients": {_K, AMOUNT, _T_FIXED, _H, _T_AMBIENT, _FLUX},
         "temperature.mesh.nodes": set(),
         "rise.coefficients": {_K, AMOUNT, _H},
         "rise.mesh.nodes": set(),
@@ -962,9 +963,9 @@ THERMAL_READS = {
     },
     "transient_thermal": {
         "time": set(),
-        "traces.upper": {_K, *_RHO_CP, AMOUNT, SCALES, _T_FIXED, _H, _T_AMBIENT},
+        "traces.upper": {_K, *_RHO_CP, AMOUNT, SCALES, _T_FIXED, _H, _T_AMBIENT, _FLUX},
         "_rises": {_K, *_RHO_CP, AMOUNT, SCALES, _H},
-        "_source_free.coefficients": {_K, _T_FIXED, _H, _T_AMBIENT},
+        "_source_free.coefficients": {_K, _T_FIXED, _H, _T_AMBIENT, _FLUX},
         "_source_free.mesh.nodes": set(),
         "power": {AMOUNT},
     },
@@ -1609,9 +1610,9 @@ def thermal_problem_cases(sheet_mesh):
     """The steady, transient and DC conduction problems on the sheet line.
 
     Every material property on the lower half (conducting, the heat source
-    there), a sheet fill between the halves, a fixed temperature and a
+    there), a sheet fill between the halves, a fixed temperature, a
     convection with another ambient (so the source-free temperature is not
-    uniform: its own adjoint pair enters).
+    uniform: its own adjoint pair enters) and a heat flux through an end.
     """
     mesh = sheet_mesh
     fill = gfem.SheetField(fill=np.linspace(0.2, 0.9, len(mesh.elements("sheet"))))
@@ -1625,6 +1626,7 @@ def thermal_problem_cases(sheet_mesh):
             gfem.Conductor("sheet", 100.0, 1e-6, fill=fill),
             gfem.FixedTemperature("plate1", temperature=300.0),
             gfem.Convection("plate2", coefficient=1e3, ambient=290.0),
+            gfem.HeatFlux("port1", flux=50.0),
         ],
     )
     heat = gfem.HeatSource.uniform("lower", power=1e-3)

@@ -17,6 +17,11 @@ Jobs and results:
 
 Thermal:
 
+- **Thermal boundary values differentiate.** A fixed temperature, a
+  convection's coefficient and ambient, and a heat flux may be traced by
+  `jax.grad` in steady and transient solves, through the temperature, the
+  traces, the heat flow and the heat-out traces, instead of raising
+  ({doc}`../recipes/thermal-gradient`).
 - **Electromagnetic heating.** `gfem.electromagnetic_heating(result,
   model=, frequency=, incident_power=)` turns the kept fields of a driven
   result at one frequency into a `gfem.HeatSource`, with no new solve: the
