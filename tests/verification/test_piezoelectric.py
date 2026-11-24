@@ -16,8 +16,8 @@ and reach the closed forms without periodic pairs.
   (about 20 measured). The clamped capacitance is :math:`C_0` to
   :math:`10^{-12}`.
 - The thickness-shear plate's fields at :math:`f/f_a = 0.3`: :math:`u_z(y)` at
-  points and :math:`S_{yz} = \partial_y u_z`, read by differencing the
-  displacement field inside one element; the other strains vanish. Within
+  points and :math:`S_{yz} = \partial_y u_z`, from `gfem.strain`;
+  the other five strains vanish. Within
   :math:`10^{-6}`, :math:`10^{-5}` and :math:`10^{-5}` of the amplitude
   (:math:`3\times10^{-8}`, :math:`1.5\times10^{-6}`, :math:`4\times10^{-7}`
   measured).
@@ -101,18 +101,6 @@ def test_a_plate_admittance_converges_at_fourth_order(plate_errors, kind):
 
 #: Points (x, y) in micrometres across the thickness-shear plate.
 FIELD_POINTS = ((0.37, 0.11), (1.21, 0.5), (0.9, 0.83), (1.63, 0.97))
-#: Differencing step (m): well inside one element (about 0.1 um).
-STEP = 1e-9
-
-
-def _derivative(field, x, y, axis):
-    """The fourth-order central difference of a scalar field at a point, per m."""
-    offsets = np.array([-2.0, -1.0, 1.0, 2.0]) * STEP
-    weights = np.array([1.0, -8.0, 8.0, -1.0]) / (12 * STEP)
-    shift = np.zeros((4, 2))
-    shift[:, axis] = offsets
-    points = np.array([x, y]) * 1e-6 + shift
-    return complex(weights @ np.asarray(field.at(points)))
 
 
 def test_the_shear_plate_fields_follow_the_thickness_solution(tmp_path):
@@ -131,21 +119,16 @@ def test_the_shear_plate_fields_follow_the_thickness_solution(tmp_path):
     amplitude = form["e"] * d0 / (form["eps"] * form["cbar"])  # S_yz, per V
     errors = np.zeros(3)
     for px, py in FIELD_POINTS:
+        point = np.array([px, py]) * 1e-6
         phase = k * (py * 1e-6 - THICKNESS / 2)
         u_exact = amplitude / k * np.sin(phase) / np.cos(x)
         s_exact = amplitude * np.cos(phase) / np.cos(x)
-        value = complex(u["z"].at(np.array([[px, py]]) * 1e-6)[0])
+        value = complex(u["z"].at(point[None, :])[0])
+        strain = np.asarray(gfem.strain(u, point))  # Voigt: xx yy zz yz xz xy
         errors[0] = max(errors[0], abs(value - u_exact) / abs(amplitude / k))
-        errors[1] = max(
-            errors[1], abs(_derivative(u["z"], px, py, 1) - s_exact) / abs(amplitude)
-        )
-        other = (
-            _derivative(u["x"], px, py, 0),
-            _derivative(u["y"], px, py, 1),
-            _derivative(u["x"], px, py, 1) + _derivative(u["y"], px, py, 0),
-            _derivative(u["z"], px, py, 0),
-        )
-        errors[2] = max(errors[2], max(abs(v) for v in other) / abs(amplitude))
+        errors[1] = max(errors[1], abs(strain[3] - s_exact) / abs(amplitude))
+        other = np.delete(strain, 3)
+        errors[2] = max(errors[2], np.abs(other).max() / abs(amplitude))
     assert errors[0] < 1e-6, errors
     assert errors[1] < 1e-5, errors
     assert errors[2] < 1e-5, errors
