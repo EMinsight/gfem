@@ -319,6 +319,9 @@ def far_field(
             f"{name!r} is neither an excited port nor a source of the result; its "
             f"columns are {columns}."
         )
+    result._refuse_unsolved_source(  # noqa: SLF001
+        name, "so it has no far field"
+    )
     background = model.background
     if background is None:
         raise ValueError(

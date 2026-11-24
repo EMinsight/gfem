@@ -1093,7 +1093,7 @@ class DrivenRule:
             frequency=problem.frequency,
             columns=tuple(names.index(n) for n in self.excite),
             excite=tuple(self.excite),
-            n_sources=len(self.sources),
+            n_sources=self._extra_width(),
             port_mode_tolerance=options.port_mode_tolerance,
             floquet_order_tolerance=options.floquet_order_tolerance,
             orders=self.orders,
@@ -1119,6 +1119,12 @@ class DrivenRule:
         )
         _check_skipped_port_modes(model, stacklevel=4, comm=comm)
 
+    def _extra_width(self) -> int:
+        """The right-hand sides beyond the excited ports' in one solve (a hint)."""
+        if self.reciprocal:
+            return len(self.wave_ports) + len(self.lumped_loads)
+        return len(self.sources)
+
     def _init_sources(self, model: Model, problem: Driven) -> None:
         """The sources' attributes and the refusals the model shows of them."""
         #: The problem's sources, solved after the excited ports.
@@ -1127,9 +1133,22 @@ class DrivenRule:
         self.incident = tuple(s for s in problem.sources if isinstance(s, INCIDENT))
         #: The point dipoles among them, in source order.
         self.dipoles = tuple(s for s in problem.sources if isinstance(s, DIPOLES))
+        #: Whether the sources' port waves are read from the ports' own
+        #: solutions (`gfem.Driven.source_fields` ``False``): no source column.
+        self.reciprocal = not problem.source_fields
+        if self.reciprocal and problem.sweep == "adaptive":
+            raise NotImplementedError(
+                "Driven(source_fields=False) on an adaptive sweep is not "
+                "available in this version: use sweep='uniform'."
+            )
+        #: The dipoles whose own field is solved: their emitted power.
+        self.emitting = () if self.reciprocal else self.dipoles
         #: The labels of the solve's columns: the excited ports, then the
-        #: sources.
-        self.columns = (*self.excite, *(s.name for s in problem.sources))
+        #: sources solved.
+        self.columns = (
+            *self.excite,
+            *(() if self.reciprocal else (s.name for s in problem.sources)),
+        )
         check_incident_model(model, self.incident)
         #: The model's background stack and its layer's regions, which the
         #: kept fields of incident columns carry.
@@ -1245,7 +1264,7 @@ class DrivenRule:
             sources = self._source_columns(model, system)
             s = np.zeros((len(frequencies), n_ports, width), complex)
             waves = np.zeros((len(frequencies), n_ports, len(self.sources)), complex)
-            emitted = np.zeros((len(frequencies), len(self.dipoles)))
+            emitted = np.zeros((len(frequencies), len(self.emitting)))
             # the first frequency starts from the previous design
             previous, design = None, self.systems.design_guess(system)
             with (
@@ -1257,7 +1276,13 @@ class DrivenRule:
             ):
                 for n, f in enumerate(frequencies):
                     omega = 2 * math.pi * f
-                    rhs = _rhs(ports, sources, omega, system, width)
+                    reading = None
+                    if self.reciprocal:
+                        excited = _rhs(ports, None, omega, system, width)
+                        reading = ports.solution_loads(omega, excited)
+                        rhs = np.concatenate([excited, reading.loads], axis=1)
+                    else:
+                        rhs = _rhs(ports, sources, omega, system, width)
                     try:
                         x, its = design.solve(sweep, omega, rhs, previous)
                     except LinearSolverConvergenceError as err:
@@ -1286,10 +1311,21 @@ class DrivenRule:
                         solutions.append(np.array(x, dtype=complex))
                     if n in self.kept:
                         # results keep fields on the unpaired space
-                        fields.append(np.array(system.operator.expand(x), complex))
-                    if n_ports:
+                        fields.append(
+                            np.array(system.operator.expand(x[:, :width]), complex)
+                            if self.reciprocal
+                            else np.array(system.operator.expand(x), complex)
+                        )
+                    if reading is not None:
+                        if n_ports and sources is not None:
+                            s[n] = ports.outgoing(omega, x[:, :width])
+                            z = reading.solutions(ports.columns, x)
+                            waves[n] = ports.deembedding[n][:, None] * (
+                                sources.port_waves(omega, z)
+                            )
+                    elif n_ports:
                         s[n], waves[n] = _outgoing(ports, n, omega, x, width)
-                    if sources is not None and self.dipoles:
+                    if sources is not None and self.emitting:
                         emitted[n] = sources.emitted_power(omega, x[:, width:])
                     row.advance(frequency=f, iterations=its)
                 if keep and miss is None:
@@ -1314,7 +1350,7 @@ class DrivenRule:
             else None,
             waves=ports.waves,
             port_waves=waves if self.sources else None,
-            emitted_power=emitted if self.dipoles else None,
+            emitted_power=emitted if self.emitting else None,
         )
         if miss is not None:
             raise_unsolved(
@@ -1747,7 +1783,7 @@ class DrivenRule:
             reduced=self._padded_size() if self.adaptive else None,
             complex_z_ref=complex_reference(model.ports),
             n_sources=len(self.sources),
-            n_dipoles=len(self.dipoles),
+            n_dipoles=len(self.emitting),
         )
 
     def role(self, kind: tuple) -> str:
@@ -1983,6 +2019,12 @@ class DrivenRule:
         ``port_modes`` the port mode rows a rebuilt system stands on, the
         ones its forward was handed (`SolveRequest.port_modes`).
         """
+        if self.reciprocal:
+            raise NotImplementedError(
+                "Gradients of a Driven(source_fields=False) solve are not "
+                "available in this version: solve with source_fields=True "
+                "(the default) under jax.grad."
+            )
         # the pairs carry the law pieces' dθ/dp only when a law parameter is
         # wanted, so a gradient beside a law computes and factors none of them
         laws = wanted is None or any(k[0] == "law" for k in wanted)
@@ -2384,7 +2426,9 @@ class DrivenRule:
             else jnp.asarray(out.port_waves),
             "emitted_power": {}
             if power is None
-            else {d.name: jnp.asarray(power[:, k]) for k, d in enumerate(self.dipoles)},
+            else {
+                d.name: jnp.asarray(power[:, k]) for k, d in enumerate(self.emitting)
+            },
         }
 
     def _point_sources(

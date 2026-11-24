@@ -103,6 +103,9 @@ def purcell_factor(result: DrivenResult, name: str, *, model: Model) -> jax.Arra
             "of its own: the Purcell factor is a point dipole's (gfem."
             "ElectricDipole or gfem.MagneticDipole)."
         )
+    result._refuse_unsolved_source(  # noqa: SLF001
+        name, "so it has no emitted power and no Purcell factor"
+    )
     material = model.materials[_region(model, source)]
     omega = 2 * math.pi * np.asarray(result.frequency)
     eps = material.eps_r

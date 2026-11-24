@@ -32,6 +32,7 @@ from typing import Any
 
 import ngsolve as ngs
 import numpy as np
+import scipy.sparse
 
 from gfem import _mpi
 from gfem._linalg import blas
@@ -51,7 +52,9 @@ class DofLayout:
     comm: Any = None
     owners: np.ndarray | None = None
 
-    def pair(self, load: np.ndarray, state: np.ndarray) -> np.ndarray:
+    def pair(
+        self, load: np.ndarray | scipy.sparse.csc_matrix, state: np.ndarray
+    ) -> np.ndarray:
         """``load.T @ state``: over all ranks, the same for every split of ``load``."""
         return load.T @ state
 
@@ -128,7 +131,9 @@ class RankLayout(DofLayout):
         local = np.asarray(local, self._dtype)
         return _mpi.reduce_bcast(self.comm, local).reshape(local.shape)
 
-    def pair(self, load: np.ndarray, state: np.ndarray) -> np.ndarray:
+    def pair(
+        self, load: np.ndarray | scipy.sparse.csc_matrix, state: np.ndarray
+    ) -> np.ndarray:
         """The rank sum of the local products ``load.T @ state``."""
         return self._sum(load.T @ state)
 

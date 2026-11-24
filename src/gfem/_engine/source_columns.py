@@ -162,6 +162,20 @@ class SourceColumns:
                 return positions, loads
         return None
 
+    def port_waves(self, omega: float, z: np.ndarray) -> np.ndarray:
+        """``(n_ports, n_sources)``: the sources' port waves from the ports' solutions.
+
+        ``z`` is ``(N, n_ports)`` (`PortSolutions.solutions`); a dipole's
+        wave is one point overlap with it (`PointLoads.port_waves`). Only
+        point dipoles are read this way.
+        """
+        out = np.zeros((z.shape[1], len(self.names)), complex)
+        found = self.dipoles
+        if found is not None:
+            positions, loads = found
+            out[:, positions] = loads.port_waves(omega, z)
+        return out
+
     def emitted_power(self, omega: float, x: np.ndarray) -> np.ndarray:
         """``(n_dipoles,)`` W from the source columns' solutions ``(N, n_sources)``."""
         found = self.dipoles
@@ -262,7 +276,5 @@ class SourceColumns:
                 c[range(len(block)), block] = loads.coefficients(w)
                 return c
 
-            # the sweep only multiplies the block, which a sparse matrix serves
-            sparse: Any = loads.vectors
-            out.append(AffineTerm(sparse, dipole_coefficients))
+            out.append(AffineTerm(loads.vectors, dipole_coefficients))
         return out

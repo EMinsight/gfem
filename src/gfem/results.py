@@ -21,7 +21,7 @@ from gfem._checks import is_traced, static_float
 from gfem._circuit_ports import Circuit, check_circuit, circuit_ports, circuit_z0
 from gfem._field import Field, FieldMap, ReducedFields
 from gfem._pytree import register_fields
-from gfem._sources import INCIDENT, Source
+from gfem._sources import DIPOLES, INCIDENT, Source
 from gfem._text import hertz, hertz_band
 from gfem.errors import NonDifferentiableError
 
@@ -2158,6 +2158,8 @@ class DrivenResult:
                 "This result solved the Hz polarization of a 2D model: its kept "
                 "field is Hz, read result.h_field(frequency, excite)."
             )
+        if excite is not None:
+            self._refuse_unsolved_source(excite, "so no field of it is kept")
         field = self._kept_field(self.e_fields, frequency, excite)
         if part == "total":
             return field
@@ -2171,6 +2173,24 @@ class DrivenResult:
                 f"only part is the total field; got part={part!r}."
             )
         return _incident_part(field, name, part)
+
+    def _refuse_unsolved_source(self, name: str, consequence: str) -> None:
+        """Raise for a dipole of a ``source_fields=False`` solve.
+
+        Such a dipole is among the sources but has no emitted power: gfem
+        reads its port waves by reciprocity and never solves its field.
+
+        Raises:
+            ValueError: ``name`` is a point dipole without an emitted power.
+        """
+        source = self.sources.get(name)
+        if isinstance(source, DIPOLES) and name not in self.emitted_power:
+            raise ValueError(
+                f"{name!r} was solved with Driven(source_fields=False): its port "
+                "waves were read by reciprocity and its own field was not "
+                f"solved, {consequence}. Solve with source_fields=True (the "
+                "default) for it."
+            )
 
     def h_field(self, frequency: float, excite: str | None = None) -> Field:
         """The kept Hz field of a 2D model's Hz solve at ``frequency``.

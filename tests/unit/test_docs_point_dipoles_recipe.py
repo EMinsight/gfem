@@ -42,6 +42,12 @@ LIMITS = {
     "A power side clear of the dipole": (
         "test_power_flow_refuses_a_side_whose_element_layer_holds_a_dipole",
     ),
+    "Port waves alone under `source_fields=False`": (
+        "test_source_fields_false_refuses_an_incident_field",
+        "test_source_fields_false_needs_a_port_with_a_defined_wave",
+        "test_source_fields_false_without_an_excited_port_refuses_keep_fields",
+        "test_a_dipole_without_its_field_refuses_purcell_e_field_and_far_field",
+    ),
     "Point dipoles only": (),
 }
 #: Refusal tests of the measurement's input, not limits of the dipole.

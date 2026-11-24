@@ -61,6 +61,7 @@ __all__ = [
     "PARALLEL_RTOL",
     "CotangentSplit",
     "PortNetwork",
+    "PortSolutions",
     "complex_reference",
     "parallel_scale",
     "resistance",
@@ -207,6 +208,46 @@ def split_cotangent(
                 continue
         loads += np.outer(f_i, ct[i])
     return CotangentSplit(free, loads, undefined)
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class PortSolutions:
+    r"""The loads that complete every port's own solution beside the excitations.
+
+    Port :math:`i`'s own solution is :math:`z_i = A^{-1} g_i`, with :math:`g_i` its
+    S functional. The excited ports' solutions scaled give it where
+    :math:`g_i` is parallel to the excitation (`parallel_scale`); every other
+    port with a defined row takes one more load, solved beside the excitations.
+
+    Attributes:
+        loads: ``(N, q)``, the S functionals to solve, one per port of
+            ``ports``.
+        ports: The port index of each load column.
+        own: The excited ports whose own solution is the excitation's,
+            scaled: port index -> scale, or ``None`` where the functional is
+            undefined (NaN row).
+        n_ports: The model's ports.
+    """
+
+    loads: np.ndarray
+    ports: tuple[int, ...]
+    own: dict[int, complex | None]
+    n_ports: int
+
+    def solutions(self, columns: Sequence[int], x: np.ndarray) -> np.ndarray:
+        """``(N, n_ports)``: every port's own solution; NaN where it has none.
+
+        ``x`` holds the solved block: the excited ports' columns (``columns``,
+        port indices), then the loads'.
+        """
+        out = np.full((x.shape[0], self.n_ports), np.nan + 0j)
+        for i, scale in self.own.items():
+            if scale is not None:
+                out[:, i] = scale * x[:, list(columns).index(i)]
+        width = len(columns)
+        for k, i in enumerate(self.ports):
+            out[:, i] = x[:, width + k]
+        return out
 
 
 @dataclasses.dataclass(eq=False)
@@ -428,14 +469,25 @@ class PortNetwork:
         every sample (`gfem._sweep.adaptive`), so the frozen-basis
         gradient of every defined S entry is exact at the samples.
         """
-        excited = any(c.index in self.columns for c in self.waves)
-        rhs = self.rhs(omega) if excited else None
+        return self.solution_loads(omega).loads
+
+    def solution_loads(
+        self, omega: float, rhs: np.ndarray | None = None
+    ) -> PortSolutions:
+        """The loads that complete every port's own solution (`PortSolutions`).
+
+        Args:
+            omega: The angular frequency.
+            rhs: ``(N, width)``, the excitations at ``omega`` when the caller
+                has them already.
+        """
+        if rhs is None and self.columns:
+            rhs = self.rhs(omega)
         functional = self.functional(omega)
-        _, waves = self.nonparallel(
-            omega, [c.index for c in self.waves], rhs, functional=functional
-        )
+        wave = [c.index for c in self.waves]
+        ports, waves = self.nonparallel(omega, wave, rhs, functional=functional)
         loads = list(waves.T)
-        wave = {c.index for c in self.waves}
+        indices = list(ports)
         for i in range(functional.shape[1]):
             if i in wave or i in self.columns:
                 continue
@@ -443,9 +495,20 @@ class PortNetwork:
             # a rank without port DOFs sees no NaN: the ranks agree
             if _mpi.agree_all(self.layout.comm, flag=bool(np.isfinite(f).all())):
                 loads.append(f)
-        if not loads:
-            return np.zeros((len(functional), 0), complex)
-        return np.stack(loads, axis=1)
+                indices.append(i)
+        own = {}
+        if rhs is not None:
+            for i in self.columns:
+                if i not in indices:
+                    own[i] = _reciprocal_scale(
+                        functional[:, i], i, self.columns, rhs, self.layout
+                    )
+        stacked = (
+            np.stack(loads, axis=1)
+            if loads
+            else np.zeros((len(functional), 0), complex)
+        )
+        return PortSolutions(stacked, tuple(indices), own, functional.shape[1])
 
     def nonparallel(
         self,
@@ -499,6 +562,6 @@ class PortNetwork:
         which a discretization and the system operator hold too.
         """
         return {
-            id(t.vectors): int(t.vectors.nbytes)
+            id(t.vectors): int(getattr(t.vectors, "nbytes", 0))
             for t in (*self.excitation, *self.outputs)
         }

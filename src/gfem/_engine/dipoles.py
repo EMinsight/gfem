@@ -109,6 +109,18 @@ class PointLoads:
         """`rhs`: the loads of a source kind as `SourceColumns` reads them."""
         return self.rhs(omega)
 
+    def port_waves(self, omega: float, z: np.ndarray) -> np.ndarray:
+        r"""``(n_ports, n)``: :math:`c_k\, b_k^\mathsf{T} z_i` by reciprocity.
+
+        ``z`` ``(N, n_ports)`` holds each port's own solution :math:`z_i =
+        A^{-1} g_i`; the dipole's load is :math:`c_k b_k`
+        (`coefficients`, `vectors`), so the product is :math:`g_i^\mathsf{T}
+        A^{-1} c_k b_k` for a complex symmetric :math:`A`: the port wave
+        before de-embedding, without solving the dipole.
+        """
+        pairs = np.asarray(self.layout.pair(self.vectors, z))
+        return (pairs * self.coefficients(omega)[:, None]).T
+
     def power_scale(self, omega: float) -> float:
         r"""Emitted power per :math:`-\operatorname{Im}(b^H x)`, in W."""
         return 1.0 / (2 * omega * const.mu_0 * self.scale)

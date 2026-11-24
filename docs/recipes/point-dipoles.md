@@ -205,4 +205,10 @@ that error.
   `gfem.NonDifferentiableError`.
 - **A power side clear of the dipole**: `power_flow` refuses a side whose
   outside element layer holds a dipole.
+- **Port waves alone under `source_fields=False`**: it takes point dipoles
+  only (an incident field raises `NotImplementedError`), and the model needs a
+  port with a defined wave (a wave port, or a lumped port with a resistance).
+  With `excite=()` it takes no `keep_fields`. The dipoles' own fields are not
+  solved, so there is no emitted power, Purcell factor, kept field or far
+  field of them: those readers raise `ValueError`.
 - **Point dipoles only**: there are no line or area currents.

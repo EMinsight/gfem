@@ -46,6 +46,7 @@ import warnings
 from collections.abc import Callable, Sequence
 
 import numpy as np
+import scipy.sparse
 
 from gfem import _progress
 from gfem.errors import SweepNotConvergedWarning, SweepRankDeficientWarning
@@ -60,26 +61,30 @@ DROP = 1e-10
 MRI_RANK = 1e-12
 
 
+#: A block of full-length vectors: dense, or sparse when it is a few entries per column.
+Block = np.ndarray | scipy.sparse.csc_matrix
+
+
 @dataclasses.dataclass(frozen=True, eq=False)
 class AffineTerm:
     """A block of full-length vectors and its coefficient matrix over ω.
 
     Attributes:
-        vectors: ``(N, m)``.
+        vectors: ``(N, m)``, dense or a ``scipy.sparse`` matrix.
         coefficients: ``ω -> (m, n_excitations)`` for an excitation term,
             ``ω -> (n_outputs, m)`` for an output term.
         conjugate: The block is ``conj(vectors)``, read on the fly so a
             wave port's couplings are held once.
     """
 
-    vectors: np.ndarray
+    vectors: Block
     coefficients: Callable[[float], np.ndarray]
     conjugate: bool = False
 
     def project(
         self,
         x: np.ndarray,
-        pair: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None,
+        pair: Callable[[Block, np.ndarray], np.ndarray] | None = None,
     ) -> np.ndarray:
         """``Lᵀ x`` for the block ``L``; ``pair(a, b)`` is ``a.T @ b`` by default."""
         if pair is None:
@@ -99,7 +104,7 @@ class AffineTerm:
         return np.conj(out, out=out)
 
 
-def _transpose_product(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+def _transpose_product(a: Block, b: np.ndarray) -> np.ndarray:
     return a.T @ b
 
 

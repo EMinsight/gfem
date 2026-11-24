@@ -17,7 +17,7 @@ from typing import Any, ClassVar, Literal, get_args
 import jax
 import numpy as np
 
-from gfem._boundaries import _temperature
+from gfem._boundaries import LumpedPort, _temperature
 from gfem._checks import check_fixed, static_float
 from gfem._pytree import register_fields
 from gfem._sources import (
@@ -796,12 +796,22 @@ def _sources(value: Any) -> tuple[Source, ...]:
 def _check_sources(problem: Driven) -> None:
     """The refusals of ``sources`` that the problem alone shows."""
     sources = problem.sources
+    if not isinstance(problem.source_fields, bool):
+        raise TypeError(
+            f"Driven.source_fields takes True or False, got {problem.source_fields!r}."
+        )
     if problem.excite == () and not sources:
         raise ValueError(
             "Driven.excite=() with no sources leaves nothing to excite: name the "
             "ports to feed (None feeds every port), or give sources=."
         )
     if not sources:
+        if not problem.source_fields:
+            raise ValueError(
+                "Driven(source_fields=False) gives up the sources' own fields, but "
+                "the problem has no source: give sources=, or leave source_fields "
+                "at True."
+            )
         return
     for name in problem.excite or ():
         if name in {s.name for s in sources}:
@@ -829,6 +839,25 @@ def _check_sources(problem: Driven) -> None:
             "a function of frequency. Use sweep='uniform'; dipoles are accepted "
             "by the adaptive sweep."
         )
+    if not problem.source_fields:
+        _check_reciprocal_sources(problem, incident)
+
+
+def _check_reciprocal_sources(problem: Driven, incident: Sequence[Source]) -> None:
+    """The refusals of ``source_fields=False`` that the problem alone shows."""
+    if incident:
+        raise NotImplementedError(
+            "Driven(source_fields=False) reads port waves by reciprocity for point "
+            f"dipoles only; the incident field {incident[0].name!r} "
+            f"({type(incident[0]).__name__}) is not supported. Solve it with "
+            "source_fields=True (the default)."
+        )
+    if problem.excite == () and problem.kept_frequencies:
+        raise ValueError(
+            "Driven(source_fields=False, excite=()) solves no field that "
+            "keep_fields could keep: the sources' fields are not solved and no "
+            "port is excited. Drop keep_fields, or excite a port."
+        )
 
 
 @dataclasses.dataclass(frozen=True, init=False)
@@ -848,7 +877,9 @@ class Driven:
     `gfem.MagneticDipole`) is one more column, solved after the excited
     ports with every port terminated: its result is the outgoing wave at
     each port (``DrivenResult.port_waves``), a dipole's emitted power
-    (``DrivenResult.emitted_power``) and, on request, its total field. Port
+    (``DrivenResult.emitted_power``) and, on request, its total field. With
+    ``source_fields=False`` a point dipole gets no column: its port waves
+    are read from the ports' own solutions by reciprocity. Port
     names and source names label the same columns, so they are distinct.
 
     A `WavePort` is fed by its own port mode, solved before the 3D solve to
@@ -933,18 +964,31 @@ class Driven:
             excited ports, in this order, labelled by their names. An
             incident field needs ``Model(background=...)``, the medium it is
             a solution of.
+        source_fields: Whether each source's own field is solved. ``True``
+            (the default): each source is a column (see ``sources``).
+            ``False``: no source is solved, and nothing that needs a source's
+            field exists (its emitted power, Purcell factor, kept field, far
+            field). gfem solves each port's own field once, the excited
+            ports' columns and one load per other port with a defined wave,
+            and reads each dipole's port waves from them by reciprocity, at
+            the cost of one point overlap per dipole: a coupling map over any
+            number of positions. Unlike ``keep_fields``, which chooses which
+            solved fields are stored, this chooses whether the sources' fields
+            are solved at all. Point dipoles only; a uniform sweep.
 
     Raises:
         TypeError: ``excite`` is not port names, ``keep_fields`` is not a
-            bool or frequencies, or ``sources`` holds something else than a
-            source.
+            bool or frequencies, ``sources`` holds something else than a
+            source, or ``source_fields`` is not a bool.
         ValueError: A frequency is not finite and positive, ``excite`` is
             empty with no sources or repeats a port, two sources share a
             name, a source is named like an excited port, ``sweep`` is
             unknown, ``samples`` is
             given without ``sweep="adaptive"``, is empty or repeats a
             frequency, a ``samples`` or ``keep_fields`` frequency is not one
-            of ``frequency``, ``wave_vector`` is not a finite 3-vector, or
+            of ``frequency``, ``source_fields`` is ``False`` with no
+            sources, or with ``excite=()`` and ``keep_fields``,
+            ``wave_vector`` is not a finite 3-vector, or
             ``wave_vector_frequency`` is not a positive finite frequency or
             is given without ``wave_vector``, or ``polarization`` is not
             ``"Ez"``, ``"Hz"`` or ``None``. `gfem.solve` also raises it
@@ -954,6 +998,9 @@ class Driven:
             pair, for a k with a component outside the span of the pairs'
             translations, and with
             ``linear_solver="petsc"``; use ``"direct"`` or ``"bddc_gmres"``.
+            With ``source_fields=False``, `gfem.solve` also raises it for a
+            model with no port with a defined wave (a wave port, or a lumped
+            port with a resistance).
             With ``sources``, `gfem.solve` also raises it for a source named
             like a port of the model, and for an incident field on a model
             without ``background``, with no PML layer and no
@@ -967,8 +1014,9 @@ class Driven:
             worker cannot load (a lambda, a closure, or a function of a
             notebook or REPL).
         NotImplementedError: ``sources`` with a ``wave_vector`` or a 2D
-            ``polarization``, or an incident field with
-            ``sweep="adaptive"`` (dipoles are accepted). `gfem.solve` raises
+            ``polarization``, an incident field with
+            ``sweep="adaptive"`` (dipoles are accepted) or with
+            ``source_fields=False``. `gfem.solve` raises
             it for ``wave_vector`` with ``sweep="adaptive"`` or a GPU
             ``device``; solve a uniform sweep on the CPU; for
             ``sources`` on a model with a `gfem.Periodic` pair; and for a
@@ -1039,6 +1087,7 @@ class Driven:
     wave_vector_frequency: float | None = None
     polarization: Polarization | None = None
     sources: tuple[Source, ...] = ()
+    source_fields: bool = True
     _rule: ClassVar[str] = "gfem._engine.driven:DrivenRule"
     #: The rule on a 2D mesh: the scalar field normal to the plane.
     _rule_2d: ClassVar[str] = "gfem._engine.driven2d:Driven2DRule"
@@ -1055,6 +1104,7 @@ class Driven:
         wave_vector_frequency: float | None = None,
         polarization: Polarization | None = None,
         sources: Source | Sequence[Source] = (),
+        source_fields: bool = True,
     ) -> None:
         """Validate and normalize (see the class docstring)."""
         if sweep not in _SWEEPS:
@@ -1076,6 +1126,7 @@ class Driven:
         )
         object.__setattr__(self, "polarization", polarization)
         object.__setattr__(self, "sources", _sources(sources))
+        object.__setattr__(self, "source_fields", source_fields)
         _check_sources(self)
 
     @property
@@ -1129,6 +1180,30 @@ def _check_model_sources(problem: Any, model: Any) -> None:
                 "stack, but the model has none: give Model(background=...), the "
                 "medium the field solves (a gfem.Material when homogeneous)."
             )
+    if not problem.source_fields:
+        _check_reciprocal_ports(model)
+
+
+def _check_reciprocal_ports(model: Any) -> None:
+    """Raise unless some port of the model has a defined wave."""
+    start = (
+        "Driven(source_fields=False) reads each source's port waves from the "
+        "ports' own solutions, but "
+    )
+    if not model.ports:
+        raise ValueError(
+            start + "the model has no port: solve with source_fields=True for the "
+            "emitted power."
+        )
+    defined = [
+        not (isinstance(p, LumpedPort) and p.rlc[0] is None) for p in model.ports
+    ]
+    if not any(defined):
+        raise ValueError(
+            start + "no port of the model has a defined wave (a wave port, or a "
+            "lumped port with a resistance): give a port a resistance, or solve "
+            "with source_fields=True for the emitted power."
+        )
 
 
 def _polarization(value: Any, owner: str) -> None:
