@@ -854,11 +854,20 @@ def test_port_mode_runs_under_jit_and_reads_its_field(plate_mesh):
     assert seen == ["PortModeResult(port 'p1', mode 1, 2 frequencies)"]
     np.testing.assert_allclose(traced.gamma, exact.gamma, rtol=1e-10)
     np.testing.assert_allclose(traced.Z_PV, exact.Z_PV, rtol=1e-10)
-    for name in ("n_g", "beta_2", "beta_3"):
+    # the TEM mode does not disperse: beta_2 and beta_3 are rounding of their
+    # natural scales n_g / (c omega^(k - 1)), which threads change
+    omega = 2 * math.pi * np.asarray(problem.frequency)
+    n_g = np.abs(np.asarray(exact.n_g))
+    natural = {
+        "n_g": n_g,
+        "beta_2": n_g / (C0 * omega),
+        "beta_3": n_g / (C0 * omega**2),
+    }
+    for name, size in natural.items():
         value = getattr(traced, name)
         assert value.shape == (2,)
         assert value.dtype == jnp.complex128
-        np.testing.assert_allclose(value, getattr(exact, name), rtol=1e-10)
+        assert (np.abs(value - getattr(exact, name)) <= 1e-10 * size).all(), name
 
     @jax.jit
     def field(eps):
