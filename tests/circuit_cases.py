@@ -11,6 +11,7 @@ the even mode's S21 is close to :math:`e^{-\gamma L}`. Ez, order 2, direct.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from pathlib import Path
 
@@ -26,6 +27,17 @@ H = 0.1  # um, cell size
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct", threads=1)
 #: Five wavelengths over 1.50-1.60 um, in Hz (decreasing).
 BAND = C0 / (np.linspace(1.50, 1.60, 5) * 1e-6)
+#: The tutorials' line between two lumped ports (mm), for the RF components.
+LINE = Path(__file__).parents[1] / "docs" / "tutorials" / "data" / "line.msh"
+#: Three frequencies out of order (Hz), for the hand-built networks.
+F = (3e9, 1e9, 2e9)
+
+
+def line_abcd(f, z0=80.0, eps=4.0, length=0.01):
+    """ABCD matrix of a lossless line of impedance ``z0``."""
+    beta = 2 * math.pi * f / C0 * math.sqrt(eps)
+    c, s = math.cos(beta * length), math.sin(beta * length)
+    return np.array([[c, 1j * z0 * s], [1j * s / z0, c]])
 
 
 def count_solves(monkeypatch) -> list:

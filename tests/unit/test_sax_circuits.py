@@ -11,7 +11,6 @@ permittivity, the reference impedance and an internal lumped capacitance.
 """
 
 import dataclasses
-from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -20,6 +19,7 @@ import pytest
 from circuit_cases import (
     BAND,
     C0,
+    LINE,
     OPTIONS,
     count_solves,
     scaled_function,
@@ -181,7 +181,6 @@ def test_a_wavelength_sweep_under_vmap_solves_nothing(mzi, monkeypatch):
 
 # --- RF ----------------------------------------------------------------------------
 
-LINE = Path(__file__).parents[2] / "docs" / "tutorials" / "data" / "line.msh"
 RF_BAND = (2e9, 5e9, 8e9)
 Z_LINE = 376.73 / 6  # ohm, the line's quasi-TEM impedance, port 1's resistance
 
