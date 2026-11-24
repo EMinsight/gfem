@@ -55,7 +55,7 @@ each material you use when you publish; the {py:mod}`gfem.materials` page
 lists them.
 
 The tables in the tests and in the fit recipe (measured gold, aluminium and
-silicon, and tabulations of the metals' published model) are excerpts of the refractiveindex.info database, dedicated to the
-public domain under CC0 1.0 (M. N. Polyanskiy, Sci. Data 11, 94 (2024),
-doi:10.1038/s41597-023-02898-2). Each file's header cites the paper it comes
-from.
+silicon, and tabulations of the metals' published model) are excerpts of the
+refractiveindex.info database, dedicated to the public domain under CC0 1.0
+(M. N. Polyanskiy, Sci. Data 11, 94 (2024), doi:10.1038/s41597-023-02898-2).
+Each file's header cites the paper it comes from.

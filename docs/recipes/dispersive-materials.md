@@ -112,7 +112,8 @@ oxide_1550 = materials.silica(frequency=c / 1.55e-6)  # a constant, at 1.55 µm
 - **No static or RF values.** Silica's law gives $\varepsilon_r(0) = 3.00$
   and silicon nitride's 265, far from real films, which also vary by
   process. An electrostatic or RF model takes a constant from your own
-  process, such as `gfem.Material(eps_r=3.9)` for a thermal oxide.
+  process: `gfem.Material(eps_r=<your oxide's static permittivity>)`, for
+  example 3.9 for a thermal oxide.
 - **A constant at one frequency.** `frequency=` gives the dielectrics'
   $\mathrm{Re}\,\varepsilon_r$ there as a constant, for the electro-optic
   and thermo-optic shifts, which take no law. It holds at that frequency
@@ -163,9 +164,10 @@ value, grad = jax.value_and_grad(passband_loss)(jnp.full(n, 2.0))
 
 - The adaptive sweep needs no setting for a law. Its samples are frozen for
   the gradient, as for any adaptive sweep ({doc}`adaptive-sweep-gradient`).
-- A lossless or weakly damped Lorentz resonance among the swept frequencies, such as
-  one of a library or fitted metal law, costs samples: the sweep solves the
-  two grid frequencies on either side of it first. Expect a few more full solves than for a constant material.
+- A lossless or weakly damped Lorentz resonance among the swept
+  frequencies, such as one of a library or fitted metal law, costs samples:
+  the sweep solves the two grid frequencies on either side of it first.
+  Expect a few more full solves than for a constant material.
 - A grid frequency exactly on a lossless resonance raises `ValueError`, since
   the permittivity is infinite there. Move the grid point, or give the term
   a damping.

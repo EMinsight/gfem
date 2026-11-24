@@ -4,11 +4,11 @@ Turn a measured table of refractive index $n$ and
 {term}`extinction coefficient` $k$ into a {term}`permittivity law` that a
 frequency sweep can read, and see how far the law is from the table. Here
 the table is a gold film measured from the near ultraviolet to the infrared,
-and the law goes into a model's electrodes. {py:obj}`gfem.fit_permittivity` fits a sum of a
-Drude term and Lorentz terms with every strength and damping held at 0 or
-above, so the law is passive at every real frequency. It holds over the
-table's frequencies, its {term}`fitted range`; outside them it stays passive,
-but nothing says how close it is to the material.
+and the law goes into a model's electrodes. {py:obj}`gfem.fit_permittivity`
+fits a sum of a Drude term and Lorentz terms with every strength and damping
+held at 0 or above, so the law is passive at every real frequency. It holds
+over the table's frequencies, its {term}`fitted range`; outside them it stays
+passive, but nothing says how close it is to the material.
 
 For a material from a published source, take it from {py:mod}`gfem.materials`
 instead ({doc}`dispersive-materials`).
@@ -26,12 +26,12 @@ instead ({doc}`dispersive-materials`).
   $\mathrm{Im}\,\varepsilon \le 0$ for loss. A table written under
   $e^{-i\omega t}$ as $\varepsilon_1 + i\varepsilon_2$ is its complex
   conjugate: pass `eps=np.conj(eps)`.
-- **Nothing is clipped.** Gain rows ($k < 0$, or $\mathrm{Im}\,\varepsilon > 0$),
-  a negative $n$, a repeated frequency and NaN raise `ValueError` before the
-  fit, and the message names the remedy. A $k$ column of the wrong sign
-  throughout is passed as `k=-k`. A few slightly negative rows that are
-  rounding of $k = 0$ are passed as `k=np.clip(k, 0, None)`. Repeated rows
-  are averaged or dropped.
+- **Nothing is clipped.** Gain rows ($k < 0$, or
+  $\mathrm{Im}\,\varepsilon > 0$), a negative $n$, a repeated frequency and
+  NaN raise `ValueError` before the fit, and the message names the remedy.
+  A $k$ column of the wrong sign throughout is passed as `k=-k`. A few
+  slightly negative rows that are rounding of $k = 0$ are passed as
+  `k=np.clip(k, 0, None)`. Repeated rows are averaged or dropped.
 
 ## Fit gold over the visible and near infrared
 
@@ -183,9 +183,10 @@ A law with `frequency_range=None` never warns, as a law written by hand.
   differ in its last digits.
 - **Resonances in the range.** A fitted metal law holds one to four damped
   Lorentz resonances inside or near its fitted range. Each one among a
-  sweep's frequencies costs the adaptive sweep two solves. Each also raises the
-  law's index near it, and the eigenmode {term}`unresolved band` reads that
-  index: a coarse mesh in the metal may refuse a target near a resonance.
+  sweep's frequencies costs the adaptive sweep two solves. Each also raises
+  the law's index near it, and the eigenmode {term}`unresolved band` reads
+  that index: a coarse mesh in the metal may refuse a target near a
+  resonance.
 - **No narrow lines.** Every Lorentz damping is at least twice the median
   spacing of the table's frequencies, so noise does not turn into narrow
   resonances. A real absorption line narrower than that is smoothed: sample
