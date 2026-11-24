@@ -267,7 +267,9 @@ class SaxComponent:
         values = {**self.settings, **settings}
         network = self._network({k: values[k] for k in self._design})
         grid = network.to_sdict(circuit=self.circuit, ports=self.ports)
-        return self._at(grid, values["wl"])
+        # the circuit's wavelength in um, as a frequency in Hz
+        frequency = scipy.constants.c / (jnp.asarray(values["wl"], dtype=float) * 1e-6)
+        return self._at(grid, frequency)
 
     def __repr__(self) -> str:
         """Circuit, ports, settings and band."""
@@ -328,24 +330,22 @@ class SaxComponent:
     # -- the band -----------------------------------------------------------------
 
     def _at(
-        self, grid: dict[tuple[str, str], jax.Array], wl: Any
+        self, grid: dict[tuple[str, str], jax.Array], frequency: jax.Array
     ) -> dict[tuple[str, str], jax.Array]:
-        """``grid`` (S over the band) read at the wavelength ``wl`` (µm)."""
-        wl = jnp.asarray(wl, dtype=float)
-        frequency = scipy.constants.c / (wl * 1e-6)
+        """``grid`` (S over the band) read at ``frequency`` (Hz, any shape)."""
         if not is_traced(frequency):
-            self._check_in_band(np.asarray(wl), np.asarray(frequency))
+            self._check_in_band(np.asarray(frequency))
         keys = list(grid)
         stacked = jnp.stack([grid[k] for k in keys], axis=-1)
         values = _hermite(frequency, jnp.asarray(self._band), stacked)
         return {k: values[..., i] for i, k in enumerate(keys)}
 
-    def _check_in_band(self, wl: np.ndarray, frequency: np.ndarray) -> None:
+    def _check_in_band(self, frequency: np.ndarray) -> None:
         """Raise if a concrete frequency lies outside the band."""
         lo, hi = self._band[0], self._band[-1]
         outside = (frequency < lo * (1 - _SLACK)) | (frequency > hi * (1 + _SLACK))
         if outside.any():
-            bad = ", ".join(f"{w:.6g}" for w in wl[outside][:3])
+            bad = ", ".join(f"{_wavelength(f):.6g}" for f in frequency[outside][:3])
             raise ValueError(
                 f"wl = {bad} um is outside the component's band, "
                 f"{_wavelength(hi):.6g}-{_wavelength(lo):.6g} um "
