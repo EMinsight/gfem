@@ -28,7 +28,9 @@ import scipy.constants as const
 import gfem
 from gfem import _multipoles as mpm
 
-OPTIONS = gfem.SolverOptions(order=3, linear_solver="direct")
+#: Nothing here is differentiated: keep no factorization between solves, or
+#: the module's solves add up past the memory of an eight-core job.
+OPTIONS = gfem.SolverOptions(order=3, linear_solver="direct", retain_memory=0)
 EPS0, MU0, C0 = const.epsilon_0, const.mu_0, const.c
 #: The lossy sphere's mesh: the sphere at maxh 0.06 in a layer 0.5 um thick.
 #: The partial cross sections need both. At the free-space layer (0.35 um,
@@ -69,7 +71,7 @@ def _solve(model, frequency, sources):
 
 
 class _Sphere:
-    """A solved sphere with memoized multipoles and cross sections per column."""
+    """A solved sphere with memoized multipoles per column."""
 
     def __init__(self, model, result, case, frequency):
         self.model, self.result, self.case, self.frequency = (
@@ -88,27 +90,6 @@ class _Sphere:
             )
         return self._cache[key]
 
-    def cross_sections(self, name):
-        key = ("cross_sections", name)
-        if key not in self._cache:
-            self._cache[key] = gfem.cross_sections(self.result, name, model=self.model)
-        return self._cache[key]
-
-    def release(self, names, waves):
-        """Read every quantity the tests use, then drop the solve.
-
-        The multipoles of ``names``, the cross sections of ``waves`` and the
-        axial wave's multipoles about `SHIFT`. The result holds its
-        factorization (gigabytes), which the module's later solves need.
-        """
-        for name in names:
-            self.multipoles(name)
-        for name in waves:
-            self.cross_sections(name)
-        self.multipoles("z", origin=SHIFT)
-        del self.result
-        return self
-
     def errors(self, name="z", mu=1.0):
         mp = self.multipoles(name)
         ref = mc.mie_multipoles(self.case.eps, self.case.x, mp.lmax, mu=mu)
@@ -116,7 +97,7 @@ class _Sphere:
         return mc.degree_errors(a, b, *ref), mc.leak(a, b, *ref)
 
     def sum_vs_cross_sections(self, name="z"):
-        xs = self.cross_sections(name)
+        xs = gfem.cross_sections(self.result, name, model=self.model)
         return float(self.multipoles(name).scattering[0] / xs.scattering[0] - 1)
 
 
@@ -131,8 +112,7 @@ def mesh(tmp_path_factory):
 @pytest.fixture(scope="module")
 def lossy(mesh):
     model = fsc.model(mesh[0], fsc.LOSSY)
-    sphere = _Sphere(model, _solve(model, mesh[2], SOURCES), mc.CASES["L"], mesh[2])
-    return sphere.release([source.name for source in SOURCES], ["z", "te", "tm"])
+    return _Sphere(model, _solve(model, mesh[2], SOURCES), mc.CASES["L"], mesh[2])
 
 
 def test_v1_the_axial_wave_gives_the_mie_coefficients(lossy):
@@ -295,38 +275,15 @@ def _power(mp):
     return float(np.sum(np.abs(c) ** 2) / (2 * mp.impedance * mp.wavenumber[0] ** 2))
 
 
-def _round_trips(tmp_path_factory, eps_b, mu_b, frequency, *, powers):
-    """Per dipole column: multipoles about `R0`, power about `CENTRE`, radiated power.
-
-    The two powers (the total about `CENTRE` and `gfem.far_field`'s) only
-    with ``powers``. The solve is dropped on return: it holds its
-    factorization (gigabytes).
-    """
-    model, result, k, eta = _dipole_solve(tmp_path_factory, eps_b, mu_b, frequency)
-    wave = (k, eta, frequency)
-    out = {}
-    for name in ("p", "m"):
-        mp = _projected(model, result, name, wave, R0, 4)
-        shifted = radiated = None
-        if powers:
-            d = float(np.linalg.norm(CENTRE - R0))
-            lmax = max(4, mpm._wiscombe(k * d))
-            shifted = _power(_projected(model, result, name, wave, CENTRE, lmax))
-            radiated = float(
-                gfem.far_field(result, name, 0.3, 0.2, model=model).radiated_power[0]
-            )
-        out[name] = (mp, shifted, radiated)
-    return out
-
-
 @pytest.fixture(scope="module")
 def vacuum(tmp_path_factory):
-    return _round_trips(tmp_path_factory, 1.0, 1.0, fsc.F0, powers=True)
+    return (*_dipole_solve(tmp_path_factory, 1.0, 1.0, fsc.F0), fsc.F0)
 
 
 @pytest.fixture(scope="module")
 def medium(tmp_path_factory):
-    return _round_trips(tmp_path_factory, 2.0, 3.0, fsc.F0 / 2, powers=False)
+    f = fsc.F0 / 2
+    return (*_dipole_solve(tmp_path_factory, 2.0, 3.0, f), f)
 
 
 def _back(mp, name):
@@ -337,7 +294,8 @@ def _back(mp, name):
 
 @pytest.mark.parametrize("name", ["p", "m"])
 def test_v10_dipoles_round_trip_in_vacuum(vacuum, name):
-    mp, shifted, radiated = vacuum[name]
+    model, result, k, eta, f = vacuum
+    mp = _projected(model, result, name, (k, eta, f), R0, 4)
     got, ref = _back(mp, name)
     assert np.linalg.norm(got - ref) < ROUND_TRIP_GATE * np.linalg.norm(ref)
     a, b = np.asarray(mp.alpha)[0], np.asarray(mp.beta)[0]
@@ -345,13 +303,20 @@ def test_v10_dipoles_round_trip_in_vacuum(vacuum, name):
     higher = math.sqrt(np.sum(np.abs(a[3:]) ** 2) + np.sum(np.abs(b[3:]) ** 2))
     assert higher < HIGHER_GATE * norm
     # the total power does not depend on the origin
-    assert shifted == pytest.approx(_power(mp), rel=SHIFT_POWER_GATE)
-    assert shifted == pytest.approx(radiated, rel=RADIATED_GATE)
+    d = float(np.linalg.norm(CENTRE - R0))
+    lmax = max(4, mpm._wiscombe(k * d))
+    shifted = _projected(model, result, name, (k, eta, f), CENTRE, lmax)
+    assert _power(shifted) == pytest.approx(_power(mp), rel=SHIFT_POWER_GATE)
+    radiated = float(
+        gfem.far_field(result, name, 0.3, 0.2, model=model).radiated_power[0]
+    )
+    assert _power(shifted) == pytest.approx(radiated, rel=RADIATED_GATE)
 
 
 @pytest.mark.parametrize("name", ["p", "m"])
 def test_v11_dipoles_round_trip_in_a_medium(medium, name):
-    mp, _, _ = medium[name]
+    model, result, k, eta, f = medium
+    mp = _projected(model, result, name, (k, eta, f), R0, 4)
     got, ref = _back(mp, name)
     assert np.linalg.norm(got - ref) < MEDIUM_GATE * np.linalg.norm(ref)
 
