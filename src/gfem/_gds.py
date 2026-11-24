@@ -24,7 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
-from gfem._pattern import LayerPattern, Polygon
+from gfem._pattern import LayerPattern, Polygon, drop_repeats, twice_area
 
 __all__ = ["write_gds"]
 
@@ -311,7 +311,7 @@ def _clean(ring: np.ndarray) -> np.ndarray:
     if len(ring) and np.abs(ring).max() >= 2**30:
         ring = ring.astype(object)
     while len(ring) >= 3:
-        ring = _drop_repeats(ring)
+        ring = drop_repeats(ring)
         if len(ring) < 3:
             break
         a = np.roll(ring, 1, axis=0) - ring
@@ -323,19 +323,9 @@ def _clean(ring: np.ndarray) -> np.ndarray:
     return np.zeros((0, 2), dtype=np.int64)
 
 
-def _drop_repeats(ring: np.ndarray) -> np.ndarray:
-    """An open ring without consecutive repeats (the last against the first too).
-
-    Of consecutive repeats the cyclically last copy stays, so a closed ring
-    loses its closing repeat and keeps its first vertex.
-    """
-    return ring[np.any(ring != np.roll(ring, -1, axis=0), axis=1)]
-
-
 def _area2(ring: np.ndarray) -> int:
     """Twice the signed area of an open integer ring, exactly (Python integers)."""
-    x, y = ring[:, 0].astype(object), ring[:, 1].astype(object)
-    return int(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+    return int(twice_area(ring.astype(object)))
 
 
 def _keyhole(
@@ -363,7 +353,7 @@ def _keyhole(
         cut = np.array([[np.rint(x[j]), py]], dtype=np.int64)
         loop = np.roll(hole, -start, axis=0)
         ring = np.vstack([ring[: j + 1], cut, loop, loop[:1], cut, ring[j + 1 :]])
-        ring = _drop_repeats(ring)  # a cut ending on a vertex
+        ring = drop_repeats(ring)  # a cut ending on a vertex
     return ring
 
 

@@ -80,3 +80,43 @@ def optional_positive(value: Any, what: str, unit: str, remedy: str) -> float | 
     if out <= 0:
         raise ValueError(f"{what} must be > 0 {unit}, got {out}.")
     return out
+
+
+#: Relative slack on range limits: lengths given as fractions of another (a
+#: rule as 1.25 radii, sigma as 4 pitches) land on the limit only to round-off.
+SLACK = 1e-9
+
+
+def metres_hint(length: float) -> str:
+    """A reminder of the unit when a length looks like micrometres or more."""
+    return " The lengths are in metres." if abs(length) >= 1e-3 else ""
+
+
+def positive_length(value: Any, name: str, where: str, remedy: str) -> float:
+    """A length as a finite host float > 0 (m), or raise.
+
+    Args:
+        value: The user's value.
+        name: The argument's name, e.g. ``"min_width"``.
+        where: The caller, e.g. ``"LayerPattern.check"``.
+        remedy: How to differentiate with respect to it, if traced.
+
+    Raises:
+        TypeError: ``value`` is not a real number (``bool`` included).
+        NonDifferentiableError: ``value`` is traced by JAX.
+        ValueError: ``value`` not finite or not > 0.
+    """
+    if not is_traced(value) and (
+        isinstance(value, bool | np.bool_)
+        or np.ndim(value) != 0
+        or np.asarray(value).dtype.kind not in "iuf"
+    ):
+        raise TypeError(
+            f"{where}: {name} is a length in metres, a real number, got {value!r}."
+        )
+    out = static_float(value, f"{where} {name}", remedy)
+    if not out > 0:
+        raise ValueError(
+            f"{where}: {name} must be a finite length > 0 m, got {out:g} m."
+        )
+    return out

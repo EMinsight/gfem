@@ -78,3 +78,26 @@ def diagonal_map(
         return rho
 
     return apply_wrapped
+
+
+def function_of_laplacian(
+    shape: tuple[int, int],
+    pitch: float,
+    periodic: tuple[bool, bool],
+    gain: Callable[[np.ndarray], np.ndarray],
+) -> Callable[[jax.Array], jax.Array]:
+    r"""The map :math:`g(-\Delta_h)` of a pixel grid's arrays.
+
+    Args:
+        shape: The grid's shape, ``(ny, nx)``.
+        pitch: Pixel side (m).
+        periodic: Per grid axis ``(x, y)``, whether its edges are one seam.
+        gain: The function :math:`g`, applied to the eigenvalues of
+            `laplacian_eigenvalues` summed per mode, ``(ny, nx)`` (1/m²).
+
+    Returns:
+        The map of `diagonal_map`.
+    """
+    wrap = (periodic[1], periodic[0])  # array axes (y, x)
+    ky, kx = laplacian_eigenvalues(shape, pitch, wrap)
+    return diagonal_map(jnp.asarray(gain(ky[:, None] + kx[None, :])), wrap)

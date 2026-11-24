@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 import numpy as np
 
-from gfem._checks import is_traced
+from gfem._checks import is_traced, metres_hint
 
 if TYPE_CHECKING:
     from gfem._feature_check import PatternCheck
@@ -276,15 +276,7 @@ def contour(
     name = "LayerGrid.pattern"
     if is_traced(rho) or is_traced(eta):
         raise ValueError(f"{name}: {_TRACED}.")
-    rho = np.asarray(rho)  # a LayerDensity raises TypeError here (pass .pixels)
-    if np.iscomplexobj(rho):
-        raise ValueError(f"{name}: densities must be real.")
-    rho = rho.astype(np.float64)
-    if rho.shape != grid.shape:
-        raise ValueError(
-            f"{name}: rho has shape {rho.shape}, but the grid on {grid.region!r} "
-            f"has shape {grid.shape} (ny, nx)."
-        )
+    rho = np.asarray(grid._pixels(rho, name, real=True), dtype=np.float64)  # noqa: SLF001
     if not np.all(np.isfinite(rho)):
         raise ValueError(
             f"{name}: rho holds {int(np.sum(~np.isfinite(rho)))} NaN or infinite "
@@ -333,7 +325,7 @@ def _nodes(centres: np.ndarray, lo: float, hi: float) -> np.ndarray:
 
 def _clean(ring: np.ndarray, tolerance: float) -> np.ndarray | None:
     """A closed ring without repeated or collinear vertices; ``None`` if degenerate."""
-    ring = _distinct(np.asarray(ring, dtype=np.float64))
+    ring = drop_repeats(np.asarray(ring, dtype=np.float64))
     while len(ring) >= 3:
         previous, following = np.roll(ring, 1, axis=0), np.roll(ring, -1, axis=0)
         a, b = ring - previous, following - ring
@@ -351,12 +343,6 @@ def _clean(ring: np.ndarray, tolerance: float) -> np.ndarray | None:
         position = index - np.maximum.accumulate(np.where(run, 0, index))
         ring = ring[~np.roll(run & (position % 2 == 1), start)]
     return None
-
-
-def _distinct(ring: np.ndarray) -> np.ndarray:
-    """The open ring's vertices, each differing from the one before (cyclically)."""
-    keep = np.any(ring != np.roll(ring, 1, axis=0), axis=1)
-    return ring[keep] if keep.any() else ring[:1]
 
 
 # --- area fraction --------------------------------------------------------------------
@@ -385,7 +371,7 @@ def area_fraction(grid: LayerGrid, pattern: LayerPattern) -> np.ndarray:
         return np.zeros(grid.shape)
     p0 = np.concatenate([r[:-1] for r in rings])
     p1 = np.concatenate([r[1:] for r in rings])
-    start, end = _pieces(p0, p1, xe, ye)
+    start, end = _split_at_lines(p0, p1, xe, ye)
     dx = end[:, 0] - start[:, 0]
     xm = 0.5 * (start[:, 0] + end[:, 0])
     ym = 0.5 * (start[:, 1] + end[:, 1])
@@ -412,12 +398,12 @@ def area_fraction(grid: LayerGrid, pattern: LayerPattern) -> np.ndarray:
             f"LayerGrid.area_fraction: no polygon of the pattern overlaps the "
             f"footprint of {grid.region!r}, x in [{xmin:g}, {xmax:g}] m, y in "
             f"[{ymin:g}, {ymax:g}] m; the pattern spans x in [{lo[0]:g}, "
-            f"{hi[0]:g}], y in [{lo[1]:g}, {hi[1]:g}]. Lengths are in metres."
+            f"{hi[0]:g}], y in [{lo[1]:g}, {hi[1]:g}].{metres_hint(np.abs(p0).max())}"
         )
     return fraction
 
 
-def _pieces(
+def _split_at_lines(
     p0: np.ndarray, p1: np.ndarray, xe: np.ndarray, ye: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
     """The segments ``p0 -> p1`` split where they cross the lines ``xe``, ``ye``."""
@@ -472,7 +458,7 @@ def _user_ring(ring: Any, k: int, name: str, sign: int) -> np.ndarray:
         )
     if not np.all(np.isfinite(array)):
         raise ValueError(f"{where}: coordinates must be finite.")
-    open_ = _distinct(array)
+    open_ = drop_repeats(array)
     if len(open_) < 3:
         raise ValueError(
             f"{where}: a ring needs at least 3 distinct vertices, got {len(open_)}."
@@ -540,7 +526,7 @@ def _check_within(
             )
         raise ValueError(
             f"{where}: the vertex ({x:g}, {y:g}) m lies outside the bounds "
-            f"{label} in [{lo:g}, {hi:g}] m. Lengths are in metres."
+            f"{label} in [{lo:g}, {hi:g}] m.{metres_hint(max(abs(x), abs(y)))}"
         )
 
 
@@ -675,7 +661,7 @@ def _mostly(flags: np.ndarray) -> bool:
 
 
 #: Point-edge pairs per block of the point-in-polygon test (memory bound).
-_BLOCK = 2**22
+_POINT_EDGE_BLOCK = 2**22
 
 
 def _inside(points: np.ndarray, rings: list[np.ndarray]) -> np.ndarray:
@@ -684,7 +670,7 @@ def _inside(points: np.ndarray, rings: list[np.ndarray]) -> np.ndarray:
     b = np.concatenate([r[1:] for r in rings])
     dy = np.where(b[:, 1] == a[:, 1], 1.0, b[:, 1] - a[:, 1])
     out = np.empty(len(points), dtype=bool)
-    step = max(1, _BLOCK // len(a))
+    step = max(1, _POINT_EDGE_BLOCK // len(a))
     for s in range(0, len(points), step):
         px, py = points[s : s + step, :1], points[s : s + step, 1:]
         crosses = (a[:, 1] > py) != (b[:, 1] > py)
@@ -704,5 +690,25 @@ def _rings(polygons: Iterable[Polygon]) -> Iterator[np.ndarray]:
 
 def _signed_area(ring: np.ndarray) -> float:
     """The shoelace area of a closed ring, positive counter-clockwise."""
+    return 0.5 * float(twice_area(ring[:-1]))
+
+
+def twice_area(ring: np.ndarray) -> Any:
+    """Twice the signed area of an open ring, in the ring's own arithmetic.
+
+    The shoelace sum, positive counter-clockwise: exact on Python integers
+    (an object array), rounded on floats.
+    """
     x, y = ring[:, 0], ring[:, 1]
-    return 0.5 * float(np.sum(x[:-1] * y[1:] - x[1:] * y[:-1]))
+    return np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y)
+
+
+def drop_repeats(ring: np.ndarray) -> np.ndarray:
+    """An open ring without consecutive repeats (the last against the first too).
+
+    Of consecutive repeats the cyclically last copy stays, so a closed ring
+    loses its closing repeat and keeps its first vertex; a ring of one point
+    repeated keeps one.
+    """
+    keep = np.any(ring != np.roll(ring, -1, axis=0), axis=1)
+    return ring[keep] if keep.any() else ring[:1]

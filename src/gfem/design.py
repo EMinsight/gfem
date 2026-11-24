@@ -383,7 +383,7 @@ class LayerGrid:
                 "map a sheet design to its faces with grid.to_faces(rho)."
             )
         if self._points:
-            return LayerDensity(self._pixels(rho, "to_elements"), self)
+            return LayerDensity(self._pixels(rho, "LayerGrid.to_elements"), self)
         return self._interpolate(rho, "to_elements")
 
     def to_faces(self, rho: jax.Array) -> jax.Array:
@@ -483,18 +483,34 @@ class LayerGrid:
         """
         return _pattern.area_fraction(self, pattern)
 
-    def _pixels(self, rho: jax.Array, name: str) -> jax.Array:
-        """``rho`` as an array, or raise for a wrong shape."""
+    def _pixels(
+        self, rho: Any, where: str, *, real: bool = False, remedy: str = ""
+    ) -> jax.Array:
+        """``rho`` as a pixel array of this grid, or raise naming ``where``.
+
+        Args:
+            rho: The pixel values.
+            where: The caller, named in the messages.
+            real: Whether to refuse complex values too.
+            remedy: Appended to the shape message.
+        """
+        if isinstance(rho, LayerDensity):
+            raise TypeError(
+                f"{where}: rho is a LayerDensity; it acts on the pixel array "
+                "before to_elements: pass density.pixels."
+            )
         rho = jnp.asarray(rho)
         if rho.shape != self.shape:
             raise ValueError(
-                f"LayerGrid.{name}: rho has shape {rho.shape}, but the grid "
-                f"on {self.region!r} has shape {self.shape} (ny, nx)."
+                f"{where}: rho has shape {rho.shape}, but the grid on "
+                f"{self.region!r} has shape {self.shape} (ny, nx).{remedy}"
             )
+        if real and jnp.iscomplexobj(rho):
+            raise ValueError(f"{where}: densities must be real.")
         return rho
 
     def _interpolate(self, rho: jax.Array, name: str) -> jax.Array:
-        rho = self._pixels(rho, name)
+        rho = self._pixels(rho, f"LayerGrid.{name}")
         return jnp.sum(rho.reshape(-1)[self._index] * self._weight, axis=1)
 
     def __repr__(self) -> str:
@@ -779,10 +795,9 @@ def helmholtz_filter(
 
 def _grid_filter(grid: LayerGrid, length: float) -> Callable:
     # The screened-Poisson solve is a gain per mode of the second differences.
-    wrap = (grid.periodic[1], grid.periodic[0])  # array axes (y, x)
-    ky, kx = _spectral.laplacian_eigenvalues(grid.shape, grid.pitch, wrap)
-    gain = jnp.asarray(1 / (1 + length**2 * (ky[:, None] + kx[None, :])))
-    return _spectral.diagonal_map(gain, wrap)
+    return _spectral.function_of_laplacian(
+        grid.shape, grid.pitch, grid.periodic, lambda k: 1 / (1 + length**2 * k)
+    )
 
 
 def _mesh_filter(mesh: Mesh, region: str, length: float) -> tuple[Callable, int]:

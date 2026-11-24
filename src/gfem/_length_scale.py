@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from gfem._checks import is_traced, static_float
+from gfem._checks import SLACK, metres_hint, positive_length, static_float
 
 if TYPE_CHECKING:
     from gfem.design import HelmholtzFilter, LayerGrid
@@ -29,12 +29,12 @@ _DECAY_PER_RADIUS_SQ = 10.0
 #: narrower than the rule pass (at 1.5 R, a line of 0.8 of the rule).
 _MAX_RULE_PER_RADIUS = 1.25
 
+#: How to differentiate a length rule (it cannot be: it is fixed).
+_FIXED_LENGTH = "A length rule is fixed: build it from numbers."
+
 #: Coarsest pitch per filter radius: at R/2 the threshold drifts to 1.3 times
 #: the rule; from R/3 on it is within a few percent.
 _PITCHES_PER_RADIUS = 3
-
-#: Relative slack on the range limits (round-off of lengths given as fractions).
-_SLACK = 1e-9
 
 
 class LengthScaleValues(NamedTuple):
@@ -131,16 +131,12 @@ class LengthScaleConstraints:
         from gfem.design import project
 
         grid = self._grid
-        rho = jnp.asarray(rho)
-        if rho.shape != grid.shape:
-            raise ValueError(
-                f"length_scale_constraints: rho has shape {rho.shape}, but the "
-                f"grid on {grid.region!r} has shape {grid.shape} (ny, nx). Pass "
-                "the filtered pixel array, blur(rho)."
-            )
-        if jnp.iscomplexobj(rho):
-            raise ValueError("length_scale_constraints: densities must be real.")
-        rho = rho.astype(jnp.float64)
+        rho = grid._pixels(  # noqa: SLF001
+            rho,
+            "length_scale_constraints",
+            real=True,
+            remedy=" Pass the filtered pixel array, blur(rho).",
+        ).astype(jnp.float64)
         solid = project(rho, _INDICATOR_BETA, self.eta)
         weight = jnp.exp(-self.decay * _gradient_squared(rho, grid))
         short = jnp.minimum(rho - self.eta_solid, 0.0) ** 2
@@ -284,8 +280,8 @@ def length_scale_constraints(
         )
     grid = _grid_of(blur)
     rules = {
-        "min_width": _length(min_width, "min_width", where),
-        "min_spacing": _length(min_spacing, "min_spacing", where),
+        name: positive_length(value, name, where, _FIXED_LENGTH)
+        for name, value in (("min_width", min_width), ("min_spacing", min_spacing))
     }
     eta = static_float(eta, f"{where} eta", "The threshold is fixed.")
     if not 0 < eta < 1:
@@ -293,17 +289,17 @@ def length_scale_constraints(
     radius = blur.radius
     needed = max(rules.values()) / _MAX_RULE_PER_RADIUS
     for name, value in rules.items():
-        if value > _MAX_RULE_PER_RADIUS * radius * (1 + _SLACK):
+        if value > _MAX_RULE_PER_RADIUS * radius * (1 + SLACK):
             raise ValueError(
                 f"{where}: {name}={value:g} m is more than "
                 f"{_MAX_RULE_PER_RADIUS} times the filter radius {radius:g} m; "
                 "there the constraints let features far narrower than the rule "
                 f"pass. Raise the filter radius to at least {needed:g} m "
                 f"(max(min_width, min_spacing) / {_MAX_RULE_PER_RADIUS})."
-                f"{_metres_hint(value)}"
+                f"{metres_hint(value)}"
             )
     coarsest = radius / _PITCHES_PER_RADIUS
-    if grid.pitch > coarsest * (1 + _SLACK):
+    if grid.pitch > coarsest * (1 + SLACK):
         raise ValueError(
             f"{where}: the grid's pitch {grid.pitch:g} m is coarser than a third "
             f"of the filter radius (radius / 3 = {coarsest:g} m), where the "
@@ -368,7 +364,7 @@ def radius_for_length_scale(length: float, *, delta: float, eta: float = 0.5) ->
             threshold outside (0, 1).
     """
     where = "radius_for_length_scale"
-    ell = _length(length, "length", where)
+    ell = positive_length(length, "length", where, _FIXED_LENGTH)
     remedy = "The robust thresholds are fixed."
     d = static_float(delta, f"{where} delta", remedy)
     e = static_float(eta, f"{where} eta", remedy)
@@ -380,26 +376,3 @@ def radius_for_length_scale(length: float, *, delta: float, eta: float = 0.5) ->
     solid = math.acosh((1 - e) / (1 - e - d))
     void = math.acosh(e / (e - d))
     return math.sqrt(3) * ell / min(solid, void)
-
-
-def _length(value: Any, name: str, where: str) -> float:
-    """A length rule as a finite float > 0 (m), or raise."""
-    if not is_traced(value) and (
-        isinstance(value, bool | np.bool_)
-        or np.ndim(value) != 0
-        or np.asarray(value).dtype.kind not in "iuf"
-    ):
-        raise TypeError(
-            f"{where}: {name} is a length in metres, a real number, got {value!r}."
-        )
-    out = static_float(
-        value, f"{where} {name}", "A length rule is fixed: build it from numbers."
-    )
-    if not out > 0:
-        raise ValueError(f"{where}: {name} must be > 0 m, got {out:g} m.")
-    return out
-
-
-def _metres_hint(value: float) -> str:
-    """A reminder of the unit when a length looks like micrometres."""
-    return " The lengths are in metres." if value >= 1e-3 else ""

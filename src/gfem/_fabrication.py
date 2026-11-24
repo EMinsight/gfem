@@ -11,7 +11,7 @@ import numpy as np
 from jax.scipy.special import erfc
 
 from gfem import _spectral
-from gfem._checks import is_traced, static_float
+from gfem._checks import SLACK, is_traced, metres_hint, static_float
 
 if TYPE_CHECKING:
     from gfem.design import LayerGrid, LayerPattern, Robust
@@ -19,9 +19,6 @@ if TYPE_CHECKING:
 #: Largest edge bias per blur width: beyond it the edge sits in the blur's tail,
 #: where the threshold (below 0.023) is narrower than the projection's transition.
 _MAX_BIAS_PER_SIGMA = 2.0
-
-#: Relative slack on the limits (round-off of lengths given as fractions).
-_SLACK = 1e-9
 
 
 class FabricationModel:
@@ -115,7 +112,7 @@ class FabricationModel:
         sigma = static_float(sigma, f"{where} sigma", "The blur is fixed.")
         if not sigma > 0:
             raise ValueError(f"{where}: sigma must be > 0 m, got {sigma:g} m.")
-        if sigma < grid.pitch * (1 - _SLACK):
+        if sigma < grid.pitch * (1 - SLACK):
             raise ValueError(
                 f"{where}: sigma={sigma:g} m is below the grid's pitch "
                 f"{grid.pitch:g} m, so the blur is not resolved (printed edges off "
@@ -128,12 +125,11 @@ class FabricationModel:
             bias, f"{where} bias", "Pass a traced bias per call: fab(rho, bias=...)."
         )
         self._check_bias(self.bias, "bias", where)
-        wrap = (grid.periodic[1], grid.periodic[0])  # array axes (y, x)
-        ky, kx = _spectral.laplacian_eigenvalues(grid.shape, grid.pitch, wrap)
         # The heat kernel exp(sigma² Δ_h / 2): non-negative with variance sigma²,
         # where the sampled continuous spectrum would ring at a binary edge.
-        gain = jnp.asarray(np.exp(-0.5 * sigma**2 * (ky[:, None] + kx[None, :])))
-        self._blur = _spectral.diagonal_map(gain, wrap)
+        self._blur = _spectral.function_of_laplacian(
+            grid.shape, grid.pitch, grid.periodic, lambda k: np.exp(-0.5 * sigma**2 * k)
+        )
 
     def __call__(self, rho: jax.Array, *, beta: float, bias: Any = None) -> jax.Array:
         r"""The printed design of a drawn design.
@@ -221,23 +217,7 @@ class FabricationModel:
             TypeError: ``rho`` is a `LayerDensity` (pass ``density.pixels``).
             ValueError: ``rho`` has the wrong shape or is complex.
         """
-        # imported here: gfem.design imports this module
-        from gfem.design import LayerDensity
-
-        where = "FabricationModel"
-        if isinstance(rho, LayerDensity):
-            raise TypeError(
-                f"{where}: rho is a LayerDensity; the model acts on the pixel "
-                "array before to_elements: pass density.pixels."
-            )
-        rho = jnp.asarray(rho)
-        if rho.shape != self.grid.shape:
-            raise ValueError(
-                f"{where}: rho has shape {rho.shape}, but the grid on "
-                f"{self.grid.region!r} has shape {self.grid.shape} (ny, nx)."
-            )
-        if jnp.iscomplexobj(rho):
-            raise ValueError(f"{where}: densities must be real.")
+        rho = self.grid._pixels(rho, "FabricationModel", real=True)  # noqa: SLF001
         return self._blur(rho.astype(jnp.float64))
 
     def threshold(self, bias: Any = None) -> float | jax.Array:
@@ -308,13 +288,12 @@ class FabricationModel:
     def _check_bias(self, b: float, name: str, where: str) -> None:
         """Raise when a concrete bias sits in the blur's tail."""
         limit = _MAX_BIAS_PER_SIGMA * self.sigma
-        if abs(b) > limit * (1 + _SLACK):
-            hint = " The lengths are in metres." if abs(b) >= 1e-3 else ""
+        if abs(b) > limit * (1 + SLACK):
             raise ValueError(
                 f"{where}: {name}={b:g} m is beyond 2 sigma ({limit:g} m): the "
                 "edge would sit in the blur's tail, threshold below 0.023, "
                 "narrower than the projection's transition. Keep the bias "
-                f"within 1.5 sigma ({1.5 * self.sigma:g} m).{hint}"
+                f"within 1.5 sigma ({1.5 * self.sigma:g} m).{metres_hint(b)}"
             )
 
     def __repr__(self) -> str:

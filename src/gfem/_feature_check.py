@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 import numpy as np
 
-from gfem._checks import is_traced
+from gfem._checks import positive_length
 
 if TYPE_CHECKING:
     from gfem._pattern import LayerPattern
@@ -123,8 +123,10 @@ _SHARED = 1e-9
 #: Edges whose ends lie this close (times the footprint's larger side) to a
 #: footprint line lie on it: contoured seam vertices match only to round-off.
 _ON_FOOTPRINT = 1e-9
+#: How to differentiate a rule (it cannot be: a check is not differentiable).
+_FIXED_RULE = "A rule is fixed: give it as a number."
 #: Candidate edge pairs evaluated at a time (bounds the temporary arrays).
-_BLOCK = 2**18
+_PAIR_BLOCK = 2**18
 
 
 def check(
@@ -138,7 +140,7 @@ def check(
             "rule would always pass."
         )
     rules = {
-        kind: _rule(value, f"min_{kind}", where)
+        kind: positive_length(value, f"min_{kind}", where, _FIXED_RULE)
         for kind, value in (("width", min_width), ("spacing", min_spacing))
         if value is not None
     }
@@ -162,29 +164,12 @@ def check(
     )
 
 
-def _rule(value: Any, name: str, where: str) -> float:
-    """A rule as a finite length > 0 (m), or raise."""
-    if (
-        is_traced(value)
-        or isinstance(value, bool | np.bool_)
-        or np.ndim(value) != 0
-        or np.asarray(value).dtype.kind not in "iuf"
-    ):
-        raise TypeError(
-            f"{where}: {name} is a length in metres, a real number, got {value!r}."
-        )
-    out = float(value)
-    if not (math.isfinite(out) and out > 0):
-        raise ValueError(f"{where}: {name} must be a finite length > 0 m, got {out}.")
-    return out
-
-
 class _Edges:
-    """A pattern's layout edges, directed with the solid on their left.
+    """A pattern's polygon edges, directed with the solid on their left.
 
     Outer rings run counter-clockwise and holes clockwise, so the solid lies on
     the left of every edge. Edges on the footprint rectangle are gfem's cut,
-    not the layout's: what lies beyond is the user's layout (or the next
+    not the pattern's: what lies beyond is the user's layout (or the next
     period, across a seam), so they are never measured.
     """
 
@@ -239,7 +224,7 @@ class _Edges:
         """
         from scipy.spatial import KDTree  # only needed here
 
-        a, b = _pieces(self.a, self.b, rule / 2)
+        a, b = _cut_edges(self.a, self.b, rule / 2)
         n = len(a)
         if n == 0:
             return np.zeros((0, 2, 2)), np.zeros(0)
@@ -252,8 +237,8 @@ class _Edges:
         side = 1.0 if kind == "width" else -1.0
         candidates = KDTree(0.5 * (a + b)).query_pairs(reach, output_type="ndarray")
         markers, distances, found = [], [], []
-        for start in range(0, len(candidates), _BLOCK):
-            i, j = candidates[start : start + _BLOCK].T
+        for start in range(0, len(candidates), _PAIR_BLOCK):
+            i, j = candidates[start : start + _PAIR_BLOCK].T
             # Keep pairs with an edge of this period; then the edges must run
             # opposite ways (corners of 90 degrees or more never pair).
             keep = (i < n) | (j < n)
@@ -358,7 +343,7 @@ class _Edges:
         )
 
 
-def _pieces(
+def _cut_edges(
     a: np.ndarray, b: np.ndarray, longest: float
 ) -> tuple[np.ndarray, np.ndarray]:
     """Edges cut into equal collinear pieces of at most ``longest``."""
