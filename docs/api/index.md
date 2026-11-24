@@ -19,6 +19,7 @@ gfem/broadband/index
 gfem/circuit/index
 gfem/refinement/index
 gfem/measurements/index
+gfem/diffraction/index
 gfem/thermal/index
 gfem/thermo_optic/index
 gfem/electro_optic/index

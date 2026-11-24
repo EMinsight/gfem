@@ -2208,66 +2208,6 @@ def _periodic_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
 
 # --- driven with Floquet ports (coarse F2) ----------------------------------------
 
-#: F2's orders with ports on both faces: every order that propagates at
-#: either frequency, in either problem, on either side (the -2 order in the
-#: substrate under Bloch at f0), so no order is unrequested.
-FLOQUET_ORDERS = ((0, 0), (-1, 0), (1, 0), (-2, 0))
-#: f0 and 0.8 f0: at 0.8 f0 the ±1 orders are evanescent in the air (rows
-#: that read 0), and propagate in the substrate.
-FLOQUET_FREQUENCIES = (pc.F1_FREQUENCY, 0.8 * pc.F1_FREQUENCY)
-#: The conical Bloch incidence from the air, rad.
-FLOQUET_THETA, FLOQUET_PHI = np.radians(20.0), np.radians(30.0)
-#: The smallest |gamma| / k of a propagating order (nearer
-#: grazing the differences carry the forward's noise divided by the step).
-FLOQUET_GRAZING = 1e-2
-#: The excited ports: the specular order from the air in both polarizations.
-FLOQUET_EXCITE = ("R0,0_TE", "R0,0_TM")
-
-
-def _floquet_problem(model: gfem.Model, cell: Cell) -> gfem.Driven:
-    """The cell's problem, checked away from grazing.
-
-    Every order that propagates on either face at either frequency has a
-    port, at ``|gamma| / k >= FLOQUET_GRAZING`` (cos theta, ``k`` in the
-    face's medium); the zero row ``R1,0`` does not propagate at 0.8 f0
-    (plain) or at either frequency (Bloch). The ``fixed_angle`` variant
-    scales the Bloch wave vector with frequency from f0.
-    """
-    k = None
-    if cell.problem == "driven_floquet_bloch":
-        k = model.bloch_wave_vector(
-            "z_max", FLOQUET_FREQUENCIES[0], theta=FLOQUET_THETA, phi=FLOQUET_PHI
-        )
-    fixed_angle = cell.variant == "fixed_angle"
-
-    def k_at(f):
-        if k is None or not fixed_angle:
-            return k
-        return tuple(c * f / FLOQUET_FREQUENCIES[0] for c in k)
-
-    declared = {(p.surface, p.order) for p in model.ports}
-    eps = {"z_max": 1.0, "z_min": pc.F1_EPS_SUB}
-    a1, a2 = (a * pc.UM for a in pc.F2_A)
-    for surface, n2 in eps.items():
-        for f in FLOQUET_FREQUENCIES:
-            orders = model.propagating_orders(surface, [f], wave_vector=k_at(f))
-            assert {(surface, o) for o in orders} <= declared, (surface, orders)
-            kt = np.zeros(2) if k is None else np.asarray(k_at(f))[:2]
-            k2 = (2 * np.pi * f / pc.C0) ** 2 * n2
-            for m, n in orders:
-                kappa = kt + 2 * np.pi * np.array([m / a1, n / a2])
-                ratio = 1 - kappa @ kappa / k2
-                assert ratio < 0 or ratio >= FLOQUET_GRAZING**2, (surface, f, m, n)
-    low = FLOQUET_FREQUENCIES[1]
-    zero = model.propagating_orders("z_max", [low], wave_vector=k_at(low))
-    assert (1, 0) not in zero
-    return gfem.Driven(
-        frequency=FLOQUET_FREQUENCIES,
-        wave_vector=k,
-        wave_vector_frequency=FLOQUET_FREQUENCIES[0] if fixed_angle else None,
-        excite=FLOQUET_EXCITE,
-    )
-
 
 def _floquet_value(result) -> jax.Array:
     """|S|^2 of the -1 transmitted order, a cross-polarized entry, a zero row."""
@@ -2278,32 +2218,21 @@ def _floquet_value(result) -> jax.Array:
     return efficiency + cross + zero
 
 
-def _floquet_model(mesh: gfem.Mesh, eps: jax.Array) -> gfem.Model:
-    """F2 with ``FLOQUET_ORDERS``, ``eps`` per element over ridge then groove."""
-    n = len(mesh.elements("ridge"))
-    return (
-        pc.f2(mesh, ports=pc.f2_ports(FLOQUET_ORDERS))
-        .with_material("ridge", gfem.MaterialField(eps_r=eps[:n]))
-        .with_material("groove", gfem.MaterialField(eps_r=eps[n:]))
-    )
-
-
-def _floquet_design(mesh: gfem.Mesh, rng: np.random.Generator) -> jax.Array:
-    """A lossy per-element permittivity of the ridge layer, symmetry broken."""
-    ridge = rng.uniform(3.5, 4.5, len(mesh.elements("ridge")))
-    groove = rng.uniform(1.0, 1.5, len(mesh.elements("groove")))
-    return jnp.asarray(np.concatenate([ridge, groove]) * (1 - 0.02j))
-
-
 def _floquet_material(d: Designs, cell: Cell, options, seed: int) -> Case:
     """F2's objective in the per-element eps_r of its ridge layer."""
     mesh = d.floquet
     rng = np.random.default_rng(30 + seed)
-    eps = _floquet_design(mesh, rng)
-    problem = _floquet_problem(_floquet_model(mesh, eps), cell)
+    eps = pc.floquet_gradient_design(mesh, rng)
+    problem = pc.floquet_gradient_problem(
+        pc.floquet_gradient_model(mesh, eps),
+        bloch=cell.problem == "driven_floquet_bloch",
+        fixed_angle=cell.variant == "fixed_angle",
+    )
 
     def objective(p):
-        result = gfem.solve(_floquet_model(mesh, p), problem, options=options)
+        result = gfem.solve(
+            pc.floquet_gradient_model(mesh, p), problem, options=options
+        )
         return _floquet_value(result)
 
     return Case(objective, eps, rng, step=STEPS["eps_r"], taylor=3e-1, imaginary=True)
@@ -2317,8 +2246,14 @@ def _floquet_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
     surfaces and the pairs do not.
     """
     mesh = d.floquet
-    model = _floquet_model(mesh, _floquet_design(mesh, np.random.default_rng(30)))
-    problem = _floquet_problem(model, cell)
+    model = pc.floquet_gradient_model(
+        mesh, pc.floquet_gradient_design(mesh, np.random.default_rng(30))
+    )
+    problem = pc.floquet_gradient_problem(
+        model,
+        bloch=cell.problem == "driven_floquet_bloch",
+        fixed_angle=cell.variant == "fixed_angle",
+    )
     x = np.asarray(mesh.imported_nodes)
     lo, hi = pc.F2_D * pc.UM, (pc.F2_D + pc.F2_H) * pc.UM
     a = np.array(pc.F2_A) * pc.UM

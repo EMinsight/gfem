@@ -63,7 +63,7 @@ __all__ = [
     "Truncation",
     "dtn",
     "floquet_face",
-    "floquet_ports",
+    "floquet_ports_in",
     "floquet_surfaces",
     "lattice_frame",
     "modelled_orders",
@@ -492,7 +492,7 @@ class FloquetFace:
         )
 
 
-def floquet_ports(ports: Iterable[Any]) -> tuple[FloquetPort, ...]:
+def floquet_ports_in(ports: Iterable[Any]) -> tuple[FloquetPort, ...]:
     """The Floquet ports among ``ports``, in model order (empty: none)."""
     return tuple(p for p in ports if isinstance(p, FloquetPort))
 
@@ -500,7 +500,7 @@ def floquet_ports(ports: Iterable[Any]) -> tuple[FloquetPort, ...]:
 def floquet_surfaces(ports: Iterable[Any]) -> dict[str, tuple[FloquetPort, ...]]:
     """The Floquet ports among ``ports`` by surface, in model order."""
     out: dict[str, list[FloquetPort]] = {}
-    for port in floquet_ports(ports):
+    for port in floquet_ports_in(ports):
         out.setdefault(port.surface, []).append(port)
     return {s: tuple(group) for s, group in out.items()}
 
@@ -798,7 +798,7 @@ def _distance(
     other = active & (mesh.tetrahedron_tags != tag)
     nodes = [mesh.tetrahedra[other].ravel()]
     skip = {s for b in model.boundaries if isinstance(b, Periodic) for s in b.surfaces}
-    skip |= {p.surface for p in floquet_ports(model.ports)}
+    skip |= {p.surface for p in floquet_ports_in(model.ports)}
     named = [
         s
         for item in (*model.boundaries, *model.ports)
@@ -951,24 +951,29 @@ def _frequencies(frequency: np.ndarray, where: np.ndarray) -> str:
 def warn_unrequested(table: dict[str, SurfaceOrders]) -> None:
     """Warn `UnrequestedOrderWarning` for each surface with unread propagating orders.
 
-    An order that propagates at some frequency and has no Floquet port on
-    its surface in either polarization: the surface absorbs it, so its
-    power is missing from S. Called by the parent only.
+    An (order, polarization) that propagates at some frequency and has no
+    Floquet port on its surface: the surface absorbs it, so its power is
+    missing from S. An order declared in one polarization warns for the other.
+    Called by the parent only.
     """
     for surface, surface_orders in table.items():
-        declared = {p.order for p in surface_orders.ports}
+        declared = {(p.order, p.polarization) for p in surface_orders.ports}
         propagating = surface_orders.rows.propagating
-        missing = [
-            o
-            for k, o in enumerate(surface_orders.orders)
-            if o not in declared and propagating[:, k].any()
-        ]
+        missing: list[tuple[tuple[int, int], tuple[str, ...]]] = []
+        for k, o in enumerate(surface_orders.orders):
+            if not propagating[:, k].any():
+                continue
+            pols = tuple(q for q in ("TE", "TM") if (o, q) not in declared)
+            if pols:
+                missing.append((o, pols))
         if not missing:
             continue
-        columns = [surface_orders.orders.index(o) for o in missing]
+        columns = [surface_orders.orders.index(o) for o, _ in missing]
         where = propagating[:, columns].any(axis=1)
         freqs = _frequencies(surface_orders.rows.frequency, where)
-        shown = ", ".join(f"({m}, {n})" for m, n in missing)
+        shown = ", ".join(
+            f"({m}, {n}) {' and '.join(pols)}" for (m, n), pols in missing
+        )
         warnings.warn(
             UnrequestedOrderWarning(
                 f"Propagating order(s) {shown} on {surface!r} at {freqs} carry "

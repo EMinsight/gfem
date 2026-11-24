@@ -47,10 +47,13 @@ The tolerances are about 10-50x the error measured on each cell at its
 order and mesh.
 """
 
+import itertools
 import math
 from collections.abc import Callable
 from pathlib import Path
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import rods_mesh as rods_gmsh
 import scipy.constants as const
@@ -1167,3 +1170,227 @@ F2_RCWA = {
 }
 #: G20L's absorption 1 - sum of the efficiencies, by incident polarization.
 F2_ABSORPTION = {"TE": 0.13763068, "TM": 0.08664219}
+
+
+# --- the bare interface: glass below, air above --------------------------------
+
+N_GLASS = 1.5
+#: The glass and air layers' thickness, um: each Floquet face that far from
+#: the interface.
+D = 0.25
+
+
+def interface_mesh(directory):
+    """Glass below z = D, air above, 0.4 x 0.4 um, 3 cells per layer."""
+    lateral = np.linspace(0.0, F1_A, 3)
+    z = np.linspace(0.0, 2 * D, 7)
+    cell = sm.periodic_cell(
+        (lateral, lateral, z),
+        lambda c: "glass" if c[2] < D else "air",
+        paired="xy",
+    )
+    path = sm.write_msh22(directory / "interface.msh", cell)
+    return gfem.Mesh.from_gmsh(path, length_unit="um")
+
+
+def interface_model(mesh, ports, boundaries=()):
+    return gfem.Model(
+        mesh,
+        materials={"glass": gfem.Material(eps_r=N_GLASS**2), "air": gfem.Material()},
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+            *boundaries,
+        ],
+        ports=ports,
+    )
+
+
+# --- F2's gradient cell (driven with Floquet ports) ---------------------------
+
+#: F2's orders with ports on both faces: every order that propagates at
+#: either frequency, in either problem, on either side (the -2 order in the
+#: substrate under Bloch at f0), so no order is unrequested.
+FLOQUET_ORDERS = ((0, 0), (-1, 0), (1, 0), (-2, 0))
+#: f0 and 0.8 f0: at 0.8 f0 the ±1 orders are evanescent in the air (rows
+#: that read 0), and propagate in the substrate.
+FLOQUET_FREQUENCIES = (F1_FREQUENCY, 0.8 * F1_FREQUENCY)
+#: The conical Bloch incidence from the air, rad.
+FLOQUET_THETA, FLOQUET_PHI = np.radians(20.0), np.radians(30.0)
+#: The smallest |gamma| / k of a propagating order (nearer
+#: grazing the differences carry the forward's noise divided by the step).
+FLOQUET_GRAZING = 1e-2
+#: The excited ports: the specular order from the air in both polarizations.
+FLOQUET_EXCITE = ("R0,0_TE", "R0,0_TM")
+
+
+def floquet_gradient_problem(
+    model: gfem.Model, *, bloch: bool, fixed_angle: bool
+) -> gfem.Driven:
+    """The cell's problem, checked away from grazing.
+
+    Every order that propagates on either face at either frequency has a
+    port, at ``|gamma| / k >= FLOQUET_GRAZING`` (cos theta, ``k`` in the
+    face's medium); the zero row ``R1,0`` does not propagate at 0.8 f0
+    (plain) or at either frequency (Bloch). With ``bloch`` the incidence is the conical
+    ``FLOQUET_THETA``, ``FLOQUET_PHI`` from the air; ``fixed_angle`` scales
+    the Bloch wave vector with frequency from f0.
+    """
+    k = None
+    if bloch:
+        k = model.bloch_wave_vector(
+            "z_max", FLOQUET_FREQUENCIES[0], theta=FLOQUET_THETA, phi=FLOQUET_PHI
+        )
+
+    def k_at(f):
+        if k is None or not fixed_angle:
+            return k
+        return tuple(c * f / FLOQUET_FREQUENCIES[0] for c in k)
+
+    declared = {(p.surface, p.order) for p in model.ports}
+    eps = {"z_max": 1.0, "z_min": F1_EPS_SUB}
+    a1, a2 = (a * UM for a in F2_A)
+    for surface, n2 in eps.items():
+        for f in FLOQUET_FREQUENCIES:
+            orders = model.propagating_orders(surface, [f], wave_vector=k_at(f))
+            assert {(surface, o) for o in orders} <= declared, (surface, orders)
+            kt = np.zeros(2) if k is None else np.asarray(k_at(f))[:2]
+            k2 = (2 * np.pi * f / C0) ** 2 * n2
+            for m, n in orders:
+                kappa = kt + 2 * np.pi * np.array([m / a1, n / a2])
+                ratio = 1 - kappa @ kappa / k2
+                assert ratio < 0 or ratio >= FLOQUET_GRAZING**2, (surface, f, m, n)
+    low = FLOQUET_FREQUENCIES[1]
+    zero = model.propagating_orders("z_max", [low], wave_vector=k_at(low))
+    assert (1, 0) not in zero
+    return gfem.Driven(
+        frequency=FLOQUET_FREQUENCIES,
+        wave_vector=k,
+        wave_vector_frequency=FLOQUET_FREQUENCIES[0] if fixed_angle else None,
+        excite=FLOQUET_EXCITE,
+    )
+
+
+def floquet_gradient_model(mesh: gfem.Mesh, eps: jax.Array) -> gfem.Model:
+    """F2 with ``FLOQUET_ORDERS``, ``eps`` per element over ridge then groove."""
+    n = len(mesh.elements("ridge"))
+    return (
+        f2(mesh, ports=f2_ports(FLOQUET_ORDERS))
+        .with_material("ridge", gfem.MaterialField(eps_r=eps[:n]))
+        .with_material("groove", gfem.MaterialField(eps_r=eps[n:]))
+    )
+
+
+def floquet_gradient_design(mesh: gfem.Mesh, rng: np.random.Generator) -> jax.Array:
+    """A lossy per-element permittivity of the ridge layer, symmetry broken."""
+    ridge = rng.uniform(3.5, 4.5, len(mesh.elements("ridge")))
+    groove = rng.uniform(1.0, 1.5, len(mesh.elements("groove")))
+    return jnp.asarray(np.concatenate([ridge, groove]) * (1 - 0.02j))
+
+
+# --- the ridge cell: a dielectric meta-atom, infinite along y ----------------------
+
+#: A dielectric ridge (eps 5, 0.6 um high, width ``RIDGE_W0``) on glass
+#: (eps 2.1), pitch 0.5 um, lit at 1 um wavelength; Floquet ports TE/TM of the
+#: specular order on both faces, offset onto the substrate surface and the
+#: ridge's top plane. The grid keeps nodes on the sidewall planes with a fixed
+#: number of cells inside and outside the ridge, so every width has the same
+#: topology (a smooth family under a boundary morph).
+RIDGE_PITCH = 0.5  # um
+RIDGE_HEIGHT = 0.6
+RIDGE_SUB = 0.3  # substrate thickness
+RIDGE_AIR = 0.35  # air thickness above the ridge
+RIDGE_EPS = 5.0
+RIDGE_EPS_SUB = 2.1
+RIDGE_W0 = 0.25  # the nominal width, 1092 tetrahedra
+RIDGE_FREQUENCY = C0 / 1.0e-6
+
+
+def ridge_mesh(directory: Path, w: float = RIDGE_W0) -> gfem.Mesh:
+    """The ridge cell of width ``w`` (um), cells ``(3 + 2 x 2, 2, ...)``.
+
+    Regions "substrate", "atom", "air"; faces "x_min", ..., "z_max" plus the
+    interfaces "base", "atom_top" and "sidewall".
+    """
+    lo, hi = RIDGE_PITCH / 2 - w / 2, RIDGE_PITCH / 2 + w / 2
+    ex = np.concatenate(
+        [
+            np.linspace(0, lo, 3),
+            np.linspace(lo, hi, 4)[1:],
+            np.linspace(hi, RIDGE_PITCH, 3)[1:],
+        ]
+    )
+    ey = np.array([0.0, 0.08, 0.16])
+    zs = [
+        0.0,
+        RIDGE_SUB,
+        RIDGE_SUB + RIDGE_HEIGHT,
+        RIDGE_SUB + RIDGE_HEIGHT + RIDGE_AIR,
+    ]
+    ez = [0.0]
+    for z0, z1 in itertools.pairwise(zs):
+        ez += list(np.linspace(z0, z1, max(1, round((z1 - z0) / 0.1)) + 1)[1:])
+    ez = np.array(ez)
+    eps = 1e-9
+    top = RIDGE_SUB + RIDGE_HEIGHT
+
+    def volume(c):
+        if c[2] < RIDGE_SUB:
+            return "substrate"
+        return "atom" if lo < c[0] < hi and c[2] < top else "air"
+
+    def surface(c):
+        for axis, (a, b) in enumerate(((0, RIDGE_PITCH), (0, ey[-1]), (0, ez[-1]))):
+            if abs(c[axis] - a) < eps:
+                return "xyz"[axis] + "_min"
+            if abs(c[axis] - b) < eps:
+                return "xyz"[axis] + "_max"
+        if abs(c[2] - RIDGE_SUB) < eps:
+            return "base"
+        if abs(c[2] - top) < eps:
+            return "atom_top"
+        return "sidewall"
+
+    cell = sm.structured((ex, ey, ez), volume, surface)
+    path = sm.write_msh22(directory / f"ridge_{w:.6f}.msh", cell)
+    return gfem.Mesh.from_gmsh(path, length_unit="um")
+
+
+def ridge(mesh: gfem.Mesh) -> gfem.Model:
+    """The ridge cell between Floquet ports TE and TM on both faces."""
+    ports = [
+        gfem.FloquetPort(f"{side} {pol}", face, polarization=pol, offset=off * UM)
+        for side, face, off in (
+            ("sub", "z_min", RIDGE_SUB),
+            ("air", "z_max", RIDGE_AIR),
+        )
+        for pol in ("TE", "TM")
+    ]
+    return gfem.Model(
+        mesh,
+        materials={
+            "substrate": gfem.Material(eps_r=RIDGE_EPS_SUB),
+            "atom": gfem.Material(eps_r=RIDGE_EPS),
+            "air": gfem.Material(),
+        },
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+        ],
+        ports=ports,
+    )
+
+
+def ridge_width_map(morph) -> np.ndarray:
+    r"""Per morph parameter, the normal displacement of a unit widening of the ridge.
+
+    The widening moves each sidewall plane outward by half of it, so a node
+    on a sidewall has :math:`t_i = u(x_i) \cdot n_i` in um.
+    """
+    x = np.asarray(morph.points) * 1e6
+    n = np.asarray(morph.normals)
+    half = np.max(np.abs(x[:, 0] - RIDGE_PITCH / 2))
+    on_wall = np.abs(np.abs(x[:, 0] - RIDGE_PITCH / 2) - half) < 1e-6
+    u = np.zeros_like(x)
+    u[:, 0] = 0.5 * np.sign(np.round(x[:, 0] - RIDGE_PITCH / 2, 9)) * on_wall
+    return np.einsum("ij,ij->i", u, n)

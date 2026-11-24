@@ -967,7 +967,7 @@ class DrivenRule:
             )
         check_floquet(
             "Driven",
-            [p.name for p in _floquet.floquet_ports(model.ports)],
+            [p.name for p in _floquet.floquet_ports_in(model.ports)],
             device=options.device,
             linear_solver=options.linear_solver,
             sweep=problem.sweep,
@@ -2234,7 +2234,7 @@ class DrivenRule:
     ) -> dict[str, DiffractionOrderResult]:
         """Each Floquet port's `DiffractionOrderResult` at the grid indices ``rows``."""
         grid = [self.problem.frequency[i] for i in rows]
-        frequency = jnp.asarray(grid)
+        frequency = np.asarray(grid)
         rows = [self.order_frequency.index(f) for f in grid]  # the table's rows
         out = {}
         for surface, table in self.orders.items():
@@ -2248,11 +2248,11 @@ class DrivenRule:
                     polarization=port.polarization,
                     surface=surface,
                     index=table.face.index,
-                    wave_vector=jnp.asarray(r.wave_vector[rows, o]),
-                    gamma=jnp.asarray(r.gamma[rows, o]),
-                    propagating=jnp.asarray(r.propagating[rows, o]),
-                    theta=jnp.asarray(r.theta[rows, o]),
-                    phi=jnp.asarray(r.phi[rows, o]),
+                    wave_vector=np.asarray(r.wave_vector[rows, o]),
+                    gamma=np.asarray(r.gamma[rows, o]),
+                    propagating=np.asarray(r.propagating[rows, o]),
+                    theta=np.asarray(r.theta[rows, o]),
+                    phi=np.asarray(r.phi[rows, o]),
                 )
         return out
 
@@ -2784,7 +2784,7 @@ def _pmg_inputs(
         options.order not in PMG_BYTES_PER_UNKNOWN
         or problem.wave_vector is not None
         or model._periodic  # noqa: SLF001
-        or _floquet.floquet_ports(model.ports)
+        or _floquet.floquet_ports_in(model.ports)
         or options.gauge == "tree_cotree"
     ):
         return None
@@ -2867,7 +2867,7 @@ def _refuse_pmg(model: Model) -> None:
     refused earlier, with the other solvers that factor symmetric operators
     only (`check_bloch`).
     """
-    floquet = _floquet.floquet_ports(model.ports)
+    floquet = _floquet.floquet_ports_in(model.ports)
     periodic = model._periodic  # noqa: SLF001
     if floquet or periodic:
         label = f"FloquetPort {floquet[0].name!r}" if floquet else periodic[0].label
@@ -2923,7 +2923,7 @@ def _resolve_gauge(
         distributed=comm is not None,
         periodic=any(isinstance(b, Periodic) for b in model.boundaries),
         bloch=problem.wave_vector is not None,
-        floquet=bool(_floquet.floquet_ports(model.ports)),
+        floquet=bool(_floquet.floquet_ports_in(model.ports)),
     )
     report.gauge_choice(problem="driven", on=choice.on, reason=choice.reason)
     return choice
