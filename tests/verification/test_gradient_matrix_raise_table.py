@@ -924,10 +924,22 @@ EXPECTED |= {
 # and is an exact zero for every other material property and the sheet
 # fill; the node coordinates raise (the forms have no shape terms), for
 # every output, since the solve itself is traced.
+#: The thermal boundary values of the thermal and DC cases (a fixed
+#: temperature, a convection's coefficient and ambient). Steady thermal reads
+#: them (the temperature reads all three, the rise only the coefficient); DC
+#: conduction does not read them (exact zeros); transient thermal still
+#: refuses them by name.
+THERMAL_VALUE_KINDS = [
+    ("boundary", 1, "temperature"),
+    ("boundary", 2, "coefficient"),
+    ("boundary", 2, "ambient"),
+]
+_T_FIXED, _H, _T_AMBIENT = THERMAL_VALUE_KINDS
 THERMAL_KINDS = [
     ("nodes",),
     *(("material", "lower", p) for p in ALL_PROPERTIES),
     ("boundary", 0, "fill", "fill"),
+    *THERMAL_VALUE_KINDS,
 ]
 _K = ("material", "lower", "thermal_conductivity")
 _RHO_CP = (
@@ -939,9 +951,9 @@ SCALES = ("problem", "._scales")
 #: Per problem: each result leaf's inputs read (GRADIENT), the rest ZERO.
 THERMAL_READS = {
     "steady_thermal": {
-        "temperature.coefficients": {_K, AMOUNT},
+        "temperature.coefficients": {_K, AMOUNT, _T_FIXED, _H, _T_AMBIENT},
         "temperature.mesh.nodes": set(),
-        "rise.coefficients": {_K, AMOUNT},
+        "rise.coefficients": {_K, AMOUNT, _H},
         "rise.mesh.nodes": set(),
         "heat.coefficients": {AMOUNT},
         "heat.mesh.nodes": set(),
@@ -969,7 +981,12 @@ _PROBLEM_KINDS = {
 }
 EXPECTED |= {
     (name, out, kind): (
-        RAISES if kind == ("nodes",) else GRADIENT if kind in reads else ZERO
+        RAISES
+        if kind == ("nodes",)
+        or (name == "transient_thermal" and kind in THERMAL_VALUE_KINDS)
+        else GRADIENT
+        if kind in reads
+        else ZERO
     )
     for name, leaves in THERMAL_READS.items()
     for out, reads in leaves.items()
@@ -1081,6 +1098,7 @@ HEAT_KINDS = [
     *(("material", "lower", p) for p in ALL_PROPERTIES),
     *(("boundary", 2, v) for v in ("resistance", "inductance", "capacitance")),
     ("boundary", 2, "fill", "fill"),
+    ("boundary", 3, "temperature"),
 ]
 #: The drive's leaves: the incident powers and p2's phase.
 DRIVE_KINDS = [
@@ -1088,9 +1106,12 @@ DRIVE_KINDS = [
     ("drive", "power", "p2"),
     ("drive", "phase", "p2"),
 ]
+#: The heat sink's fixed temperature: only the temperature reads it (the
+#: electromagnetic solve and the rise do not).
+_SINK = HEAT_KINDS[-1]
 _EM_READS = {
     *(("material", "lower", p) for p in EM_PROPERTIES),
-    *HEAT_KINDS[-4:],
+    *HEAT_KINDS[-5:-1],
 }
 _HEATING_READS = _EM_READS | set(DRIVE_KINDS)
 #: ``dissipated_power_law``: the upper half a permittivity law (`TABLE_LAW`).
@@ -1105,7 +1126,7 @@ HEAT_READS = {
     "dissipated_power_law": dict.fromkeys(("lower", "upper", "sheet"), _LAW_READS),
     "dissipated_power_blend": dict.fromkeys(("lower", "upper", "sheet"), _BLEND_READS),
     "electromagnetic_heating": {
-        "temperature.coefficients": _HEATING_READS | {_K},
+        "temperature.coefficients": _HEATING_READS | {_K, _SINK},
         "temperature.mesh.nodes": set(),
         "rise.coefficients": _HEATING_READS | {_K},
         "rise.mesh.nodes": set(),
@@ -3441,13 +3462,6 @@ def _out_route_phase_by_the_window_nodes(request):
     jax.make_jaxpr(jax.grad(objective))(jnp.asarray(mesh.nodes))
 
 
-def _out_traced_boundary(build):
-    def call(_request):
-        jax.make_jaxpr(jax.grad(lambda x: build(x).value))(300.0)
-
-    return call
-
-
 def _transient(**overrides):
     kwargs = {"duration": 1e-6, "steps": 4} | overrides
     return gfem.TransientThermal(**kwargs)
@@ -3949,29 +3963,6 @@ OUT_OF_SCOPE = [
         _out_periodic_eigenmode_by_a_law_parameter,
         gfem.NonDifferentiableError,
         r"eps_r\.eps_inf.*periodic eigenmode",
-    ),
-    *(
-        (
-            f"thermal boundary {what}",
-            _out_traced_boundary(build),
-            gfem.NonDifferentiableError,
-            rf"{what}\b.*fixed value",
-        )
-        for what, build in (
-            (
-                "FixedTemperature.temperature",
-                lambda x: gfem.FixedTemperature("bottom", temperature=x),
-            ),
-            (
-                "Convection.coefficient",
-                lambda x: gfem.Convection("top", coefficient=x, ambient=290.0),
-            ),
-            (
-                "Convection.ambient",
-                lambda x: gfem.Convection("top", coefficient=10.0, ambient=x),
-            ),
-            ("HeatFlux.flux", lambda x: gfem.HeatFlux("top", flux=x)),
-        )
     ),
     (
         "TransientThermal duration",
