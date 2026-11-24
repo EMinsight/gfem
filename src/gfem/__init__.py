@@ -22,6 +22,7 @@ from gfem._materials import (  # noqa: E402
     PermittivityLaw,
 )
 from gfem.broadband import RationalModel, TimeResponse  # noqa: E402
+from gfem.circuit import SaxComponent  # noqa: E402
 from gfem.electro_optic import ElectroOpticShift, electro_optic_shift  # noqa: E402
 from gfem.errors import (  # noqa: E402
     AntiBoundRootWarning,
@@ -246,6 +247,7 @@ __all__ = [
     "Region",
     "RegionNotFoundError",
     "RoutePhase",
+    "SaxComponent",
     "SheetField",
     "SkippedPortModeWarning",
     "SolveCacheWarning",
