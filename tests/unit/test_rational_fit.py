@@ -657,3 +657,17 @@ def test_a_hand_built_model_reports_whether_it_is_passive():
     short = _model(residues=np.zeros((3, 2, 2)), d=-np.eye(2))
     assert short.passive
     assert _model(poles=[], residues=np.zeros((0, 2, 2)), d=-np.eye(2)).passive
+
+
+def test_the_fit_docstring_states_the_numbers_the_fit_uses():
+    from gfem._broadband import _passivity, _vector_fit
+
+    doc = " ".join(gfem.NetworkParameters.fit_rational.__doc__.split())
+    margin = round(math.log10(_passivity.MARGIN))
+    assert 10.0**margin == _passivity.MARGIN
+    assert f"steps of {_vector_fit._POLE_STEP} poles" in doc
+    assert f"``tolerance``/{round(1 / _vector_fit._PRUNE)}" in doc
+    assert f":math:`1 - 10^{{{margin}}}`" in doc
+    assert f"{_passivity._ITERATIONS} iterations" in doc
+    assert f"min({_vector_fit._MAX_POLES}, n_freq - 1)" in doc
+    assert f"fewer than {_vector_fit._MIN_FREQUENCIES} distinct" in doc

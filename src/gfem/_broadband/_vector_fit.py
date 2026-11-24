@@ -55,6 +55,8 @@ __all__ = ["PoleResidueFit", "fit_rational", "vector_fit"]
 _MIN_FREQUENCIES = 6
 #: Default cap on the pole count (also capped below the frequency count).
 _MAX_POLES = 100
+#: Poles added per order: two conjugate pairs. Also the first order tried.
+_POLE_STEP = 4
 _NOT_DIFFERENTIABLE = (
     "NetworkParameters.fit_rational relocates poles iteratively and picks its "
     "order in steps, so gfem does not differentiate it: S, z_ref, z0, "
@@ -224,11 +226,11 @@ def _max_poles(max_poles: Any, n_freq: int) -> int:
     if (
         isinstance(max_poles, bool)
         or not isinstance(max_poles, (int, np.integer))
-        or not 4 <= max_poles <= n_freq - 1
+        or not _POLE_STEP <= max_poles <= n_freq - 1
     ):
         raise ValueError(
-            "fit_rational max_poles must be an integer from 4 to the number of "
-            f"frequencies minus one ({n_freq - 1}), got {max_poles!r}."
+            f"fit_rational max_poles must be an integer from {_POLE_STEP} to the "
+            f"number of frequencies minus one ({n_freq - 1}), got {max_poles!r}."
         )
     return int(max_poles)
 
@@ -388,7 +390,7 @@ def vector_fit(
     x = 1j * omega / scale
     h = s.reshape(n_freq, n_ports * n_ports).T
     tried = []
-    for n_poles in range(4, max_poles + 1, 4):
+    for n_poles in range(_POLE_STEP, max_poles + 1, _POLE_STEP):
         fit = _fit_order(x, h, weights, _initial_poles(omega / scale, n_poles // 2))
         if fit.error <= tolerance:
             pruned = _prune(x, h, weights, fit, tolerance)
