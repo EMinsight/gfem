@@ -287,6 +287,10 @@ def _frequency(frequency: Any, owner: str) -> float:
             f"{owner} takes one frequency, got {np.size(frequency)} values: "
             "call it once per frequency in a loop."
         )
+    if isinstance(frequency, (bool, np.bool_)):
+        raise ValueError(  # noqa: TRY004 (every unusable frequency is one class)
+            f"{owner}: frequency must be one real number in Hz, got {frequency!r}."
+        )
     try:
         f = float(frequency)
     except (TypeError, ValueError):

@@ -214,7 +214,18 @@ def test_frequency_gives_the_law_s_real_value():
 
 
 @pytest.mark.parametrize(
-    "frequency", [np.array([F_1550, 2 * F_1550]), [F_1550], 0.0, -F_1550, np.nan, 1j]
+    "frequency",
+    [
+        np.array([F_1550, 2 * F_1550]),
+        [F_1550],
+        0.0,
+        -F_1550,
+        np.nan,
+        1j,
+        # a flag, not 1 Hz
+        True,
+        np.True_,
+    ],
 )
 def test_frequency_refusals(frequency):
     with pytest.raises(ValueError, match="frequency"):
