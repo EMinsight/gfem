@@ -43,6 +43,7 @@ from gfem._engine.mesh import EngineMesh, inverse_order
 from gfem.mesh import Mesh
 
 __all__ = [
+    "GradientProbe",
     "Layout",
     "Located",
     "Probe",
@@ -517,6 +518,35 @@ class Probe:
                             minlength=self.ndof,
                         )
         return out
+
+
+class GradientProbe(Probe):
+    r"""The gradient :math:`\nabla u` of a scalar H1 layout at fixed points.
+
+    `values` gives ``(m, n_points, dim)`` gradients per metre and `transpose`
+    its transpose; the points are those of `Probe`.
+    """
+
+    def __init__(
+        self, mesh: Mesh, layout: Layout, located: Located, comm: Any = None
+    ) -> None:
+        """Build the engine space and the points; derivatives are per mesh unit."""
+        super().__init__(mesh, layout, located, comm)
+        # d/dx of the engine's scaled coordinates
+        self.factor = 1.0 / self._built.scale
+
+    def _evaluate(
+        self, fes: ngs.FESpace, values: np.ndarray, *, curl: bool = False
+    ) -> np.ndarray:
+        """Gradients at this rank's points, ``(its points, dim)``."""
+        if curl:
+            raise ValueError("A scalar gradient probe reads no curl.")
+        if self._mips is None:
+            return np.zeros((0, 2))
+        gf = ngs.GridFunction(fes)
+        gf.vec.FV().NumPy()[:] = values
+        out = np.asarray(ngs.grad(gf)(self._mips))
+        return out.reshape(self._own.size, -1)
 
 
 _PROBES: collections.OrderedDict[tuple, tuple] = collections.OrderedDict()

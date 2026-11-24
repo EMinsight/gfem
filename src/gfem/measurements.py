@@ -25,6 +25,8 @@ result reloaded with `gfem.load_result`.
   each volume region, with the model's materials.
 - `region_mean`: a field's mean over named volume regions, exact for the
   solved field (an electric field's, or a potential's).
+- `strain`: the engineering strain of a piezoelectric solve's displacement
+  at points, exact for the solved field.
 - `purcell_factor`: a point dipole's emitted power over its power in the
   unbounded material at its position.
 - `far_field`: the far-field amplitude of a port, dipole or incident-field
@@ -100,6 +102,7 @@ __all__ = [
     "power_flow",
     "purcell_factor",
     "region_mean",
+    "strain",
 ]
 
 # --- interface participation -------------------------------------------------------
@@ -1626,6 +1629,64 @@ def region_mean(field: Field, region: str | Sequence[str]) -> jax.Array:
     return measure(
         kernel, {"coefficients": field.coefficients, "nodes": field.mesh.nodes}
     )["mean"]
+
+
+def strain(displacement: Any, points: Any) -> jax.Array:
+    r"""The engineering strain of a displacement at points.
+
+    ``displacement`` is the kept displacement of a `gfem.Piezoelectric`
+    solve (``res.displacement(f, terminal)``), per volt on the terminal. A 2D
+    section has no variation along :math:`z`, so with :math:`u = (u_x, u_y,
+    u_z)` the strain in Voigt order (xx, yy, zz, yz, xz, xy), the shear
+    entries engineering ones (twice the tensor components), is
+
+    .. math::
+        S = \left(\partial_x u_x,\ \partial_y u_y,\ 0,\ \partial_y u_z,\
+        \partial_x u_z,\ \partial_y u_x + \partial_x u_y\right).
+
+    It is read in the lab frame, in the mechanical domain. The gradient of
+    each component is exact for the solved field, and linear in its
+    coefficients: under `jax.grad` it flows back into the solve that made the
+    displacement, and it works under `jax.jit` and `jax.vmap`. The points and
+    the mesh node coordinates are fixed.
+
+    Args:
+        displacement: The displacement map ``res.displacement(f)``, with the
+            keys ``"x"``, ``"y"`` and ``"z"``.
+        points: One point ``(2,)`` or ``(n, 2)`` points, in metres, in the
+            :math:`(x, y)` plane.
+
+    Returns:
+        ``(n, 6)`` complex strain per volt, ``(6,)`` for one point.
+
+    Raises:
+        TypeError: ``displacement`` is not a displacement map; pass
+            ``res.displacement(f)``.
+        ValueError: A point is outside the mechanical domain.
+    """
+    from gfem._field import FieldMap
+
+    keys = ("x", "y", "z")
+    if not isinstance(displacement, FieldMap) or tuple(displacement) != keys:
+        raise TypeError(
+            "strain reads the displacement of a piezoelectric solve: pass "
+            f"res.displacement(f), got {type(displacement).__name__}."
+        )
+    single = np.ndim(points) == 1
+    grads = {k: _probe.gradient_at(displacement[k], points) for k in keys}
+    zero = jnp.zeros_like(grads["x"][:, 0])
+    out = jnp.stack(
+        [
+            grads["x"][:, 0],
+            grads["y"][:, 1],
+            zero,
+            grads["z"][:, 1],
+            grads["z"][:, 0],
+            grads["x"][:, 1] + grads["y"][:, 0],
+        ],
+        axis=-1,
+    )
+    return out[0] if single else out
 
 
 def _region_names(region: Any) -> tuple[str, ...]:
