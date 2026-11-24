@@ -54,7 +54,7 @@ def test_push_pull_needs_half_an_arm(ran):
     length_mm, v_pi = dp.numbers(lines[1])
     # lambda / (2 |s_a - s_b|), with s_b = ratio * s_a
     assert push_pull == pytest.approx(arm / (1 - ratio), rel=1e-3)
-    # the tutorial's finer section gives 1.61 V cm
+    # these constants on the tutorial's finer section give 1.61 V cm
     assert push_pull == pytest.approx(1.61, rel=0.05)
     assert v_pi == pytest.approx(push_pull * 1e-2 / (length_mm * 1e-3), rel=2e-2)
 

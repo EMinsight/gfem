@@ -32,10 +32,12 @@ from __future__ import annotations
 import cmath
 import dataclasses
 import math
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
+from typing import Any
 
 import numpy as np
 
+from gfem import _mpi
 from gfem._boundaries import Absorbing
 from gfem._checks import is_traced
 from gfem._engine.coefficients import element_values, lossy_eps
@@ -48,9 +50,11 @@ from gfem._materials import (
     Material,
     MaterialField,
     PermittivityLaw,
+    inside_fitted_range,
     refractive_index,
 )
-from gfem._text import hertz
+from gfem._text import hertz, hertz_band
+from gfem.errors import FittedRangeWarning
 from gfem.model import Model
 
 __all__ = [
@@ -80,6 +84,7 @@ __all__ = [
     "resonance_seeds",
     "static_eps",
     "susceptibility",
+    "warn_fitted_range",
 ]
 
 _TWO_PI = 2 * math.pi
@@ -655,13 +660,23 @@ def resonance_seeds(model: Model, frequencies: Sequence[float]) -> list[int]:
 
 
 def check_frequencies(
-    model: Model, frequencies: Iterable[float], *, absorbing: bool = True
+    model: Model,
+    frequencies: Iterable[float],
+    *,
+    absorbing: bool = True,
+    reader: str | None = None,
+    comm: Any = None,
 ) -> None:
     """Raise for an output frequency a law region cannot be solved at.
 
     With ``absorbing``, a law region behind a face of an `Absorbing` surface
     must hold a propagating medium (Re eps > 0) at every frequency: its face
     pieces read sqrt(Re eps(omega)), at either order.
+
+    With ``reader`` (the solve in the message, ``"driven solve"``), a law
+    read outside its fitted range then warns once (`warn_fitted_range`,
+    under ``comm``): the rule's construction passes it, the forward, which
+    runs this again on every design, does not.
 
     Static: it reads the laws and the frequencies only, so every rank of a
     distributed solve raises the same error before any collective. A law
@@ -678,6 +693,19 @@ def check_frequencies(
     _check_blend_poles(model, frequencies)
     # a traced law is checked on the host, on its concrete values
     regions = [lr for lr in law_regions(model) if not is_traced(lr.law)]
+    _check_law_frequencies(model, frequencies, regions, absorbing=absorbing)
+    if reader is not None:
+        warn_fitted_range(model, frequencies, reader, comm=comm)
+
+
+def _check_law_frequencies(
+    model: Model,
+    frequencies: list[float],
+    regions: list[LawRegion],
+    *,
+    absorbing: bool,
+) -> None:
+    """`check_frequencies` on the concrete law regions ``regions``."""
     if not regions:
         return
     behind = absorbing_surfaces(model, regions) if absorbing else {}
@@ -711,6 +739,117 @@ def check_frequencies(
                     "metal with a dielectric or air layer and put the boundary "
                     "there."
                 )
+
+
+def _fitted_laws(
+    model: Model, regions: Collection[str] | None
+) -> list[tuple[str, str, PermittivityLaw, tuple[float, float]]]:
+    """``(key, label, law, range)`` of each law of ``model`` with a fitted range.
+
+    The law regions in ``model.materials`` order, a blend's law ends in
+    place of its region; ``regions`` keeps those regions only. A region with
+    no element in the solve domain (excluded from electromagnetic solves,
+    kept for another physics) is never read, as in `law_regions`.
+    """
+    mesh, active = model.mesh, model._domain.active  # noqa: SLF001
+    found: list[tuple[str, str, object]] = []
+    for region, material in model.materials.items():
+        if regions is not None and region not in regions:
+            continue
+        if not active[mesh.elements(region)].any():
+            continue
+        if isinstance(material, Material):
+            name = f" ({material.name})" if material.name else ""
+            found.append((region, f"region {region!r}{name}", material.eps_r))
+        elif isinstance(material, MaterialField) and material.blend_ends is not None:
+            ends = material.blend_ends
+            for which, end in (("void", ends.void), ("solid", ends.solid)):
+                label = f"the {which} end of the blend in region {region!r}"
+                found.append((f"{region}:{which}", label, end))
+    return [
+        (key, label, law, law.frequency_range)
+        for key, label, law in found
+        if isinstance(law, PermittivityLaw) and law.frequency_range is not None
+    ]
+
+
+def warn_fitted_range(
+    model: Model,
+    frequencies: Iterable[float],
+    what: str,
+    *,
+    comm: Any = None,
+    noun: str = "frequencies",
+    static: bool = False,
+    regions: Collection[str] | None = None,
+    skip: Collection[str] = (),
+) -> set[str]:
+    """Warn once if a law is read outside its fitted range.
+
+    Every law of a law region, and every law end of a blend, whose
+    ``frequency_range`` does not hold one of ``frequencies`` (Hz) gives one
+    line of a single `gfem.FittedRangeWarning`; inside is decided by
+    `gfem._materials.inside_fitted_range`, as for a library constant. The
+    law stays passive outside its range, so the solve runs on. Static: it
+    reads the ranges and the frequencies only, so it runs on a traced model
+    too, and every rank of a distributed solve sees the same warning, which
+    rank 0 shows (`gfem._mpi.warn`).
+
+    Args:
+        model: The model.
+        frequencies: The frequencies the solve reads the laws at, Hz.
+        what: The reader in the message: ``"driven solve"``,
+            ``"eigenmode target"``...
+        comm: The solve's communicator.
+        noun: What ``frequencies`` count in the message (``"modes"``).
+        static: The solve reads each law's static permittivity (0 Hz): the
+            message gives that value and the electrostatic remedy.
+        regions: Check these regions only (a port's cross-section).
+        skip: Keys already warned for in this solve (see Returns).
+
+    Returns:
+        The keys of the laws warned for (a region, or ``region:end`` for a
+        blend end), so a later read in the same solve does not repeat them.
+    """
+    freqs = [float(f) for f in frequencies]
+    lines = []
+    keys = set()
+    for key, label, law, (lo, hi) in _fitted_laws(model, regions):
+        if key in skip:
+            continue
+        outside = [f for f in freqs if not inside_fitted_range((lo, hi), f)]
+        if not outside:
+            continue
+        keys.add(key)
+        if static:
+            where = "0 Hz"
+            if not is_traced(law):
+                where += f", static permittivity {complex(law(0.0)).real:.4g}"
+            remedy = (
+                "Give the region a constant gfem.Material(eps_r=<its static "
+                "permittivity>) in the electrostatic model"
+            )
+        else:
+            if len(freqs) == 1:
+                where = hertz(outside[0], 4)
+            else:
+                span = hertz_band(min(outside), max(outside), 4)
+                where = f"{len(outside)} of {len(freqs)} {noun}, {span}"
+            if min(outside) < lo and any(isinstance(t, Drude) for t in law.terms):
+                remedy = (
+                    "For a metal at RF use gfem.Conductor with its bulk conductivity"
+                )
+            else:
+                remedy = "Narrow the frequencies or fit data that cover them"
+        lines.append(
+            f"{label}: its permittivity law was fitted over {hertz_band(lo, hi, 4)}, "
+            f"and this {what} reads it at {where}. The law stays passive there, "
+            f"but its accuracy is unknown. {remedy}, or clear the range with "
+            "dataclasses.replace(law, frequency_range=None) once checked."
+        )
+    if lines:
+        _mpi.warn(comm, "\n".join(lines), FittedRangeWarning, stacklevel=2)
+    return keys
 
 
 def _check_blend_poles(model: Model, frequencies: Iterable[float]) -> None:

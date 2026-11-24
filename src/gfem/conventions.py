@@ -194,6 +194,15 @@ conjugate, so their :math:`+i\gamma` reads :math:`-i\gamma` here, with the
 same parameter values. Circuit-board laws (Djordjevic-Sarkar) are usually
 written under :math:`e^{+j\omega t}` already.
 
+A measured table gives the refractive index :math:`n` and the
+extinction coefficient :math:`k \ge 0`, which does not depend on the time
+convention. Under :math:`e^{+i\omega t}` the index is :math:`n - ik`, so
+:math:`\varepsilon = (n - ik)^2` and
+:math:`\mathrm{Im}\,\varepsilon = -2nk`. `gfem.fit_permittivity` takes
+:math:`n` and :math:`k` as tabulated; a permittivity table written under
+:math:`e^{-i\omega t}` as :math:`\varepsilon_1 + i\varepsilon_2` goes in
+as its complex conjugate.
+
 Eigenmodes
 ----------
 An eigenmode is a complex angular frequency :math:`\omega` and a field

@@ -290,6 +290,10 @@ USER_TERMS = (
     "Beam coupling",
     "Incident contact",
     "Truncation layer",
+    "Library material",
+    "Permittivity fit",
+    "Extinction coefficient",
+    "Fitted range",
 )
 
 

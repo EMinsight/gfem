@@ -463,6 +463,43 @@ def _law_number(owner: str, name: str, value: Any, bound: str, unit: str) -> Any
     return x
 
 
+def _fitted_range(value: Any) -> tuple[float, float] | None:
+    r"""A checked fitted range: ``None``, or two floats in Hz.
+
+    The two are :math:`(f_\mathrm{low}, f_\mathrm{high})` with
+    :math:`0 < f_\mathrm{low} < f_\mathrm{high}`.
+
+    The range is static pytree data, so a traced value or an array (whose
+    entries could be traced, and which does not hash) is refused.
+    """
+    if value is None:
+        return None
+    message = f"frequency_range takes two numbers in Hz, got {value!r}."
+    if is_traced(value) or isinstance(value, (np.ndarray, jax.Array)):
+        raise TypeError(message)
+    try:
+        pair = tuple(value)
+    except TypeError:
+        raise TypeError(message) from None
+    if len(pair) != 2:
+        raise TypeError(message)
+    numbers = []
+    for x in pair:
+        if is_traced(x) or isinstance(x, bool) or np.ndim(x) != 0:
+            raise TypeError(message)
+        kind = np.asarray(x).dtype.kind
+        if kind not in "iuf":
+            raise TypeError(message)
+        numbers.append(float(x))
+    lo, hi = numbers
+    if not (np.isfinite(lo) and np.isfinite(hi) and 0 < lo < hi):
+        raise ValueError(
+            f"PermittivityLaw: frequency_range=({lo!r}, {hi!r}) must be two "
+            "finite frequencies in Hz with 0 < low < high."
+        )
+    return lo, hi
+
+
 class _DispersionTerm:
     """A dispersion term: a susceptibility added to a law's eps_inf.
 
@@ -547,7 +584,7 @@ class Drude(_DispersionTerm):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Lorentz(_DispersionTerm):
-    r"""A bound-oscillator (Lorentz) term of a `PermittivityLaw`.
+    r"""A Lorentz term of a `PermittivityLaw`: a damped bound-charge resonance.
 
     Under :math:`e^{+i\omega t}` it adds
     :math:`\Delta\varepsilon\, \omega_0^2 /
@@ -710,15 +747,30 @@ class PermittivityLaw:
         eps_inf: The high-frequency permittivity, > 0.
         terms: The dispersion terms (`Drude`, `Lorentz`, `Debye`,
             `DjordjevicSarkar`), at least one, stored as a tuple.
+        frequency_range: The law's fitted range ``(low, high)`` in Hz: the
+            frequencies over which its parameters were matched to data or
+            to a source's formula, or ``None`` (the default) for a law
+            with no such range. Outside it the law stays passive but its
+            accuracy is unknown, so a solve that reads it there warns
+            `gfem.FittedRangeWarning` and runs on; ``law(f)`` itself stays
+            silent. `dataclasses.replace` keeps the range: once a law has
+            been edited, or checked outside its range, clear it with
+            ``dataclasses.replace(law, frequency_range=None)``. It is
+            static data, not a JAX leaf.
 
     Raises:
         ValueError: ``eps_inf`` is not a finite real number > 0, or
-            ``terms`` is empty (a constant permittivity is ``eps_r=<number>``).
-        TypeError: An entry of ``terms`` is not a dispersion term.
+            ``terms`` is empty (a constant permittivity is ``eps_r=<number>``),
+            or ``frequency_range`` is not finite with
+            :math:`0 < f_\mathrm{low} < f_\mathrm{high}`.
+        TypeError: An entry of ``terms`` is not a dispersion term, or
+            ``frequency_range`` is not two numbers (an array or a value
+            under a JAX transformation is refused: the range is static).
     """
 
     eps_inf: float = 1.0
     terms: tuple[Drude | Lorentz | Debye | DjordjevicSarkar, ...]
+    frequency_range: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         eps_inf = _law_number("PermittivityLaw", "eps_inf", self.eps_inf, ">", "")
@@ -742,6 +794,7 @@ class PermittivityLaw:
                     f"Debye or DjordjevicSarkar, got {term!r}."
                 )
         object.__setattr__(self, "terms", terms)
+        object.__setattr__(self, "frequency_range", _fitted_range(self.frequency_range))
 
     def __call__(self, frequency: Any) -> jax.Array:
         """The complex relative permittivity at ``frequency``.
@@ -822,6 +875,20 @@ class PermittivityLaw:
 for _cls in _TERMS:
     register_fields(_cls, tuple(f.name for f in dataclasses.fields(_cls)))
 register_fields(PermittivityLaw, ("eps_inf", "terms"))
+
+#: How close to an edge of a fitted range, relative, a frequency still counts
+#: as inside: it absorbs the rounding of a frequency computed as c / wavelength.
+#: There is no other margin, because each edge is the source's own.
+FITTED_EDGE = 1e-9
+
+
+def inside_fitted_range(frequency_range: tuple[float, float], frequency: float) -> bool:
+    """Whether ``frequency`` (Hz) lies in a law's fitted range, edges included.
+
+    A frequency within `FITTED_EDGE` of an edge, relative, counts as inside.
+    """
+    lo, hi = frequency_range
+    return lo * (1 - FITTED_EDGE) <= frequency <= hi * (1 + FITTED_EDGE)
 
 
 _ANISOTROPIC_LAW = (

@@ -863,8 +863,11 @@ def _options_args(options: SolverOptions, _: _codec.Context) -> dict[str, Any]:
 def _unset_omitted(cls: Any, **defaults: Any) -> _codec.ToArgs:
     """Write ``cls``'s init fields, leaving out each of ``defaults`` at its default.
 
-    A field added for 2D meshes is then absent from a 3D file, which stays as an
-    older gfem wrote it and reads there; its solve key is unchanged.
+    It serves any optional field added after files were written (the fields
+    of 2D meshes, a material's electro-optic tensor, a permittivity law's
+    fitted range): left at its default, the field is absent from the file,
+    which stays as an older gfem wrote it and reads there, and its solve key
+    is unchanged.
     """
     names = [f.name for f in dataclasses.fields(cls) if f.init]
 
@@ -949,9 +952,14 @@ for _cls in (Material, MaterialField):
         # "density": the mass density as gfem 0.1 wrote it (a read alias)
         names=[f.name for f in dataclasses.fields(_cls) if f.init] + ["density"],
     )
-for _cls in (
-    # a Material's eps_r may hold a law: tags of their own, no Material key
+# a Material's eps_r may hold a law: tags of their own, no Material key; a law
+# without a fitted range is written as an older gfem wrote it, so the file
+# and its solve key are unchanged
+_codec.register(
     PermittivityLaw,
+    to_args=_unset_omitted(PermittivityLaw, frequency_range=None),
+)
+for _cls in (
     Drude,
     Lorentz,
     Debye,

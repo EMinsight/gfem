@@ -385,7 +385,7 @@ class EigenmodeRule:
 
     # --- forward -----------------------------------------------------------------
 
-    def forward(
+    def forward(  # noqa: PLR0915 - one search between its target and mode checks
         self, model: Model, *, keep: bool, request: SolveRequest | None = None
     ) -> tuple[dict[str, object], Entry | None]:
         """Find the modes.
@@ -426,6 +426,10 @@ class EigenmodeRule:
         # before any assembly: a target in a law's unresolved band
         with _mpi.raised_together(ValueError):
             dispersion.check_band(model, self.problem.target, "target")
+        # the modes below repeat no region warned for here
+        warned = dispersion.warn_fitted_range(
+            model, [self.problem.target], "eigenmode target", comm=comm
+        )
         with task_manager(opts.threads, comm):
             stretch = self._stretch(model, warn=True)
             with _timing.phase("discretize") as span:
@@ -465,6 +469,14 @@ class EigenmodeRule:
                         dispersion.check_band(model, f, f"mode {j} at")
                         # the mode energy's weight
                         dispersion.check_energy(model, f, f"mode {j} at")
+                dispersion.warn_fitted_range(
+                    model,
+                    [m.k.real * per_hz for m in modes],
+                    "eigenmode",
+                    comm=comm,
+                    noun="modes",
+                    skip=warned,
+                )
                 outputs, x = self._outputs(model, op, divfree, modes, ports)
                 ks = [m.k for m in modes]
                 self._warn_modes(found, built.scale)

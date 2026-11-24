@@ -45,7 +45,7 @@ from gfem._boundaries import PEC, Conductor, sheet_of, surfaces_of
 from gfem._engine import quadrature
 from gfem._engine.cache import Entry, discretization
 from gfem._engine.coefficients import p0, permittivity
-from gfem._engine.dispersion import check_static, law_regions
+from gfem._engine.dispersion import check_static, law_regions, warn_fitted_range
 from gfem._engine.domain import (
     domain_key,
     em_region,
@@ -380,6 +380,8 @@ class ElectrostaticRule:
         )
         # a law reads its static permittivity; a Drude term has none
         check_static(model)
+        # 0 Hz lies below every fitted range
+        warn_fitted_range(model, [0.0], "electrostatic solve", comm=comm, static=True)
         periodic = model._periodic  # noqa: SLF001
         if periodic:
             raise NotImplementedError(

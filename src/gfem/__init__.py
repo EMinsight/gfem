@@ -12,7 +12,7 @@ import jax as _jax
 _jax.config.update("jax_enable_x64", True)
 
 # Submodules are imported after the switch, so no gfem array is ever float32.
-from gfem import conventions, design, log, quantum, shape  # noqa: E402
+from gfem import conventions, design, log, materials, quantum, shape  # noqa: E402
 from gfem._cuda import cuda_available  # noqa: E402
 from gfem._materials import (  # noqa: E402
     Debye,
@@ -29,6 +29,7 @@ from gfem.errors import (  # noqa: E402
     DeviceUnavailableError,
     DistributedUnsupportedError,
     EigenmodeConvergenceError,
+    FittedRangeWarning,
     FloquetOrderCapWarning,
     LayerClearanceWarning,
     LinearSolverConvergenceError,
@@ -41,6 +42,7 @@ from gfem.errors import (  # noqa: E402
     ModeLabelError,
     NonDifferentiableError,
     ObliqueAbsorberWarning,
+    PermittivityFitWarning,
     PortGeometryError,
     PortModeError,
     PortModeProjectionWarning,
@@ -93,9 +95,11 @@ from gfem.model import (  # noqa: E402
     MaterialField,
     Model,
     Periodic,
+    PermittivityFit,
     SheetField,
     WavePort,
     enclosed_by,
+    fit_permittivity,
 )
 from gfem.options import SolverOptions  # noqa: E402
 from gfem.problems import (  # noqa: E402
@@ -186,6 +190,7 @@ __all__ = [
     "FarField",
     "Field",
     "FieldEstimator",
+    "FittedRangeWarning",
     "FixedTemperature",
     "FloquetOrderCapWarning",
     "FloquetPort",
@@ -217,6 +222,8 @@ __all__ = [
     "NonDifferentiableError",
     "ObliqueAbsorberWarning",
     "Periodic",
+    "PermittivityFit",
+    "PermittivityFitWarning",
     "PermittivityLaw",
     "PlaneWave",
     "PortGeometryError",
@@ -265,12 +272,14 @@ __all__ = [
     "enclosed_by",
     "error_estimate",
     "far_field",
+    "fit_permittivity",
     "heat_flow",
     "heat_flow_per_length",
     "interface_participation",
     "joule_heating",
     "load_result",
     "log",
+    "materials",
     "power_flow",
     "purcell_factor",
     "quantum",

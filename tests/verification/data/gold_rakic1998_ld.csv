@@ -1,0 +1,17 @@
+# Gold, Lorentz-Drude model of A. D. Rakic, A. B. Djurisic, J. M. Elazar,
+# M. L. Majewski, Appl. Opt. 37, 5271 (1998), doi:10.1364/AO.37.005271,
+# tabulated by the refractiveindex.info database (CC0 1.0): M. N. Polyanskiy,
+# Sci. Data 11, 94 (2024), doi:10.1038/s41597-023-02898-2. Ten rows of its
+# Rakic-LD table for Au, as printed. Columns: wavelength (um), n, extinction
+# coefficient k >= 0.
+wavelength_um,n,k
+2.4797e-01,1.0941e+00,1.5478e+00
+3.5395e-01,1.4741e+00,1.6065e+00
+5.0523e-01,7.4535e-01,1.9410e+00
+7.2117e-01,2.4725e-01,3.8898e+00
+1.0294e+00,2.6520e-01,6.1969e+00
+1.4933e+00,5.4960e-01,9.3109e+00
+2.1316e+00,8.7781e-01,1.3460e+01
+3.0426e+00,1.7932e+00,1.9004e+01
+4.3430e+00,2.7404e+00,2.6856e+01
+6.1992e+00,5.0974e+00,3.8118e+01

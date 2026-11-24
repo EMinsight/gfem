@@ -68,6 +68,7 @@ recipes/save-and-export
 recipes/mesh-refinement
 recipes/anisotropic-materials
 recipes/dispersive-materials
+recipes/fit-measured-data
 recipes/periodic-cell
 recipes/floquet-ports
 recipes/perfectly-matched-layer

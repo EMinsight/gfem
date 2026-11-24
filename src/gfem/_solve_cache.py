@@ -656,6 +656,7 @@ REPLAYED = (
     errors.PortModeTrackingWarning,
     errors.ThinLayerWarning,
     errors.LayerClearanceWarning,
+    errors.FittedRangeWarning,
 )
 
 

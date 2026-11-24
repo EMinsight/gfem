@@ -82,15 +82,25 @@ def test_the_closing_cell_asserts_the_physics_checks(cells):
         "v_pi_l_opt",  # below the start
     ):
         assert name in closing, name
-    assert "1.61" in closing
+    assert "1.62" in closing
     assert "atol=1e-4" in closing  # s_b / s_a = -1 to 1e-4
     assert "less(fd_error, 1e-3)" in closing  # measured about 2e-5
 
 
 def test_the_asserted_v_pi_l_is_quoted(cells):
     prose = " ".join(_source(c) for c in cells if c["cell_type"] == "markdown")
-    assert "1.61 V·cm" in prose
+    assert "1.62 V·cm" in prose
     assert "1.8 V·cm" in prose  # the measured value, an observation only
+
+
+def test_the_page_takes_lithium_niobate_from_the_library(cells):
+    code = " ".join(_source(c) for c in _code(cells))
+    assert "materials.lithium_niobate(" in code
+    assert "materials.lithium_niobate_static(" in code
+    text = " ".join(_source(c) for c in cells)
+    # the library's tensor is the clamped set the page's prose relies on
+    assert "unclamped" not in text
+    assert "Turner 1966" in text
 
 
 def test_the_page_offers_its_section_builder(cells):

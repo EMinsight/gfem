@@ -490,6 +490,39 @@ class UnsampledPixelsWarning(UserWarning):
     """
 
 
+class FittedRangeWarning(UserWarning):
+    """A solve reads a permittivity law outside its fitted range.
+
+    A `gfem.PermittivityLaw` with a ``frequency_range`` (a fitted law, or a
+    library material's) was matched to data or to a source's formula over
+    that range only. A driven sweep, an eigenmode target or mode, a port
+    mode solve, or an electrostatic solve (which reads the law at 0 Hz) that
+    reads it outside the range still runs: the law stays passive everywhere,
+    so the problem is well posed, but its accuracy there is unknown. One
+    warning per solve names each region read outside its range, and how
+    far. Narrow the frequencies, fit data that cover them, give an
+    electrostatic model a constant permittivity, or clear the range with
+    ``dataclasses.replace(law, frequency_range=None)`` once the law has been
+    checked there; or filter the warning with Python's `warnings` module.
+    """
+
+
+class PermittivityFitWarning(UserWarning):
+    r"""A permittivity fit stopped above its tolerance.
+
+    Its error in :math:`\varepsilon` or in :math:`k` is above the
+    tolerance, and `gfem.fit_permittivity` still returns its best law: the
+    one with the smallest relative error in :math:`\varepsilon` up to its
+    term cap. The message gives the error and the remedies: more Lorentz
+    terms, ``drude=True`` for a metal, a narrower range, or a looser
+    tolerance when the table's own scatter is that large. A :math:`k` error
+    above the tolerance means the law has loss where the data have little or
+    none, as below an absorption edge: fit only where the material absorbs,
+    or fit the transparent part without ``k``. Filter it with Python's
+    `warnings` module.
+    """
+
+
 class LowFrequencyWarning(UserWarning):
     r"""A driven frequency or an eigenmode is below the mesh's low-frequency floor.
 

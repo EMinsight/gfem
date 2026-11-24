@@ -84,6 +84,49 @@ static = crystal.eps_r(0.0)  # the static permittivity, eps_inf + delta_eps
   `mu_r` or `conductivity`, raises `ValueError`
   ({doc}`anisotropic-materials`).
 
+## Take a law from cited data
+
+A silicon nitride guide in oxide, with gold electrodes, from published
+optical constants. Each {term}`library material` in {py:mod}`gfem.materials`
+is a function that returns a plain {py:obj}`gfem.Material`, built from one
+cited source:
+
+```python
+from scipy.constants import c
+
+from gfem import materials
+
+core = materials.silicon_nitride()
+cladding = materials.silica()
+electrode = materials.gold()
+oxide_1550 = materials.silica(frequency=c / 1.55e-6)  # a constant, at 1.55 µm
+```
+
+- **Sources.** The {py:mod}`gfem.materials` page lists each material's
+  source, specimen, accuracy and range. Each `name` carries a short source
+  tag, `"silica (Malitson 1965)"`, which a saved job keeps. Cite the source
+  paper when you publish.
+- **The fitted range.** Each law holds over its {term}`fitted range`, the
+  law's `frequency_range`. A solve that reads it outside warns
+  `gfem.FittedRangeWarning` and runs on.
+- **No static or RF values.** Silica's law gives $\varepsilon_r(0) = 3.00$
+  and silicon nitride's 265, far from real films, which also vary by
+  process. An electrostatic or RF model takes a constant from your own
+  process: `gfem.Material(eps_r=<your oxide's static permittivity>)`, for
+  example 3.9 for a thermal oxide.
+- **A constant at one frequency.** `frequency=` gives the dielectrics'
+  $\mathrm{Re}\,\varepsilon_r$ there as a constant, for the electro-optic
+  and thermo-optic shifts, which take no law. It holds at that frequency
+  only (silica at 1.55 µm gives 2.085) and carries no fitted range, so later
+  solves read it without a warning.
+- **Lithium niobate.** {py:obj}`gfem.materials.lithium_niobate` builds the
+  crystal at one frequency on the principal axes you give, with its clamped
+  electro-optic tensor, and {py:obj}`gfem.materials.lithium_niobate_static`
+  gives its static permittivity for the electrostatic model
+  ({doc}`electro-optic-phase`).
+- **Your own data.** Fit a measured $n$, $k$ table with
+  {py:obj}`gfem.fit_permittivity` ({doc}`fit-measured-data`).
+
 ## A board over a wide band
 
 A microstrip filter on the FR-4 board, swept from 1 to 20 GHz with the
@@ -121,9 +164,10 @@ value, grad = jax.value_and_grad(passband_loss)(jnp.full(n, 2.0))
 
 - The adaptive sweep needs no setting for a law. Its samples are frozen for
   the gradient, as for any adaptive sweep ({doc}`adaptive-sweep-gradient`).
-- A lossless or weakly damped Lorentz resonance inside the band costs
-  samples: the sweep solves the two grid frequencies on either side of it
-  first. Expect a few more full solves than for a constant material.
+- A lossless or weakly damped Lorentz resonance among the swept
+  frequencies, such as one of a library or fitted metal law, costs samples:
+  the sweep solves the two grid frequencies on either side of it first.
+  Expect a few more full solves than for a constant material.
 - A grid frequency exactly on a lossless resonance raises `ValueError`, since
   the permittivity is infinite there. Move the grid point, or give the term
   a damping.
@@ -272,8 +316,11 @@ How gfem itself is checked: {doc}`../verification`.
 - **Only the permittivity disperses.** A law as `mu_r` raises `ValueError`,
   and a law cannot be anisotropic. Solve a dispersive permeability or a
   dispersive crystal one band at a time with constant values.
-- **No tabulated n and k.** Fit Drude and Lorentz terms to measured data
-  yourself, then pass the terms.
+- **Measured n and k.** Fit them with {py:obj}`gfem.fit_permittivity`
+  ({doc}`fit-measured-data`).
+- **Outside the fitted range.** A library or fitted law is accurate within
+  its {term}`fitted range` only. A solve outside it warns
+  `gfem.FittedRangeWarning` and runs on, with an accuracy nothing states.
 - **No metal in a port's cross-section.** Plasmonic port modes raise; end the
   guide in a dielectric or use lumped ports.
 - **Eigenmodes near a resonance.** "Nearest the target" stops being well
@@ -295,6 +342,7 @@ How gfem itself is checked: {doc}`../verification`.
 ## Next
 
 {doc}`../tutorials/metal-bend`, {py:obj}`gfem.PermittivityLaw`,
+{doc}`fit-measured-data`, {py:mod}`gfem.materials`,
 {py:obj}`gfem.conventions`, {doc}`../capabilities`,
 {doc}`s-parameter-gradient`, {doc}`eigenmode-gradient`,
 {doc}`adaptive-sweep-gradient`, {doc}`frequency-sweep`.

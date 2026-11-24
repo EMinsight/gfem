@@ -13,7 +13,7 @@ The device is the section of the {doc}`modulator tutorial
 each gap of a ground-signal-ground electrode pattern, at $\lambda = 1.55$ µm.
 The tutorial's {download}`tfln_section.py <../tutorials/tfln_section.py>`
 meshes it with netgen; here at twice the tutorial's edge lengths, which is
-quicker and within 1 % of its numbers. The shift is first order in the
+quicker and moves the shift by under 1 %. The shift is first order in the
 static field: one mode solve gives the weights of every element, and the
 shift is their sum weighted by the change of permittivity the field causes,
 with the mode held constant. The section must be lossless.
@@ -70,6 +70,11 @@ oxide_static, oxide = gfem.Material(eps_r=3.9), gfem.Material(eps_r=1.444**2)
   shift.
 - `axes` must be right-handed: the tensor's sign follows the crystal's
   frame, and a left-handed set flips it without an error.
+- **Cited constants.** {py:obj}`gfem.materials.lithium_niobate` and
+  {py:obj}`gfem.materials.lithium_niobate_static` build the two crystal
+  materials from cited sources, with the clamped tensor and static
+  permittivity, as the modulator tutorial does. The coefficients typed here
+  are the unclamped set.
 
 ## The shift per volt
 
@@ -230,7 +235,7 @@ mode 2: n_eff 1.9076, TE fraction 0.994
 
 - **Mirror symmetry.** In a symmetric ground-signal-ground section the two
   arms' shifts are equal and opposite, to the meshes' asymmetry: $3 \times
-  10^{-3}$ above, and $4 \times 10^{-5}$ on the tutorial's finer section.
+  10^{-3}$ above, and $2.5 \times 10^{-5}$ on the tutorial's finer section.
 - **The bulk estimate.** A uniform field $V/g$ across a gap $g$ shifts a
   TE mode's index by about $\tfrac12 n_e^3 r_{33} V / g$. The ratio of the
   shift to it, the {term}`electro-optic overlap factor` $\Gamma$, is between

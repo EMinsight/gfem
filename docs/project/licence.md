@@ -46,3 +46,16 @@ The no-MPI stack contains neither PT-Scotch nor ScaLAPACK. The MPI stack's
 `libptscotchparmetisv3` is Scotch's own ParMETIS-compatible interface, not
 ParMETIS. conda-forge's PETSc depends on ParMETIS, which is why the recipe
 builds from source.
+
+## Material data
+
+{py:mod}`gfem.materials` ships the parameters of published formulas and
+models, each with its citation, and no data tables. Cite the source paper of
+each material you use when you publish; the {py:mod}`gfem.materials` page
+lists them.
+
+The tables in the tests and in the fit recipe (measured gold, aluminium and
+silicon, and tabulations of the metals' published model) are excerpts of the
+refractiveindex.info database, dedicated to the public domain under CC0 1.0
+(M. N. Polyanskiy, Sci. Data 11, 94 (2024), doi:10.1038/s41597-023-02898-2).
+Each file's header cites the paper it comes from.

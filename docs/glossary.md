@@ -586,6 +586,31 @@ Energy permittivity
   for a region with a {term}`permittivity law`: $\mathrm{Re}\,\varepsilon_r$ for a constant
   material, and $\varepsilon_\infty$ for a lossless Drude law.
 
+Library material
+  A {term}`material` gfem ships ready-made in `gfem.materials`, built from
+  the parameters of one cited published source and accurate over its
+  {term}`fitted range`. Lithium niobate is built at one frequency on your
+  principal axes, and its static permittivity is a separate library
+  material.
+
+Permittivity fit
+  A {term}`permittivity law` fitted to a table of one material's measured
+  values, with its largest relative errors in permittivity, refractive index
+  and {term}`extinction coefficient` over the table
+  (`gfem.fit_permittivity`).
+
+Extinction coefficient
+  The imaginary part $k \ge 0$ of a tabulated refractive index $n + ik$. It
+  measures absorption and does not depend on the time convention; under
+  $e^{+i\omega t}$ the permittivity is $\varepsilon = (n - ik)^2$. Not the
+  extinction cross section, which is a power.
+
+Fitted range
+  The frequencies over which a {term}`permittivity law`'s parameters were
+  matched to data or to a source's formula (`PermittivityLaw.frequency_range`).
+  Outside it the law stays passive but its accuracy is unknown, and a solve
+  that reads it there warns (`gfem.FittedRangeWarning`).
+
 Anisotropic material
   A {term}`material` whose permittivity, permeability, loss tangent or
   conductivity depends on the field direction: real symmetric tensors, given

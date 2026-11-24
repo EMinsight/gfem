@@ -182,6 +182,15 @@ reads. A mode's energy weighs a law region with its
 {term}`energy permittivity` instead of $\mathrm{Re}\,\varepsilon$ (see below). How to write a law:
 {doc}`recipes/dispersive-materials`.
 
+A measured table gives the refractive index $n$ and the
+{term}`extinction coefficient` $k \ge 0$, which does not depend on the time
+convention. Under $e^{+i\omega t}$ the index is $n - ik$, so
+$\varepsilon = (n - ik)^2$ and $\mathrm{Im}\,\varepsilon = -2nk$.
+{py:obj}`gfem.fit_permittivity` takes $n$ and $k$ as tabulated; a
+permittivity table written under $e^{-i\omega t}$ as
+$\varepsilon_1 + i\varepsilon_2$ goes in as its complex conjugate
+({doc}`recipes/fit-measured-data`).
+
 ## Eigenmode fields
 
 A mode has no source to set its amplitude, so gfem scales every mode field to

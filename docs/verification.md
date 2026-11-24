@@ -468,11 +468,21 @@ Each check below uses a region whose permittivity follows a
 - **Mesh refinement.** A line with a Drude metal block is one of the field
   estimator's cases (see [Mesh refinement error
   estimates](#verification-mesh-refinement)).
+- **Material data.** Each library law is checked against its source: exactly
+  for silica and lithium niobate, within the refit's stated error for
+  silicon and silicon nitride, and for the metals against an independent
+  evaluation of the source's model and against its published tabulation.
+  Every library law and every fitted law is passive on a dense grid far
+  beyond its {term}`fitted range`. The fit recovers known laws from their
+  own samples, and reaches its target on dense gold and aluminium film
+  tables. A solve outside a law's fitted range warns once, for each problem
+  type that reads a law.
 
 Not checked: port modes of plasmonic guides (refused), absorbed power in a
 dispersive region, agreement with measured metal data, eigenmodes inside a
-resonance's crowded band, and convergence of the tutorial's unresolved skin
-depth.
+resonance's crowded band, convergence of the tutorial's unresolved skin
+depth, library values against measurements other than their source, and the
+fit's repeatability across platforms.
 
 All of these run on every change. The PETSc cells run twice a week, as in
 [PETSc and SLEPc](#verification-petsc).
@@ -487,7 +497,12 @@ Tests: [driven](https://github.com/benvial/gfem/blob/main/tests/unit/test_driven
 [adaptive sweep](https://github.com/benvial/gfem/blob/main/tests/verification/test_dispersive_adaptive.py),
 [metal bend](https://github.com/benvial/gfem/blob/main/tests/verification/test_metal_bend.py),
 [field estimate](https://github.com/benvial/gfem/blob/main/tests/verification/test_field_estimate.py),
-[MPI](https://github.com/benvial/gfem/blob/main/tests/mpi/test_dispersive.py), and the law and blend cells of the
+[MPI](https://github.com/benvial/gfem/blob/main/tests/mpi/test_dispersive.py),
+[library materials](https://github.com/benvial/gfem/blob/main/tests/unit/test_library_materials.py),
+[library sources](https://github.com/benvial/gfem/blob/main/tests/verification/test_library_sources.py),
+[fit](https://github.com/benvial/gfem/blob/main/tests/unit/test_fit_permittivity.py),
+[fit on measured tables](https://github.com/benvial/gfem/blob/main/tests/verification/test_fit_permittivity_data.py),
+[fitted range](https://github.com/benvial/gfem/blob/main/tests/unit/test_fitted_range.py), and the law and blend cells of the
 [gradient matrix](https://github.com/benvial/gfem/blob/main/tests/verification/test_gradient_matrix.py) and the
 [gradients that raise](https://github.com/benvial/gfem/blob/main/tests/verification/test_gradient_matrix_raise_table.py).
 
@@ -674,7 +689,7 @@ remeshed sections. Each check runs on every change to gfem.
   optical model's permittivity and nodes raise.
 
 Three comparisons are observations, not checks, and live on the pages. The
-modulator of Wang et al. (2018): gfem's push-pull $V_\pi L$ is 1.61 V·cm
+modulator of Wang et al. (2018): gfem's push-pull $V_\pi L$ is 1.62 V·cm
 against the measured 1.8 V·cm, at assumed values of the dimensions the paper
 withholds ({doc}`tutorials/modulator`). An optical window and the whole
 section with the electrodes excluded give shifts within a few percent, and

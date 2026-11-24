@@ -59,6 +59,7 @@ from gfem._periodic import (
     check_wave_vector,
     pairing,
 )
+from gfem._permittivity_fit import PermittivityFit, fit_permittivity
 from gfem._pml import (
     PML,
     Layers,
@@ -98,11 +99,13 @@ __all__ = [
     "MaterialField",
     "Model",
     "Periodic",
+    "PermittivityFit",
     "PermittivityLaw",
     "Port",
     "SheetField",
     "WavePort",
     "enclosed_by",
+    "fit_permittivity",
 ]
 
 _BOUNDARY_TYPES = (
