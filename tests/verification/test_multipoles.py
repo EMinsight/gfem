@@ -41,17 +41,23 @@ EPS0, MU0, C0 = const.epsilon_0, const.mu_0, const.c
 #: total). Either alone puts some incidence direction near 2e-2.
 SPHERE_MAXH, LAYER_THICKNESS = 0.06, 0.5
 
-# gates (>= 3x the measured floors recorded in multipole_cases)
-E1_GATE, E2_GATE, LEAK_GATE = 1.5e-2, 5e-3, 3.5e-3
-CARTESIAN_GATE = 2e-2
-SUM_GATE = 4e-3
+# gates: 3-5x the measured floors recorded in multipole_cases (dipole, shift
+# and power gates: the floors named beside each)
+E1_GATE, E2_GATE, LEAK_GATE = 2.5e-3, 1.6e-3, 1.5e-3
+CARTESIAN_GATE = 3e-3
+SUM_GATE = 2e-3
 PARTIAL_GATE = fsc.TOLERANCE
-BEAM_L1_GATE, BEAM_SUM_GATE = 1e-4, 5e-3
-SHIFT_GATE = 1e-8
-PEC_GATES = (2e-2, 1e-2, 7e-3, 4e-3)
-MU_GATES = (2e-2, 6e-3, 3e-3, 4e-3)
-ROUND_TRIP_GATE, HIGHER_GATE, SHIFT_POWER_GATE, RADIATED_GATE = 2e-3, 5e-3, 1e-6, 1e-3
-MEDIUM_GATE = 3e-3
+BEAM_L1_GATE, BEAM_SUM_GATE = 3e-5, 5e-3
+#: Measured 3e-14: the sum is exactly origin-free up to round-off.
+SHIFT_GATE = 1.5e-13
+PEC_GATES = (5e-3, 3e-3, 2.5e-3, 1e-3)
+#: The sum's floor, 1.3e-5, is a signed cancellation: its gate is 5x that.
+MU_GATES = (3.5e-3, 2.5e-3, 2.5e-3, 6e-5)
+#: Measured 1.4e-4, 9.4e-4, 9e-9, 1.4e-4: the moments back, the content above
+#: degree 2, the power's origin dependence and the radiated power.
+ROUND_TRIP_GATE, HIGHER_GATE, SHIFT_POWER_GATE, RADIATED_GATE = 6e-4, 4e-3, 4e-8, 6e-4
+#: Measured 3.1e-4 in the medium.
+MEDIUM_GATE = 1.3e-3
 RM1_GATES = {"e1": 2.2e-2, "e2": 2e-3, "leak": 5.5e-3, "sum": 5e-3, "kerker": 2e-2}
 
 AXIAL = gfem.PlaneWave("z", theta=0, phi=0, polarization="TM")
@@ -338,6 +344,16 @@ def test_rm1_the_kerker_sphere(tmp_path):
     assert abs(p - m / C0) < RM1_GATES["kerker"] * abs(p)
 
 
+def test_v7_the_toroidal_correction_improves_the_dipole_on_the_default_sphere(lossy):
+    mp = lossy.multipoles("z")
+    cm = gfem.current_moments(lossy.result, "z", model=lossy.model)
+    p = np.asarray(mp.electric_dipole)[0]
+    p0 = np.asarray(cm.long_wavelength_dipole)[0]
+    kt = 1j * cm.wavenumber[0] * np.asarray(cm.toroidal_dipole)[0]
+    print("V7RATIO", np.linalg.norm(p0 - kt - p) / np.linalg.norm(p0 - p))  # noqa: T201
+    assert np.linalg.norm(p0 - kt - p) <= np.linalg.norm(p0 - p) / 5
+
+
 #: Degree-1 error of the volume route against the projection (both types, over
 #: the projection's degree-1 norm), above 3x the measured 2.4e-4 and under the
 #: 1e-3 cap.
@@ -393,10 +409,12 @@ def test_v7_the_toroidal_correction_improves_the_long_wavelength_dipole(
 
 #: Reference tier: the anapole sphere D' (index 4, :math:`x = 1.1654`), where the
 #: exact dipole vanishes and the long-wavelength one does not.
-#: Measured at maxh 0.25, sphere 0.05: the exact dipole's share 2.3e-3; the
-#: moments 1.7e-3 and 8e-4 from the quadrature values; the miss 0.070.
+#: Measured at maxh 0.25, sphere 0.05: the exact dipole's fraction of the norm
+#: 2.3e-3; the moments 1.7e-3 and 8e-4 from the quadrature values; the miss
+#: 0.070. The miss window brackets the physical prediction of the long-wavelength
+#: approximation (7 to 9 %), not a discretization floor, so it keeps its width.
 ANAPOLE_GATE = 1e-2
-MOMENT_GATE = 1e-2
+MOMENT_GATE = 6e-3
 
 
 @pytest.mark.reference
@@ -412,7 +430,7 @@ def test_rm2_the_anapole_has_no_exact_dipole_but_long_wavelength_moments(tmp_pat
     alpha = np.asarray(mp.alpha)[0]
     dipole = np.linalg.norm(alpha[:3]) / norm
     assert dipole <= ANAPOLE_GATE
-    # the long-wavelength moments, in units of 6 pi eps0 E0 / k^3
+    # the long-wavelength moments, in units of $6\pi\varepsilon_0 E_0/k^3$
     cm = gfem.current_moments(result, "z", model=model)
     k = cm.wavenumber[0]
     unit = 6 * np.pi * const.epsilon_0 / k**3

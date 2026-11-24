@@ -140,7 +140,7 @@ ANAPOLE_LONG_WAVELENGTH = {"D'": (0.287088, -0.306525), "D": (0.417177, -0.45494
 
 
 def _riccati(n: np.ndarray, z: complex):
-    """:math:`\\psi_n, \\psi_n'` of the Riccati-Bessel function :math:`z j_n(z)`."""
+    r""":math:`\psi_n, \psi_n'` of the Riccati-Bessel function :math:`z j_n(z)`."""
     return z * spherical_jn(n, z), spherical_jn(n, z) + z * spherical_jn(
         n, z, derivative=True
     )

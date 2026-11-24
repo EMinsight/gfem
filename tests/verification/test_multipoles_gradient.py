@@ -2,8 +2,8 @@ r"""Gradients of the multipoles by a material design against finite differences.
 
 The case is the lossy cube of the free-space gradient test (six perfectly
 matched sides, order 2) with the multipole origin at its centre. Each
-gradient matches a fourth-order central difference to :math:`10^{-6}`
-relative (`finite_differences`):
+gradient matches a fourth-order central difference to :math:`2.5\times10^{-9}`
+relative, above the measured worst 5.8e-10 (`finite_differences`):
 
 - the magnetic dipole's scattering cross section under a TM plane wave
   (the default degree is 8 on the grid of 15 polar nodes, pinned here);
@@ -47,6 +47,8 @@ BEAM = gfem.GaussianBeam(
 EPS, LOSS = 3.0, 0.6j
 ORIGIN = (0.5e-6, 0.5e-6, 0.5e-6)
 STEP = 1e-2
+#: The directional derivatives' relative error, measured 6e-11 to 5.8e-10.
+REL = 2.5e-9
 
 
 def _volume(c):
@@ -95,7 +97,7 @@ def _multipoles(model, eps, source):
 def _check(objective, model, seed):
     eps = _start(model)
     directions = unit_directions(np.random.default_rng(seed), eps.shape, 2)
-    assert_gradient_matches(objective, eps, directions, step=STEP)
+    assert_gradient_matches(objective, eps, directions, step=STEP, rel=REL)
 
 
 def test_g1_the_magnetic_dipole_cross_section_by_the_scatterer_permittivity(cube):

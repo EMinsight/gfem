@@ -489,6 +489,9 @@ def test_u7_checks_are_in_order_and_refusals_are_named(run, tmp_path_factory):
         match=r"multipoles in a lossy background \(.*\) is not computed",
     ):
         gfem.multipoles(result, "te", model=model.replace(background=lossy))
+    # a lossy background and a missing intensity: the background comes first
+    with pytest.raises(NotImplementedError, match=r"in a lossy background"):
+        gfem.multipoles(result, "f", model=model.replace(background=lossy))
     stack = gfem.Background([AIR, gfem.Material(eps_r=2.0)], interfaces=[1e-6])
     with pytest.raises(NotImplementedError, match=r"over a layered background"):
         gfem.multipoles(result, "te", model=model.replace(background=stack))
@@ -715,7 +718,8 @@ def test_u11_a_translated_scatterer_has_the_translated_multipoles(
     sigma = lambda m: np.asarray(m.electric_scattering)[0, 0]  # noqa: E731
     assert abs(sigma(other) - sigma(moved)) > 1e-3 * sigma(moved)
     total = lambda m: float(np.asarray(m.scattering)[0])  # noqa: E731
-    assert abs(total(other) - total(moved)) <= 1e-2 * total(moved)
+    # the two degrees differ in the truncation only: measured 9e-10
+    assert abs(total(other) - total(moved)) <= 5e-9 * total(moved)
 
 
 def test_u12_lmax_and_its_bounds(run, reference):
