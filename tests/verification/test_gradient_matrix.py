@@ -91,6 +91,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import periodic_cases as pc
+import piezo_cases as pz
 import pml_cases
 import pytest
 import thermal_cases as tc
@@ -670,8 +671,26 @@ def _source_cells() -> list[Cell]:
     ]
 
 
+def _piezoelectric_cells() -> list[Cell]:
+    """The piezoelectric section (``piezoelectric``), on ``direct``.
+
+    The admittance and the clamped capacitance of the line-electrode
+    transducer of tests/piezo_cases.py, in the principal permittivities of
+    its crystal (``eps_r_axes``) and in the nodes through a pitch map
+    (``nodes``). The other material inputs and the meshed fingers' maps are
+    gated in tests/unit/test_piezoelectric_gradients.py and
+    tests/unit/test_piezoelectric_nodes.py. The direct solver is the only one
+    of a piezoelectric solve.
+    """
+    return [
+        Cell("piezoelectric", "eps_r_axes", "direct"),
+        Cell("piezoelectric", "nodes", "direct"),
+    ]
+
+
 CELLS = [
     *_cells(),
+    *_piezoelectric_cells(),
     *_source_cells(),
     *_driven_periodic_cells(),
     *_driven_floquet_cells(),
@@ -776,6 +795,11 @@ class Designs:
     @functools.cached_property
     def capacitor(self):
         return capacitor(self._dir("capacitor"))
+
+    @functools.cached_property
+    def transducer(self):
+        mesh = pz.mesh(self._dir("transducer") / "idt.msh", "lines")
+        return mesh, pz.model(mesh, "lines")
 
     @functools.cached_property
     def line(self):
@@ -3164,7 +3188,53 @@ def _transient_heat_out(d: Designs, cell: Cell, options, seed: int) -> Case:
     return Case(objective, p, rng, step=step, taylor=10 * step)
 
 
+def _piezoelectric(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """``<W, [Re Y', Im Y', C0']>`` of the transducer, in its permittivity or pitch.
+
+    Per principal value of the crystal (``eps_r_axes``, ``(3,)``; the damping
+    frame keeps its own values), or through the pitch map (``nodes``: the area
+    between the frames stretched by ``1 + p``, the frames translated rigidly).
+    """
+    mesh, model = d.transducer
+    problem = pz.problem()
+    rng = np.random.default_rng(23 + seed)
+    weights = rng.uniform(0.5, 1.5, 3)
+
+    def reading(result):
+        y = result.admittance_per_length[0, 0, 0]
+        c0 = result.clamped_capacitance_per_length[0, 0] * 1e10  # O(1)
+        return weights @ jnp.stack([y.real, y.imag, c0])
+
+    if cell.input == "nodes":
+        left = (-pz.PAIRS * pz.PERIOD / 2 - pz.MARGIN) * 1e-6
+        nodes = jnp.asarray(mesh.imported_nodes)
+
+        def objective(p):
+            x = nodes[:, 0]
+            inside = jnp.clip(x, left, -left)
+            moved = nodes.at[:, 0].set(x - inside + (1.0 + p[0]) * inside)
+            result = gfem.solve(
+                model.replace(mesh=mesh.with_nodes(moved)), problem, options=options
+            )
+            return reading(result)
+
+        return Case(objective, jnp.zeros(1), rng, step=3e-4, taylor=1e-2)
+
+    def objective(eps):
+        film = dataclasses.replace(
+            gfem.MaterialField.uniform("ln", model.materials["ln"]), eps_r=eps
+        )
+        result = gfem.solve(model.with_material("ln", film), problem, options=options)
+        return reading(result)
+
+    return Case(
+        objective, jnp.asarray(pz.EPS_LN), rng, step=STEPS["eps_r"], taylor=1e-1
+    )
+
+
 BUILDERS = {
+    ("piezoelectric", "eps_r_axes"): _piezoelectric,
+    ("piezoelectric", "nodes"): _piezoelectric,
     ("steady_thermal", "thermal_conductivity"): _steady_thermal,
     **{
         ("transient_thermal", name): _transient_thermal

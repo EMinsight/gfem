@@ -2610,7 +2610,7 @@ class PiezoelectricResult:
         frequencies: The frequencies in Hz, in the problem's order (static;
             `frequency` reads them as an array).
         displacement_fields: The kept displacements
-            (``Piezoelectric(keep_fields=...)``), one `FieldMap` per kept
+            (``Piezoelectric(keep_fields=...)``), one ``FieldMap`` per kept
             (frequency, terminal) labelled by `kept`, with the keys ``"x"``,
             ``"y"`` and ``"z"``: scalar `Field` s of quantity ``"ux"``,
             ``"uy"`` or ``"uz"`` in m, per volt on the terminal, on H1 of the

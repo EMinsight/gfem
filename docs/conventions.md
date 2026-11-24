@@ -660,6 +660,89 @@ field is strongest. The {py:obj}`gfem.conventions` module, "Electro-optic
 shift", gives the formulas, and {doc}`recipes/electro-optic-phase` the
 whole calculation.
 
+## Piezoelectric problems
+
+A {py:class}`gfem.Piezoelectric` problem solves linear piezoelectricity on a
+2D section: the $(x, y)$ plane, $\partial_z = 0$, and three displacement
+components $u_x, u_y, u_z$. With $e^{+i\omega t}$, the stress and the electric
+displacement are
+
+$$
+T = c^E S - e^\mathsf{T} E, \qquad D = e S + \varepsilon^S E, \qquad
+E = -\nabla\varphi,
+$$
+
+with $\nabla\cdot T = -\omega^2 \rho\, u$ and $\nabla\cdot D = 0$. A material's
+`stiffness` is $c^E$ in Pa, 6 × 6, at constant field; its `piezoelectric_tensor`
+is $e$ in C/m², 3 × 6, the stress constants and not the strain constants $d$;
+its `eps_r` is $\varepsilon^S / \varepsilon_0$, at constant strain. All three
+are in the frame of the material's `axes`, whose rows are the crystal's $x$, $y$
+and $z$ in the model's coordinates (a right-handed set).
+
+**Voigt order and engineering shear.** The six strain components are ordered
+$xx, yy, zz, yz, xz, xy$, with the shear entries twice the tensor components:
+
+$$
+S = (\partial_x u_x,\ \partial_y u_y,\ 0,\ \partial_y u_z,\ \partial_x u_z,\
+\partial_y u_x + \partial_x u_y).
+$$
+
+{py:func}`gfem.strain` returns this $S$ at points, per volt. The shear wave of
+an x-cut film, polarized along the fingers, is the fifth entry,
+$S_{xz} = \partial_x u_z$.
+
+**Loss is a complex stiffness.** Under $e^{+i\omega t}$ the stiffness is
+$c^E (1 + i(1/Q_m + \eta r^2))$, with $Q_m$ the material's
+`mechanical_quality_factor` and $\eta r^2$ a {py:class}`gfem.DampingFrame`'s:
+$r$ is the normalised depth into the frame and $\eta$ its `loss_factor`.
+The imaginary part is positive, the opposite of a permittivity's
+$\varepsilon_r (1 - i\tan\delta)$: a solid dissipates
+$\tfrac{\omega}{2} S^* \,\mathrm{Im}(c)\, S \ge 0$, a dielectric
+$\tfrac{\omega}{2}\,\mathrm{Im}(-\varepsilon)|E|^2 \ge 0$ ("Sign of loss").
+A frame of thickness $L$ in a medium of wavelength $\lambda$ reflects a plane
+wave at normal incidence by $|R| \approx e^{-2\pi\eta (L/\lambda)/3}$, down to
+a floor of about $3.4\times10^{-3}\,\eta\,(\lambda/L)^2$: four wavelengths at
+the default $\eta = 1.2$ give $|R| < 10^{-3}$.
+
+**Per metre along $z$.** For each terminal $j$ in turn, the potential is 1 V on
+it and 0 V on every other terminal and the ground. The result's
+`admittance_per_length` is $Y'_{ij}(f) = i\omega q'_i$ in S/m, the current into
+terminal $i$ per volt on terminal $j$ per metre ($q'$ the charge per length),
+indexed `[frequency, i, j]`: the response first, the excitation second, as in
+S-parameters. `clamped_capacitance_per_length` is $C_0'$ in F/m, the capacitance
+of the potential alone with $\varepsilon^S$ and no displacement. It is not the
+low-frequency limit of $Y'/i\omega$, the free capacitance, which is larger by
+$1 + K^2$ with $K^2$ the crystal's coupling. A device of aperture $W$ has
+$Y = W Y'$, as every extensive quantity of a 2D model scales
+(the table below).
+
+**Network parameters.** `network_parameters(aperture, series_resistance=,
+reference_impedance=)` puts the resistances $R = \mathrm{diag}(R_s)$ in the
+leads and refers S to the reference impedances (50 Ω by default), as
+pseudo-waves ("S-parameters and power"):
+
+$$
+Y = W Y', \qquad Y_t = Y (I + R Y)^{-1}.
+$$
+
+For one terminal on a real $Z_0$, $S_{11} = (Z_L - Z_0)/(Z_L + Z_0)$ with
+$Z_L = 1/Y + R_s$.
+
+**Per terminal volt, and incident referral.** The kept displacement and
+potential and the strain are per volt across the terminal, after $R_s$. A
+device fed by an incident wave $V_\mathrm{inc}$ on $Z_0$ has across its one
+terminal
+
+$$
+V_\mathrm{IDT} = V_\mathrm{inc}\,\frac{2 Z_\mathrm{IDT}}{Z_L + Z_0}, \qquad
+Z_\mathrm{IDT} = 1/Y, \quad Z_L = Z_\mathrm{IDT} + R_s,
+$$
+
+so a quantity per terminal volt is referred to the incident wave by that
+factor. The {doc}`recipes/piezoelectric-admittance` recipe and the
+{doc}`transducer tutorial <tutorials/transducer>` use these conventions; the
+{py:obj}`gfem.conventions` module, "Piezoelectric problems", states them.
+
 ## Thin metals
 
 A {py:obj}`gfem.Conductor` with a thickness describes one face of a film. On
@@ -681,6 +764,7 @@ quantity is per metre along z. The rows that change:
 | kept driven field | $\mathbf{E}$ in V/m | $E_z$ in V/m (Ez) or $H_z$ in A/m (Hz), for 1 W/m |
 | S-parameters | dimensionless | dimensionless, and the same |
 | `Field.at` | (m, 3) points, (m, 3) values | (m, 2) points, (m,) values |
+| kept piezoelectric fields | | $u_x, u_y, u_z$ in m and $\varphi$ in V, per volt on the terminal |
 
 S is a ratio of powers, so it does not depend on the height of the structure:
 a {term}`slab <Slab model>` of thickness $h$ between plates and the 2D model of

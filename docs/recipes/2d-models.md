@@ -196,12 +196,14 @@ message names the alternative, most often the slab:
 - eigenmode, electrostatic, DC conduction and thermal problems;
 - oblique incidence (`wave_vector=`), periodic pairs and Floquet ports;
 - lumped ports, conductor and impedance surfaces, sheet designs;
-- anisotropic materials and PMLs;
+- anisotropic materials and PMLs (a {doc}`piezoelectric problem
+  <piezoelectric-admittance>` takes anisotropic materials);
 - the adaptive sweep (use `sweep="uniform"`), iterative and GPU solvers, and
   solves over several processes;
 - power flow, energies, participations, characteristic impedance and region or
   element means (read the field with `Field.at` instead);
-- mesh refinement, error estimates and moved nodes (change the mesh in gmsh).
+- mesh refinement, error estimates and moved nodes (change the mesh in gmsh;
+  a piezoelectric problem takes node maps, {doc}`piezoelectric-gradient`).
 
 ## Next
 
