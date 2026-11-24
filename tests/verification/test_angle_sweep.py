@@ -92,15 +92,6 @@ def f2_sweep(tmp_path_factory):
             base, "z_min", F0, wave_vector=ks, wave_vector_frequency=F0
         ),
     ]
-    ports = [
-        gfem.FloquetPort(
-            p.name.replace("z_max", "R").replace("z_min", "T"),
-            p.surface,
-            order=p.order,
-            polarization=p.polarization,
-        )
-        for p in ports
-    ]
     model = base.replace(ports=ports)
     sweep = dif.angle_sweep(
         model, [F0], surface=TOP, theta=theta, phi=phi, options=OPTS
