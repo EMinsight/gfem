@@ -292,18 +292,73 @@ NORMAL_TM = gfem.PlaneWave("n", theta=0.0, polarization="TM")
 NORMAL_TE = gfem.PlaneWave("n", theta=0.0, polarization="TE")
 
 
-#: The scattered field of a wall-bounded wave is round-off: up to 8.3e-13 of
-#: the total with 8 threads (one thread 7.9e-13), so ten times that.
-WALL_GATE = 1e-11
+#: The walled cube is a waveguide along z, PEC at x = 0 and 1 um, PMC at y = 0
+#: and 1 um, whose modes are cut off at $k_c = \pi\sqrt{m^2 + n^2}$ per um. At
+#: `F` ($k_0 = 2\pi$ per um) the modes (2, 0) and (0, 2) sit at cutoff: they
+#: do not travel into the layer, the operator is nearly singular (its condition
+#: number a hundred times that of nearby frequencies) and so is the solve's
+#: round-off. $k_0 = 1.7\pi$ per um lies between the cutoffs $\sqrt{2}\pi$ and
+#: $2\pi$.
+F_WALL = 0.85 * F
 
 
-def test_walls_the_incident_field_satisfies_are_accepted(meshes):
+def _condition(factored):
+    r"""The 1-norm condition number :math:`\kappa_1` of each factored matrix, estimated.
+
+    ``factored`` holds the (matrix, free DOFs) pairs the direct solver
+    factored; a symmetric matrix stored as its lower triangle is completed.
+    """
+    import scipy.sparse as sp
+    import scipy.sparse.linalg as spla
+
+    found = []
+    for matrix, freedofs in factored:
+        rows, cols, values = matrix.COO()
+        a = sp.csc_array(
+            (np.asarray(values), (np.asarray(rows), np.asarray(cols))),
+            shape=(matrix.height, matrix.width),
+        )
+        if not sp.triu(a, 1).nnz:
+            a = a + sp.tril(a, -1).T
+        if freedofs is not None:
+            free = np.array([freedofs[i] for i in range(len(freedofs))])
+            a = sp.csc_array(a[free][:, free])
+        lu = spla.splu(a)
+        inverse = spla.LinearOperator(
+            a.shape,
+            matvec=lu.solve,
+            rmatvec=lambda x, lu=lu: lu.solve(x, trans="H"),
+            dtype=a.dtype,
+        )
+        found.append(spla.norm(a, 1) * spla.onenormest(inverse))
+    return found
+
+
+def test_walls_the_incident_field_satisfies_are_accepted(meshes, monkeypatch):
+    from gfem._linalg.direct import DirectHandle
+
+    factored = []
+    factor = DirectHandle._factor
+
+    def keep(handle, matrix, freedofs):
+        factored.append((matrix, freedofs))
+        return factor(handle, matrix, freedofs)
+
+    monkeypatch.setattr(DirectHandle, "_factor", keep)
     # PEC where E is normal, PMC (by default) where H is normal
     model = _walled(meshes["walls"], boundaries=[gfem.PEC("xwall"), gfem.PEC("xfeed")])
-    result = _solve(model, NORMAL_TM)
-    total = result.e_field(F)
-    ratio = _norm(result.e_field(F, part="scattered")) / _norm(total)
-    assert ratio <= WALL_GATE, f"scattered over total {ratio:.3g}"
+    problem = gfem.Driven(F_WALL, sources=[NORMAL_TM], keep_fields=True)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    total = result.e_field(F_WALL)
+    ratio = _norm(result.e_field(F_WALL, part="scattered")) / _norm(total)
+    # The incident field solves the walled problem exactly, so the scattered
+    # field is the direct solve's round-off: a backward-stable factorization
+    # leaves a relative error of about $\kappa_1 \epsilon$ (the forward error
+    # bound without its slowly growing size factor). A wall the lift got wrong
+    # leaves the discretization error, orders above that.
+    (kappa,) = _condition(factored)
+    gate = kappa * np.finfo(float).eps
+    assert ratio <= gate, f"scattered over total {ratio:.3g}, kappa eps {gate:.3g}"
 
 
 def test_a_pec_wall_the_incident_field_crosses_is_refused(meshes):
