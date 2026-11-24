@@ -18,16 +18,16 @@ grow past one setup's worth. A frequency sweep also sets it up again before a
 step an octave from its setup's frequency, and when a reused step costs as
 much as the mean per step since the setup (`_chain_ended`). A GMRES solve
 without an initial guess on a preconditioner reused across a sweep's
-frequencies (an adjoint solve of a multi-frequency backward) runs that warm path from a zero guess;
-after a refactorization at no stated frequency (an eigen reshift) it sets
-the preconditioner up at the new operator first. A handle prepared without
-reuse sets it up at each `KrylovHandle.refactorize`.
+frequencies (an adjoint solve of a multi-frequency backward) runs that warm
+path from a zero guess; after a refactorization at no stated frequency (an
+eigen reshift) it sets the preconditioner up at the new operator first. A
+handle prepared without reuse sets it up at each `KrylovHandle.refactorize`.
 
 `KrylovHandle.last_action` and `last_reason` say what the last step did and
 why (`gfem._linalg.report`): ``factorized`` (set up: ``first``,
-``rebuild rule``, ``octave`` (a sweep step an octave from the setup's frequency),
-``chain`` (a reused step as costly as the mean since the setup), or ``cold
-solve`` for a CG solve, or a GMRES solve after an eigen reshift, on a reused
+``rebuild rule``, ``octave`` (a sweep step an octave from the setup's
+frequency), ``chain`` (a reused step as costly as the mean since the setup), or
+``cold solve`` for a CG solve, or a GMRES solve after an eigen reshift, on a reused
 preconditioner), ``reused``, or ``reused,
 capped, refactorized`` (``capped``: a warm column set the preconditioner up
 inside the solve).

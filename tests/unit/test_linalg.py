@@ -705,9 +705,7 @@ def test_a_chain_of_reused_steps_ends_when_the_last_reaches_the_mean_cost():
     # step adds its iterations; the chain ends at the first reused step whose
     # iterations reach the mean cost per step (a creeping fine sweep)
     steps = [48, 18, 20, 22, 22, 24, 26]
-    ended = [
-        krylov_handle._chain_ended(steps[:n]) for n in range(1, len(steps) + 1)
-    ]
+    ended = [krylov_handle._chain_ended(steps[:n]) for n in range(1, len(steps) + 1)]
     assert ended == [False] * 6 + [True]
     # a step on the fresh preconditioner alone never ends a chain, and a
     # three-point sweep at 1 % (setup, then two steps of about the same cost)
