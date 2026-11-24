@@ -645,3 +645,50 @@ def test_missing_thermal_properties_read_as_before():
         "mass_density=2200, specific_heat=700) for silica), or leave the region "
         "out of thermal problems with Model(excluded={'thermal': ('si',)})."
     )
+
+
+def test_solid_materials_round_trip_through_the_job_codec(tmp_path):
+    import json
+
+    import structured_meshes as sm
+
+    mesh = gfem.Mesh.from_gmsh(
+        sm.write_msh22(
+            tmp_path / "stack.msh",
+            sm.plate(4.0, 3.0, (("oxide", 0.5), ("nitride", 0.25)), (1, 1, 1)),
+        )
+    )
+    n = len(mesh.elements("oxide"))
+    field = gfem.MaterialField(
+        eps_r=jnp.full((n, 3), 44.0),
+        axes=X_CUT,
+        stiffness=jnp.linspace(1, 2, n)[:, None, None] * jnp.asarray(C_LN),
+        piezoelectric_tensor=E_LN,
+        mechanical_quality_factor=jnp.full(n, 800.0),
+        mass_density=RHO_LN,
+    )
+    model = gfem.Model(
+        mesh,
+        materials={"oxide": field, "nitride": _ln()},
+        excluded={"mechanical": ("nitride",)},
+    )
+    problem = gfem.Electrostatic(terminals={"top": "top", "mid": "oxide__nitride"})
+    path = gfem.Job(model, problem).to_json(tmp_path / "job.json")
+    back = gfem.Job.from_json(path).model
+    assert back.materials["nitride"] == _ln()
+    assert back.excluded_from("mechanical") == ("nitride",)
+    oxide = back.materials["oxide"]
+    assert oxide.axes == X_CUT
+    for name in ("stiffness", "piezoelectric_tensor", "mechanical_quality_factor"):
+        assert getattr(oxide, name).dtype == jnp.float64
+        np.testing.assert_array_equal(getattr(oxide, name), getattr(field, name))
+    # a material without them is written as before
+    plain = gfem.Model(
+        mesh,
+        materials={"oxide": gfem.Material(eps_r=3.9), "nitride": gfem.Material()},
+    )
+    doc = json.loads(gfem.Job(plain, problem).to_json(tmp_path / "p.json").read_text())
+    written = doc["job"]["model"]["materials"]["oxide"]
+    assert not {"stiffness", "piezoelectric_tensor", "mechanical_quality_factor"} & set(
+        written
+    )
