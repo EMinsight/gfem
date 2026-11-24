@@ -115,6 +115,27 @@ def test_a_half_plane_closes_exactly_on_the_footprint(grid):
     assert _signed_area(exterior) == pytest.approx((xmax - x0) * (ymax - ymin), 1e-3)
 
 
+def test_a_bar_whose_field_is_the_threshold_on_the_footprint_keeps_its_corners(grid):
+    # A bar from the footprint's left edge, 15 pixels wide about a pixel line,
+    # its field 0.5 minus its signed distance in 50 pixels: on the edge the
+    # field reaches eta at the corners, where the contour gives each corner
+    # twice, one rounding apart. The clean-up keeps one of each: dropping
+    # both would cut the corner off.
+    xmin, _, _, _ = grid.bounds
+    X, Y = _xy(grid)
+    length, half, yc = 0.5 * MM, 7.5 * PITCH, 0.5 * MM
+    qx = np.abs(X - xmin - length / 2) - length / 2
+    qy = np.abs(Y - yc) - half
+    outside = np.hypot(np.maximum(qx, 0), np.maximum(qy, 0))
+    rho = 0.5 - (outside + np.minimum(np.maximum(qx, qy), 0)) / (50 * PITCH)
+    ((exterior, holes),) = grid.pattern(rho)
+    assert holes == ()
+    assert _signed_area(exterior) == pytest.approx(length * 2 * half, rel=5e-3)
+    on_edge = exterior[exterior[:, 0] == xmin]
+    assert on_edge[:, 1].min() == pytest.approx(yc - half, abs=0.05 * PITCH)
+    assert on_edge[:, 1].max() == pytest.approx(yc + half, abs=0.05 * PITCH)
+
+
 def test_a_grid_overhanging_its_footprint_is_clipped_to_bounds(square):
     grid = design.LayerGrid(square, "design", pitch=0.03 * MM)  # 34 x 34, 1.02 mm
     xmin, ymin, xmax, ymax = grid.bounds
