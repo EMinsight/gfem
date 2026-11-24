@@ -854,13 +854,14 @@ class Driven:
             `jax.grad`, `jax.jit` or `jax.vmap` from their arguments; pass a
             fixed value.
         LinearSolverConvergenceError: `gfem.solve` raises it when an
-            iterative linear solve (``linear_solver="bddc_gmres"``, or
-            ``"petsc"`` with a Krylov ``ksp_type``) does not converge at some
-            frequency. A uniform sweep stops there and keeps what it solved:
-            the error's ``.result`` holds the frequencies solved before it,
-            its ``.unsolved`` the rest; solve ``err.unsolved`` again with
-            ``linear_solver="direct"``. An adaptive sweep keeps neither,
-            since its reduced model needs every sample; rerun it with
+            iterative linear solve (``linear_solver="bddc_gmres"`` or
+            ``"pmg_gmres"``, or ``"petsc"`` with a Krylov ``ksp_type``) does
+            not converge at some frequency. A uniform sweep stops there and
+            keeps what it solved: the error's ``.result`` holds the
+            frequencies solved before it, its ``.unsolved`` the rest; solve
+            ``err.unsolved`` again with ``linear_solver="direct"``. An
+            adaptive sweep keeps neither, since its reduced model needs every
+            sample; rerun it with
             ``linear_solver="direct"``.
 
     Notes:
@@ -877,7 +878,8 @@ class Driven:
         the floor, and the solve does not warn.
 
         The other driven solves run ungauged: ``gauge="none"``,
-        ``linear_solver="bddc_gmres"`` or ``"petsc"``, ``device="cuda"``,
+        ``linear_solver="bddc_gmres"``, ``"pmg_gmres"`` or ``"petsc"``,
+        ``device="cuda"``,
         several MPI ranks, and models with a `gfem.Periodic` pair, a Bloch
         ``wave_vector`` or a `gfem.FloquetPort`. Below the floor they warn
         with `gfem.LowFrequencyWarning`, and their rounding error grows like
@@ -889,8 +891,8 @@ class Driven:
         least :math:`k_0 h_\mathrm{min} = 10^{-8}`. Ungauged MKL PARDISO
         (``"direct"`` with the ``mkl`` extra) becomes unreliable below
         :math:`k_0 h_\mathrm{min} \approx 3 \times 10^{-8}`. With
-        ``bddc_gmres``, S stays at ``SolverOptions.tolerance``, but a
-        capacitance read from S is good only to about
+        ``bddc_gmres`` or ``pmg_gmres``, S stays at
+        ``SolverOptions.tolerance``, but a capacitance read from S is good only to about
         ``tolerance`` / :math:`(\omega C Z_0)`.
 
         The wave ports' mode problem is not gauged and keeps its own floor:

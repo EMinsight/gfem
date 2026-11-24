@@ -672,19 +672,24 @@ def test_changing_the_target_reflection_changes_the_operator(tmp_path):
 def test_an_explicit_bddc_gmres_refuses_the_layer(tmp_path):
     model = _line(tmp_path, gfem.PML("pml"))
     options = gfem.SolverOptions(linear_solver="bddc_gmres")
-    with pytest.raises(ValueError, match=r"bddc_gmres.*perfectly matched layer.*'pml'"):
+    with pytest.raises(
+        ValueError,
+        match=r"bddc_gmres.*perfectly matched layer.*'pml'.*Use "
+        r"linear_solver='pmg_gmres', which solves the layer exactly",
+    ):
         _driven(model, options=options)
 
 
-def test_auto_picks_direct_for_a_layer_whatever_the_memory(
+def test_auto_keeps_direct_for_a_layer_where_neither_estimate_fits(
     tmp_path, monkeypatch, caplog
 ):
     from gfem._engine import driven
     from gfem._engine.driven import DrivenRule
 
     model = _line(tmp_path, gfem.PML("pml"))
-    # no budget at all: without a layer, auto would take bddc_gmres
+    # no memory at all: without a layer, auto would take bddc_gmres
     monkeypatch.setattr(driven, "default_retain_memory", lambda: 0)
+    monkeypatch.setattr(driven, "memory_limit", lambda: 0)
     caplog.set_level(logging.INFO, logger="gfem.solver")
     rule = DrivenRule(model, gfem.Driven((pml_cases.F0,)), gfem.SolverOptions())
     assert rule.linear.kind == "direct"

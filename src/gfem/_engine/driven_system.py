@@ -27,6 +27,7 @@ from gfem._engine.gauge import gauge_basis
 from gfem._engine.port_network import PortNetwork
 from gfem._engine.system_operator import SystemOperator, SystemSweep
 from gfem._engine.wave_ports import PortSurfaceCoupling, wave_port_couplings
+from gfem._linalg import KRYLOV_KINDS
 from gfem._linalg.layout import ONE_PROCESS
 from gfem._port_section import port_section_key
 
@@ -206,14 +207,15 @@ class DrivenSystemBuilder:
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class DesignGuess:
-    """Where a uniform BDDC sweep's cold solves find the previous design's solution.
+    """Where a uniform Krylov sweep's cold solves find the previous design's solution.
 
-    On one process, a ``bddc_gmres`` sweep's first frequency starts
-    from the previous design's solution there, kept with the discretization
-    (`Discretization.guesses`, dropped first by the walk). It is used only
-    for the same excited ports and wave vector, free DOFs, symmetry and
-    right-hand-side shape. The guess carries the ``n_ref`` its design's
-    BDDC measured (`gfem._linalg.bddc.BddcHandle.assume_reference`): a solve
+    On one process, a ``bddc_gmres`` or ``pmg_gmres`` sweep's first
+    frequency starts from the previous design's solution there, kept with
+    the discretization (`Discretization.guesses`, dropped first by the
+    walk). It is used only for the same excited ports and wave vector, free
+    DOFs, symmetry and right-hand-side shape. The guess carries the
+    ``n_ref`` its design's preconditioner measured
+    (`gfem._linalg.krylov_handle.KrylovHandle.assume_reference`): a solve
     from it takes too few iterations to measure one.
     """
 
@@ -225,13 +227,14 @@ class DesignGuess:
     def of(cls, builder: DrivenSystemBuilder, system: SystemOperator) -> DesignGuess:
         """``builder``'s guesses on ``system``'s discretization.
 
-        None kept or used (no ``disc``) but for ``bddc_gmres`` on one process
-        with a ``retain_memory`` above 0 and a cached discretization.
+        None kept or used (no ``disc``) but for ``bddc_gmres`` and
+        ``pmg_gmres`` on one process with a ``retain_memory`` above 0 and a
+        cached discretization.
         """
         op = system.operator
         disc = cached(op.built)
         if (
-            builder.linear.kind != "bddc_gmres"
+            builder.linear.kind not in KRYLOV_KINDS
             or builder.comm is not None
             or builder.retain_memory == 0
             or disc is None

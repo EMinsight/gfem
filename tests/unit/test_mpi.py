@@ -767,6 +767,7 @@ SHARED_REFUSALS = {
     "device": gfem.SolverOptions(linear_solver="direct", device="cuda"),
     "bddc_order_1": gfem.SolverOptions(order=1, linear_solver="bddc_gmres"),
     "bddc_order_1_auto": gfem.SolverOptions(order=1),
+    "pmg_gmres": gfem.SolverOptions(linear_solver="pmg_gmres"),
     "petsc_preconditioner": gfem.SolverOptions(
         linear_solver="petsc", petsc_options={"pc_type": "ilu"}
     ),

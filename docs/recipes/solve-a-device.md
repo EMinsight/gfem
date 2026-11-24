@@ -267,7 +267,7 @@ The numerical settings are apart from the model and the problem, in
   accurate on the same mesh and costs more time and memory.
 - `linear_solver` is `"auto"` by default: for a driven problem on one
   machine, the direct solver while its factorization fits in half the memory,
-  else an iterative one; an iterative solver for electrostatic problems, and
+  else an iterative one (see {doc}`large-driven-model`); an iterative solver for electrostatic problems, and
   a direct one for eigenmodes.
 - `tolerance` is where the iterative solver stops (1e-6, relative to the
   right-hand side). It is not the error of S.

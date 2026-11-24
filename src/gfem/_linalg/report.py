@@ -106,12 +106,16 @@ def auto_choice(
     unknowns: int | None = None,
     estimate: int | None = None,
     budget: int | None = None,
+    pmg_estimate: int | None = None,
+    direct_set: int | None = None,
 ) -> None:
     """Log what ``linear_solver="auto"`` resolved to for a ``problem`` problem.
 
     ``reason`` states the driven rule's numbers; a fixed choice
     has none. Attributes ``linear_solver``, ``unknowns``, ``estimate`` and
-    ``budget`` (bytes; ``None`` for a fixed choice).
+    ``budget`` (bytes; ``None`` for a fixed choice), and ``pmg_estimate``
+    (bytes) and ``direct_set`` (DOFs) where the rule weighed the
+    p-multigrid (``None`` otherwise).
     """
     why = "" if reason is None else f": {reason}"
     LOGGER.info(
@@ -125,6 +129,48 @@ def auto_choice(
             "unknowns": unknowns,
             "estimate": estimate,
             "budget": budget,
+            "pmg_estimate": pmg_estimate,
+            "direct_set": direct_set,
+        },
+    )
+
+
+def pmg_build(
+    *,
+    direct: int,
+    pml_dofs: int,
+    poor_cells: int,
+    unknowns: int,
+    frequency: float | None,
+) -> None:
+    """Log one build of the p-multigrid (`gfem._linalg.pmg.PmgHandle`).
+
+    ``direct`` of the ``unknowns`` free DOFs are on its direct set,
+    ``pml_dofs`` of them on perfectly matched layer cells, and the mesh has
+    ``poor_cells`` poor cells; ``frequency`` (Hz) is the operator's, or
+    ``None``. Attributes ``direct_set``, ``direct_share`` and ``pml_share``
+    (fractions of ``unknowns``), ``poor_cells`` and ``frequency``.
+    """
+    if not LOGGER.isEnabledFor(logging.INFO):
+        return
+    total = max(unknowns, 1)
+    direct_share, pml_share = direct / total, pml_dofs / total
+    at = "" if frequency is None else f" at {frequency / 1e9:g} GHz"
+    LOGGER.info(
+        "p-multigrid%s: %s of %s DOFs on the direct set (%.1f %%; PML DOF share "
+        "%.1f %%, %s poor cells)",
+        at,
+        f"{direct:,}",
+        f"{unknowns:,}",
+        100 * direct_share,
+        100 * pml_share,
+        f"{poor_cells:,}",
+        extra={
+            "direct_set": direct,
+            "direct_share": direct_share,
+            "pml_share": pml_share,
+            "poor_cells": poor_cells,
+            "frequency": frequency,
         },
     )
 

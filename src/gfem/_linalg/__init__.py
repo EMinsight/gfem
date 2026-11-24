@@ -51,6 +51,11 @@ Backends:
   solution, or the previous design's at a design's first frequency); CG
   ignores it. BDDC reads the fixed DOFs from the space, so the operator's
   free DOFs must be the space's ``FreeDofs()``.
+- ``"pmg_gmres"``: GMRES on one V-cycle of a two-level p-multigrid
+  (`gfem._linalg.pmg`), to the same relative preconditioned residual as
+  ``"bddc_gmres"``, with the same preconditioner reuse. Its direct level is
+  factored as ``"direct"`` factors; its smoother needs :math:`A^T = A`. It reads
+  the solve domain's cells from ``Operator.cells``.
 - ``"cudss"``: the ``direct`` solver on a GPU (``device="cuda"`` or
   ``"cuda:N"``), NVIDIA cuDSS. The host holds all data; the factors stay on
   the GPU. Symmetric and Hermitian operators only. Needs the cuda extra; an
@@ -84,6 +89,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Literal,
+    NamedTuple,
     Protocol,
     Self,
     get_args,
@@ -98,13 +104,17 @@ from gfem import _timing
 if TYPE_CHECKING:
     from gfem._linalg.layout import DofLayout
     from gfem._linalg.pieces import PieceSum
+    from gfem._linalg.pmg import Cells, DirectSetCount
     from gfem.options import PetscOptions, PetscValue, SolverOptions
 
 __all__ = [
     "KINDS",
+    "KRYLOV_KINDS",
+    "AutoChoice",
     "Handle",
     "Kind",
     "Operator",
+    "PmgInputs",
     "Refactorable",
     "ResolvedLinearSolver",
     "Symmetry",
@@ -118,8 +128,11 @@ __all__ = [
 
 Symmetry = Literal["complex_symmetric", "hermitian", "general"]
 #: A linear solver a problem can use (`ResolvedLinearSolver.kind`).
-Kind = Literal["direct", "bddc_gmres", "petsc"]
+Kind = Literal["direct", "bddc_gmres", "petsc", "pmg_gmres"]
 KINDS: tuple[Kind, ...] = get_args(Kind)
+#: The iterative linear solvers: a Krylov solve on a preconditioner kept
+#: across a sweep (`gfem._linalg.krylov_handle.KrylovHandle`).
+KRYLOV_KINDS: tuple[Kind, ...] = ("bddc_gmres", "pmg_gmres")
 #: Most Krylov iterations of an iterative solve.
 MAXITER = 400
 #: Bytes per unknown of a direct factorization, above every measured peak
@@ -128,26 +141,125 @@ MAXITER = 400
 DIRECT_BYTES_PER_UNKNOWN = 48 * 2**10
 
 
-def auto_linear_solver(
-    default: Kind, *, unknowns: int, in_flight: int, general: bool, budget: int
-) -> tuple[Kind, str, int]:
-    """``"direct"`` while its factorizations fit ``budget``, else ``default``.
+#: Bytes per unknown of the p-multigrid by order, its direct set's
+#: higher-order DOFs aside: the operator and its symmetric copy, the
+#: vertex-star factors, the Whitney factor and the Krylov vectors, at or
+#: above every measured peak at order 2 (`pmg_estimate`).
+PMG_BYTES_PER_UNKNOWN = {2: 8 * 2**10, 3: 16 * 2**10}
 
-    The estimate is `DIRECT_BYTES_PER_UNKNOWN` times ``unknowns`` per
+
+class PmgInputs(NamedTuple):
+    """What `auto_linear_solver` reads to weigh ``pmg_gmres``.
+
+    Attributes:
+        order: The element order, 2 or 3.
+        limit: The memory the process may use, in bytes: the p-multigrid
+            pools no factor, so its estimate is held to all of it.
+        count: Counts the direct set from the mesh
+            (`gfem._linalg.pmg.direct_set_count`); called only where direct
+            does not fit.
+    """
+
+    order: int
+    limit: int
+    count: Callable[[], DirectSetCount]
+
+
+class AutoChoice(NamedTuple):
+    """What `auto_linear_solver` resolved, and why.
+
+    Attributes:
+        kind: The linear solver.
+        reason: Why, in words, with the numbers.
+        estimate: Direct's estimate, in bytes.
+        pmg_estimate: The p-multigrid's estimate, in bytes, where the rule
+            weighed it; else ``None``.
+        direct_set: The direct set's DOFs it counted; else ``None``.
+    """
+
+    kind: Kind
+    reason: str
+    estimate: int
+    pmg_estimate: int | None = None
+    direct_set: int | None = None
+
+
+def auto_linear_solver(
+    default: Kind,
+    *,
+    unknowns: int,
+    in_flight: int,
+    general: bool,
+    budget: int,
+    pmg: PmgInputs | None = None,
+    reason: str | None = None,
+) -> AutoChoice:
+    """``"direct"`` while it fits, else ``"pmg_gmres"`` where it fits, else ``default``.
+
+    Direct's estimate is `DIRECT_BYTES_PER_UNKNOWN` times ``unknowns`` per
     factorization ``in_flight``, doubled for a ``general`` operator (LU
-    stores L and U). Equal to the budget fits. Reads no clock and no
-    installed library. Returns the kind, why in words, and the
-    estimate in bytes.
+    stores L and U). Where it exceeds ``budget`` and ``pmg`` is given (a
+    model ``pmg_gmres`` solves), the direct set is counted and
+    `pmg_estimate` held to ``pmg.limit``. Equal to the bound fits. Reads no
+    clock and no installed library.
+
+    Args:
+        default: The linear solver where neither fits.
+        unknowns: The system size, an upper bound.
+        in_flight: The factorizations held at once (frequency workers).
+        general: Whether the operator is general (not :math:`A^T = A`).
+        budget: Direct's bytes.
+        pmg: The p-multigrid's inputs, or ``None`` where it does not apply.
+        reason: Why ``default`` is the fallback, appended where it is chosen
+            past direct's budget.
     """
     estimate = direct_estimate(unknowns, in_flight=in_flight, general=general)
     fits = estimate <= budget
     gib = 2**30
-    reason = (
+    why = (
         f"{unknowns:,} unknowns, est. {estimate / gib:.1f} GiB factorization "
         f"{'<=' if fits else '>'} {budget / gib:.1f} GiB budget "
         f"(half of {2 * budget / gib:.3g} GiB)"
     )
-    return ("direct" if fits else default), reason, estimate
+    if fits:
+        return AutoChoice("direct", why, estimate)
+    pmg_bytes = direct = None
+    if pmg is not None:
+        count = pmg.count()
+        direct = count.direct
+        pmg_bytes = pmg_estimate(
+            unknowns,
+            direct=direct,
+            whitney=count.whitney,
+            order=pmg.order,
+            in_flight=in_flight,
+        )
+        below = pmg_bytes <= pmg.limit
+        why += (
+            f"; p-multigrid est. {pmg_bytes / gib:.1f} GiB (direct set "
+            f"{100 * direct / max(unknowns, 1):.1f} %) {'<=' if below else '>'} "
+            f"{pmg.limit / gib:.3g} GiB memory"
+        )
+        if below:
+            return AutoChoice("pmg_gmres", why, estimate, pmg_bytes, direct)
+    if reason is not None:
+        why += f"; {reason}"
+    return AutoChoice(default, why, estimate, pmg_bytes, direct)
+
+
+def pmg_estimate(
+    unknowns: int, *, direct: int, whitney: int, order: int, in_flight: int
+) -> int:
+    r"""Bytes of ``in_flight`` p-multigrid solves of ``unknowns``.
+
+    $n\,(c_p N + c_d (D - W))$: `PMG_BYTES_PER_UNKNOWN` $c_p$ of ``order``
+    per unknown, and `DIRECT_BYTES_PER_UNKNOWN` $c_d$ per higher-order DOF of
+    the ``direct`` set $D$ (its ``whitney`` DOFs $W$ aside), which is a
+    direct factor.
+    """
+    per_unknown = PMG_BYTES_PER_UNKNOWN[order]
+    higher = DIRECT_BYTES_PER_UNKNOWN * (direct - whitney)
+    return in_flight * (per_unknown * unknowns + higher)
 
 
 def direct_estimate(unknowns: int, *, in_flight: int, general: bool) -> int:
@@ -173,12 +285,20 @@ class Operator:
         layout: How the form's space lies across ranks, on which `prepare`
             dispatches; ``None`` on one process. It cannot be read off the form,
             which is not assembled yet.
+        cells: Builds the solve domain's cells (`gfem._linalg.pmg.Cells`),
+            which ``pmg_gmres`` reads for its direct set; ``None`` for every
+            volume element of the form's mesh, none of them in a perfectly
+            matched layer. The other linear solvers ignore it.
+        frequency: The frequency the operator is at, in Hz, for a linear
+            solver's log; ``None`` when it has none.
     """
 
     form: ngs.BilinearForm
     freedofs: ngs.BitArray
     piece_sum: PieceSum | None = None
     layout: DofLayout | None = None
+    cells: Callable[[], Cells] | None = None
+    frequency: float | None = None
 
 
 class Handle(Protocol):
@@ -471,10 +591,12 @@ def prepare(
         from gfem._linalg.direct import DirectHandle
 
         return DirectHandle.from_operator(operator, symmetry, tolerance=tolerance)
-    if kind == "bddc_gmres":
+    if kind in KRYLOV_KINDS:
         from gfem._linalg.bddc import BddcHandle
+        from gfem._linalg.pmg import PmgHandle
 
-        return BddcHandle(
+        handle = {"bddc_gmres": BddcHandle, "pmg_gmres": PmgHandle}[kind]
+        return handle(
             operator,
             symmetry,
             tolerance=tolerance,
@@ -491,6 +613,18 @@ def _unavailable(kind: str) -> NotImplementedError:
     return NotImplementedError(
         f"linear_solver={kind!r} is not available in this version of gfem; use "
         f"one of {', '.join(repr(k) for k in KINDS)}."
+    )
+
+
+def _driven_only(problem: str, default: Kind) -> str:
+    """The refusal of ``pmg_gmres`` for a ``problem`` problem, naming its ``"auto"``."""
+    if default == "direct":
+        remedy = "Use linear_solver='direct' (or 'auto', which picks it)."
+    else:
+        remedy = f"Use linear_solver='auto', which picks {default!r}, or 'direct'."
+    return (
+        "linear_solver='pmg_gmres' solves driven problems only, not "
+        f"{problem} problems. {remedy}"
     )
 
 
@@ -514,6 +648,8 @@ def _prepare_on_ranks(
 
     Raises:
         NotImplementedError: No backend of ``kind``, on every rank.
+        gfem.DistributedUnsupportedError: ``pmg_gmres``, which runs on one
+            process only, on every rank.
         ValueError: ``petsc`` and an operator without :math:`A^T = A`, on every rank.
         gfem.SolverUnavailableError: ``direct`` or ``petsc`` without the MPI PETSc
             stack.
@@ -521,6 +657,10 @@ def _prepare_on_ranks(
     from gfem import _mpi
     from gfem._linalg.bddc import BddcHandle
 
+    if kind == "pmg_gmres":
+        # `gfem._mpi.refuse` stops it before any mesh; a caller below that meets
+        # the same refusal, on every rank
+        _mpi.refuse_feature("pmg_gmres")
     if kind not in KINDS:
         raise _mpi.agreed(_unavailable(kind))
     if kind in ("direct", "petsc"):
@@ -586,11 +726,13 @@ class ResolvedLinearSolver:
         general: bool = False,
         budget: int | None = None,
         reason: str | None = None,
+        pmg: PmgInputs | None = None,
     ) -> Self:
         """The linear solver of ``options`` for a ``problem`` problem.
 
         With ``unknowns``, ``"auto"`` on one CPU process is `auto_linear_solver`
-        (``"direct"`` while it fits ``budget``, else ``default``). A resolved
+        (``"direct"`` while it fits ``budget``, else ``"pmg_gmres"`` where
+        ``pmg`` is given and fits, else ``default``). A resolved
         ``"auto"`` is logged on ``gfem.solver`` (`report.auto_choice`); an
         explicit choice is not.
 
@@ -602,12 +744,16 @@ class ResolvedLinearSolver:
             comm: The resolved communicator of a distributed solve.
             unknowns: The system size, an upper bound, for the rule.
             in_flight: The factorizations held at once (frequency workers).
-            general: Whether the operator is general (not ``A^T = A``).
+            general: Whether the operator is general (not :math:`A^T = A`).
             budget: The rule's bytes; required with ``unknowns``.
-            reason: Why ``"auto"`` takes ``default`` without ``unknowns``,
-                for the log.
+            reason: Why ``"auto"`` takes ``default`` without ``unknowns``, or
+                past ``budget``, for the log.
+            pmg: The p-multigrid's inputs for the rule, or ``None`` where
+                ``pmg_gmres`` does not solve the model.
 
         Raises:
+            ValueError: ``linear_solver="pmg_gmres"`` for a problem other than
+                ``"driven"``.
             NotImplementedError: The linear solver is not available.
             gfem.SolverUnavailableError: ``linear_solver="petsc"`` and PETSc
                 cannot be used, or ``"direct"`` or ``"petsc"`` under ``comm``
@@ -617,6 +763,8 @@ class ResolvedLinearSolver:
         from gfem.options import split_petsc_options
 
         name = options.linear_solver
+        if name == "pmg_gmres" and problem != "driven":
+            raise ValueError(_driven_only(problem, default))
         if name != "auto":
             kind = name
         elif options.device != "cpu":
@@ -628,20 +776,25 @@ class ResolvedLinearSolver:
         else:
             if budget is None:  # pragma: no cover - a caller error
                 raise TypeError("resolve needs a budget with unknowns.")
-            kind, reason, estimate = auto_linear_solver(
+            choice = auto_linear_solver(
                 default,
                 unknowns=unknowns,
                 in_flight=in_flight,
                 general=general,
                 budget=budget,
+                pmg=pmg,
+                reason=reason,
             )
+            kind = choice.kind
             report.auto_choice(
                 kind,
                 problem=problem,
-                reason=reason,
+                reason=choice.reason,
                 unknowns=unknowns,
-                estimate=estimate,
+                estimate=choice.estimate,
                 budget=budget,
+                pmg_estimate=choice.pmg_estimate,
+                direct_set=choice.direct_set,
             )
         if kind not in KINDS:  # pragma: no cover - SolverOptions validates
             raise NotImplementedError(

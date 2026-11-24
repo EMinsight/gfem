@@ -33,7 +33,7 @@ from gradient_cases import core_design, s_functional, tight, wave_line, wave_mes
 
 import gfem
 
-SOLVERS = ["direct", "bddc_gmres"]
+SOLVERS = ["direct", "bddc_gmres", "pmg_gmres"]
 FREQUENCIES = (12e9, 24e9)
 GRID = tuple(float(f) for f in np.linspace(10e9, 30e9, 11))
 SAMPLES = (GRID[0], GRID[10], GRID[5], GRID[2])

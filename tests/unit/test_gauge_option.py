@@ -123,6 +123,15 @@ def test_auto_runs_bddc_gmres_ungauged_and_logs_why(line, caplog):
     assert "tree-cotree gauge off (linear_solver='bddc_gmres')" in record.getMessage()
 
 
+def test_auto_runs_auto_s_pmg_gmres_ungauged_and_names_direct(line, monkeypatch):
+    monkeypatch.setattr(driven, "default_retain_memory", lambda: 1)
+    rule = DrivenRule(line, gfem.Driven(1e9), gfem.SolverOptions(order=2))
+    assert rule.linear.kind == "pmg_gmres"
+    assert not rule.gauge.on
+    assert rule.gauge.reason == "linear_solver='auto' chose 'pmg_gmres'"
+    assert rule.gauge.clause.endswith("linear_solver='direct' keeps these digits.")
+
+
 def test_auto_runs_a_periodic_model_ungauged(tmp_path):
     rule, _ = _rule(_strip(tmp_path, periodic=True), gfem.Driven(1e9), DIRECT)
     assert not rule.gauge.on
@@ -208,6 +217,18 @@ def test_tree_cotree_refuses_auto_s_iterative_choice_with_its_numbers(
     options = gfem.SolverOptions(gauge="tree_cotree")
     with pytest.raises(ValueError, match="linear_solver='auto' chose 'bddc_gmres'"):
         DrivenRule(line, gfem.Driven(1e9), options)
+
+
+def test_tree_cotree_refuses_auto_s_pmg_gmres_naming_direct():
+    with pytest.raises(ValueError, match=r"auto' chose 'pmg_gmres' \(numbers\)") as err:
+        gauge.resolve_gauge(
+            "tree_cotree",
+            linear_solver="auto",
+            kind="pmg_gmres",
+            device="cpu",
+            auto_reason="numbers",
+        )
+    assert "Set linear_solver='direct'" in str(err.value)
 
 
 def test_tree_cotree_names_the_estimate_and_the_remedy(line, monkeypatch):

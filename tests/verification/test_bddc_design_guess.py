@@ -1,6 +1,6 @@
-"""Gradients of BDDC solves that start from the previous design's solution.
+"""Gradients of iterative solves that start from the previous design's solution.
 
-The design initial guess: on one process each ``bddc_gmres``
+The design initial guess: on one process each ``bddc_gmres`` or ``pmg_gmres``
 design's first frequency starts from the previous design's solution there.
 Four designs in a row on the small 3D two-layer line
 (`gradient_cases.layered_line`), through ``jax.value_and_grad`` at tolerance
@@ -11,6 +11,8 @@ difference from it at most twice the guess-free run's (1.5x was
 measured on the 1.0M-DOF 3D bend).
 """
 
+import functools
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -19,6 +21,7 @@ from gradient_cases import layered_line, line_design, s_functional, with_fields
 
 import gfem
 from gfem._engine.system_operator import SystemSweep
+from gfem._linalg import KRYLOV_KINDS
 
 TOLERANCE = 1e-6
 PROBLEM = gfem.Driven(frequency=(20e9, 24e9))
@@ -37,14 +40,12 @@ def _designs(line):
     return values, [eps * (1 + 0.03 * k * direction) for k in range(4)]
 
 
-def _run(line, values, designs, monkeypatch, *, tolerance, guess):
+def _run(line, values, designs, monkeypatch, *, solver, tolerance, guess):
     """S, gradients and each design's first-frequency iterations.
 
     Without ``guess`` every design starts from no kept state.
     """
-    options = gfem.SolverOptions(
-        order=2, linear_solver="bddc_gmres", tolerance=tolerance
-    )
+    options = gfem.SolverOptions(order=2, linear_solver=solver, tolerance=tolerance)
     first: list = []
     solve = SystemSweep.solve
 
@@ -86,19 +87,15 @@ def _gradient_error(run, reference):
     )
 
 
+@pytest.mark.parametrize("solver", KRYLOV_KINDS)
 def test_a_design_guess_keeps_s_and_the_gradient_within_the_guess_free_band(
-    line, monkeypatch
+    line, monkeypatch, solver
 ):
     values, designs = _designs(line)
-    reference, _ = _run(
-        line, values, designs, monkeypatch, tolerance=1e-10, guess=False
-    )
-    plain, cold = _run(
-        line, values, designs, monkeypatch, tolerance=TOLERANCE, guess=False
-    )
-    guessed, warm = _run(
-        line, values, designs, monkeypatch, tolerance=TOLERANCE, guess=True
-    )
+    run = functools.partial(_run, line, values, designs, monkeypatch, solver=solver)
+    reference, _ = run(tolerance=1e-10, guess=False)
+    plain, cold = run(tolerance=TOLERANCE, guess=False)
+    guessed, warm = run(tolerance=TOLERANCE, guess=True)
     # the first design has nothing to start from; the others start from the
     # previous design's solution, in fewer iterations
     assert [g for _, g in cold] == [None] * 4

@@ -145,13 +145,15 @@ process starts without it:
   that is cheaper than factorizing again. Small models, where factorizing is
   cheap, factorize every design. A periodic cell with a nonzero wave vector
   always factorizes again;
-- with `linear_solver="bddc_gmres"` in one process, each design's first
+- with `linear_solver="bddc_gmres"` or `"pmg_gmres"` in one process, each design's first
   frequency of a uniform sweep starts its iterations from the previous
   design's solution there.
 
 On the CPU in one process, the default `linear_solver="auto"` already picks
 `"direct"` for a driven problem whose factorization fits in half the memory the process may use, by an estimate
-of about 48 KiB per unknown, and `"bddc_gmres"` above. The estimate is
+of about 48 KiB per unknown. Above it picks `"pmg_gmres"` where that solver's
+own estimate fits all of the memory, else `"bddc_gmres"` (see
+{doc}`large-driven-model`). The estimate is
 cautious: on a machine where a larger model still fits, an explicit
 `linear_solver="direct"` lifts that guard.
 
@@ -176,8 +178,8 @@ the decision no longer depends on the peak. To keep the factorizations of a
 large model under an explicit value, set it at least as large as one solve's
 peak memory: the peak barely grows, but that memory stays held between
 designs. On a machine shared with other memory-heavy processes, set it
-explicitly. With less room, gfem drops the BDDC initial guesses first, then the
-factorizations, then the parts, then the plans. Only the time changes: S and
+explicitly. With less room, gfem drops the iterative solvers' initial guesses
+first, then the factorizations, then the parts, then the plans. Only the time changes: S and
 the gradient agree with a solve that keeps nothing to within `tolerance`.
 
 To see what each design reused, read `result.sweep.iterations` (the Krylov

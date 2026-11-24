@@ -37,6 +37,38 @@ Electro-optics:
   "Electro-optic shift" section of the conventions and an "Electro-optics"
   section of the glossary.
 
+Linear solvers:
+
+- **A p-multigrid linear solver.** `SolverOptions(linear_solver="pmg_gmres")`
+  solves driven problems with GMRES on a two-level p-multigrid
+  preconditioner: the lowest-order unknowns, and every unknown of a cell in a
+  perfectly matched layer or of a poor cell, are solved exactly, and the rest
+  is smoothed around each mesh vertex. Its iteration count stays near 10 as a
+  model grows in wavelengths. It needs about a quarter of the direct solver's
+  memory at order 2, and it is faster from a few million unknowns on. It
+  solves models with a perfectly matched layer, which `"bddc_gmres"` refuses.
+  Order 2 or 3, 3D, one CPU process, with gradients and reuse across a
+  sweep's frequencies; Bloch, periodic and Floquet models, MPI ranks, a GPU,
+  2D meshes and non-driven problems raise, each naming its alternative
+  ({doc}`../recipes/large-driven-model`).
+
+- **`"auto"` picks it.** Behaviour change: for a driven problem on one CPU
+  process whose direct factorization does not fit in half the memory,
+  `"auto"` now picks `"pmg_gmres"` when its own estimate fits the memory the
+  process may use, before `"bddc_gmres"`; with a perfectly matched layer,
+  before the direct solver over its budget. Models that ran on the direct
+  solver still do. The choice record on `gfem.solver` gives the new estimate,
+  and each build of the solver logs its direct-set share, PML share and
+  poor-cell count.
+
+- **Messages.** The refusal of `"bddc_gmres"` with a perfectly matched layer
+  now names `"pmg_gmres"`. A job that names `"pmg_gmres"` does not load in
+  gfem 0.2.0 or earlier.
+
+- **Documentation.** A recipe, "Solve a driven model too large for the direct
+  solver"; the glossary terms p-multigrid, direct set and poor cell; a
+  verification section; a one-node section of the performance data.
+
 ## 0.2.0 (2026-11-23)
 
 - **Native 2D models.** A gmsh file of triangles at one height reads as a

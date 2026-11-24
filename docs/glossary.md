@@ -324,6 +324,26 @@ Device
   The hardware a solve's linear algebra runs on, the CPU or one CUDA GPU; part
   of the {term}`solver options`, never of the {term}`model`.
 
+P-multigrid
+  The preconditioner of `linear_solver="pmg_gmres"`. It solves the
+  {term}`direct set` exactly and smooths the remaining higher-order unknowns
+  patch by patch around each mesh vertex, under GMRES. Its iteration count
+  barely grows with a model's size in wavelengths.
+
+Direct set
+  The unknowns the {term}`p-multigrid` solves exactly: the lowest-order
+  (Whitney) unknown of every edge, and every unknown of a cell in a
+  {term}`perfectly matched layer` or of a {term}`poor cell`. Its share of the
+  unknowns, logged at each build, sets how close the solver's memory comes to
+  the direct solver's.
+
+Poor cell
+  A tetrahedron whose longest edge exceeds ten times its shortest altitude,
+  $L_\mathrm{max} > 10\, h_\mathrm{min}$ with $h_\mathrm{min} = 3V / S_\mathrm{max}$
+  ($V$ its volume, $S_\mathrm{max}$ its largest face area), as in a thin film
+  meshed one cell across. The {term}`p-multigrid` puts its unknowns on the
+  {term}`direct set`, because layers of such cells stall its smoothing.
+
 Tree-cotree gauge
   A change of basis for a driven solve's unknowns that writes the gradients
   $\nabla \phi$, on which the curl-curl term vanishes, as node potentials along

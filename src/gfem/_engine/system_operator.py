@@ -81,6 +81,7 @@ from gfem import _timing
 from gfem._engine.cache import ENTRIES
 from gfem._engine.wave_ports import PortSurfaceCoupling
 from gfem._linalg import (
+    KRYLOV_KINDS,
     Handle,
     Operator,
     ResolvedLinearSolver,
@@ -523,10 +524,11 @@ class SystemOperator:
         """Move a finished forward sweep's base handle to the adjoint solves.
 
         Under ranks, where one factorization per frequency does not fit and a
-        backward must not prepare what its forward just freed, and on
-        one process with the CPU ``direct`` and ``bddc_gmres`` solvers when the
-        operator is its own adjoint's, so that the backward refactorizes it rather
-        than preparing a handle per frequency (on the plan pool, takes each
+        backward must not prepare what its forward just freed, and on one
+        process with the CPU ``direct``, ``bddc_gmres`` and ``pmg_gmres``
+        solvers when the operator is its own adjoint's, so that the backward
+        refactorizes it rather than preparing a handle per frequency (on the
+        plan pool, takes each
         frequency's base in turn: `SystemSweep.at`). A base it no longer holds is
         prepared again at the adjoint tolerance, taking a plan from the pool where
         it can. A shared base from the plan pool returns to the pool once no
@@ -549,13 +551,13 @@ class SystemOperator:
     def _shares_base(self) -> bool:
         """Whether one-process adjoint solves refactorize the forward's base.
 
-        The CPU ``direct`` and ``bddc_gmres`` solvers, without a transposed
-        system (whose adjoint solves are on another operator).
+        The CPU ``direct``, ``bddc_gmres`` and ``pmg_gmres`` solvers, without a
+        transposed system (whose adjoint solves are on another operator).
         """
         return (
             self._transposed is None
             and self._linear.device == "cpu"
-            and self._linear.kind in ("direct", "bddc_gmres")
+            and self._linear.kind in ("direct", *KRYLOV_KINDS)
         )
 
     def free_base(self, *, return_plan: bool = False, walk: bool = True) -> None:
@@ -613,11 +615,12 @@ class SystemOperator:
     def operator_at(self, omega: float) -> Operator:
         """``A(ω)``, the operator without the modal corrections, to prepare.
 
-        Its form, and its piece sum for the ``direct`` and ``petsc`` linear
-        solvers. Under a gauge, the gauged piece sum on the gauge space's free
-        DOFs; the form stays the driven space's (a backend reads only whether
-        its space is complex, and never assembles it: the gauged piece sum
-        always has its pattern).
+        Its form, its piece sum for the ``direct`` and ``petsc`` linear
+        solvers, its cells for ``pmg_gmres``, and ω as a frequency. Under a
+        gauge, the gauged piece sum on the gauge space's free DOFs; the form
+        stays the driven space's (a backend reads only whether its space is
+        complex, and never assembles it: the gauged piece sum always has its
+        pattern).
         """
         op = self.operator
         free = op.space.FreeDofs() if self._gauge is None else self._gauge.free
@@ -626,6 +629,8 @@ class SystemOperator:
             free,
             piece_sum=PieceSum(self._pieces, self._weights(omega)),
             layout=op.layout,
+            cells=op.cells,
+            frequency=omega / (2 * math.pi),
         )
 
     def _weights(self, omega: float) -> tuple[complex, ...]:

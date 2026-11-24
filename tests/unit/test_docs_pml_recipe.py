@@ -78,7 +78,7 @@ LIMITS = {
         "test_a_moved_mesh_pushing_air_past_a_stretched_face_is_refused_under_grad",
         "test_boundary_morph_of_a_surface_in_the_layer_is_refused",
     ),
-    "No iterative solver": ("test_an_explicit_bddc_gmres_refuses_the_layer",),
+    "Iterative solver": ("test_an_explicit_bddc_gmres_refuses_the_layer",),
     "Thin layers": ("test_a_thin_layer_warns",),
 }
 #: Refusal tests of input mistakes, not limits of the layer: no page line.

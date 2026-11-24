@@ -30,10 +30,10 @@ from gfem._engine.cache import ENTRIES
 from gfem._engine.driven import DrivenRule
 from gfem._engine.solve_request import SolveRequest
 from gfem._engine.system_operator import SystemOperator
-from gfem._linalg import bddc, pardiso, prepare
+from gfem._linalg import KRYLOV_KINDS, bddc, pardiso, prepare
 from gfem._linalg.base import PlannedHandle, same_pattern
-from gfem._linalg.bddc import BddcHandle
 from gfem._linalg.direct import DirectHandle
+from gfem._linalg.krylov_handle import KrylovHandle
 from gfem._text import hertz
 
 L, W, H = 10.0, 2.0, 1.0  # mm
@@ -327,20 +327,28 @@ def test_auto_is_direct_while_it_fits(line, monkeypatch, caplog):
     (record,) = [r for r in caplog.records if hasattr(r, "linear_solver")]
     assert record.linear_solver == "direct"
     assert record.estimate <= record.budget
-    # a budget below the estimate: GMRES + BDDC
+    # a budget below the estimate: the p-multigrid, which fits the memory
     monkeypatch.setattr(driven, "default_retain_memory", lambda: record.estimate - 1)
+    rule = DrivenRule(line, problem, gfem.SolverOptions())
+    assert rule.linear.kind == "pmg_gmres"
+    # and where it does not: GMRES + BDDC
+    monkeypatch.setattr(driven, "memory_limit", lambda: 0)
     rule = DrivenRule(line, problem, gfem.SolverOptions())
     assert rule.linear.kind == "bddc_gmres"
 
 
-def test_bddc_tolerance_is_the_preconditioned_residual(line, monkeypatch):
+@pytest.mark.parametrize("linear_solver", KRYLOV_KINDS)
+def test_the_iterative_tolerance_is_the_preconditioned_residual(
+    line, monkeypatch, linear_solver
+):
     # GMRES stops on |P(b - Ax)| <= tol |P b|; S is accurate to about tol,
-    # while |b - Ax| / |b| (1.6e-5 here) is not asserted: it is no error measure
+    # while |b - Ax| / |b| (1.6e-5 here with BDDC) is not asserted: it is no
+    # error measure
     import ngsolve as ngs
 
     tolerance = 1e-6
     residuals = []
-    solve = BddcHandle._inverse_map
+    solve = KrylovHandle._inverse_map
 
     def spy(self, B, tol, x0=None):
         X, its = solve(self, B, tol, x0)
@@ -355,9 +363,9 @@ def test_bddc_tolerance_is_the_preconditioned_residual(line, monkeypatch):
             residuals.append(ngs.Norm(pr) / ngs.Norm(pb))
         return X, its
 
-    monkeypatch.setattr(BddcHandle, "_inverse_map", spy)
+    monkeypatch.setattr(KrylovHandle, "_inverse_map", spy)
     problem = gfem.Driven(frequency=1e9)
-    s = _s(line, problem, linear_solver="bddc_gmres", tolerance=tolerance).s.values
+    s = _s(line, problem, linear_solver=linear_solver, tolerance=tolerance).s.values
     direct = _s(line, problem).s.values
     assert len(residuals) == 2
     assert max(residuals) <= 1.01 * tolerance
@@ -439,7 +447,7 @@ def test_a_bddc_sweep_keeps_its_preconditioner_and_matches_fresh_setups(
     s = np.asarray(_s(line, problem, linear_solver="bddc_gmres").s.values)
     assert len(builds) == 1
     # without refactorization, BDDC is set up afresh at each frequency
-    monkeypatch.delattr(BddcHandle, "refactorize")
+    monkeypatch.delattr(KrylovHandle, "refactorize")
     builds.clear()
     fresh = np.asarray(_s(line, problem, linear_solver="bddc_gmres").s.values)
     assert len(builds) == 4
@@ -467,7 +475,7 @@ def test_a_reused_bddc_preconditioner_solves_as_accurately_as_fresh_setups(
     builds = count_preconditioners(monkeypatch)
     reused = np.asarray(_s(line, problem, linear_solver="bddc_gmres").s.values)
     assert len(builds) < 8
-    monkeypatch.delattr(BddcHandle, "refactorize")
+    monkeypatch.delattr(KrylovHandle, "refactorize")
     fresh = np.asarray(_s(line, problem, linear_solver="bddc_gmres").s.values)
     error = np.abs(reused - direct).max(axis=(1, 2))
     error_fresh = np.abs(fresh - direct).max(axis=(1, 2))

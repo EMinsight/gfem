@@ -91,11 +91,20 @@ v0.1.
   and reuses the factorization for every port. The default (`"auto"`) picks it
   for a driven problem on one machine while its factorization fits in half the
   memory. Install the `mkl` extra for its fastest factorization.
-- **`linear_solver="bddc_gmres"`**: pick it for a large model, or when the
-  direct factorization does not fit in memory; `"auto"` picks it for such a
-  driven problem and for electrostatic problems. A model with a perfectly
-  matched layer refuses it, and `"auto"` then picks `"direct"` whatever the
-  memory (MUMPS across MPI ranks).
+- **`linear_solver="pmg_gmres"`**: pick it for a driven model several
+  wavelengths across that the direct solver cannot hold, such as a photonic
+  device in dielectric cladding, with absorbing faces or a perfectly matched
+  layer, or a metal circuit on a fine mesh. Its iterations stay near 10 as the
+  model grows, it needs about a quarter of the direct solver's memory at order 2,
+  and it is faster than the direct solver from a few million unknowns on.
+  Driven problems at order 2 or 3 on one CPU process, with gradients, and
+  without Bloch, periodic or Floquet models. `"auto"` picks it where the direct
+  solver does not fit and it does ({doc}`recipes/large-driven-model`).
+- **`linear_solver="bddc_gmres"`**: pick it across MPI ranks, for periodic and
+  Bloch models, and for electrostatic problems, when the direct factorization
+  does not fit; `"auto"` picks it for a driven problem that neither the
+  direct solver nor `"pmg_gmres"` takes, and for electrostatic problems. A model with a perfectly matched layer refuses it:
+  use `"pmg_gmres"`.
 - **`linear_solver="petsc"`** and **`eigen_solver="slepc"`**: pick them for
   MUMPS and its options, your own PETSc Krylov method and preconditioner, or
   SLEPc's own controls. With no options, `"petsc"` gives the same results as
@@ -164,7 +173,7 @@ returning a wrong value:
   ports' mode problem is not gauged and keeps its own floor: below it, a
   model with wave ports warns with {py:obj}`gfem.LowFrequencyWarning`, and
   lumped ports keep their digits. Other driven solves (`"bddc_gmres"`,
-  `"petsc"`, the GPU, several MPI ranks, periodic and Floquet models, or
+  `"pmg_gmres"`, `"petsc"`, the GPU, several MPI ranks, periodic and Floquet models, or
   `gauge="none"`) are ungauged: below the floor their fields, gradients and,
   with an exact factorization, the capacitive part of S lose digits, and they
   warn. For capacitance at low frequency, solve {py:obj}`gfem.Electrostatic`;
@@ -206,7 +215,8 @@ returning a wrong value:
   principal axes. No `Absorbing` face, `Impedance` or `Conductor` sheet in or
   on the layer. Lumped ports and Floquet surfaces keep clear of it, and a
   wave port may cut a side layer but not one stretched along its normal. No
-  stretch along a periodic axis. No `"bddc_gmres"`. The fields inside the
+  stretch along a periodic axis. No `"bddc_gmres"`; `"pmg_gmres"` solves the layer exactly
+  inside its iterations. The fields inside the
   layer are not physical; energies, participations and port power count the
   physical regions. Details: {doc}`recipes/perfectly-matched-layer`.
 - **Unrequested port modes**: a propagating mode that no wave port on its
@@ -222,7 +232,7 @@ returning a wrong value:
 - **2D models**: normal incidence and one polarization only. Eigenmode,
   electrostatic and thermal problems, lumped and Floquet ports, periodic
   pairs, conductor and impedance surfaces, sheet designs, anisotropic
-  materials, PMLs, the adaptive sweep, the BDDC and GPU solvers, several
+  materials, PMLs, the adaptive sweep, the iterative and GPU solvers, several
   processes, measurements other than `Field.at`, mesh refinement and node
   gradients raise `NotImplementedError` and name the alternative, most often
   the {term}`slab model`. In Hz a design blend takes constant permittivities

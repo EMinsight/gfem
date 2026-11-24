@@ -801,9 +801,10 @@ def refuse_bddc(pml: PML) -> ValueError:
     return ValueError(
         f"linear_solver='bddc_gmres' cannot solve a model with a perfectly matched "
         f"layer ({', '.join(map(repr, pml.regions))}): its stretch stalls the "
-        "BDDC-preconditioned GMRES. Use linear_solver='direct' (or 'auto', which "
-        "picks it), or end the air box with gfem.Absorbing faces instead of the "
-        "layer."
+        "BDDC-preconditioned GMRES. Use linear_solver='pmg_gmres', which solves "
+        "the layer exactly inside an iterative solve, or 'direct' (or 'auto', "
+        "which picks one of them), or end the air box with gfem.Absorbing faces "
+        "instead of the layer."
     )
 
 

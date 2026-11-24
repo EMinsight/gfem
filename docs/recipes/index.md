@@ -40,6 +40,7 @@ orphan: true
 - {doc}`shared-port-surface`
 - {doc}`measurements`
 - {doc}`loss-budget`
+- {doc}`large-driven-model`
 - {doc}`gpu-direct-solver`
 - {doc}`petsc-slepc`
 - {doc}`distributed-solve`

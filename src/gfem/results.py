@@ -1291,9 +1291,9 @@ class SweepInfo:
             iterations of each excited port's solve; ``()`` for a direct
             solve on fresh factors.
         preconditioner_reused: For each sampled frequency, whether its
-            solve ran on a preconditioner built for another matrix (BDDC
-            set up at an earlier frequency, or direct factors from an
-            earlier design: preconditioner reuse).
+            solve ran on a preconditioner built for another matrix (a BDDC
+            or p-multigrid preconditioner built at an earlier frequency, or
+            direct factors from an earlier design: preconditioner reuse).
 
     Under `jax.grad`, `jax.jit` or `jax.vmap` an adaptive sweep needs
     frozen samples (``Driven(samples=...)``), and ``sample_errors``,
