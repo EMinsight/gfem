@@ -232,6 +232,10 @@ PROBLEMS = {
     "driven": Problem("driven", "s.values", "lumped"),
     "driven_wave": Problem("driven", "s.values", "wave"),
     "driven_wave_shared": Problem("driven", "s.values", "wave"),
+    "driven_wave_face": Problem("driven", "s.values", "wave"),
+    "driven_wave_shared_face": Problem("driven", "s.values", "wave"),
+    "driven_wave_face_sheet": Problem("driven", "s.values", "wave"),
+    "driven_wave_face_law": Problem("driven", "s.values", "wave"),
     "driven_sheet": Problem("driven", "s.values", "lumped"),
     "driven_adaptive": Problem("driven", "s.values", "lumped"),
     "driven_periodic_plain": Problem("driven_periodic_plain", "s.values", "lumped"),
@@ -413,14 +417,6 @@ RAISES_LABELS = {
         "Eigenmode of a periodic model, with respect to the parameters of a "
         "permittivity law"
     ),
-    "driven x fill of a sheet beside a wave port": (
-        "Driven S-parameters, with respect to the fill of a sheet that shares "
-        "an edge with a wave port's face"
-    ),
-    "driven x Impedance value beside a wave port": (
-        "Driven S-parameters, with respect to the resistance, inductance or "
-        "capacitance of an `Impedance` that shares an edge with a wave port's face"
-    ),
     "LumpedPort resistance": (
         "Any result, with respect to a lumped port's resistance (its reference "
         "impedance)"
@@ -455,14 +451,6 @@ RAISES_LABELS = {
         "`Model.bloch_wave_vector`, with respect to the incidence angles (the "
         "incidence of a Floquet port is a constant of the solve)"
     ),
-    "driven x material on a wave port face": (
-        "Driven S-parameters, with respect to the material of a region with "
-        "elements on a wave port's face"
-    ),
-    "driven x law parameter of a region on a wave port face": (
-        "Driven S-parameters, with respect to the parameters of a permittivity "
-        "law in a region with elements on a wave port's face"
-    ),
     "law parameter of a blend's end": (
         "Any result, with respect to the parameters of a permittivity law at an "
         "end of a metal-dielectric blend"
@@ -470,10 +458,6 @@ RAISES_LABELS = {
     "driven x law parameter under a Bloch wave vector": (
         "Driven S-parameters at a Bloch `wave_vector`, with respect to the "
         "parameters of a permittivity law"
-    ),
-    "driven x material field with axes on a wave port face": (
-        "Driven S-parameters, with respect to the principal values of a "
-        "`MaterialField` with axes, in a region with elements on a wave port's face"
     ),
     "material axes (orientation)": (
         "Any result, with respect to a material's principal axes"
@@ -485,9 +469,18 @@ RAISES_LABELS = {
         "Any result, with respect to node coordinates, when an `Absorbing` "
         "surface borders an anisotropic material"
     ),
-    "driven x material on a shared wave port face": (
-        "Driven S-parameters, with respect to the material of a region with "
-        "elements on a shared wave port surface"
+    "driven x port mode residual at a port-face design": (
+        "The `residual` of a wave port's mode in a driven result, with respect "
+        "to a design a wave port's mode reads (the backward error of the mode "
+        "solve is a diagnostic)"
+    ),
+    "driven x port-face design under a Bloch wave vector": (
+        "Driven results at a Bloch `wave_vector`, with respect to a design a wave "
+        "port's mode reads"
+    ),
+    "driven x port-face design on a fixed-angle sweep": (
+        "Driven results on a fixed-angle sweep, with respect to a design a wave "
+        "port's mode reads"
     ),
     "driven x nodes of a port surface": (
         "Driven S-parameters, with respect to node coordinates on a port surface"

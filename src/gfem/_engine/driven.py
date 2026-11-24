@@ -58,9 +58,10 @@ system, the system operator at -k (`SystemOperator.solve_adjoint`). On a
 periodic model the pairs go to the sensitivity kernel on the unpaired
 space (`DrivenOperator.pair`): ``A = P^H A_plain P``, so ``lambda^T (dA)
 x = (conj(P) lambda)^T (dA_plain) (P x)``. Wave
-ports' modes are constants of the solve: a design may not touch a wave
-port face (`gfem.PortGeometryError`), so the excitations, the S
-functionals and the modal corrections have no design derivative.
+ports' modes follow a design at their faces: the excitations, the S
+functionals, the modal corrections and the Robin term read the modes, so
+the held pairs miss their derivative, which a port pass adds per surface
+whose section reads a wanted input (`gfem._engine.port_pass`).
 
 An adaptive sweep differentiates with its reduced basis V and sample set
 held fixed (`DrivenRule._backward_adaptive`): the cache entry keeps only V
@@ -81,7 +82,7 @@ import contextvars
 import dataclasses
 import functools
 import math
-from collections.abc import Callable, Generator, Hashable, Mapping, Sequence
+from collections.abc import Callable, Collection, Generator, Hashable, Mapping, Sequence
 from typing import Any, Literal, cast
 
 import jax
@@ -94,6 +95,7 @@ import scipy.sparse
 from gfem import _floquet, _mpi, _pml, _progress, _timing
 from gfem._adjoint import adjoint_tolerance
 from gfem._boundaries import (
+    Absorbing,
     FloquetPort,
     Impedance,
     LumpedPort,
@@ -149,9 +151,11 @@ from gfem._engine.port_network import (
     resistance,
     split_cotangent,
 )
+from gfem._engine.port_pass import PortPass
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import (
     FieldPair,
+    Integrated,
     Term,
     is_lumped,
     is_sheet,
@@ -905,9 +909,11 @@ class DrivenRule:
     form = "driven"
     #: Material properties the driven forms read, and a law blend's density.
     reads = frozenset({"eps_r", "mu_r", "tan_delta", "conductivity", "blend"})
-    #: Outputs whose cotangents the backward pass handles (a design may not
-    #: touch a wave port face: `unsupported_input`).
+    #: Outputs whose cotangents the backward pass handles.
     differentiable_outputs = sweep_outputs.DIFFERENTIABLE
+    #: `nondifferentiable_output` reads the wanted input kinds: the port
+    #: modes' ``residual`` is refused only beside a design at a port face.
+    input_aware = True
     #: Outputs that are a rank's own piece under ranks: the ranks
     #: compare their cotangents' shapes, not their values.
     pieces = frozenset({"e_field"})
@@ -1078,6 +1084,7 @@ class DrivenRule:
         self.port_design = PortDesign.of(model)
         # The fields live on the mesh as given (traced or not).
         self._mesh = model.mesh
+        self._materials = dict(model.materials)
         self._excluded = model._domain.excluded  # noqa: SLF001
         self._check_dipoles(model)
         #: The system operator and port network builder, and the state its
@@ -1779,33 +1786,70 @@ class DrivenRule:
     def unsupported_input(self, kind: tuple) -> str | None:
         """Why a read input cannot be differentiated here, or ``None``.
 
-        A wave port's mode is a constant of the solve, so the design must
-        stay off its face: a perturbed material of a region with an element
-        on a wave port face raises.
-
-        A sheet field whose surface shares an edge with a wave port face
-        raises likewise: the port mode reads the sheet on that edge. So does
-        a lumped value of an `Impedance` on such a surface.
+        An input a wave port's mode reads (the materials of the regions on its
+        face, a permittivity law's parameters, a sheet field or `Impedance`
+        beside it) is differentiated through the port pass, except under a
+        Bloch wave vector or at a fixed angle, and on an adaptive sweep, whose
+        modes this version holds.
 
         The node coordinates cannot be differentiated next to a tensor
         absorbing admittance (`terms.absorbing_shape_unsupported`). A
         permittivity law's parameter is differentiated on the uniform and
         adaptive sweeps without a Bloch wave vector (`_law_unsupported`).
-
-        Raises:
-            PortGeometryError: ``kind`` is the material, or a law parameter,
-                of a region that touches a wave port face, or the fill of a
-                sheet or a lumped value of an `Impedance` beside one.
         """
         if kind[0] == "law":
             reason = self._law_unsupported()
             if reason is not None:
                 return reason
-        self.port_design.check(kind)
+        reason = self._port_face_unsupported(kind)
+        if reason is not None:
+            return reason
         if kind == ("nodes",) or kind[1:2] in [(r,) for r in self.truncation_designs]:
             # nodes, or a design an incident load would read at the truncation
             return self._unsupported_with_sources(kind)
         return None
+
+    def _port_face_unsupported(self, kind: tuple) -> str | None:
+        """Why a wave port's mode cannot follow input ``kind`` here, or ``None``.
+
+        ``None`` for an input no wave port's mode reads.
+        """
+        ports = self.port_design.reading(kind)
+        if not ports:
+            return None
+        problem = self.problem
+        if problem.wave_vector is not None:
+            where = (
+                "on a fixed-angle sweep"
+                if problem.wave_vector_frequency is not None
+                else "under a Bloch wave vector"
+            )
+            return (
+                f"the mode of wave port {ports[0]!r} reads it, and gradients with "
+                f"respect to a design at a wave port face are not verified {where} "
+                "in this version. Keep the design away from wave port faces"
+            )
+        if self.adaptive:
+            return (
+                f"the mode of wave port {ports[0]!r} reads it, and the adaptive "
+                "sweep holds the wave ports' modes in this version. Use "
+                "Driven(sweep='uniform'), or keep the design away from wave port "
+                "faces"
+            )
+        absorbing = self.port_design.absorbing.intersection(ports)
+        if kind[0] == "material" and absorbing and self._anisotropic(kind[1]):
+            return (
+                "the absorbing edge's admittance beside a per-axis material at a "
+                "wave port face is not differentiable in this version: make the "
+                "material isotropic next to the absorbing edge or wrap it in "
+                "jax.lax.stop_gradient"
+            )
+        return None
+
+    def _anisotropic(self, region: str) -> bool:
+        """Whether the material of ``region`` is a field with principal axes."""
+        material = self._materials.get(region)
+        return isinstance(material, MaterialField) and material.axes is not None
 
     def _nodes_unsupported(self, model: Model) -> str | None:
         """Why the node coordinates cannot be differentiated, or ``None``."""
@@ -1850,15 +1894,35 @@ class DrivenRule:
             )
         return None
 
-    def nondifferentiable_output(self, name: str) -> str:
-        """The error message for a cotangent on output ``name``."""
+    def nondifferentiable_output(
+        self, name: str, kinds: Collection[tuple] = frozenset()
+    ) -> str | None:
+        """Why a cotangent on output ``name`` cannot be pulled back, or ``None``.
+
+        Input-aware: ``kinds`` are the wanted input kinds. The wave ports'
+        ``residual`` is the backward error of the mode solve, a diagnostic: it
+        has no derivative where a wanted input moves a mode (one a wave port
+        reads), and an exact zero elsewhere.
+        """
+        if name == "port_residual":
+            ports = [p for k in kinds for p in self.port_design.reading(k)]
+            if not ports:
+                return None
+            return (
+                f"gfem cannot differentiate the port mode output 'residual' of "
+                f"wave port {ports[0]!r}: it is the backward error of the mode "
+                "solve, a diagnostic, not a physical quantity. Wrap it in "
+                "jax.lax.stop_gradient to use its value without its derivative."
+            )
+        if name in self.differentiable_outputs:
+            return None
         return (
             f"gfem cannot differentiate the driven output {name!r} in this "
             "version. Wrap it in jax.lax.stop_gradient to use its value without "
             "its derivative."
         )
 
-    def backward(
+    def backward(  # noqa: PLR0912, PLR0915 - one frequency loop with its adjoint columns
         self,
         model: Model,
         entry: Entry,
@@ -1866,7 +1930,7 @@ class DrivenRule:
         *,
         wanted: frozenset | None = None,
         port_modes: list[dict[str, np.ndarray]] | None = None,
-    ) -> list[FieldPair]:
+    ) -> list[FieldPair | Integrated]:
         """Fold the S and kept-field cotangents into one field pair per frequency.
 
         At frequency n, with ``X`` the excited ports' solutions, ``f_i`` port
@@ -1877,7 +1941,8 @@ class DrivenRule:
         cotangent on a periodic model) and ``A`` the system operator
         (wave-port Robin terms and modal corrections included): ``sum ct
         dy/dp = -sum_j Lambda_j^T (dA/dp) x_j`` (the excitations and the
-        modal corrections depend on the port modes only). Without a Bloch
+        modal corrections depend on the port modes only, which the port pass
+        below differentiates). Without a Bloch
         wave vector ``A`` is complex symmetric, and when ``f_i`` is parallel
         to port i's excitation (every lumped port and every wave port, lossy
         or not), ``A^-T f_i`` is port i's own solution scaled (no solve).
@@ -1885,8 +1950,17 @@ class DrivenRule:
         not excited, and every row under a Bloch wave vector) take one
         multi-column adjoint solve, on the transposed system (-k) under a
         Bloch wave vector. On a periodic model the pair
-        is on the unpaired space (`DrivenOperator.pair`). ``z_ref``
-        contributes nothing.
+        is on the unpaired space (`DrivenOperator.pair`).
+
+        A design a wave port's mode reads (`PortDesign.reading`) moves the
+        excitations, the S functionals, the modal corrections, the Robin term
+        and the outputs ``port_gamma``, ``port_z_pv`` and ``z_ref`` through the
+        mode, which the held pairs miss: ``PortPass`` collects, per frequency,
+        the traces of ``Lambda`` and ``X`` on each such surface with the row's
+        cotangents, and runs one 2D pass per surface after the loop. Its
+        material cotangents join the pairs (`Integrated`), the rest
+        (a law's parameters, a sheet's fill, an `Impedance`'s values) go
+        through `explicit_inputs`.
 
         The frequencies are solved from the adjoint base's frequency
         (`SystemOperator.adjoint_order`): a base handle kept from the forward
@@ -1916,13 +1990,18 @@ class DrivenRule:
         frequencies = self.problem.frequency
         nodes = bool(self.dipoles) and (wanted is None or ("nodes",) in wanted)
         self._explicit_nodes = None
+        self._explicit_inputs = {}
         pairs: list[FieldPair | None] = [None] * len(frequencies)
+        port_terms: list[Integrated] = []
         rebuilt = not isinstance(entry.handle, _Kept)  # frequency workers keep none
         with task_manager(self.options.threads, self.comm):
             if rebuilt:
                 entry.handle = _Kept(*self.system(model, handed=port_modes))
             system, ports = entry.handle.system, entry.handle.ports
             op = system.operator
+            # the wave ports' modes follow a design at their faces: one 2D pass
+            # per surface that reads a wanted input, none elsewhere
+            port_pass = PortPass(self, model, system, ports, wanted)
             sources = None
             if ct_p is not None or nodes:
                 sources = self._source_columns(model, system)
@@ -1958,6 +2037,8 @@ class DrivenRule:
                         weights=op.weights(omega, laws=laws),
                         domain=domain,
                     )
+                    if port_pass.active:
+                        port_pass.collect(n, adjoint, x, cotangents)
                     if nodes and sources is not None:
                         self._add_explicit_nodes(
                             model,
@@ -1968,11 +2049,24 @@ class DrivenRule:
                             ct=None if ct_p is None else ct_p[n],
                         )
                     row.advance(frequency=f)
+            if port_pass.active:
+                found = port_pass.finish()
+                port_terms, self._explicit_inputs = found.integrated, found.explicit
         if rebuilt:
             # as a rerun forward's (`gfem._adjoint.solve_vjp`): the kept state
             # this backward built goes down to the budget, no entry evicted
             ENTRIES.trim(retain_budget(self.options.retain_memory), self.comm)
-        return [p for p in pairs if p is not None]
+        return [*(p for p in pairs if p is not None), *port_terms]
+
+    def explicit_inputs(self) -> dict[tuple, Any]:
+        """The cotangents by input kind the backward computed itself.
+
+        The port pass's: a permittivity law's parameters, a sheet field's fill
+        and an `Impedance`'s values, which a wave port's mode reads and no
+        pass over the 3D pairs gives. Rank 0 alone has them (the ranks' sum
+        counts the 2D work once).
+        """
+        return getattr(self, "_explicit_inputs", {})
 
     def _output_loads(
         self,
@@ -2019,7 +2113,7 @@ class DrivenRule:
         *,
         laws: bool,
         wanted: frozenset | None = None,
-    ) -> list[FieldPair]:
+    ) -> list[FieldPair | Integrated]:
         r"""The frozen-basis backward of an adaptive sweep: no full-size solve.
 
         With the basis V and the sample set held fixed, the reduced solution
@@ -3067,12 +3161,15 @@ class _Kept:
 
 @dataclasses.dataclass(frozen=True)
 class PortDesign:
-    """What the wave ports' modes read, so a gradient must hold it.
+    """What the wave ports' modes read.
 
-    A wave port's mode is a constant of the solve: a gradient with respect
-    to an input its mode reads would miss the mode's own derivative. The
-    driven and eigenmode rules refuse those inputs with one `check`, so
-    their messages cannot drift.
+    A wave port's mode follows the inputs its cross-section reads: the
+    materials of the regions on its face, a permittivity law's parameters, and
+    a sheet field or `Impedance` sharing an edge with the face. `reading` is the
+    map of those inputs: the driven rule differentiates them through the
+    port pass (`gfem._engine.port_pass`) and only gates on it, while the
+    eigenmode rule, whose wave port term holds its mode, refuses them with
+    `check`.
     """
 
     #: Per wave port, the volume regions with an element on its face: the
@@ -3085,6 +3182,8 @@ class PortDesign:
     #: wave ports whose face shares an edge with its surface: the port mode
     #: reads it there.
     sheets: dict[int, tuple[str, ...]]
+    #: The wave ports whose face shares an edge with an `Absorbing` surface.
+    absorbing: frozenset[str] = frozenset()
 
     @classmethod
     def of(cls, model: Model, *, sheets: bool = True) -> PortDesign:
@@ -3097,61 +3196,80 @@ class PortDesign:
                 for p in group
             },
             sheets=_sheet_ports(model) if sheets else {},
+            absorbing=_absorbing_ports(model) if sheets else frozenset(),
         )
 
-    def check(self, kind: tuple) -> None:
+    def reading(self, kind: tuple) -> tuple[str, ...]:
+        """The wave ports whose mode reads input ``kind`` (none: empty)."""
+        if (is_lumped(kind) and kind[0] == "boundary") or is_sheet(kind):
+            return self.sheets.get(kind[1], ())
+        if kind[0] not in ("material", "law"):
+            return ()
+        return tuple(p for p, regions in self.regions.items() if kind[1] in regions)
+
+    def reads(self, wanted: Collection[tuple] | None, ports: Sequence[str]) -> bool:
+        """Whether a wanted input is read by a mode of ``ports`` (``None``: all)."""
+        if wanted is None:
+            return True
+        return any(set(self.reading(k)) & set(ports) for k in wanted)
+
+    def check(self, kind: tuple, *, line: bool = False) -> None:
         """Raise when input ``kind`` is one a wave port's mode reads.
+
+        The eigenmode rule's refusal: its wave port term at a complex
+        eigenfrequency holds the mode, so the mode's own derivative is
+        missing. With ``line``, a 2D model's line port, whose mode is a
+        constant of the solve.
 
         Raises:
             PortGeometryError: ``kind`` is the material, or a law parameter,
                 of a region that touches a wave port face, or the fill of a
                 sheet or a lumped value of an `Impedance` beside one.
         """
+        ports = self.reading(kind)
+        if not ports:
+            return
+        who = "gfem" if line else "an Eigenmode solve"
+        why = (
+            "the port mode reads that and is a constant of the solve"
+            if line
+            else "the wave port's term at a complex eigenfrequency holds its mode"
+        )
+        keep = (
+            "Keep the design away from wave port faces"
+            if line
+            else "A gfem.Driven solve differentiates a design at a wave port face. "
+            "For an eigenmode problem, keep the design away from wave port faces"
+        )
+        label = self._label(ports[0])
         if is_lumped(kind) and kind[0] == "boundary":
-            ports = self.sheets.get(kind[1], ())
-            if ports:
-                raise PortGeometryError(
-                    f"{self._label(ports[0])}: the Impedance model.boundaries"
-                    f"[{kind[1]}] shares an edge with the port face, so gfem cannot "
-                    f"differentiate with respect to its {kind[2]}: the port mode "
-                    "reads the sheet there and is a constant of the solve. Keep the "
-                    "design away from wave port faces (split the surface so the "
-                    "part touching the port is a boundary of its own), or wrap the "
-                    "value in jax.lax.stop_gradient."
-                )
-            return
-        if is_sheet(kind):
-            ports = self.sheets.get(kind[1], ())
-            if ports:
-                raise PortGeometryError(
-                    f"{self._label(ports[0])}: the sheet field of model.boundaries"
-                    f"[{kind[1]}] shares an edge with the port face, so gfem cannot "
-                    "differentiate with respect to its fill: the port mode reads "
-                    "the sheet there and is a constant of the solve. Keep the "
-                    "design away from wave port faces (split the sheet so the part "
-                    "touching the port is a boundary of its own without fill), or "
-                    "wrap the fill in jax.lax.stop_gradient."
-                )
-            return
-        if kind[0] not in ("material", "law"):
-            return
-        region = kind[1]
-        touched = [p for p, regions in self.regions.items() if region in regions]
-        if touched:
-            leaf = (
-                f"the permittivity law of model.materials[{region!r}]"
-                if kind[0] == "law"
-                else f"model.materials[{region!r}].{kind[2]}"
-            )
             raise PortGeometryError(
-                f"{self._label(touched[0])}: region {region!r} has elements "
-                f"on the port face, so gfem cannot differentiate with respect to "
-                f"{leaf}: the port mode reads that "
-                "material and is a constant of the solve. Keep the design away "
-                "from wave port faces (give the elements beside the port a "
-                "region of their own with a constant gfem.Material), or wrap "
+                f"{label}: the Impedance model.boundaries[{kind[1]}] shares an "
+                f"edge with the port face, so {who} cannot differentiate with "
+                f"respect to its {kind[2]}: {why}. {keep} (split the surface so "
+                "the part touching the port is a boundary of its own), or wrap "
                 "the value in jax.lax.stop_gradient."
             )
+        if is_sheet(kind):
+            raise PortGeometryError(
+                f"{label}: the sheet field of model.boundaries[{kind[1]}] shares "
+                f"an edge with the port face, so {who} cannot differentiate with "
+                f"respect to its fill: {why}. {keep} (split the sheet so the part "
+                "touching the port is a boundary of its own without fill), or "
+                "wrap the fill in jax.lax.stop_gradient."
+            )
+        region = kind[1]
+        leaf = (
+            f"the permittivity law of model.materials[{region!r}]"
+            if kind[0] == "law"
+            else f"model.materials[{region!r}].{kind[2]}"
+        )
+        raise PortGeometryError(
+            f"{label}: region {region!r} has elements on the port face, so {who} "
+            f"cannot differentiate with respect to {leaf}: {why}. {keep} (give "
+            "the elements beside the port a region of their own with a constant "
+            "gfem.Material), or wrap the value in jax.lax.stop_gradient."
+        )
 
     def _label(self, port: str) -> str:
         """``WavePort 'p1'``, or a shared port surface's ports and surface."""
@@ -3179,6 +3297,24 @@ def _sheet_ports(model: Model) -> dict[int, tuple[str, ...]]:
         if ports:
             out[i] = ports
     return out
+
+
+def _absorbing_ports(model: Model) -> frozenset[str]:
+    """The wave ports whose face shares an edge with an `Absorbing` surface."""
+    mesh = model.mesh
+    edges: set[tuple[int, int]] = set()
+    for b in model.boundaries:
+        if isinstance(b, Absorbing):
+            for surface in surfaces_of(b):
+                edges |= _edges(mesh.triangles[mesh.elements(surface)])
+    if not edges:
+        return frozenset()
+    return frozenset(
+        p.name
+        for p in model.ports
+        if isinstance(p, WavePort)
+        and edges & _edges(mesh.triangles[mesh.elements(p.surface)])
+    )
 
 
 def _edges(triangles: np.ndarray) -> set[tuple[int, int]]:

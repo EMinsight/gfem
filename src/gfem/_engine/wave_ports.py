@@ -208,6 +208,22 @@ class FaceTrace:
         vectors[self.idx3] = r[self.idx2] / self.writers[self.idx3, None]
         return vectors
 
+    def gather(self, values: np.ndarray, n_dof: int) -> np.ndarray:
+        r"""The 2D traces :math:`T^\mathsf{T}v` of 3D vectors, this rank's share.
+
+        The transpose of `lift`: ``values`` ``(ndof, width)`` are 3D vectors
+        (a solution, an adjoint), and the result ``(n_dof, width)`` holds on
+        2D DOF ``idx2[k]`` the value of 3D DOF ``idx3[k]`` over the number of
+        ranks that write it, so the sum over ranks is the exact trace.
+
+        Args:
+            values: The 3D columns.
+            n_dof: The number of 2D Nédélec DOFs of the port section.
+        """
+        trace = np.zeros((n_dof, values.shape[1]), values.dtype)
+        trace[self.idx2] = values[self.idx3] / self.writers[self.idx3, None]
+        return trace
+
 
 @dataclasses.dataclass(eq=False)
 class PortSurfaceCoupling:

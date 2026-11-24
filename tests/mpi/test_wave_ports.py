@@ -523,7 +523,7 @@ def test_a_port_mode_solve_agrees_with_one_process(tmp_path, case, ranks):
     np.testing.assert_array_equal(row["solved"], one["solved"])
 
 
-def _port_mode_under_jit():
+def _port_mode_under_jax():
     model = _slab()
     options = gfem.SolverOptions(threads=1)
 
@@ -535,18 +535,16 @@ def _port_mode_under_jit():
         return gfem.solve(moved, gfem.PortMode("p1", 12e9), options=options).gamma
 
     value = np.asarray(jax.jit(gamma)(4.0))
-    try:
-        jax.grad(lambda eps: gamma(eps).real.sum())(4.0)
-    except gfem.NonDifferentiableError as err:
-        return value, str(err)
-    raise AssertionError("a port mode has no derivative")
+    # the 2D adjoint runs on rank 0 alone, and the ranks' sum counts it once
+    grad = float(jax.grad(lambda eps: gamma(eps).real.sum())(4.0))
+    return value, grad
 
 
 def test_a_port_mode_under_jax_is_as_on_one_process():
-    value_one, message_one = _port_mode_under_jit()
-    (value, message), *_ = on_ranks(_port_mode_under_jit, ranks=3, limit=120)
-    assert message == message_one
+    value_one, grad_one = _port_mode_under_jax()
+    (value, grad), *_ = on_ranks(_port_mode_under_jax, ranks=3, limit=120)
     assert abs(value - value_one).max() < 1e-8 * abs(value_one).max()
+    assert grad == pytest.approx(grad_one, rel=1e-9)
 
 
 def _named_solver(directory):

@@ -23,6 +23,7 @@ from gradient_cases import (
     core_design,
     hybrid_line,
     hybrid_mesh,
+    ramp,
     s_functional,
     tight,
     wave_line,
@@ -142,6 +143,34 @@ def test_a_lossy_wave_port_beside_a_lumped_port_over_two_workers(tmp_path):
     np.testing.assert_allclose(s_two, s_one, rtol=0, atol=1e-12)
     assert np.abs(np.asarray(one)).max() > 0
     np.testing.assert_allclose(two, one, rtol=0, atol=1e-9 * np.abs(one).max())
+
+
+def test_a_face_design_gradient_over_two_workers_equals_one_process(tmp_path):
+    # the lower layer touches both port faces, so the modes follow it: the
+    # parent's backward rebuilds the whole-grid sweep and runs the port pass
+    mesh = wave_mesh(tmp_path)
+    model = wave_line(mesh, "lossy")
+    n = len(mesh.elements("lo"))
+    values = {"eps_r": ramp(mesh, "lo", 3.5, 4.5), "tan_delta": jnp.full(n, 0.05)}
+    weights = jnp.array([1.0, -2.0, 0.5, 3.0])[:, None, None]
+
+    def objective(eps, workers):
+        field = gfem.MaterialField(**{**values, "eps_r": eps})
+        m = model.with_material("lo", field)
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        options = tight("direct", frequency_workers=workers)
+        problem = gfem.Driven(WAVE_GRID, excite="p1")
+        result = gfem.solve(m, problem, options=options)
+        gamma = result.port_modes["p1"].gamma
+        return jnp.sum(weights * jnp.abs(result.s.values) ** 2) + jnp.sum(
+            jnp.imag(gamma * weights[:, 0, 0])
+        )
+
+    eps = values["eps_r"]
+    one = jax.grad(objective)(eps, 1)
+    two = jax.grad(objective)(eps, 2)
+    assert np.abs(np.asarray(one)).max() > 0
+    np.testing.assert_allclose(two, one, rtol=1e-10, atol=1e-14 * np.abs(one).max())
 
 
 def test_workers_on_shared_port_surfaces_give_the_sequential_sweep(tmp_path):

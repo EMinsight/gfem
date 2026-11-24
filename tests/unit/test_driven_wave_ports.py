@@ -22,6 +22,7 @@ import pytest
 import scipy.constants
 import scipy.sparse as sp
 import structured_meshes as sm
+from finite_differences import assert_gradient_matches
 from gradient_cases import (
     HYBRID_EPS,
     HYBRID_PORTS,
@@ -240,11 +241,26 @@ def test_wave_port_s_comes_out_of_jit_unchanged(plate_mesh, plate_result):
     )
 
 
-def test_a_design_touching_a_wave_port_face_raises_under_grad(plate_mesh):
-    # "fill" fills the whole line, so its elements sit on both port faces:
-    # the port mode would depend on the design.
-    model = line(plate_mesh).with_material(
-        "fill", gfem.MaterialField.uniform("fill", gfem.Material(eps_r=EPS))
+def test_a_design_filling_the_line_to_its_port_faces_differentiates(plate_mesh):
+    # "fill" fills the whole line, so its elements sit on both port faces: the
+    # port modes follow the design, and the gradient is the finite difference's
+    field = gfem.MaterialField.uniform("fill", gfem.Material(eps_r=EPS))
+    model = line(plate_mesh).with_material("fill", field)
+    # the forward's modes at the reduced rows are exact at the one frequency
+    options = gfem.SolverOptions(order=3, port_mode_tolerance=1e-12)
+
+    def s21_of(eps):
+        m = model.with_material("fill", dataclasses.replace(field, eps_r=eps))
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        result = gfem.solve(m, gfem.Driven(F[:1]), options=options)
+        # the line is lossless, so |S21| = 1 whatever the fill: its phase moves
+        return jnp.real(result.s.values[0, 1, 0])
+
+    rng = np.random.default_rng(0)
+    direction = rng.standard_normal(np.shape(field.eps_r))
+    direction /= np.linalg.norm(direction)
+    assert_gradient_matches(
+        s21_of, jnp.asarray(field.eps_r), [direction], step=1e-2, rel=1e-6
     )
 
     def s21(m):
@@ -252,8 +268,6 @@ def test_a_design_touching_a_wave_port_face_raises_under_grad(plate_mesh):
         result = gfem.solve(m, gfem.Driven(F[:1]), options=OPTIONS)
         return jnp.abs(result.s.values[0, 1, 0])
 
-    with pytest.raises(gfem.PortGeometryError, match=r"WavePort 'p1'.*'fill'"):
-        jax.grad(s21)(model)
     # a forward solve of the same model is fine, and so is stop_gradient
     assert np.isfinite(float(s21(model)))
     frozen = jax.grad(lambda m: s21(jax.lax.stop_gradient(m)))(model)

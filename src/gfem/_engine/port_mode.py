@@ -412,18 +412,20 @@ class PortModeSpace:
         """(pencil slot, name, weight) of an `Impedance` edge's R, L and C."""
         scale = self.section.scale
         out = []
+        # Python floats: NGSolve integrals do not multiply with NumPy scalars,
+        # which a design's host values (an Impedance beside the port) are
         if item.resistance is not None:
-            out.append((2, "resistance", Z0 / item.resistance))
+            out.append((2, "resistance", float(Z0 / item.resistance)))
         if item.inductance is not None:
             out.append(
-                (0, "inductance", scipy.constants.mu_0 * scale / item.inductance)
+                (0, "inductance", float(scipy.constants.mu_0 * scale / item.inductance))
             )
         if item.capacitance is not None:
             out.append(
                 (
                     1,
                     "capacitance",
-                    item.capacitance / (scipy.constants.epsilon_0 * scale),
+                    float(item.capacitance / (scipy.constants.epsilon_0 * scale)),
                 )
             )
         return out

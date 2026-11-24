@@ -808,9 +808,11 @@ def _local_points(section: PortSection | LineSection, p: np.ndarray) -> np.ndarr
 class PortModeResult:
     r"""The mode of a wave port over frequency.
 
-    Differentiable (see `gfem.PortMode`); on a `DrivenResult` the modes are
-    constants of the solve (a design may not touch a wave port face), so their
-    gradient is an exact zero.
+    Differentiable on its own (`gfem.PortMode`); on a `DrivenResult`
+    the modes follow a design at the wave port's face, as S does: ``gamma``
+    and ``Z_PV`` differentiate, a design the port's section does not read gives
+    them an exact zero, and ``residual`` is a diagnostic that raises
+    `gfem.NonDifferentiableError` beside such a design.
 
     Fields follow :math:`e^{+i\omega t}`; a mode propagates into the solve
     domain as :math:`e^{-\gamma s}`.
@@ -1945,7 +1947,8 @@ class DrivenResult:
             it before the 3D solve; empty without wave ports. Each carries
             its mode field, with or without ``Driven(keep_fields=...)``,
             except inside `jax.jit`, `jax.grad` or `jax.vmap`, where it is
-            ``None``. Constants of the solve: not differentiable.
+            ``None``. ``gamma`` and ``Z_PV`` follow a design at the port's
+            face; ``residual`` is not differentiable.
         offsets: ``(port name, distance in m)`` of each wave and Floquet
             port (static labels; ``dict(result.offsets)``), from
             ``WavePort(offset=...)`` or ``FloquetPort(offset=...)``: S of
@@ -2219,8 +2222,8 @@ class DrivenResult:
         A port not named keeps its plane. ``z_ref``, the kept fields,
         `port_modes` and `sweep` are unchanged.
 
-        Written in `jax.numpy`, so the new S differentiates like S
-        (``gamma`` is a constant of the solve).
+        Written in `jax.numpy`, so the new S differentiates like S, and
+        through ``gamma``, which follows a design at the port's face.
 
         Args:
             offsets: The new distance of each named wave or Floquet port, m,

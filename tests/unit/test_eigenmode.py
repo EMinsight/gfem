@@ -915,11 +915,13 @@ def test_a_mode_above_the_low_frequency_floor_does_not_warn(mesh):
 # --- unsupported terms and failures ----------------------------------------------
 
 
-def test_port_geometry_error_beside_a_wave_port_face_matches_the_driven_rule(
+def test_an_eigenmode_refuses_the_port_face_design_a_driven_solve_differentiates(
     mesh, monkeypatch
 ):
-    # the eigenmode gradient check names the same inputs, with the same
-    # messages, as the driven rule's (past any refusal of the solve itself)
+    # the wave port's term at a complex eigenfrequency holds its mode: the
+    # eigenmode rule names the inputs the port reads, and sends the user to
+    # `gfem.Driven`, whose rule differentiates them (past any refusal of the
+    # solve itself)
     monkeypatch.setattr(eigen_rule, "_check_supported", lambda _model: None)
     model = gfem.Model(
         mesh,
@@ -940,12 +942,16 @@ def test_port_geometry_error_beside_a_wave_port_face_matches_the_driven_rule(
         ("boundary", 1, "fill", "fill"),
         ("boundary", 1, "inductance"),
     ]:
-        with pytest.raises(gfem.PortGeometryError) as driven_raised:
-            driven.unsupported_input(kind)
-        with pytest.raises(gfem.PortGeometryError) as eigen_raised:
+        with pytest.raises(gfem.PortGeometryError) as raised:
             eigen.unsupported_input(kind)
-        assert str(eigen_raised.value) == str(driven_raised.value)
-        assert "WavePort 'o1'" in str(eigen_raised.value)
+        message = str(raised.value)
+        assert "WavePort 'o1'" in message
+        assert "an Eigenmode solve cannot differentiate" in message
+        assert "A gfem.Driven solve differentiates a design at a wave port face" in (
+            message
+        )
+        assert "stop_gradient" in message
+        assert driven.unsupported_input(kind) is None
 
 
 def test_conductivity_damps_the_line_exactly(mesh):

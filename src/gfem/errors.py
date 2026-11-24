@@ -178,9 +178,9 @@ class PortGeometryError(ValueError):
     """A port whose geometry the solver cannot use.
 
     For example a wave port surface that is not planar, or, under
-    differentiation, a design that touches a wave port face (the port mode
-    is a constant of the solve, so the materials beside the face must be
-    too). The message names the port and the remedy.
+    differentiation, a design at a wave port face of an eigenmode problem
+    (a `gfem.Driven` solve differentiates it), or a moved node of a lumped or
+    Floquet port surface. The message names the port and the remedy.
     """
 
 

@@ -1105,6 +1105,74 @@ def wave_resonator(mesh: gfem.Mesh, layers, design: dict, ports) -> gfem.Model:
     )
 
 
+# --- driven: wave ports with a design at their faces ---------------------------------
+
+#: A voltage path across both layers on the face of p1, inside the elements.
+FACE_PATH = ((0.0, 0.5e-3, 0.0), (0.0, 0.5e-3, 1e-3))
+#: The face variants of the two-layer line and the lead's loss.
+FACE_LEADS = {
+    "face_lossless": "lossless",
+    "face_lossy": "lossy",
+    "face_path": "lossy",
+    "face_absorbing": "lossy",
+}
+
+
+def face_line(mesh: gfem.Mesh, variant: str) -> gfem.Model:
+    """`wave_line` for a design at its port faces, in a variant of its ports.
+
+    ``"face_lossless"`` and ``"face_lossy"`` are the two lead materials;
+    ``"face_path"`` adds a voltage path on p1 (so ``Z_PV`` and ``z_ref`` of p1
+    are defined), ``"face_absorbing"`` first-order absorbing side walls.
+    """
+    model = wave_line(mesh, FACE_LEADS[variant])
+    if variant == "face_path":
+        d1, d2 = WAVE_OFFSETS["lossy"]
+        model = model.replace(
+            ports=[
+                gfem.WavePort("p1", "port1", offset=d1, voltage_path=FACE_PATH),
+                gfem.WavePort("p2", "port2", offset=d2),
+            ]
+        )
+    if variant == "face_absorbing":
+        model = model.replace(
+            boundaries=[*model.boundaries, gfem.Absorbing("side", order=1)]
+        )
+    return model
+
+
+def face_functional(result, rows, paths=(), s_part=None):
+    """The S objective, the ports' ``gamma`` and, with a path, ``Z_PV`` and ``z_ref``.
+
+    ``s_functional`` of S at ``rows``, plus per wave port ``(Im gamma + 0.3 Re
+    gamma) / k0`` summed over the rows, plus, for each port of ``paths`` (the
+    ones with a voltage path, whose ``Z_PV`` is defined), Re and Im of ``Z_PV``
+    and of its S reference impedance over 50 ohm. ``s_part`` replaces the S
+    objective (a shared surface's). Every term is O(1), so a small entry that
+    cancels does not set the margin.
+    """
+    rows = jnp.asarray(rows)
+    value = s_functional(result.s.values[rows]) if s_part is None else s_part
+    k0 = 2 * math.pi * jnp.asarray(result.s.frequency)[rows] / const.c
+    for mode in result.port_modes.values():
+        gamma = mode.gamma[rows]
+        value = value + jnp.sum((jnp.imag(gamma) + 0.3 * jnp.real(gamma)) / k0)
+    for name in paths:
+        z = result.port_modes[name].Z_PV[rows]
+        z_ref = result.s.z_ref[rows, result.s.ports.index(name)]
+        value = (
+            value
+            + jnp.sum(
+                jnp.real(z)
+                + 0.7 * jnp.imag(z)
+                + jnp.real(z_ref)
+                + 0.4 * jnp.imag(z_ref)
+            )
+            / 50.0
+        )
+    return value
+
+
 # --- port modes ---------------------------------------------------------------------
 
 #: The port mode cells' frequencies on the wave line, and the voltage path of its

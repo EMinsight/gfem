@@ -23,6 +23,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from finite_differences import assert_gradient_matches
 
 import gfem
 
@@ -118,10 +119,10 @@ def test_a_uniform_field_fill_gives_its_material_s_s(mesh, values, axes, frequen
     np.testing.assert_allclose(field_gamma, gamma, rtol=7e-15)
 
 
-def test_a_uniform_field_fill_at_the_ports_refuses_its_gradient(mesh):
-    # the port modes read the fill and are constants of the solve: its
-    # principal values may not move (raised while tracing, by the port's
-    # own rule before any per-axis question)
+def test_a_uniform_field_fill_at_the_ports_differentiates(mesh):
+    # the port modes read the fill (its principal values, with the turned
+    # permeability's explicit coupling terms): the gradient carries their
+    # derivative, and matches a central difference
     material = gfem.Material(eps_r=EPS, mu_r=MU, axes=anisotropy.turned(2, 30.0))
     field = gfem.MaterialField.uniform("fill", material)
     model = gfem.Model(
@@ -130,17 +131,18 @@ def test_a_uniform_field_fill_at_the_ports_refuses_its_gradient(mesh):
         boundaries=[gfem.PEC("walls")],
         ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")],
     )
+    options = dataclasses.replace(OPTIONS, port_mode_tolerance=1e-12)
 
     def objective(eps):
         moved = model.with_material("fill", dataclasses.replace(field, eps_r=eps))
         moved = moved.replace(mesh=jax.lax.stop_gradient(moved.mesh))
-        s = gfem.solve(moved, gfem.Driven(F_MU), options=OPTIONS).s.values
-        return jnp.sum(jnp.abs(s) ** 2)
+        s = gfem.solve(moved, gfem.Driven(F_MU), options=options).s.values
+        return jnp.sum(jnp.abs(s) ** 2) + jnp.real(s[0, 1, 0])
 
-    with pytest.raises(
-        gfem.PortGeometryError, match=r"WavePort 'p\d'.*'fill'.*eps_r.*stop_gradient"
-    ):
-        jax.make_jaxpr(jax.grad(objective))(field.eps_r)
+    p = jnp.asarray(field.eps_r)
+    direction = np.random.default_rng(0).standard_normal(p.shape)
+    direction /= np.linalg.norm(direction)
+    assert_gradient_matches(objective, p, [direction], step=1e-2, rel=1e-6)
 
 
 def test_a_rotated_guide_gives_the_same_s_parameters(mesh, tmp_path_factory):

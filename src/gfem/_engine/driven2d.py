@@ -296,6 +296,8 @@ class Driven2DRule(DrivenRule):
             and kind[1] not in self._constant_grids
         ):
             return _HZ_FREQUENCY_DEPENDENT
+        # a line port's mode is a constant of the solve here
+        self.port_design.check(kind, line=True)
         return super().unsupported_input(kind)
 
     def result(self, outputs: dict) -> DrivenResult:

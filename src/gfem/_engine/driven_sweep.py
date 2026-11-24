@@ -42,7 +42,7 @@ from gfem.problems import Driven
 if TYPE_CHECKING:
     from gfem._engine.driven import DrivenRule
     from gfem._engine.gauge import GaugeChoice
-    from gfem._engine.sensitivity import FieldPair
+    from gfem._engine.sensitivity import FieldPair, Integrated
     from gfem._pml import Stretch
     from gfem.model import Model
     from gfem.options import SolverOptions
@@ -331,7 +331,7 @@ class FixedAngleChildren:
         cotangents: dict[str, np.ndarray],
         *,
         wanted: frozenset | None,
-    ) -> list[FieldPair]:
+    ) -> list[FieldPair | Integrated]:
         """The backward of a fixed-angle sweep: each frequency on its own ±k(f).
 
         Each frequency's single-frequency rule (`child`) builds its
@@ -347,7 +347,7 @@ class FixedAngleChildren:
         width = len(parent.excite)
         ct_s = cotangents.get("s")
         ct_e = cotangents.get("e_field")
-        pairs: list[FieldPair] = []
+        pairs: list[FieldPair | Integrated] = []
         frequencies = parent.problem.frequency
         with _progress.task(
             _progress.UNIFORM_SWEEP_ADJOINT, total=len(frequencies)

@@ -134,7 +134,19 @@ EM_PROPERTIES = ("eps_r", "mu_r", "tan_delta", "conductivity")
 # raise (the face's shape terms are not differentiated yet). These cases
 # run in `test_port_face_raise_table`, one item per case.
 PORT_MODE_OUTPUTS = ("frequency", "gamma", "Z_PV", "residual", "solved")
-PORT_FACE_NAMES = ("port_mode", "port_mode_law", "port_mode_sheet", "port_mode_lumped")
+PORT_FACE_CASES = (
+    "driven_wave_face",
+    "driven_wave_shared_face",
+    "driven_wave_face_sheet",
+    "driven_wave_face_law",
+)
+PORT_FACE_NAMES = (
+    "port_mode",
+    "port_mode_law",
+    "port_mode_sheet",
+    "port_mode_lumped",
+    *PORT_FACE_CASES,
+)
 
 
 def _port_mode_outcome(out, kind, *, path, zero=()):
@@ -381,6 +393,70 @@ EXPECTED |= {
         ),
     )
     for kind in [("nodes",)] + [("material", "core", p) for p in ALL_PROPERTIES]
+}
+
+# A design at the wave port faces (cases `port_face_cases`, run by
+# `test_port_face_raise_table`): the port modes follow the design, so S, the
+# modes' gamma and, where a port has a voltage path, Z_PV and z_ref
+# differentiate with respect to every electromagnetic input a port's section
+# reads. The residual of a mode is a diagnostic: it raises beside such a design.
+# A thermal property is not read: exact zeros. The node coordinates, held by
+# the port pass of this version, move S alone.
+#: The 2-term law of the face region of `driven_wave_face_law`.
+FACE_LAW = gfem.PermittivityLaw(
+    eps_inf=2.0,
+    terms=[gfem.Lorentz(delta_eps=1.0, resonance_frequency=40e9, damping=2e9)],
+)
+FACE_LAW_KINDS = [
+    ("law", "dielectric", "eps_inf"),
+    *(("law", "dielectric", 0, f.name) for f in dataclasses.fields(FACE_LAW.terms[0])),
+]
+FACE_SHEET_KINDS = [
+    ("boundary", 2, "fill", "fill"),
+    *(("boundary", 2, v) for v in ("resistance", "inductance", "capacitance")),
+]
+FACE_KINDS = {
+    "driven_wave_face": [
+        ("nodes",),
+        *(("material", "dielectric", p) for p in ALL_PROPERTIES),
+    ],
+    "driven_wave_shared_face": [("nodes",), ("material", "fill", "eps_r")],
+    "driven_wave_face_sheet": [("nodes",), *FACE_SHEET_KINDS],
+    "driven_wave_face_law": [("nodes",), *FACE_LAW_KINDS],
+}
+
+
+def _face_outcome(name, out, kind):
+    """The outcome of port-face case ``name``'s leaf ``out`` in input ``kind``."""
+    if kind == ("nodes",):
+        return GRADIENT if out == "s.values" else ZERO
+    if kind[0] == "material" and kind[2] not in EM_PROPERTIES:
+        return ZERO
+    leaf = out.rsplit(".", 1)[-1]
+    # p1 has a voltage path on the lone-port line
+    path = name in ("driven_wave_face", "driven_wave_face_law")
+    if out == "s.values" or leaf == "gamma":
+        return GRADIENT
+    if out == "s.z_ref" or leaf == "Z_PV":
+        return GRADIENT if path and not out.startswith("port_modes.p2") else ZERO
+    return RAISES if leaf == "residual" else ZERO
+
+
+EXPECTED |= {
+    (name, out, kind): _face_outcome(name, out, kind)
+    for name in PORT_FACE_CASES
+    for out in (
+        "s.values",
+        "s.z_ref",
+        *(
+            f"port_modes.{p}.{leaf}"
+            for p in (
+                HYBRID_PORTS if name == "driven_wave_shared_face" else ("p1", "p2")
+            )
+            for leaf in WAVE_PORT_MODE_OUTPUTS
+        ),
+    )
+    for kind in FACE_KINDS[name]
 }
 
 # A perfectly matched layer behind a wave port (the layer's TEM line with a
@@ -1604,6 +1680,86 @@ def wave_cases(wave_model, shared_surface_model):
 
 
 @pytest.fixture(scope="module")
+def driven_port_face_cases(tmp_path_factory, sheet_mesh):
+    """The driven cases with a design at the wave port faces, by name."""
+    path = tmp_path_factory.mktemp("wave_face") / "line.msh"
+    sm.write_msh22(path, sm.strip_line(3.0, 2.0, 1.0, (3, 1, 1), core=(1.0, 2.0)))
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+    voltage = ((0.0, 0.5e-3, 0.0), (0.0, 0.5e-3, 1e-3))
+    ports = [gfem.WavePort("p1", "port1", voltage_path=voltage)]
+    ports.append(gfem.WavePort("p2", "port2"))
+
+    def line(dielectric):
+        return gfem.Model(
+            mesh,
+            materials={"dielectric": dielectric, "core": gfem.Material(eps_r=3.0)},
+            boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+            ports=ports,
+        )
+
+    n = len(sheet_mesh.elements("sheet"))
+    sheet = gfem.Impedance(
+        "sheet",
+        resistance=LUMPED[2],
+        inductance=LUMPED[3],
+        capacitance=LUMPED[4],
+        fill=gfem.SheetField(fill=np.linspace(0.2, 0.9, n)),
+    )
+    waves = [gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")]
+    hybrid = hybrid_mesh(tmp_path_factory.mktemp("hybrid_face"), cells=(4, 2, 2))
+    fill = 2.0 * np.linspace(1.0, 1.5, len(hybrid.elements("fill")))
+    return {
+        "driven_wave_face": (
+            line(_field(mesh, "dielectric")),
+            gfem.Driven(frequency=20e9),
+        ),
+        "driven_wave_shared_face": (
+            # lossy leads: the modes' gamma has a real part to differentiate
+            hybrid_line(hybrid, tan_delta=0.02).with_material(
+                "fill", gfem.MaterialField(eps_r=fill)
+            ),
+            SHARED_SURFACE_PROBLEM,
+        ),
+        "driven_wave_face_sheet": (
+            gfem.Model(
+                sheet_mesh,
+                materials={"lower": gfem.Material(eps_r=2.0), "upper": gfem.Material()},
+                boundaries=[gfem.PEC("plate1"), gfem.PEC("plate2"), sheet],
+                ports=waves,
+            ),
+            gfem.Driven(frequency=20e9),
+        ),
+        "driven_wave_face_law": (
+            line(gfem.Material(eps_r=FACE_LAW)),
+            gfem.Driven(frequency=20e9),
+        ),
+    }
+
+
+@pytest.fixture(scope="module")
+def bloch_wave_port_model(tmp_path_factory):
+    """A periodic cell along x with a wave port on a patch of z_min, off the pair."""
+    edges = tuple(
+        np.linspace(0, size, n + 1)
+        for size, n in zip((10.0, 7.0, 1.0), (4, 3, 1), strict=True)
+    )
+
+    def surface(c):
+        return "port" if abs(c[2]) < 1e-9 and 2.5 < c[0] < 7.5 else ""
+
+    path = tmp_path_factory.mktemp("bloch_port") / "cell.msh"
+    sm.write_msh22(path, sm.periodic_cell(edges, surface=surface))
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+    eps = np.full(len(mesh.elements("cell")), 2.0)
+    return gfem.Model(
+        mesh,
+        materials={"cell": gfem.MaterialField(eps_r=eps)},
+        boundaries=[gfem.Periodic(("x_min", "x_max"))],
+        ports=[gfem.WavePort("w", "port")],
+    )
+
+
+@pytest.fixture(scope="module")
 def driven_periodic_cases(tmp_path_factory):
     # the C1 line (periodic along x) on 3 cells, its port sheets the inner
     # grid planes, a material field over its cell
@@ -2217,6 +2373,7 @@ def all_cases(model, driven_model, eigen_model, wave_cases, request):
         **_dipole_cases(request.getfixturevalue("dipole_model")),
         "eigenmode_pml": request.getfixturevalue("eigen_pml_case"),
         "driven_planewave": request.getfixturevalue("planewave_case"),
+        **request.getfixturevalue("driven_port_face_cases"),
         **request.getfixturevalue("sheet_cases"),
         **request.getfixturevalue("lumped_cases"),
         **request.getfixturevalue("driven_periodic_cases"),
@@ -2466,33 +2623,6 @@ def _sheet_fill_objective(model, problem):
     return objective, sheet.fill.fill
 
 
-def _out_sheet_beside_a_wave_port(request):
-    # the port mode reads the sheet on the port face's edge: a constant of
-    # the solve, so the fill may not move there (raised while tracing)
-    mesh = request.getfixturevalue("sheet_mesh")
-    waves = [gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")]
-    objective, fill = _sheet_fill_objective(
-        _sheet_model(mesh, waves), gfem.Driven(frequency=20e9)
-    )
-    jax.make_jaxpr(jax.grad(objective))(fill)
-
-
-def _out_impedance_beside_a_wave_port(request):
-    # the port mode reads the sheet on the port face's edge: its lumped
-    # values are constants of the solve there (raised while tracing)
-    mesh = request.getfixturevalue("sheet_mesh")
-    waves = [gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")]
-    problem = gfem.Driven(frequency=20e9)
-
-    def objective(r):
-        model = _lumped_model(mesh, waves)
-        sheet = gfem.Impedance("sheet", resistance=r, inductance=LUMPED[3])
-        model = model.replace(boundaries=[*model.boundaries[:2], sheet])
-        return jnp.sum(jnp.abs(gfem.solve(model, problem).s.values) ** 2)
-
-    jax.make_jaxpr(jax.grad(objective))(LUMPED[2])
-
-
 def _out_lumped_port_resistance(request):
     # a port's resistance is its reference impedance: a fixed value (raised
     # by the constructor)
@@ -2612,34 +2742,6 @@ def _out_bloch_wave_vector_angle(request):
     jax.grad(objective)(0.3)
 
 
-def _out_material_on_a_wave_port_face(request):
-    # likewise for a material of a region with elements on a port face
-    model = request.getfixturevalue("wave_model")
-    problem = gfem.Driven(frequency=20e9)
-    n = len(model.mesh.elements("dielectric"))
-
-    def objective(eps):
-        m = model.with_material("dielectric", gfem.MaterialField(eps_r=eps))
-        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
-        return jnp.sum(jnp.abs(gfem.solve(m, problem).s.values) ** 2)
-
-    jax.make_jaxpr(jax.grad(objective))(jnp.full(n, 2.0))
-
-
-def _out_law_on_a_wave_port_face(request):
-    # a law region with elements on a wave port face: the port mode reads it
-    model = request.getfixturevalue("wave_model")
-    problem = gfem.Driven(frequency=20e9)
-
-    def objective(eps_inf):
-        law = dataclasses.replace(TABLE_LAW, eps_inf=eps_inf)
-        m = model.with_material("dielectric", gfem.Material(eps_r=law))
-        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
-        return jnp.sum(jnp.abs(gfem.solve(m, problem).s.values) ** 2)
-
-    jax.make_jaxpr(jax.grad(objective))(2.0)
-
-
 def _out_law_under_a_bloch_wave_vector(request):
     model, problem = request.getfixturevalue("driven_periodic_cases")[
         "driven_periodic_bloch"
@@ -2667,23 +2769,6 @@ def _out_law_of_a_blend_end(_request):
         return jnp.sum(field.blend)
 
     jax.make_jaxpr(jax.grad(objective))(2.0)
-
-
-def _out_field_with_axes_on_a_wave_port_face(request):
-    # a field with axes at the port: the port reads its tensors (the forward
-    # takes them), its principal values may not move (raised while tracing)
-    model = request.getfixturevalue("wave_model")
-    problem = gfem.Driven(frequency=20e9)
-    n = len(model.mesh.elements("dielectric"))
-
-    def objective(eps):
-        field = gfem.MaterialField(eps_r=eps, axes=np.eye(3))
-        m = model.with_material("dielectric", field)
-        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
-        return jnp.sum(jnp.abs(gfem.solve(m, problem).s.values) ** 2)
-
-    eps = jnp.tile(jnp.array([2.0, 2.5, 3.0]), (n, 1))
-    jax.make_jaxpr(jax.grad(objective))(eps)
 
 
 def _out_material_axes(request):
@@ -2732,17 +2817,38 @@ def _out_nodes_beside_a_tensor_absorbing_face(request):
     jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
 
 
-def _out_material_on_a_shared_wave_port_face(request):
-    # the error names the shared port surface and every port on it
-    model = request.getfixturevalue("shared_surface_model")
-    n = len(model.mesh.elements("fill"))
+def _out_driven_port_mode_residual(request):
+    # the backward error of a mode is a diagnostic: a cotangent on it raises
+    # where a wanted input moves the mode
+    model, problem = request.getfixturevalue("driven_port_face_cases")[
+        "driven_wave_face"
+    ]
 
     def objective(eps):
-        m = model.with_material("fill", gfem.MaterialField(eps_r=eps))
+        m = model.with_material("dielectric", gfem.MaterialField(eps_r=eps))
         m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
-        return jnp.sum(jnp.abs(gfem.solve(m, SHARED_SURFACE_PROBLEM).s.values) ** 2)
+        return jnp.sum(gfem.solve(m, problem).port_modes["p1"].residual)
 
-    jax.make_jaxpr(jax.grad(objective))(jnp.full(n, 2.0))
+    jax.make_jaxpr(jax.grad(objective))(
+        jnp.full(len(model.mesh.elements("dielectric")), 2.0)
+    )
+
+
+def _out_port_face_design_under_bloch(**problem):
+    def call(request):
+        model = request.getfixturevalue("bloch_wave_port_model")
+        driven = gfem.Driven(frequency=10e9, wave_vector=(1e2, 0.0, 0.0), **problem)
+
+        def objective(eps):
+            m = model.with_material("cell", gfem.MaterialField(eps_r=eps))
+            m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+            return jnp.sum(jnp.abs(gfem.solve(m, driven).s.values) ** 2)
+
+        jax.make_jaxpr(jax.grad(objective))(
+            jnp.full(len(model.mesh.elements("cell")), 2.0)
+        )
+
+    return call
 
 
 def _moved_port_objective(model, value):
@@ -3958,28 +4064,10 @@ OUT_OF_SCOPE = [
         r"Model\.bloch_wave_vector: theta and phi must be fixed numbers",
     ),
     (
-        "driven x material on a wave port face",
-        _out_material_on_a_wave_port_face,
-        gfem.PortGeometryError,
-        "has elements on the port face",
-    ),
-    (
-        "driven x law parameter of a region on a wave port face",
-        _out_law_on_a_wave_port_face,
-        gfem.PortGeometryError,
-        r"has elements on the port face.*permittivity law",
-    ),
-    (
         "driven x law parameter under a Bloch wave vector",
         _out_law_under_a_bloch_wave_vector,
         gfem.NonDifferentiableError,
         r"eps_r\.eps_inf.*Bloch wave vector",
-    ),
-    (
-        "driven x material field with axes on a wave port face",
-        _out_field_with_axes_on_a_wave_port_face,
-        gfem.PortGeometryError,
-        "has elements on the port face",
     ),
     (
         "material axes (orientation)",
@@ -4000,15 +4088,6 @@ OUT_OF_SCOPE = [
         r"Absorbing surface 'side' has an anisotropic material.*stop_gradient",
     ),
     (
-        "driven x material on a shared wave port face",
-        _out_material_on_a_shared_wave_port_face,
-        gfem.PortGeometryError,
-        (
-            r"^WavePorts 'p1_m1', 'p1_m2' on surface 'port1': region 'fill' has "
-            "elements on the port face"
-        ),
-    ),
-    (
         "driven x nodes of a port surface",
         _out_driven_port_nodes_moved,
         HOST,
@@ -4021,22 +4100,49 @@ OUT_OF_SCOPE = [
         r"PortGeometryError.*port1",
     ),
     (
+        "driven x port mode residual at a port-face design",
+        _out_driven_port_mode_residual,
+        gfem.NonDifferentiableError,
+        r"'residual'.*diagnostic.*stop_gradient",
+    ),
+    (
+        "driven x port-face design under a Bloch wave vector",
+        _out_port_face_design_under_bloch(),
+        gfem.NonDifferentiableError,
+        r"mode of wave port 'w' reads it.*not verified under a Bloch wave vector",
+    ),
+    (
+        "driven x port-face design on a fixed-angle sweep",
+        _out_port_face_design_under_bloch(wave_vector_frequency=10e9),
+        gfem.NonDifferentiableError,
+        r"mode of wave port 'w' reads it.*not verified on a fixed-angle sweep",
+    ),
+    (
         "eigenmode x material on a wave port face",
         _out_eigenmode_material_on_a_wave_port_face,
         gfem.PortGeometryError,
-        r"WavePort 'p1'.*region 'air' has elements on the port face",
+        (
+            r"WavePort 'p1'.*region 'air' has elements on the port face.*"
+            r"A gfem\.Driven solve differentiates"
+        ),
     ),
     (
         "eigenmode x law parameter of a region on a wave port face",
         _out_eigenmode_law_on_a_wave_port_face,
         gfem.PortGeometryError,
-        r"has elements on the port face.*permittivity law",
+        (
+            r"has elements on the port face.*permittivity law.*"
+            r"A gfem\.Driven solve differentiates"
+        ),
     ),
     (
         "eigenmode x Impedance value beside a wave port",
         _out_eigenmode_impedance_beside_a_wave_port,
         gfem.PortGeometryError,
-        r"Impedance model\.boundaries\[0\] shares an edge with the port face",
+        (
+            r"Impedance model\.boundaries\[0\] shares an edge with the port face.*"
+            r"A gfem\.Driven solve differentiates"
+        ),
     ),
     (
         "eigenmode x nodes of a wave port surface",

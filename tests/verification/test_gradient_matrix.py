@@ -147,6 +147,8 @@ from gradient_cases import (  # the port mode cells
     dispersive_line,
     dispersive_mesh,
     dispersive_resonator,
+    face_functional,
+    face_line,
     guide_model,
     hybrid_line,
     hybrid_mesh,
@@ -572,6 +574,49 @@ def _blend_cells() -> list[Cell]:
     ]
 
 
+#: The face cells' inputs by variant: a design at the wave port faces.
+FACE_INPUTS = {
+    "face_lossless": ("eps_r",),
+    "face_lossy": (
+        "eps_r",
+        "conductivity",
+        "tan_delta",
+        "mu_r",
+        "eps_r_axes",
+        "law",
+    ),
+    "face_path": ("eps_r",),
+    "face_absorbing": ("eps_r", "law"),
+    "face_shared": ("eps_r",),
+}
+
+
+def _face_cells() -> list[Cell]:
+    """The driven cells of a design at the wave port faces, on the uniform sweep.
+
+    The two-layer line's lower layer "lo" touches both port faces: its
+    per-element permittivity (lossless and lossy leads, with a voltage path,
+    behind absorbing side walls, on a lossy shared surface), conductivity, loss
+    tangent, permeability, principal values, a law's parameters and a blend's
+    density, the fill and the `Impedance` values of a sheet beside the ports,
+    a dipole's power through a port cut by a layer, and the permittivity on
+    BDDC + GMRES.
+    """
+    cells = [
+        Cell("driven_wave", name, "direct", "uniform", variant)
+        for variant, names in FACE_INPUTS.items()
+        for name in names
+    ]
+    cells += [
+        Cell("driven_wave", "fill", "direct", "uniform", "face_sheet_conductor"),
+        Cell("driven_wave", "fill", "direct", "uniform", "face_sheet_impedance"),
+        Cell("driven_wave", "lumped", "direct", "uniform", "face_sheet"),
+        Cell("driven_dipole", "eps_r", "direct", "uniform", "face"),
+        Cell("driven_wave", "eps_r", "bddc_gmres", "uniform", "face_lossy"),
+    ]
+    return cells
+
+
 def _electrostatic_law_cells() -> list[Cell]:
     """Cell S1: the capacitance in a law's parameters, on ``direct``.
 
@@ -778,6 +823,7 @@ CELLS = [
     *_eigen_wave_cells(),
     *_law_cells(),
     *_blend_cells(),
+    *_face_cells(),
     *_electrostatic_law_cells(),
     *_thermal_cells(),
     *_heat_cells(),
@@ -792,6 +838,8 @@ PETSC_CELLS = [
     Cell("driven", "eps_r", "petsc", "uniform"),
     Cell("driven", "eps_r", "petsc", "adaptive"),
     Cell("driven_wave", "eps_r", "petsc", "uniform", "lossy"),
+    # a design at the wave port faces: the port pass reads a PETSc adjoint
+    Cell("driven_wave", "eps_r", "petsc", "uniform", "face_lossy"),
     Cell("eigenmode", "eps_r", "petsc"),
     # plain periodicity keeps every backend (Bloch on PETSc raises)
     Cell("driven_periodic_plain", "eps_r", "petsc", "uniform"),
@@ -1016,6 +1064,10 @@ class Designs:
         return dipole_line(self._dir("dipole"))
 
     @functools.cached_property
+    def face_dipole_line(self):
+        return face_dipole_line(self._dir("face_dipole"))
+
+    @functools.cached_property
     def law_shape_line(self):
         # the shape line's magnetic cover as a Lorentz medium (mu_r kept)
         line = shape_line(self._dir("law_shape_line"))
@@ -1073,6 +1125,25 @@ def dipole_line(directory):
         ports=[gfem.WavePort("p1", "port")],
         pml=gfem.PML("pml"),
     )
+
+
+def face_dipole_line(directory):
+    """`dipole_line` with a region "lead" of its own on the port's face (um)."""
+    mesh = gfem.Mesh.from_gmsh(
+        pml_cases.slab_line(directory / "line.msh", lead=FACE_LEAD)
+    )
+    air = gfem.Material()
+    return gfem.Model(
+        mesh,
+        materials={"lead": air, "air": air, "pml": air, "slab": air},
+        boundaries=[gfem.PEC("pec"), _sheet(mesh, "front")],
+        ports=[gfem.WavePort("p1", "port")],
+        pml=gfem.PML("pml"),
+    )
+
+
+#: The thickness (um) of the "lead" of `face_dipole_line`, below the dipole.
+FACE_LEAD = 0.3
 
 
 @pytest.fixture(scope="module")
@@ -2612,6 +2683,212 @@ def _wave_law(d: Designs, cell: Cell, options, seed: int) -> Case:
     return _law_case(objective, law, seed)
 
 
+#: Frequencies of the sheet beside wave ports: the glued line's.
+FACE_SHEET_FREQUENCIES = SHEET_FREQUENCIES
+#: The sheet's values with wave ports, in `LUMPED`: its R, L and C.
+FACE_SHEET_VALUES = LUMPED[2:]
+
+
+#: The face cells' grids where they are not `WAVE_FREQUENCIES`: the line with
+#: absorbing side walls has its first mode's cutoff at 18 GHz.
+FACE_FREQUENCIES = {"face_absorbing": (24e9, 30e9)}
+#: The loss tangent of the face cells' shared surface.
+FACE_SHARED_TAN_DELTA = 0.02
+
+
+def _face_options(options):
+    """``options`` with the port modes solved to the differences' accuracy.
+
+    A reduced port row is off by up to the port mode tolerance, which a central
+    difference sees and the (polished) gradient does not: the checks solve the
+    modes tightly, the Taylor test keeps the production tolerance.
+    """
+    if options.tolerance <= 1e-12:
+        return dataclasses.replace(options, port_mode_tolerance=1e-12)
+    return options
+
+
+def _face_problem(d: Designs, cell: Cell):
+    """The face cell's mesh, model, problem, rows and voltage-path ports."""
+    if cell.variant == "face_shared":
+        mesh = d.hybrid_mesh
+        problem = gfem.Driven(frequency=HYBRID_FREQUENCIES, excite="p1_m1")
+        model = hybrid_line(mesh, tan_delta=FACE_SHARED_TAN_DELTA)
+        return mesh, model, problem, [0, 1], ()
+    mesh = d.wave_mesh
+    model = face_line(mesh, cell.variant)
+    frequencies = FACE_FREQUENCIES.get(cell.variant, WAVE_FREQUENCIES)
+    problem = gfem.Driven(frequency=frequencies)
+    paths = ("p1",) if cell.variant == "face_path" else ()
+    return mesh, model, problem, [0, 1], paths
+
+
+def _face_objective(rows, paths, *, shared: bool):
+    """``result -> objective`` of a face cell: S, gamma and, with paths, Z_PV."""
+    rows = jnp.asarray(rows)
+    if shared:
+        return lambda result: face_functional(
+            result, rows, s_part=shared_surface_functional(result.s, rows)
+        )
+    return lambda result: face_functional(result, rows, paths)
+
+
+def _face_material(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """S, gamma and Z_PV in the lower layer's per-element property, at both faces.
+
+    Per principal value (``_axes``): biaxial values on axes turned about the
+    ports' normal. A ``mu_r``, ``tan_delta`` or ``conductivity`` cell adds its
+    property to the design of the others; a ``blend`` cell is the density
+    between two constant lossy ends.
+    """
+    options = _face_options(options)
+    mesh, model, problem, rows, paths = _face_problem(d, cell)
+    shared = cell.variant == "face_shared"
+    functional = _face_objective(rows, paths, shared=shared)
+    region = "block" if shared else "lo"
+    n = len(mesh.elements(region))
+    name = _property(cell.input)
+    axes = turned(0, 30.0) if cell.input.endswith(AXES) else None
+    rng = np.random.default_rng(seed)
+    if name == "blend":
+        ends = (
+            gfem.Material(eps_r=3.0, tan_delta=0.05),
+            gfem.Material(eps_r=5.0, tan_delta=0.05),
+        )
+        values = {"blend": jnp.asarray(rng.uniform(0.2, 0.8, n))}
+
+        def design(p):
+            return gfem.MaterialField.interpolate(p, *ends, scheme="linear")
+
+        taylor = 3e-2
+    else:
+        lossy = shared or cell.variant != "face_lossless"
+        eps = ramp(mesh, region, 3.5, 4.5)
+        values = {"eps_r": eps}
+        if lossy:
+            values["tan_delta"] = jnp.full(n, FACE_SHARED_TAN_DELTA if shared else 0.05)
+        if name == "conductivity":
+            values[name] = ramp(mesh, region, 0.2, 0.6)
+        elif name in RANGES:
+            values[name] = ramp(mesh, region, *RANGES[name])
+        if axes is not None:
+            values = {k: v[:, None] * BIAXIAL for k, v in values.items()}
+
+        def design(p):
+            return gfem.MaterialField(**{**values, name: p}, axes=axes)
+
+        taylor = {
+            "eps_r": 3e-2,
+            "conductivity": 1e-1,
+            "mu_r": 1e-1,
+            "tan_delta": 3e-2,
+        }[name]
+
+    def objective(p):
+        m = model.with_material(region, design(p))
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        return functional(gfem.solve(m, problem, options=options))
+
+    p0 = values[name]
+    return Case(objective, p0, rng, step=STEPS[name], taylor=taylor)
+
+
+def _face_law(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """S, gamma and Z_PV in the law parameters of the lower layer (`COVER_LAW`)."""
+    options = _face_options(options)
+    _, model, problem, rows, paths = _face_problem(d, cell)
+    functional = _face_objective(rows, paths, shared=False)
+
+    def objective(t):
+        m = model.with_material("lo", gfem.Material(eps_r=scaled_law(COVER_LAW, t)))
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        return functional(gfem.solve(m, problem, options=options))
+
+    return _law_case(objective, COVER_LAW, seed)
+
+
+def _face_sheet_line(mesh, sheet):
+    """The glued line with wave ports at both ends: the sheet meets both faces."""
+    return gfem.Model(
+        mesh,
+        materials={"lower": gfem.Material(eps_r=3.0), "upper": gfem.Material()},
+        boundaries=[gfem.PEC("plate1"), gfem.PEC("plate2"), sheet],
+        ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")],
+    )
+
+
+def _face_sheet(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """S and gamma through wave ports in a sheet's fill, or an Impedance's R, L, C."""
+    options = _face_options(options)
+    mesh = d.sheet_mesh
+    problem = gfem.Driven(frequency=FACE_SHEET_FREQUENCIES)
+    rows = list(range(len(FACE_SHEET_FREQUENCIES)))
+
+    def functional(result):
+        return face_functional(result, rows)
+
+    if cell.input == "lumped":
+
+        def objective(t):
+            r, l, c = jnp.asarray(FACE_SHEET_VALUES) * (1 + t)
+            sheet = gfem.Impedance("sheet", resistance=r, inductance=l, capacitance=c)
+            m = _face_sheet_line(mesh, sheet)
+            return functional(gfem.solve(m, problem, options=options))
+
+        return Case(
+            objective,
+            jnp.zeros(3),
+            np.random.default_rng(seed),
+            step=1e-3,
+            taylor=1e-1,
+        )
+    kind = cell.variant.removeprefix("face_sheet_")
+    fill, rng = sheet_fill(mesh, seed)
+
+    def objective(p):
+        sheet = SHEETS[kind](gfem.SheetField(fill=p))
+        m = _face_sheet_line(mesh, sheet)
+        return functional(gfem.solve(m, problem, options=options))
+
+    return Case(objective, fill, rng, step=5e-3, taylor=1e-2)
+
+
+def _face_dipole(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """A dipole's emitted power in the lead that holds the port's face."""
+    options = _face_options(options)
+    model = d.face_dipole_line
+    n = len(model.mesh.elements("lead"))
+    rng = np.random.default_rng(31 + seed)
+    eps = jnp.asarray(rng.uniform(2.0, 3.0, n))
+    problem, scale = _dipole_problem(Cell("driven_dipole", "eps_r", cell.solver))
+
+    def objective(p):
+        moved = model.with_material("lead", gfem.MaterialField(eps_r=p))
+        result = gfem.solve(moved, problem, options=options)
+        return result.emitted_power["d"][0] / scale
+
+    return Case(objective, eps, rng, step=STEPS["eps_r"], taylor=1e-1)
+
+
+#: The face cells' builders, by (problem, input, variant).
+FACE_BUILDERS = {
+    **{
+        ("driven_wave", name, variant): _face_material
+        for variant, names in FACE_INPUTS.items()
+        for name in names
+        if name != "law"
+    },
+    **{
+        ("driven_wave", "law", variant): _face_law
+        for variant in ("face_lossy", "face_absorbing")
+    },
+    ("driven_wave", "fill", "face_sheet_conductor"): _face_sheet,
+    ("driven_wave", "fill", "face_sheet_impedance"): _face_sheet,
+    ("driven_wave", "lumped", "face_sheet"): _face_sheet,
+    ("driven_dipole", "eps_r", "face"): _face_dipole,
+}
+
+
 def _periodic_law(d: Designs, cell: Cell, options, seed: int) -> Case:
     """S of G whose floor "core" holds the ``poles`` law, in its parameters."""
     mesh = d.periodic
@@ -3781,6 +4058,9 @@ VARIANT_BUILDERS = {
 }
 
 
+VARIANT_BUILDERS |= FACE_BUILDERS
+
+
 def _builder(cell: Cell) -> Callable:
     variant = VARIANT_BUILDERS.get((cell.problem, cell.input, cell.variant))
     return variant or BUILDERS[cell.problem, cell.input]
@@ -3839,6 +4119,8 @@ FAMILIES = [
     Cell("driven", "fill", "direct", "uniform", "conductor"),
     Cell("driven", "nodes", "direct", "uniform"),
     Cell("driven_wave", "eps_r", "direct", "uniform", "lossy"),
+    # a design at the wave port faces: the port pass rebuilds its 2D factors
+    Cell("driven_wave", "eps_r", "direct", "uniform", "face_lossy"),
     Cell("port_mode", "eps_r", "direct"),
     Cell("eigenmode", "conductivity", "direct"),
     Cell("eigenmode", "fill", "direct"),

@@ -94,9 +94,11 @@ def test_counts_come_from_the_cells(derived):
     )
 
 
-def test_driven_sheet_fill_is_verified_on_lumped_ports_only(derived):
+def test_driven_sheet_fill_is_verified_on_lumped_and_wave_ports(derived):
+    # a sheet beside wave ports moves their modes too (the port pass)
     fill = _cell(derived, "driven", "fill")
-    assert fill["label"] == "FD-verified, lumped ports"
+    assert fill["label"] == "FD-verified"
+    assert fill["ports"] == ["lumped", "wave"]
     assert _cell(derived, "driven", "eps_r")["ports"] == ["lumped", "wave"]
     assert _cell(derived, "driven", "eps_r")["note"] == ""
     assert _cell(derived, "eigenmode", "fill")["note"] == ""
@@ -139,10 +141,10 @@ def test_principal_value_cells_fold_into_their_property_column(derived):
 def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
     # no column of their own: one phrase per row and group under the matrix
     assert [(e["key"], e["inputs"], e["cells"]) for e in derived["also"]] == [
-        ("driven", ["permeability", "loss tangent"], 4),
-        ("driven", ["lumped values"], 4),
-        ("driven", ["permittivity-law parameters"], 7),
-        ("driven", ["density of a metal-dielectric blend"], 2),
+        ("driven", ["permeability", "loss tangent"], 6),
+        ("driven", ["lumped values"], 5),
+        ("driven", ["permittivity-law parameters"], 9),
+        ("driven", ["density of a metal-dielectric blend"], 3),
         ("eigenmode", ["permeability", "loss tangent"], 2),
         ("eigenmode", ["lumped values"], 3),
         ("eigenmode", ["permittivity-law parameters"], 4),
@@ -319,7 +321,7 @@ def test_raising_cells_name_their_error(derived):
 
 def test_raises_list_is_the_out_of_scope_rows_off_the_grid(derived):
     rows = {r["key"]: r for r in derived["raises"]}
-    assert len(rows) == 89
+    assert len(rows) == 86
     assert rows["design in the far-field layer"]["error"] == "ValueError"
     fit = rows["fit_rational under jax.grad"]
     assert fit["error"] == "NonDifferentiableError"

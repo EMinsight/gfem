@@ -35,8 +35,9 @@ from gfem.results import PortModeField
 __all__ = ["DIFFERENTIABLE", "PortModeRows", "SweepOutputs"]
 
 #: Outputs whose cotangents the backward pass handles. ``z_ref`` and the
-#: wave ports' modes (``port_*``) are constant in every differentiable
-#: input: a design may not touch a wave port face. An adaptive sweep's kept
+#: wave ports' modes (``port_gamma``, ``port_z_pv``) follow a design at a wave
+#: port face (the port pass); the modes' ``port_residual`` is a diagnostic, and
+#: refused beside such a design. An adaptive sweep's kept
 #: fields differentiate through their reduced coordinates; its basis
 #: ``e_basis`` is frozen, so not differentiable.
 DIFFERENTIABLE = frozenset(

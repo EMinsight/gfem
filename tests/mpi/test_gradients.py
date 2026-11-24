@@ -348,6 +348,56 @@ def test_a_gradient_matches_one_process_and_differences(tmp_path, row, ranks, so
     _assert_below_the_gate(grad, grad_one, f"{row} ranks={ranks}", solver)
 
 
+# --- a design at the wave port faces -----------------------------------------------
+
+#: The ranks of the port face rows (a share of a surface's DOFs on each).
+FACE_RANKS = (2, 4)
+
+
+def _face_shared(directory, cells):
+    """The lossy shared surface's quadrant ``block``, on both port faces."""
+    mesh = cases.hybrid_mesh(Path(directory), cells=cells)
+    model = cases.hybrid_line(mesh, tan_delta=0.02)
+    n = len(mesh.elements("block"))
+    eps = cases.ramp(mesh, "block", 3.5, 4.5)
+    tan_delta = jnp.full(n, 0.02)
+    driven = gfem.Driven(frequency=HYBRID_FREQUENCIES, excite="p1_m1")
+    rows = jnp.asarray([0, 1])
+
+    def objective(p):
+        field = gfem.MaterialField(eps_r=p, tan_delta=tan_delta)
+        design = model.with_material("block", field)
+        design = design.replace(mesh=jax.lax.stop_gradient(design.mesh))
+        result = gfem.solve(design, driven, options=_options())
+        return cases.face_functional(
+            result, rows, s_part=cases.shared_surface_functional(result.s, rows)
+        )
+
+    return objective, eps
+
+
+def _face_gradient(directory, cells):
+    objective, p = _face_shared(directory, cells)
+    value, grad = jax.value_and_grad(objective)(p)
+    return np.asarray(value), np.asarray(grad)
+
+
+@pytest.mark.parametrize("solver", SOLVERS)
+@pytest.mark.parametrize("ranks", FACE_RANKS)
+@pytest.mark.parametrize("cells", [(4, 2, 2), (8, 8, 4)], ids=["coarse", "fine"])
+def test_a_port_face_gradient_matches_one_process(tmp_path, cells, ranks, solver):
+    # the 2D port pass runs on rank 0 from the faces' traces summed over ranks,
+    # and rank 0 alone contributes it: the fine mesh puts port faces across ranks
+    value_one, grad_one = _on("_face_gradient", solver, tmp_path, cells)
+    (value, grad), *_ = on_ranks(
+        _on, "_face_gradient", solver, tmp_path, cells, ranks=ranks, limit=900
+    )
+    assert np.isfinite(grad).all()
+    assert np.abs(grad).max() > 0
+    assert abs(value - value_one) < 1e-8 * abs(value_one)
+    _assert_below_the_gate(grad, grad_one, f"port face ranks={ranks}", solver)
+
+
 def _a_rank_without_the_sum(directory):
     """The row `eps` with the sum gone: what a lost rank sum looks like."""
     module = importlib.import_module("gfem._adjoint.solve_vjp")
