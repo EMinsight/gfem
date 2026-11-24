@@ -7,7 +7,9 @@ mode is tied to the global axes, so a quarter turn of the model can flip S21;
 a polarity reference, or a voltage path, that moves with the model fixes it.
 Port 1's arrow points along +y at the guide's centre, port 2's along -x: the
 field carried round the bend. The rigid motions are exact in floating point
-(quarter turns and a mirror), so S21 agrees to rounding.
+(quarter turns and a mirror), so S21 agrees to rounding. As the two arms of
+a SAX interferometer, the bend and its quarter turn then interfere as equal
+arms: the bar port stays dark.
 """
 
 import numpy as np
@@ -70,19 +72,32 @@ def _port(name, quarter, mirror, reference):
     return gfem.WavePort(name, surface, voltage_path=tuple(map(tuple, ends)))
 
 
+def _model(mesh, quarter, mirror, reference):
+    return gfem.Model(
+        mesh,
+        materials={"air": gfem.Material()},
+        boundaries=[gfem.PEC("wall")],
+        ports=[_port(name, quarter, mirror, reference) for name in PORTS],
+    )
+
+
 @pytest.fixture(scope="module")
-def s21(tmp_path_factory):
+def meshes(tmp_path_factory):
     folder = tmp_path_factory.mktemp("bends")
+    return {
+        (quarter, mirror): _bend(
+            folder / f"bend_{quarter}_{int(mirror)}.msh", quarter, mirror
+        )
+        for quarter, mirror in MOTIONS
+    }
+
+
+@pytest.fixture(scope="module")
+def s21(meshes):
     out = {}
-    for quarter, mirror in MOTIONS:
-        mesh = _bend(folder / f"bend_{quarter}_{int(mirror)}.msh", quarter, mirror)
+    for (quarter, mirror), mesh in meshes.items():
         for reference in ("polarity", "voltage_path"):
-            model = gfem.Model(
-                mesh,
-                materials={"air": gfem.Material()},
-                boundaries=[gfem.PEC("wall")],
-                ports=[_port(name, quarter, mirror, reference) for name in PORTS],
-            )
+            model = _model(mesh, quarter, mirror, reference)
             result = gfem.solve(model, gfem.Driven(F, excite=None), options=OPTIONS)
             out[quarter, mirror, reference] = complex(
                 np.asarray(result.s.values)[0, 1, 0]
@@ -95,3 +110,44 @@ def test_an_e_plane_bend_keeps_its_s21_under_rotation_and_mirroring(s21):
     assert abs(first) > 0.9
     for key, value in s21.items():
         assert abs(value - first) < 1e-8, key
+
+
+def test_an_interferometer_of_a_bend_and_its_quarter_turn_stays_crossed(meshes):
+    # the two arms are one bend, modelled 90 degrees apart: with their signs
+    # fixed by the polarity reference they interfere as equal arms, so every
+    # transmitted wave leaves by the cross port and none by the bar port
+    sax = pytest.importorskip("sax")
+    arms = {
+        name: gfem.SaxComponent(
+            _model(meshes[quarter, False], quarter, False, "polarity"),
+            gfem.Driven(F),
+            circuit="optical",
+            ports={"p1": "o1", "p2": "o2"},
+            options=OPTIONS,
+        )
+        for name, quarter in (("bend0", 0), ("bend90", 1))
+    }
+    i0, i1, o0, o1 = sax.get_ports(sax.models.coupler_ideal())
+    mzi, _ = sax.circuit(
+        netlist={
+            "instances": {
+                "split": "coupler",
+                "top": "bend0",
+                "bottom": "bend90",
+                "join": "coupler",
+            },
+            "connections": {
+                f"split,{o0}": "top,o1",
+                "top,o2": f"join,{i0}",
+                f"split,{o1}": "bottom,o1",
+                "bottom,o2": f"join,{i1}",
+            },
+            "ports": {"in": f"split,{i0}", "bar": f"join,{o0}", "cross": f"join,{o1}"},
+        },
+        models={"coupler": sax.models.coupler_ideal, **arms},
+    )
+    s = mzi()
+    through = abs(complex(arms["bend0"]()["o1", "o2"])) ** 2
+    assert through > 0.8
+    assert abs(complex(s["in", "cross"])) ** 2 / through == pytest.approx(1, abs=1e-8)
+    assert abs(complex(s["in", "bar"])) ** 2 / through < 1e-8
