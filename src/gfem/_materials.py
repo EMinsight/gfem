@@ -31,7 +31,7 @@ class _Property:
 
     name: str
     unit: str
-    physics: Literal["em", "thermal"]
+    physics: Literal["em", "thermal", "mechanical"]
     default: float | None
     strict: bool  # value > 0 (else >= 0)
     bounded: bool = True  # False: any finite real value (``strict`` unread)
@@ -54,6 +54,7 @@ PROPERTIES: tuple[_Property, ...] = (
     _Property(
         "thermo_optic_coefficient", "1/K", "thermal", None, strict=False, bounded=False
     ),
+    _Property("mechanical_quality_factor", "1", "mechanical", None, strict=True),
 )
 PROPERTY_NAMES = tuple(p.name for p in PROPERTIES)
 _BY_NAME = {p.name: p for p in PROPERTIES}
@@ -145,14 +146,267 @@ def _material_eo_tensor(
     return tuple(tuple(float(x) for x in row) for row in arr)  # ty: ignore[invalid-return-type]
 
 
-def _check_right_handed(axes: Any, owner: str) -> None:
-    """Raise if orthonormal ``axes`` are left-handed (the frame of a tensor)."""
+def _check_right_handed(
+    axes: Any, owner: str, tensor: str = "electro_optic_tensor"
+) -> None:
+    """Raise if orthonormal ``axes`` are left-handed (the frame of ``tensor``)."""
     if np.linalg.det(np.asarray(axes, dtype=float)) < 0:
         raise ValueError(
-            f"{owner}: axes are left-handed (det -1), but the electro_optic_tensor "
+            f"{owner}: axes are left-handed (det -1), but the {tensor} "
             "is given in the frame whose x, y, z are the rows of axes, which must "
             "be right-handed: reverse one axis (for example the last row)."
         )
+
+
+# --- stiffness and piezoelectric tensor ---------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class _SolidTensor:
+    """A contracted tensor of a solid: its shape, its form and how to contract it."""
+
+    name: str
+    shape: tuple[int, int]
+    full: tuple[int, ...]  # the shape of the uncontracted tensor
+    form: str
+    contract: str
+
+
+_STIFFNESS = _SolidTensor(
+    "stiffness",
+    (6, 6),
+    (3, 3, 3, 3),
+    "the contracted 6x6 matrix c_IJ in Pa (rows and columns xx, yy, zz, yz, xz, "
+    "xy, engineering shear strain)",
+    "contract a full c_ijkl to rows and columns ij = xx, yy, zz, yz, xz, xy, with "
+    "no factors of 2",
+)
+_PIEZOELECTRIC = _SolidTensor(
+    "piezoelectric_tensor",
+    (3, 6),
+    (3, 3, 3),
+    "the contracted 3x6 matrix e_kJ of stress constants in C/m^2 (rows x, y, z "
+    "of the field; columns xx, yy, zz, yz, xz, xy)",
+    "contract a full e_kij to columns ij = xx, yy, zz, yz, xz, xy",
+)
+_SOLID_TENSORS = (_STIFFNESS, _PIEZOELECTRIC)
+_SOLID_BY_NAME = {t.name: t for t in _SOLID_TENSORS}
+#: A material field's tensors outside the property table, as its leaves.
+_FIELD_TENSORS = ("electro_optic_tensor", "stiffness", "piezoelectric_tensor")
+# Pa: below the largest constant of every solid (even a rubber-like c11 is
+# near 1e9 Pa), far above a value typed in GPa
+_STIFFNESS_MIN = 1e5
+# C/m^2: below every stress constant (quartz 0.17), far above the strain
+# constants d in C/N (1e-12 to 1e-9)
+_PIEZOELECTRIC_MIN = 1e-6
+
+
+def _solid_shape_error(
+    tensor: _SolidTensor, owner: str, shape: tuple, field: bool
+) -> ValueError:
+    n = tensor.shape
+    want = (
+        f"shape {n} for the whole region or (n_elements, {n[0]}, {n[1]}) per element"
+        if field
+        else f"shape {n}"
+    )
+    full = tuple(shape[-len(tensor.full) :]) == tensor.full
+    return ValueError(
+        f"{owner}: {tensor.name} is {tensor.form}, {want}, got shape "
+        f"{tuple(shape)}{f'; {tensor.contract}' if full else ''}."
+    )
+
+
+def _solid_real(tensor: _SolidTensor, owner: str) -> ValueError:
+    remedy = (
+        "; give mechanical loss as a mechanical_quality_factor Q_m, which makes "
+        "the stiffness c (1 + i / Q_m)"
+        if tensor is _STIFFNESS
+        else ""
+    )
+    return ValueError(f"{owner}: {tensor.name} must be real{remedy}.")
+
+
+def _check_solid_values(tensor: _SolidTensor, arr: np.ndarray, owner: str) -> None:
+    """Raise unless a concrete tensor, ``(..., *shape)``, is finite and in SI units.
+
+    A stiffness is also symmetric and positive definite (a positive strain
+    energy), element by element.
+    """
+    if not np.isfinite(arr).all():
+        raise ValueError(f"{owner}: {tensor.name} must be finite.")
+    big = np.abs(arr).max(axis=(-2, -1))
+    if tensor is _PIEZOELECTRIC:
+        small = (big > 0) & (big < _PIEZOELECTRIC_MIN)
+        if small.any():
+            raise ValueError(
+                f"{owner}: piezoelectric_tensor has a largest entry of "
+                f"{_short(big[small].flat[0])} C/m^2, below {_PIEZOELECTRIC_MIN:g}: "
+                "e is in C/m^2; these look like the strain constants d in C/N, "
+                "and e = d c^E."
+            )
+        return
+    soft = big < _STIFFNESS_MIN
+    if soft.any():
+        raise ValueError(
+            f"{owner}: stiffness has a largest entry of {_short(big[soft].flat[0])} "
+            f"Pa, below {_STIFFNESS_MIN:g} Pa: the stiffness is in Pa, so 203 GPa "
+            "is 203e9."
+        )
+    skew = np.linalg.norm(arr - np.swapaxes(arr, -2, -1), axis=(-2, -1))
+    if (skew > _TENSOR_TOL * np.linalg.norm(arr, axis=(-2, -1))).any():
+        raise ValueError(
+            f"{owner}: stiffness is not symmetric: c_IJ = c_JI is the major "
+            "symmetry c_ijkl = c_klij of an elastic solid."
+        )
+    low = np.linalg.eigvalsh((arr + np.swapaxes(arr, -2, -1)) / 2)[..., 0]
+    if (low <= 0).any():
+        raise ValueError(
+            f"{owner}: stiffness is not positive definite (smallest eigenvalue "
+            f"{_short(low[low <= 0].flat[0])} Pa): the strain energy of a solid "
+            "is positive."
+        )
+
+
+def _material_solid_tensor(
+    tensor: _SolidTensor, value: Any, owner: str
+) -> tuple[tuple[float, ...], ...] | None:
+    """A checked constant stiffness or piezoelectric tensor, as rows of floats."""
+    if value is None:
+        return None
+    if is_traced(value):
+        raise NonDifferentiableError(
+            f"{owner}: {tensor.name} is computed inside jax.grad, jax.jit or "
+            f"jax.vmap, but Material values are fixed constants. {_TRACED_REMEDY}"
+        )
+    arr = np.asarray(value)
+    if np.iscomplexobj(arr):
+        raise _solid_real(tensor, owner)
+    try:
+        arr = arr.astype(float)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"{owner}: {tensor.name} must be {tensor.form}, got {value!r}."
+        ) from None
+    if arr.shape != tensor.shape:
+        raise _solid_shape_error(tensor, owner, arr.shape, field=False)
+    _check_solid_values(tensor, arr, owner)
+    return tuple(tuple(float(x) for x in row) for row in arr)
+
+
+def _check_solid(
+    owner: str,
+    *,
+    stiffness: Any,
+    piezoelectric: Any,
+    quality_factor: Any,
+    electro_optic: Any,
+) -> None:
+    """Raise for a solid's values that do not go together.
+
+    A piezoelectric medium is a solid; a quality factor damps a stiffness;
+    a material holding acoustic constants reads its eps_r as the clamped
+    static permittivity, which cannot also be the optical permittivity an
+    electro-optic tensor reads.
+    """
+    if electro_optic is not None and (
+        stiffness is not None or piezoelectric is not None
+    ):
+        given = "stiffness" if stiffness is not None else "piezoelectric_tensor"
+        raise ValueError(
+            f"{owner}: a {given} sits beside an electro_optic_tensor, but the two "
+            "read different eps_r: the clamped static permittivity of an "
+            "acoustic problem, the optical permittivity at the wavelength of an "
+            "electro-optic one. Give the crystal two Materials, an acoustic one "
+            "(eps_r, stiffness, piezoelectric_tensor, mass_density) and an "
+            "optical one (eps_r, electro_optic_tensor), one for each model."
+        )
+    if piezoelectric is not None and stiffness is None:
+        raise ValueError(
+            f"{owner}: a piezoelectric_tensor needs a stiffness: a piezoelectric "
+            "medium is a solid. Give its stiffness c^E in Pa."
+        )
+    if quality_factor is not None and stiffness is None:
+        raise ValueError(
+            f"{owner}: a mechanical_quality_factor needs a stiffness, which it "
+            "damps as c (1 + i / Q_m)."
+        )
+
+
+def _piezoelectric_without_eps_message(owner: str) -> str:
+    r"""Why a piezoelectric tensor needs the crystal's clamped permittivity.
+
+    The coupling scales as :math:`e^2 / (\varepsilon c)`: an eps_r left at 1
+    makes it 29 to 44 times too strong in lithium niobate, with no other
+    sign of the omission.
+    """
+    return (
+        f"{owner}: a piezoelectric_tensor needs the crystal's clamped "
+        "(constant-strain) static permittivity as eps_r, e.g. eps_r=(44, 44, 29) "
+        "with axes for lithium niobate; without it eps_r is 1 and the coupling "
+        "e^2 / (eps c) is many times too strong."
+    )
+
+
+# the Lamé constants' patterns: lambda on the normal block, mu with the
+# factor 2 of engineering shear on the diagonal
+_LAMBDA_PATTERN = np.pad(np.ones((3, 3)), ((0, 3), (0, 3)))
+_MU_PATTERN = np.diag([2.0, 2.0, 2.0, 1.0, 1.0, 1.0])
+
+
+def isotropic_stiffness(young_modulus: Any, poisson_ratio: Any) -> Any:
+    r"""The 6x6 stiffness of an isotropic solid, for `Material.stiffness`.
+
+    With the Lamé constants :math:`\lambda = E\nu / ((1 + \nu)(1 - 2\nu))`
+    and :math:`\mu = E / (2(1 + \nu))`, the upper-left 3x3 block is
+    :math:`\lambda` plus :math:`2\mu` on its diagonal and the shear
+    diagonal is :math:`\mu`, in the Voigt order xx, yy, zz, yz, xz, xy with
+    engineering shear strain. The matrix is the same in every frame, so the
+    material takes any `axes`, or none.
+
+    Plain array arithmetic: JAX inputs give a JAX array, so `jax.grad` with
+    respect to :math:`E` and :math:`\nu` flows through a
+    `MaterialField.stiffness` built from it.
+
+    Args:
+        young_modulus: Young's modulus :math:`E` in Pa, > 0 (70e9 for
+            aluminium).
+        poisson_ratio: Poisson's ratio :math:`\nu`, in (-1, 1/2).
+
+    Returns:
+        The stiffness :math:`c_{IJ}` in Pa, shape ``(6, 6)``: a NumPy array,
+        or a JAX array for JAX inputs.
+
+    Raises:
+        ValueError: :math:`E \le 0`, or :math:`\nu` outside (-1, 1/2), where
+            the stiffness is not positive definite; checked on concrete
+            values only.
+    """
+    jax_input = any(isinstance(v, jax.Array) for v in (young_modulus, poisson_ratio))
+    xp = jnp if jax_input else np
+    e = xp.asarray(young_modulus, dtype=float)
+    nu = xp.asarray(poisson_ratio, dtype=float)
+    if not is_traced(e) and not float(e) > 0:
+        raise ValueError(
+            f"isotropic_stiffness: young_modulus must be > 0 Pa, got {float(e)!r}."
+        )
+    if not is_traced(nu) and not -1 < float(nu) < 0.5:
+        raise ValueError(
+            "isotropic_stiffness: poisson_ratio must lie in (-1, 1/2), where the "
+            f"stiffness is positive definite, got {float(nu)!r}."
+        )
+    lame = e * nu / ((1 + nu) * (1 - 2 * nu))
+    shear = e / (2 * (1 + nu))
+    return lame * _LAMBDA_PATTERN + shear * _MU_PATTERN
+
+
+def _solid_law_message(owner: str, tensor: str) -> str:
+    """Why a stiffness or piezoelectric tensor cannot sit beside a permittivity law."""
+    return (
+        f"{owner}: a {tensor} is given in the frame of axes, but eps_r is a "
+        "PermittivityLaw, which takes no axes. Give the static permittivity a "
+        "piezoelectric problem reads as a constant eps_r."
+    )
 
 
 def electro_optic_in_frame(r: Any, source: Any, target: Any = None) -> Any:
@@ -173,15 +427,50 @@ def electro_optic_in_frame(r: Any, source: Any, target: Any = None) -> Any:
     return out[..., _VOIGT_I, _VOIGT_J, :]
 
 
+def stiffness_in_frame(c: Any, source: Any, target: Any = None) -> Any:
+    r"""A contracted stiffness moved from one frame to another.
+
+    With :math:`Q = b a^T` as in `electro_optic_in_frame`,
+    :math:`c^t_{pqrs} = \sum_{ijkl} Q_{pi} Q_{qj} Q_{rk} Q_{sl}
+    c^s_{ijkl}`: the 6x6 matrix is expanded to :math:`c_{ijkl}`, rotated
+    and contracted again, which is :math:`M c M^T` with the Bond matrix
+    :math:`M`. The stiffness is ``(..., 6, 6)``, a NumPy or a JAX array.
+    """
+    xp = np if isinstance(c, np.ndarray) else jnp
+    q = _frame_rotation(source, target)
+    full = c[..., _VOIGT_ROW, :][..., _VOIGT_ROW]
+    out = xp.einsum("pi,qj,rk,sl,...ijkl->...pqrs", q, q, q, q, full)
+    return out[..., _VOIGT_I, _VOIGT_J, :, :][..., _VOIGT_I, _VOIGT_J]
+
+
+def piezoelectric_in_frame(e: Any, source: Any, target: Any = None) -> Any:
+    r"""A contracted piezoelectric tensor moved from one frame to another.
+
+    :math:`e^t_{pqr} = \sum_{kij} Q_{pk} Q_{qi} Q_{rj} e^s_{kij}`, with
+    :math:`Q` as in `stiffness_in_frame`: :math:`Q e M^T`. The tensor is
+    ``(..., 3, 6)``, a NumPy or a JAX array.
+    """
+    xp = np if isinstance(e, np.ndarray) else jnp
+    q = _frame_rotation(source, target)
+    out = xp.einsum("pk,qi,rj,...kij->...pqr", q, q, q, e[..., _VOIGT_ROW])
+    return out[..., _VOIGT_I, _VOIGT_J]
+
+
+def _frame_rotation(source: Any, target: Any) -> np.ndarray:
+    """:math:`Q = b a^T` of the rows of ``source`` and ``target`` (``None``: global)."""
+    a = np.eye(3) if source is None else np.asarray(source, dtype=float)
+    b = np.eye(3) if target is None else np.asarray(target, dtype=float)
+    return b @ a.T
+
+
 def _bound_error(
     prop: _Property, owner: str, value: Any, axis: str | None = None
 ) -> ValueError:
     """The passivity error; ``axis`` names a principal axis for a tensor value."""
     bound = "> 0" if prop.strict else ">= 0"
     if prop.physics != "em":
-        return ValueError(
-            f"{owner}: {prop.name} must be {bound} {prop.unit}, got {value}."
-        )
+        unit = "" if prop.unit == "1" else f" {prop.unit}"
+        return ValueError(f"{owner}: {prop.name} must be {bound}{unit}, got {value}.")
     if axis is None:
         what = f"{prop.name}={value} but {prop.name} must be {bound}"
     else:
@@ -1016,9 +1305,9 @@ class Material:
         thermal_conductivity: The thermal conductivity in W/(m K), > 0,
             read by thermal problems. ``None`` means not given.
         mass_density: The mass density in kg/m^3, > 0, read by transient
-            thermal problems (``density=`` is its deprecated name, kept for
-            one release with a `DeprecationWarning`). ``None`` means not
-            given.
+            thermal and piezoelectric problems (``density=`` is its
+            deprecated name, kept for one release with a
+            `DeprecationWarning`). ``None`` means not given.
         specific_heat: The specific heat capacity in J/(kg K), > 0, read
             by transient thermal problems. ``None`` means not given.
         thermo_optic_coefficient: dn/dT, the change of the refractive index
@@ -1038,6 +1327,30 @@ class Material:
             raises), `axes` are right-handed, and `eps_r` is a constant.
             It leaves `isotropic` unchanged. ``None``: no electro-optic
             effect.
+        stiffness: The stiffness :math:`c^E_{IJ}` of a solid at constant
+            electric field, in Pa, contracted to a symmetric positive
+            definite 6x6 matrix: rows and columns :math:`I, J` in the order
+            xx, yy, zz, yz, xz, xy, with engineering shear strain, so that
+            :math:`c_{IJ} = c_{ijkl}` with no factors of 2, as datasheets
+            print it. A piezoelectric problem adds the piezoelectric
+            stiffening itself: enter :math:`c^E`, not :math:`c^D`. Given in
+            the frame of `axes`, as `electro_optic_tensor` is, with the same
+            rules beside it (a reflection changes :math:`c_{14}` of a trigonal
+            crystal). `isotropic_stiffness` builds an isotropic solid's.
+            Read by piezoelectric problems. ``None``: not a solid.
+        piezoelectric_tensor: The piezoelectric stress constants
+            :math:`e_{kJ}` in C/m^2 (not the strain constants :math:`d` in
+            C/N; :math:`e = d c^E`), contracted to a 3x6 matrix: rows
+            :math:`k` the field components x, y, z, columns :math:`J` in the
+            Voigt order of `stiffness`, so that :math:`T = c^E S - e^T E`
+            and :math:`D = e S + \varepsilon^S E`. Given in the frame of
+            `axes`, beside a `stiffness`; `eps_r` is then the clamped
+            (constant-strain) static permittivity :math:`\varepsilon^S`.
+            ``None``: not piezoelectric.
+        mechanical_quality_factor: The mechanical quality factor
+            :math:`Q_m`, > 0, beside a `stiffness`: the solid's loss, which
+            makes the stiffness :math:`c (1 + i / Q_m)` under
+            :math:`e^{+i\omega t}`. ``None``: lossless.
         name: A free-form label (for example ``"silicon"``), shown in reprs.
 
     Raises:
@@ -1054,7 +1367,17 @@ class Material:
             finite 6x3 matrix, has an entry above 1e-8 m/V (a value in
             pm/V), or sits beside a matrix property, left-handed `axes`, a
             `PermittivityLaw` or an `eps_r` of 1 (the crystal's optical
-            permittivity left out).
+            permittivity left out); a `stiffness` that is not a real,
+            finite, symmetric positive definite 6x6 matrix, or whose largest
+            entry is below 1e5 Pa (a value in GPa); a `piezoelectric_tensor`
+            that is not a real, finite 3x6 matrix, or whose nonzero largest
+            entry is below 1e-6 C/m^2 (strain constants d); a
+            `piezoelectric_tensor` or a `mechanical_quality_factor` without
+            a `stiffness`, or a `mechanical_quality_factor` <= 0; either
+            tensor beside a matrix property, left-handed `axes`, a
+            `PermittivityLaw` or an `electro_optic_tensor` (give the crystal
+            an acoustic and an optical `Material`); a `piezoelectric_tensor`
+            with an `eps_r` of 1 (the clamped permittivity left out).
         TypeError: `eps_r` is a bare dispersion term such as `Drude`; wrap
             it in a `PermittivityLaw`; ``density=`` beside ``mass_density=``.
         NonDifferentiableError: A constant value is computed inside
@@ -1074,6 +1397,9 @@ class Material:
     specific_heat: float | None = None
     thermo_optic_coefficient: float | None = None
     electro_optic_tensor: tuple[tuple[float, float, float], ...] | None = None
+    stiffness: tuple[tuple[float, ...], ...] | None = None
+    piezoelectric_tensor: tuple[tuple[float, ...], ...] | None = None
+    mechanical_quality_factor: float | None = None
     name: str | None = None
 
     density = property(_no_density_attribute)
@@ -1082,19 +1408,40 @@ class Material:
         owner = f"Material {self.name!r}" if self.name else "Material"
         tensor = _material_eo_tensor(self.electro_optic_tensor, owner)
         object.__setattr__(self, "electro_optic_tensor", tensor)
+        stiffness = _material_solid_tensor(_STIFFNESS, self.stiffness, owner)
+        object.__setattr__(self, "stiffness", stiffness)
+        piezoelectric = _material_solid_tensor(
+            _PIEZOELECTRIC, self.piezoelectric_tensor, owner
+        )
+        object.__setattr__(self, "piezoelectric_tensor", piezoelectric)
+        _check_solid(
+            owner,
+            stiffness=stiffness,
+            piezoelectric=piezoelectric,
+            quality_factor=self.mechanical_quality_factor,
+            electro_optic=tensor,
+        )
+        # a piezoelectric tensor comes with a stiffness, which names the frame
+        solid = None if stiffness is None else "stiffness"
         if isinstance(self.eps_r, PermittivityLaw):
             if tensor is not None:
                 raise ValueError(_eo_law_message(owner))
+            if solid is not None:
+                raise ValueError(_solid_law_message(owner, solid))
             for name, value in _law_material_values(self, owner).items():
                 object.__setattr__(self, name, value)
             return
         values = {
             p.name: _material_value(p, getattr(self, p.name), owner) for p in PROPERTIES
         }
-        if tensor is not None:
-            _check_eo_frame(values, self.axes, owner)
-            if np.all(np.asarray(values["eps_r"]) == 1.0):
-                raise ValueError(_eo_without_eps_message(owner))
+        crystal = "electro_optic_tensor" if tensor is not None else solid
+        if crystal is not None:
+            _check_crystal_frame(values, self.axes, owner, crystal)
+        vacuum = np.all(np.asarray(values["eps_r"]) == 1.0)
+        if tensor is not None and vacuum:
+            raise ValueError(_eo_without_eps_message(owner))
+        if piezoelectric is not None and vacuum:
+            raise ValueError(_piezoelectric_without_eps_message(owner))
         values, axes = _principal(values, self.axes, owner)
         for name, value in values.items():
             object.__setattr__(self, name, value)
@@ -1151,24 +1498,30 @@ def _eo_without_eps_message(owner: str) -> str:
     )
 
 
-def _check_eo_frame(values: dict[str, Any], axes: Any, owner: str) -> None:
-    """Raise unless a material's tensors fix the frame of its electro-optic tensor.
+def _check_crystal_frame(
+    values: dict[str, Any], axes: Any, owner: str, tensor: str
+) -> None:
+    """Raise unless a material's tensors fix the frame of its crystal ``tensor``.
 
-    The tensor is third-rank, so the order and sign of the axes matter:
-    a matrix input derives axes of neither, and a reflection flips the
-    sign of every coefficient.
+    The order and sign of the axes matter: a matrix input derives axes of
+    neither, a reflection flips the sign of every electro-optic or
+    piezoelectric coefficient and of the stiffness entries with one index
+    along the reflected axis (c14 of a trigonal crystal), and an axis swap
+    that a permittivity with two equal principal values does not see changes
+    the stiffness.
     """
     matrices = [name for name, v in values.items() if isinstance(v, np.ndarray)]
     if matrices:
+        article = "an" if tensor[0] in "aeiou" else "a"
         raise ValueError(
-            f"{owner}: {matrices[0]} is a 3x3 matrix, but beside an "
-            "electro_optic_tensor every tensor property takes one value or "
+            f"{owner}: {matrices[0]} is a 3x3 matrix, but beside {article} "
+            f"{tensor} every tensor property takes one value or "
             "three principal values along explicit `axes`: a matrix's "
             "derived axes fix neither the order nor the sign of the frame "
             "the tensor is given in."
         )
     if axes is not None:
-        _check_right_handed(_axes(axes, owner), owner)
+        _check_right_handed(_axes(axes, owner), owner, tensor)
 
 
 def _flatten_material_with_keys(m: Material) -> tuple[tuple, tuple]:
@@ -1320,6 +1673,21 @@ def _field_eo_tensor(value: Any) -> jax.Array | None:
     return arr
 
 
+def _field_solid_tensor(tensor: _SolidTensor, value: Any) -> jax.Array | None:
+    """A checked field stiffness or piezoelectric tensor, one or one per element."""
+    if value is None:
+        return None
+    arr = jnp.asarray(value)
+    if jnp.iscomplexobj(arr):
+        raise _solid_real(tensor, "MaterialField")
+    arr = arr.astype(jnp.float64)
+    if arr.ndim not in (2, 3) or arr.shape[-2:] != tensor.shape:
+        raise _solid_shape_error(tensor, "MaterialField", arr.shape, field=True)
+    if not is_traced(arr):
+        _check_solid_values(tensor, np.asarray(arr), "MaterialField")
+    return arr
+
+
 def _check_blend_values(rho: np.ndarray) -> None:
     """Raise unless a blend's concrete density is finite and in [0, 1].
 
@@ -1358,7 +1726,7 @@ def check_field_values(materials: Mapping[str, Any]) -> None:
             _check_law(region, material.eps_r)
         if not isinstance(material, MaterialField):
             continue
-        for name in (*PROPERTY_NAMES, "electro_optic_tensor", "blend"):
+        for name in (*PROPERTY_NAMES, *_FIELD_TENSORS, "blend"):
             value = getattr(material, name)
             if value is None:
                 continue
@@ -1367,6 +1735,10 @@ def check_field_values(materials: Mapping[str, Any]) -> None:
                     _check_blend_values(np.asarray(value))
                 elif name == "electro_optic_tensor":
                     _check_eo_values(np.asarray(value), "MaterialField")
+                elif name in _SOLID_BY_NAME:
+                    _check_solid_values(
+                        _SOLID_BY_NAME[name], np.asarray(value), "MaterialField"
+                    )
                 else:
                     _check_field_values(_BY_NAME[name], np.asarray(value))
             except ValueError as err:
@@ -1615,6 +1987,68 @@ def _has_eo(*materials: Material) -> bool:
     return any(m.electro_optic_tensor is not None for m in materials)
 
 
+def _has_crystal(*materials: Material) -> bool:
+    """Whether a material has a tensor given in the frame of its axes."""
+    return _has_eo(*materials) or any(m.stiffness is not None for m in materials)
+
+
+def _blend_solid(void: Material, solid: Material, axes: Any, w: Any) -> dict:
+    r"""A solid's stiffness, piezoelectric tensor and Q_m blended by weight ``w``.
+
+    The tensors blend linearly in the frame of ``axes``: the piezoelectric
+    tensor with an end without one counting as zero, the stiffness only
+    between two solids (zero stiffness inside the mechanical domain is
+    singular). The loss :math:`1/Q_m` blends linearly, between two ends
+    that both give a quality factor. Empty when neither end is a solid.
+
+    Raises:
+        ValueError: One end only is a solid, or one solid only has a
+            quality factor.
+    """
+    out: dict[str, Any] = {}
+    ends = {"void": void, "solid": solid}
+    if all(m.stiffness is None for m in ends.values()):
+        return out
+    for which, m in ends.items():
+        if m.stiffness is None:
+            raise ValueError(
+                f"MaterialField.interpolate: the {which} end has no stiffness, but "
+                "the other end is a solid: a blend of a solid takes both ends' "
+                "stiffness, since zero stiffness inside the mechanical domain is "
+                "singular. Give both ends a stiffness."
+            )
+    c = [
+        stiffness_in_frame(np.asarray(m.stiffness), m.axes, axes) for m in (void, solid)
+    ]
+    out["stiffness"] = c[0] + jnp.asarray(w)[..., None, None] * (c[1] - c[0])
+    if any(m.piezoelectric_tensor is not None for m in (void, solid)):
+        e = [
+            np.zeros((3, 6))
+            if m.piezoelectric_tensor is None
+            else piezoelectric_in_frame(
+                np.asarray(m.piezoelectric_tensor), m.axes, axes
+            )
+            for m in (void, solid)
+        ]
+        out["piezoelectric_tensor"] = e[0] + jnp.asarray(w)[..., None, None] * (
+            e[1] - e[0]
+        )
+    q = [m.mechanical_quality_factor for m in (void, solid)]
+    if q[0] is None and q[1] is None:
+        return out
+    for which, m in ends.items():
+        if m.mechanical_quality_factor is None:
+            raise ValueError(
+                "MaterialField.interpolate: the other end has a "
+                f"mechanical_quality_factor but the {which} end has none: the "
+                "blend is linear in the loss 1 / Q_m, so give both ends one (a "
+                "nearly lossless end takes a large Q_m)."
+            )
+    loss = [1 / float(x) for x in q if x is not None]  # both given
+    out["mechanical_quality_factor"] = 1 / (loss[0] + w * (loss[1] - loss[0]))
+    return out
+
+
 def _blend_eo(void: Material, solid: Material, axes: Any, w: Any) -> Any:
     """The electro-optic tensor blended by weight ``w`` in the frame of ``axes``.
 
@@ -1663,6 +2097,14 @@ class MaterialField:
     x, y, z are the rows of `axes` (the global frame if ``None``); with it,
     `axes` must be right-handed. `jax.grad` reaches its entries.
 
+    `stiffness` (:math:`c^E`, Pa) and `piezoelectric_tensor` (:math:`e`,
+    C/m^2) are the contracted matrices of `Material`, shape ``(6, 6)`` and
+    ``(3, 6)`` for the whole region or ``(n_elements, 6, 6)`` and
+    ``(n_elements, 3, 6)`` per element, in the frame of `axes` as the
+    electro-optic tensor is; `mechanical_quality_factor` (:math:`Q_m`) is one
+    real value per element or for the region. `jax.grad` reaches their
+    entries.
+
     Build one with `MaterialField.interpolate` (a design density blended
     between two materials) or `MaterialField.uniform` (a whole region whose
     constant material should be differentiable).
@@ -1689,7 +2131,12 @@ class MaterialField:
             `axes` is not orthonormal; an `electro_optic_tensor` that is not
             real and finite, of shape ``(6, 3)`` or ``(n_elements, 6, 3)``,
             has an entry above 1e-8 m/V (a value in pm/V), or comes with
-            left-handed `axes`, without `eps_r` or in a blend.
+            left-handed `axes`, without `eps_r` or in a blend; a
+            `stiffness` or `piezoelectric_tensor` that fails the checks of
+            `Material` (per element), or comes with left-handed `axes`, in a
+            blend or beside an `electro_optic_tensor`; a
+            `piezoelectric_tensor` without `stiffness` or `eps_r`; a
+            `mechanical_quality_factor` without `stiffness`.
         NonDifferentiableError: `axes` is computed inside `jax.grad`,
             `jax.jit` or `jax.vmap` from their arguments; pass a fixed value.
     """
@@ -1703,6 +2150,9 @@ class MaterialField:
     specific_heat: jax.Array | None = None
     thermo_optic_coefficient: jax.Array | None = None
     electro_optic_tensor: jax.Array | None = None
+    stiffness: jax.Array | None = None
+    piezoelectric_tensor: jax.Array | None = None
+    mechanical_quality_factor: jax.Array | None = None
     region: str | None = None
     axes: tuple[tuple[float, float, float], ...] | None = None
     blend: jax.Array | None = None
@@ -1735,6 +2185,7 @@ class MaterialField:
                 sizes.add(tensor.shape[0])
             if self.axes is not None:
                 _check_right_handed(self.axes, "MaterialField")
+        sizes |= self._check_solid()
         size = self._check_blend()
         if size is not None:
             sizes.add(size)
@@ -1748,6 +2199,35 @@ class MaterialField:
                 "MaterialField: every per-element property must have the same "
                 f"number of values (one per element), got {sorted(sizes)}."
             )
+
+    def _check_solid(self) -> set[int]:
+        """Check the stiffness and piezoelectric tensor; their per-element sizes."""
+        sizes = set()
+        for tensor in _SOLID_TENSORS:
+            value = _field_solid_tensor(tensor, getattr(self, tensor.name))
+            object.__setattr__(self, tensor.name, value)
+            if value is not None and value.ndim == 3:
+                sizes.add(value.shape[0])
+        _check_solid(
+            "MaterialField",
+            stiffness=self.stiffness,
+            piezoelectric=self.piezoelectric_tensor,
+            quality_factor=self.mechanical_quality_factor,
+            electro_optic=self.electro_optic_tensor,
+        )
+        if self.stiffness is None:
+            return sizes
+        if self.blend is not None:
+            raise ValueError(
+                "MaterialField: a stiffness is given in the frame of axes, but a "
+                "blend holds a permittivity law or a layer grid, which take no "
+                "axes; build the field per element."
+            )
+        if self.piezoelectric_tensor is not None and self.eps_r is None:
+            raise ValueError(_piezoelectric_without_eps_message("MaterialField"))
+        if self.axes is not None:
+            _check_right_handed(self.axes, "MaterialField", "stiffness")
+        return sizes
 
     def _check_blend(self) -> int | None:
         """Check `blend` and `blend_ends`; the size of a per-element `blend`."""
@@ -1791,9 +2271,10 @@ class MaterialField:
             v = getattr(self, name)
             if v is not None and v.ndim == 1 + self.has_principal_values(name):
                 return int(v.shape[0])
-        r = self.electro_optic_tensor
-        if r is not None and r.ndim == 3:
-            return int(r.shape[0])
+        for name in _FIELD_TENSORS:
+            r = getattr(self, name)
+            if r is not None and r.ndim == 3:
+                return int(r.shape[0])
         return None
 
     def has_principal_values(self, name: str) -> bool:
@@ -1803,7 +2284,7 @@ class MaterialField:
     @property
     def properties(self) -> tuple[str, ...]:
         """Names of the properties this field gives."""
-        names = (*PROPERTY_NAMES, "electro_optic_tensor")
+        names = (*PROPERTY_NAMES, *_FIELD_TENSORS)
         return tuple(n for n in names if getattr(self, n) is not None)
 
     @classmethod
@@ -1878,6 +2359,13 @@ class MaterialField:
         right-handed, or the global frame for an isotropic field. A layer
         density and a law end refuse it.
 
+        A `stiffness` blends linearly between two solids, and a
+        `piezoelectric_tensor` with an end without one counting as zero,
+        both in the field's frame as the electro-optic tensor is. The
+        `mechanical_quality_factor` blends through its loss: :math:`1/Q_m`
+        is linear in the weight, between two ends that both give one. A
+        layer density refuses them.
+
         Args:
             density: One value per element, in [0, 1] (0 = void, 1 = solid),
                 or a `gfem.design.LayerDensity` on a 2D model.
@@ -1890,7 +2378,9 @@ class MaterialField:
             ValueError: Unknown scheme, two materials whose tensors have
                 different principal axes, or an anisotropic end under
                 ``"index"`` or beside a law; an electro-optic end under a
-                layer density or beside a law.
+                layer density or beside a law; one end only a solid (with a
+                `stiffness`) or with a `mechanical_quality_factor`; a solid
+                end under a layer density.
             NonDifferentiableError: An end's law is computed inside
                 `jax.grad`, `jax.jit` or `jax.vmap`: differentiate a law on a
                 `Material` region instead.
@@ -1919,17 +2409,18 @@ class MaterialField:
             )
         else:
             axes, ends = _common_axes(void, solid)
-            if _has_eo(void, solid) and np.linalg.det(np.asarray(axes)) < 0:
-                # the tensor's frame is right-handed; the sign of a principal
+            if _has_crystal(void, solid) and np.linalg.det(np.asarray(axes)) < 0:
+                # the tensors' frame is right-handed; the sign of a principal
                 # axis leaves the principal values unchanged
                 flip = np.array([[1.0], [1.0], [-1.0]])
                 axes = _axes(np.asarray(axes) * flip, "MaterialField.interpolate")
-        props = {}
+        props = _blend_solid(void, solid, axes, w)
         for name in PROPERTY_NAMES:
             a, b = ends[0][name], ends[1][name]
-            if a is not None and b is not None:
-                principal = axes is not None and _BY_NAME[name].may_be_tensor
-                props[name] = a + (w[..., None] if principal else w) * (b - a)
+            if name in props or a is None or b is None:
+                continue
+            principal = axes is not None and _BY_NAME[name].may_be_tensor
+            props[name] = a + (w[..., None] if principal else w) * (b - a)
         tensor = _blend_eo(void, solid, axes, w)
         return cls(**props, electro_optic_tensor=tensor, axes=axes)
 
@@ -1951,9 +2442,9 @@ class MaterialField:
         """
         ends = (_blend_end(void, "void"), _blend_end(solid, "solid"))
         w = rho if scheme == "index" else _SCHEMES[scheme](rho, penalty)
-        props: dict[str, Any] = {}
+        props: dict[str, Any] = _blend_solid(void, solid, None, w)
         for name in PROPERTY_NAMES:
-            if name in ("eps_r", "tan_delta"):
+            if name in ("eps_r", "tan_delta") or name in props:
                 continue
             a, b = getattr(void, name), getattr(solid, name)
             if a is not None and b is not None:
@@ -1986,10 +2477,14 @@ class MaterialField:
                     f"MaterialField.interpolate: the {which} end is anisotropic, "
                     "but a layer density of a 2D model takes isotropic ends only."
                 )
-            if m.electro_optic_tensor is not None:
+            tensor = next(
+                (n for n in _FIELD_TENSORS if getattr(m, n) is not None), None
+            )
+            if tensor is not None:
+                article = "an" if tensor[0] in "aeiou" else "a"
                 raise ValueError(
-                    f"MaterialField.interpolate: the {which} end has an "
-                    "electro_optic_tensor, but a layer density of a 2D model "
+                    f"MaterialField.interpolate: the {which} end has {article} "
+                    f"{tensor}, but a layer density of a 2D model "
                     "does not blend it; give the region a Material or a "
                     "MaterialField per element."
                 )
@@ -2021,8 +2516,9 @@ class MaterialField:
         conductivity, ... directly. An anisotropic material gives a field
         on its `axes` (the coordinate axes if ``None``) whose tensor
         properties are ``(3,)`` arrays of principal values, and so does a
-        material with an `electro_optic_tensor` and `axes`, whose frame the
-        field keeps; the tensor is one ``(6, 3)`` array.
+        material with an `electro_optic_tensor` or a `stiffness` and `axes`,
+        whose frame the field keeps; each such tensor is one array, ``(6, 3)``,
+        ``(6, 6)`` or ``(3, 6)``.
 
         Args:
             region: The volume region the field is for.
@@ -2035,8 +2531,7 @@ class MaterialField:
                 "parameters directly (the law is a pytree)."
             )
         axes = None
-        tensor = material.electro_optic_tensor
-        if not material.isotropic or (tensor is not None and material.axes):
+        if not material.isotropic or (_has_crystal(material) and material.axes):
             axes = material.axes or _axes(np.eye(3), "MaterialField.uniform")
         props: dict[str, Any] = {}
         for n in PROPERTY_NAMES:
@@ -2047,8 +2542,10 @@ class MaterialField:
             if axes is not None and _BY_NAME[n].may_be_tensor:
                 arr = jnp.broadcast_to(arr, (3,))
             props[n] = arr
-        if tensor is not None:
-            props["electro_optic_tensor"] = jnp.asarray(tensor, dtype=jnp.float64)
+        for n in _FIELD_TENSORS:
+            tensor = getattr(material, n)
+            if tensor is not None:
+                props[n] = jnp.asarray(tensor, dtype=jnp.float64)
         return cls(**props, region=region, axes=axes)
 
     def __repr__(self) -> str:
@@ -2081,7 +2578,7 @@ class MaterialField:
         return f"MaterialField({size}{where}, {', '.join(parts)})"
 
 
-register_fields(MaterialField, (*PROPERTY_NAMES, "electro_optic_tensor", "blend"))
+register_fields(MaterialField, (*PROPERTY_NAMES, *_FIELD_TENSORS, "blend"))
 
 
 def field_principal_values(

@@ -51,6 +51,7 @@ from gfem._materials import (
     Material,
     MaterialField,
     PermittivityLaw,
+    isotropic_stiffness,
 )
 from gfem._periodic import (
     Pairing,
@@ -107,6 +108,7 @@ __all__ = [
     "WavePort",
     "enclosed_by",
     "fit_permittivity",
+    "isotropic_stiffness",
 ]
 
 _BOUNDARY_TYPES = (
