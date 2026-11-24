@@ -50,6 +50,7 @@ from gfem._materials import (
     Material,
     MaterialField,
     PermittivityLaw,
+    inside_fitted_range,
     refractive_index,
 )
 from gfem._text import hertz, hertz_band
@@ -740,12 +741,6 @@ def _check_law_frequencies(
                 )
 
 
-#: How close to an edge of a fitted range, relative, a frequency still counts
-#: as inside: it absorbs the rounding of a frequency computed as c / wavelength.
-#: There is no other margin, because each edge is the source's own.
-FITTED_EDGE = 1e-9
-
-
 def _fitted_laws(
     model: Model, regions: Collection[str] | None
 ) -> list[tuple[str, str, PermittivityLaw, tuple[float, float]]]:
@@ -793,11 +788,12 @@ def warn_fitted_range(
 
     Every law of a law region, and every law end of a blend, whose
     ``frequency_range`` does not hold one of ``frequencies`` (Hz) gives one
-    line of a single `gfem.FittedRangeWarning`; within `FITTED_EDGE` of an
-    edge counts as inside. The law stays passive outside its range, so the
-    solve runs on. Static: it reads the ranges and the frequencies only, so
-    it runs on a traced model too, and every rank of a distributed solve
-    sees the same warning, which rank 0 shows (`gfem._mpi.warn`).
+    line of a single `gfem.FittedRangeWarning`; inside is decided by
+    `gfem._materials.inside_fitted_range`, as for a library constant. The
+    law stays passive outside its range, so the solve runs on. Static: it
+    reads the ranges and the frequencies only, so it runs on a traced model
+    too, and every rank of a distributed solve sees the same warning, which
+    rank 0 shows (`gfem._mpi.warn`).
 
     Args:
         model: The model.
@@ -821,9 +817,7 @@ def warn_fitted_range(
     for key, label, law, (lo, hi) in _fitted_laws(model, regions):
         if key in skip:
             continue
-        outside = [
-            f for f in freqs if f < lo * (1 - FITTED_EDGE) or f > hi * (1 + FITTED_EDGE)
-        ]
+        outside = [f for f in freqs if not inside_fitted_range((lo, hi), f)]
         if not outside:
             continue
         keys.add(key)

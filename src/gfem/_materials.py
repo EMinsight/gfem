@@ -872,6 +872,20 @@ for _cls in _TERMS:
     register_fields(_cls, tuple(f.name for f in dataclasses.fields(_cls)))
 register_fields(PermittivityLaw, ("eps_inf", "terms"))
 
+#: How close to an edge of a fitted range, relative, a frequency still counts
+#: as inside: it absorbs the rounding of a frequency computed as c / wavelength.
+#: There is no other margin, because each edge is the source's own.
+FITTED_EDGE = 1e-9
+
+
+def inside_fitted_range(frequency_range: tuple[float, float], frequency: float) -> bool:
+    """Whether ``frequency`` (Hz) lies in a law's fitted range, edges included.
+
+    A frequency within `FITTED_EDGE` of an edge, relative, counts as inside.
+    """
+    lo, hi = frequency_range
+    return lo * (1 - FITTED_EDGE) <= frequency <= hi * (1 + FITTED_EDGE)
+
 
 _ANISOTROPIC_LAW = (
     "anisotropic dispersive materials are not supported: a permittivity law "

@@ -100,8 +100,13 @@ import numpy as np
 from scipy.constants import c, e, h
 
 from gfem._checks import is_traced
-from gfem._engine.dispersion import FITTED_EDGE
-from gfem._materials import Drude, Lorentz, Material, PermittivityLaw
+from gfem._materials import (
+    Drude,
+    Lorentz,
+    Material,
+    PermittivityLaw,
+    inside_fitted_range,
+)
 from gfem._text import hertz, hertz_band
 from gfem.errors import FittedRangeWarning, NonDifferentiableError
 
@@ -309,9 +314,9 @@ def _warn_outside(
 
     ``stacklevel`` points the warning at the user's call of the entry.
     """
-    lo, hi = source.fitted_range
-    if lo * (1 - FITTED_EDGE) <= frequency <= hi * (1 + FITTED_EDGE):
+    if inside_fitted_range(source.fitted_range, frequency):
         return
+    lo, hi = source.fitted_range
     warnings.warn(
         f"{owner}: the permittivity law of {tag} was fitted over "
         f"{hertz_band(lo, hi, 4)}, and frequency={hertz(frequency, 4)} lies "

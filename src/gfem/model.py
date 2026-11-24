@@ -42,7 +42,6 @@ from gfem._floquet import (
     surface_lead,
     wavenumber,
 )
-from gfem._permittivity_fit import PermittivityFit, fit_permittivity
 from gfem._materials import (
     Debye,
     DjordjevicSarkar,
@@ -60,6 +59,7 @@ from gfem._periodic import (
     check_wave_vector,
     pairing,
 )
+from gfem._permittivity_fit import PermittivityFit, fit_permittivity
 from gfem._pml import (
     PML,
     Layers,
