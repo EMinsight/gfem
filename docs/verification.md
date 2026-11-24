@@ -426,6 +426,47 @@ Tests: [spheres](https://github.com/benvial/gfem/blob/main/tests/verification/te
 [dipole over glass](https://github.com/benvial/gfem/blob/main/tests/reference/test_layered_dipole.py),
 [across ranks](https://github.com/benvial/gfem/blob/main/tests/mpi/test_free_space.py).
 
+## Multipoles
+
+The multipole decomposition of a scatterer's field is checked at order 3
+against closed forms, against identities the physics must obey, and against
+finite differences:
+
+- **Spheres under a plane wave.** Dielectric spheres lit by a plane wave,
+  including the one that satisfies the first Kerker condition: their
+  multipole coefficients match the Mie series up to the degree it is
+  resolved, the partial scattering cross sections match it in any
+  propagation direction, and they add up to the scattering cross section.
+  A perfectly conducting sphere and a magnetic sphere match their own Mie
+  series.
+- **A wide beam.** A Gaussian beam wide against the scatterer gives the plane
+  wave's multipoles, and an incident-field function that is a plane wave
+  gives the plane wave's.
+- **A point dipole read back.** An electric or a magnetic point dipole, in
+  vacuum and in a magnetic medium, returns its own moment exactly.
+- **A moved scatterer and an empty one.** Moving the scatterer multiplies the
+  coefficients by the phase of the plane wave at its new position, the
+  cross sections stay put, and with no scatterer the coefficients are
+  round-off.
+- **The toroidal correction.** The long-wavelength and toroidal dipoles of the
+  induced current give the exact electric dipole as $p \approx p_0 - ikT$,
+  and the anapole sphere has $p_0$ and $T$ at the values of the Mie
+  internal field.
+- **Gradients.** The multipoles' gradient by a design's permittivity matches
+  finite differences, for a dipole, for a quadrupole and for the fraction of
+  the scattering a multipole carries. Every refusal is a test of its own.
+- **Across ranks.** On three MPI ranks the coefficients and the current
+  moments equal one process's, and so does the gradient.
+
+All of these run on every change to gfem, except the refined Kerker and
+anapole spheres, which run before each release, and the checks across ranks,
+which need the {term}`MPI PETSc stack` and run twice a week.
+
+Tests: [multipoles](https://github.com/benvial/gfem/blob/main/tests/unit/test_multipoles.py),
+[spheres](https://github.com/benvial/gfem/blob/main/tests/verification/test_multipoles.py),
+[gradients](https://github.com/benvial/gfem/blob/main/tests/verification/test_multipoles_gradient.py),
+[across ranks](https://github.com/benvial/gfem/blob/main/tests/mpi/test_multipoles.py).
+
 ## Anisotropic materials
 
 - An absorbing boundary ending a biaxial, magnetic slab reflects as the

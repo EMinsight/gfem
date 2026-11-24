@@ -248,6 +248,17 @@ Free space:
   nanosphere and a grating coupler shaped for a fiber; four recipes
   (incident fields, cross sections, point dipoles, far fields); four
   sections of the conventions and a "Free space" section of the glossary.
+- **Multipoles.** `gfem.multipoles(result, source, model=)` decomposes the
+  field a scatterer radiates under a plane wave, a Gaussian beam or an
+  incident-field function into electric and magnetic multipoles about an
+  origin you choose. It gives power-normalized coefficients, the partial
+  scattering cross section of each multipole up to a degree cap (they add up
+  to the scattering cross section), and the exact electric and magnetic
+  dipoles and quadrupoles in SI units, at any particle size.
+  `gfem.current_moments` gives the long-wavelength electric dipole and the
+  toroidal dipole of the induced current, to read anapoles. The multipoles
+  differentiate with respect to material designs, so the magnetic dipole can
+  be maximized ({doc}`../recipes/multipoles`).
 
 Material data:
 

@@ -104,6 +104,7 @@ recipes/incident-fields
 recipes/cross-sections
 recipes/point-dipoles
 recipes/far-field
+recipes/multipoles
 ```
 
 ```{toctree}

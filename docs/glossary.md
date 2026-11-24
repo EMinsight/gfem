@@ -1088,6 +1088,85 @@ Beam coupling
   squared modulus is the coupled power on a real reference.
 ```
 
+## Multipoles
+
+```{glossary}
+Multipole decomposition
+  The multipoles of the field a {term}`scatterer` radiates under one
+  {term}`incident field`, in a homogeneous lossless background, each with its
+  share of the scattering cross section (`gfem.multipoles`). It is always of
+  the whole scatterer, never of a mirror-reduced part.
+
+Multipole coefficients
+  The dimensionless electric $\alpha_{lm}$ and magnetic $\beta_{lm}$
+  amplitudes of the scattered field's outgoing vector spherical waves about
+  the {term}`multipole origin`, per {term}`incident amplitude`, normalized so
+  that $\sigma_\text{sca} = k^{-2}\sum(|\alpha_{lm}|^2 + |\beta_{lm}|^2)$
+  (`Multipoles.alpha`, `Multipoles.beta`). A sphere's Mie coefficients
+  $a_l$ and $b_l$ are the same numbers up to a factor.
+
+Multipole degree
+  The index $l$ of a multipole: 1 is a dipole, 2 a quadrupole, 3 an octupole;
+  $m$ is its azimuthal index, from $-l$ to $l$. It is not the element order of
+  the solve.
+
+Multipole origin
+  The point the multipoles are taken about (`origin=`). The
+  {term}`partial scattering cross sections <Partial scattering cross section>`
+  depend on it; their sum does not.
+
+Incident amplitude
+  The complex field the {term}`multipole coefficients <Multipole
+  coefficients>` are given per: a plane wave's amplitude, a Gaussian beam's
+  focal field, $\sqrt{2\eta I}$ for an {py:obj}`gfem.IncidentField`;
+  $|E_\text{inc}|^2/(2\eta)$ is the {term}`incident intensity`
+  (`Multipoles.incident_amplitude`).
+
+Partial scattering cross section
+  The power one electric or magnetic multipole of one {term}`degree <Multipole
+  degree>` (all $m$) radiates, over the {term}`incident intensity`, in m²
+  (`Multipoles.electric_scattering`, `Multipoles.magnetic_scattering`). Summed
+  over all degrees they give the scattering cross section.
+
+Exact multipole moments
+  The Cartesian electric and magnetic dipoles and quadrupoles $p$, $m$,
+  $Q^e$, $Q^m$ that radiate exactly the degree-1 and degree-2 parts of the
+  scattered field, at any particle size (`Multipoles.electric_dipole` and
+  its siblings).
+
+Induced current
+  $J = +i\omega\varepsilon_0(\varepsilon_r - \varepsilon_b)E$ in the
+  {term}`scatterer` under $e^{+i\omega t}$, with $E$ the {term}`total field`:
+  the source of the {term}`current moments <Current moments>`.
+
+Current moments
+  The {term}`long-wavelength dipole` $p_0$ and the {term}`toroidal dipole` $T$
+  of the {term}`induced current` (`gfem.current_moments`), as opposed to the
+  {term}`exact multipole moments <Exact multipole moments>`. They are not
+  defined for surface currents or a permeability contrast.
+
+Long-wavelength dipole
+  $p_0 = \frac{1}{i\omega}\int J\,dV$, the electric dipole of the
+  {term}`induced current` without its $k^2$ corrections. It equals the exact
+  $p$ only for particles small against the wavelength.
+
+Toroidal dipole
+  $T$, the $k^2$ correction that turns the {term}`long-wavelength dipole` $p_0$
+  into the exact electric dipole: $p \approx p_0 - ikT$ under $e^{+i\omega t}$.
+  It is not a separate radiating family and has no cross section of its own.
+
+Anapole
+  A scatterer whose exact electric dipole vanishes, $p = 0$, while $p_0$ and
+  $T$ do not. Its long-wavelength approximation $p_0 = ikT$ is only a rough
+  guide, 7-9 % off for a sphere of high index.
+
+Kerker condition
+  The first Kerker condition: equal electric and magnetic dipoles
+  ($\alpha_{1,\pm1}$ against $\beta_{1,\pm1}$; $p_x = m_y/v$ for a wave
+  travelling along $z$, $v$ the speed of light in the background), under which
+  the dipoles scatter nothing backward. The quadrupoles still do.
+```
+
 ## Thermal
 
 ```{glossary}

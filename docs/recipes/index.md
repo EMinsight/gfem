@@ -62,3 +62,4 @@ orphan: true
 - {doc}`cross-sections`
 - {doc}`point-dipoles`
 - {doc}`far-field`
+- {doc}`multipoles`
