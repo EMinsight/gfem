@@ -780,10 +780,12 @@ def meet(comm: Any, call: str) -> None:
     if comm is None:
         return
     request = comm.Ibarrier()
-    start = time.monotonic()
+    # perf_counter, not monotonic: before Python 3.13, Windows' monotonic clock
+    # ticks every 15.6 ms, so a wait shorter than a tick reads as no wait at all
+    start = time.perf_counter()
     pause, told = 1e-4, False
     while not request.Test():
-        if not told and time.monotonic() - start > ENTRY_PATIENCE:
+        if not told and time.perf_counter() - start > ENTRY_PATIENCE:
             told = True
             _log.warning(
                 "gfem: rank %d: waiting over %g s for the other ranks at %s: every "
