@@ -695,8 +695,11 @@ def port_terms(
         modes = planar(mode_space(section, order, None))
         label = wave_port_label(list(ports), lone_surface=True)
         band = sweep_band(modes, target, max(p.mode for p in ports), label)
+        # the absorbing term does not depend on a mode's sign or phase, and a
+        # band near cutoff may read a polarity point at a node of the field
+        unsigned = [dataclasses.replace(p, polarity=None) for p in ports]
         sweeps = port_mode_sweep(
-            modes, band, [p.mode for p in ports], tolerance=tolerance, ports=list(ports)
+            modes, band, [p.mode for p in ports], tolerance=tolerance, ports=unsigned
         )
         lift = face_vectors(model, modes, built, space)
         out.append(PortTerm(ports, modes, sweeps, tolerance=tolerance, lift=lift))
