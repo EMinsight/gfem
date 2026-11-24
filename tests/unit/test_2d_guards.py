@@ -281,7 +281,6 @@ ENTRIES = {
         lambda model: gfem.shape.boundary_morph(model, "ab"),
         r"boundary_morph.*gmsh",
     ),
-    "quality": (lambda model: gfem.shape.quality(model.mesh), r"quality.*gmsh"),
     "helmholtz_filter": (
         lambda model: gfem.design.helmholtz_filter(model.mesh, "a", radius=1e-6),
         r"helmholtz_filter.*LayerGrid",

@@ -48,47 +48,68 @@ _EXTENSIONS = get_args(Extension)
 # Corners of a tet and their three edges, ordered so that each corner's
 # determinant is +6 V on a positively oriented tet.
 _CORNERS = ((0, 1, 2, 3), (1, 2, 0, 3), (2, 0, 1, 3), (3, 0, 2, 1))
+# Corners of a triangle and their two edges, ordered so that each corner's
+# determinant is +2 A on an anticlockwise triangle.
+_TRIANGLE_CORNERS = ((0, 1, 2), (1, 2, 0), (2, 0, 1))
 
 
 # --- mesh quality ------------------------------------------------------------
 
 
-def _scaled_jacobian(xp: ModuleType, nodes, tets: np.ndarray, sign: np.ndarray):
-    """Min over corners of sqrt(2) det(e1, e2, e3) / (|e1| |e2| |e3|), times sign."""
+def _det(xp: ModuleType, edges) -> Any:
+    """Per element, the determinant of its corner's edges (two in 2D, three in 3D)."""
+    if len(edges) == 2:
+        e1, e2 = edges
+        return e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]
+    e1, e2, e3 = edges
+    return xp.sum(e1 * xp.cross(e2, e3), axis=1)
+
+
+def _scaled_jacobian(xp: ModuleType, nodes, elements: np.ndarray, sign: np.ndarray):
+    r"""The scaled Jacobian of each element, times ``sign``.
+
+    The minimum over a tet's corners of
+    :math:`\sqrt{2} \det(e_1, e_2, e_3) / (|e_1| |e_2| |e_3|)`, or over a
+    triangle's corners of :math:`(2 / \sqrt{3}) \det(e_1, e_2) / (|e_1| |e_2|)`.
+    """
+    triangles = elements.shape[1] == 3
+    corners, factor = (
+        (_TRIANGLE_CORNERS, 2 / np.sqrt(3)) if triangles else (_CORNERS, np.sqrt(2))
+    )
     q = None
-    for a, b, c, d in _CORNERS:
-        e1, e2, e3 = (nodes[tets[:, k]] - nodes[tets[:, a]] for k in (b, c, d))
-        det = xp.sum(e1 * xp.cross(e2, e3), axis=1)
-        norm = xp.prod(
-            xp.stack([xp.linalg.norm(e, axis=1) for e in (e1, e2, e3)]), axis=0
-        )
-        corner = sign * np.sqrt(2) * det / norm
+    for a, *others in corners:
+        edges = [nodes[elements[:, k]] - nodes[elements[:, a]] for k in others]
+        norm = xp.prod(xp.stack([xp.linalg.norm(e, axis=1) for e in edges]), axis=0)
+        corner = sign * factor * _det(xp, edges) / norm
         q = corner if q is None else xp.minimum(q, corner)
     return q
 
 
 def _orientation(mesh: Mesh) -> np.ndarray:
-    """+1 / -1 per tet: the sign of its volume in the imported mesh."""
-    x, tets = mesh.imported_nodes, mesh.tetrahedra
-    e = [x[tets[:, k]] - x[tets[:, 0]] for k in (1, 2, 3)]
-    det = np.einsum("ij,ij->i", e[0], np.cross(e[1], e[2]))
+    """+1 / -1 per element: the sign of its volume (area) in the imported mesh."""
+    x, elements = mesh.imported_nodes, mesh.volume_elements
+    det = _det(
+        np, [x[elements[:, k]] - x[elements[:, 0]] for k in range(1, mesh.dim + 1)]
+    )
     return np.where(det < 0, -1.0, 1.0)
 
 
 def _imported_quality(mesh: Mesh) -> np.ndarray:
     return _scaled_jacobian(
-        np, mesh.imported_nodes, mesh.tetrahedra, _orientation(mesh)
+        np, mesh.imported_nodes, mesh.volume_elements, _orientation(mesh)
     )
 
 
 def quality(mesh: Mesh) -> jax.Array:
-    r"""The scaled Jacobian of every tetrahedron, in mesh order.
+    r"""The scaled Jacobian of every volume element, in mesh order.
 
-    The scaled Jacobian is the minimum over a tet's four corners of
-    :math:`\sqrt{2} \det(e_1, e_2, e_3) / (|e_1| |e_2| |e_3|)`, with
-    :math:`e_1, e_2, e_3` the
-    corner's three edges. A regular tet scores 1, a flat one 0, and a tet
-    turned inside out relative to the imported mesh scores below 0. Imported
+    The scaled Jacobian of a tetrahedron is the minimum over its four corners
+    of :math:`\sqrt{2} \det(e_1, e_2, e_3) / (|e_1| |e_2| |e_3|)`, with
+    :math:`e_1, e_2, e_3` the corner's three edges; that of a triangle (a 2D
+    mesh) the minimum over its three corners of
+    :math:`(2 / \sqrt{3}) \det(e_1, e_2) / (|e_1| |e_2|)`. A regular element
+    scores 1, a flat one 0, and one turned inside out relative to the
+    imported mesh scores below 0. Imported
     meshes already contain poor elements (gsim meshes reach 0.015-0.05), so
     compare against ``quality`` of the imported mesh rather than an absolute
     threshold: gfem warns when an element falls below a quarter of its
@@ -99,14 +120,15 @@ def quality(mesh: Mesh) -> jax.Array:
     reject optimization steps, or, smoothly aggregated, as a constraint.
 
     Args:
-        mesh: A mesh, typically moved by a `BoundaryMorph`.
+        mesh: A mesh, typically moved by a `BoundaryMorph` or built with
+            `Mesh.with_nodes`.
 
     Returns:
-        One value per tetrahedron, shape ``(n_tetrahedra,)``.
+        One value per volume element (tetrahedron or triangle), shape
+        ``(n_elements,)``.
     """
-    refuse_entry(mesh, "quality")
     return _scaled_jacobian(
-        jnp, jnp.asarray(mesh.nodes), mesh.tetrahedra, _orientation(mesh)
+        jnp, jnp.asarray(mesh.nodes), mesh.volume_elements, _orientation(mesh)
     )
 
 
@@ -121,7 +143,8 @@ def _check_quality(
 
     Args:
         mesh: The mesh to check, with concrete node coordinates.
-        active: Per tet, whether it counts (the solve domain); default all.
+        active: Per volume element, whether it counts (the solve domain);
+            default all.
         stacklevel: Passed on to `warnings.warn`, counted from the caller.
         comm: The resolved communicator: rank 0 warns (`gfem._mpi.warn`).
 
@@ -131,10 +154,10 @@ def _check_quality(
     nodes = np.asarray(mesh.nodes)
     if np.array_equal(nodes, mesh.imported_nodes):
         return
-    tets = mesh.tetrahedra
+    elements = mesh.volume_elements
     if active is None:
-        active = np.ones(len(tets), dtype=bool)
-    q = _scaled_jacobian(np, nodes, tets, _orientation(mesh))
+        active = np.ones(len(elements), dtype=bool)
+    q = _scaled_jacobian(np, nodes, elements, _orientation(mesh))
     q0 = _imported_quality(mesh)
     inverted = active & (q <= 0)
     if inverted.any():
@@ -173,16 +196,17 @@ def _quality_message(
 ) -> str:
     unit = mesh.length_unit
     scale = LENGTH_UNITS[unit]
-    tet = mesh.tetrahedra[worst]
-    x0 = mesh.imported_nodes[tet]
+    element = mesh.volume_elements[worst]
+    x0 = mesh.imported_nodes[element]
     region = next(
         r.name
         for r in mesh.regions
-        if r.dim == mesh.dim and r.tag == mesh.tetrahedron_tags[worst]
+        if r.dim == mesh.dim and r.tag == mesh._topology.volume_tags[worst]  # noqa: SLF001
     )
-    centroid = nodes[tet].mean(axis=0) / scale
-    edges = [np.linalg.norm(x0[i] - x0[j]) for i in range(4) for j in range(i + 1, 4)]
-    moved = np.linalg.norm(nodes[tet] - x0, axis=1).max()
+    centroid = nodes[element].mean(axis=0) / scale
+    k = len(element)
+    edges = [np.linalg.norm(x0[i] - x0[j]) for i in range(k) for j in range(i + 1, k)]
+    moved = np.linalg.norm(nodes[element] - x0, axis=1).max()
     where = ", ".join(f"{c:.4g}" for c in centroid)
     if fatal:
         effect = "The solve would be meaningless on this mesh."

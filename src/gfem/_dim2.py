@@ -227,7 +227,6 @@ _ENTRIES = {
     "refine_mesh": f"Refine the mesh in gmsh and read it again. {_GEOMETRY}",
     "error_estimate": f"Refine the mesh in gmsh and read it again. {_GEOMETRY}",
     "boundary_morph": _GEOMETRY,
-    "quality": f"Check the element quality in gmsh. {_GEOMETRY}",
     "helmholtz_filter": "Filter the pixels of a LayerGrid instead: "
     "helmholtz_filter(grid, radius=...).",
 }
