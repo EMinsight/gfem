@@ -29,7 +29,7 @@ def line(tmp_path_factory):
 
 
 def _dipoles(m, *, magnetic=0):
-    """``m`` dipoles on a fixed lattice inside the line, the last ``magnetic`` magnetic."""
+    """``m`` seeded dipoles inside the line, the last ``magnetic`` magnetic."""
     rng = np.random.default_rng(3)
     x = rng.uniform(0.3e-3, 9.7e-3, m)
     y = rng.uniform(0.2e-3, 1.8e-3, m)

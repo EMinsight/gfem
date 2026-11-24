@@ -395,7 +395,6 @@ def point_loads(
     """
     located = check_positions(model, sources, layout, frequency, comm)
     probed = probe(model.mesh, layout, located, comm)
-    n = len(sources)
     moments = np.array([s.moment for s in sources], complex)
     magnetic = np.array([isinstance(s, MagneticDipole) for s in sources])
     # one shape-function pass for all dipoles; a column holds only its element's DOFs
