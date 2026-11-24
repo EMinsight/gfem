@@ -647,6 +647,16 @@ def _choose(steps: list[_Step], tolerance: float) -> _Step:
 
     Of equal errors the law with fewer terms wins.
     """
+    if not steps:
+        # only a lossless fit without a Drude term discards seeds, and it
+        # discarded every one at the first term
+        raise ValueError(
+            f"{_OWNER}: no lossless law fits these data: every Lorentz term "
+            "tried put its resonance between the data's frequencies, where a "
+            "lossless law diverges. Remedies: give k where the material "
+            "absorbs, fit a narrower range of rows on one side of the "
+            "resonance, or pass drude=True for a metal."
+        )
     for step in steps:
         if step.error <= tolerance:
             return step

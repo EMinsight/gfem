@@ -386,6 +386,22 @@ def test_a_traced_input_is_refused():
         )(1e-2)
 
 
+def test_a_lossless_fit_with_no_usable_term_is_refused(monkeypatch):
+    # Transparent data rule out a resonance between their rows (it would
+    # diverge there). Every seed landing one there is rare in real tables, so
+    # the test forces it: the fit must say so, not fail on an empty list.
+    monkeypatch.setattr(
+        "gfem._permittivity_fit._resonance_in_range", lambda *_, **__: True
+    )
+    n, _ = _nk(_eps(CLEAR_F, *CLEAR))
+    with pytest.raises(ValueError, match="no lossless law") as info:
+        gfem.fit_permittivity(CLEAR_F, n=n)
+    message = str(info.value)
+    assert message.startswith("fit_permittivity")
+    for remedy in ("give k", "narrower", "drude=True"):
+        assert remedy in message
+
+
 def test_the_point_cap_counts_per_mode():
     f = np.linspace(100, 500, 8) * THZ
     # a broad resonance: the 8 points' linewidth floor is 2 x 57 THz
