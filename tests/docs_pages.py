@@ -46,6 +46,9 @@ MESHES = {
     MESH_URL.replace("data/line.msh", "tfln_section.py"): DOCS
     / "tutorials"
     / "tfln_section.py",
+    MESH_URL.replace("tutorials/data/line.msh", "recipes/strip_section.py"): DOCS
+    / "recipes"
+    / "strip_section.py",
     MESH_URL.replace("line.msh", "antenna_box.msh"): MESH.with_name("antenna_box.msh"),
     MESH_URL.replace("line.msh", "sphere.msh"): MESH.with_name("sphere.msh"),
     MESH_URL.replace("data/line.msh", "transducer_section.py"): DOCS

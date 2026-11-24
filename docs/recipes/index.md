@@ -35,6 +35,7 @@ orphan: true
 - {doc}`mesh-refinement`
 - {doc}`anisotropic-materials`
 - {doc}`dispersive-materials`
+- {doc}`waveguide-dispersion`
 - {doc}`fit-measured-data`
 - {doc}`periodic-cell`
 - {doc}`floquet-ports`
