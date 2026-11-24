@@ -114,8 +114,12 @@ The three errors answer different questions:
 ```python
 index = np.sqrt(np.asarray(fit.law(frequency)))  # n - ik
 worst = np.argmax(np.abs(index.real - n[rows]) / n[rows])
-print(f"at {wavelength[rows][worst]:.2f} µm: n {n[rows][worst]:.4f}, law {index.real[worst]:.4f}")
-print(f"at {wavelength[rows][worst]:.2f} µm: k {k[rows][worst]:.3f}, law {-index.imag[worst]:.3f}")
+print(
+    f"at {wavelength[rows][worst]:.2f} µm: n {n[rows][worst]:.4f}, law {index.real[worst]:.4f}"
+)
+print(
+    f"at {wavelength[rows][worst]:.2f} µm: k {k[rows][worst]:.3f}, law {-index.imag[worst]:.3f}"
+)
 ```
 
 ```text
