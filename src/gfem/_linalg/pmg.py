@@ -396,7 +396,7 @@ class PmgHandle(KrylovHandle):
     r"""GMRES on one V-cycle of the p-multigrid, reused by a solve per right-hand side.
 
     The operator must equal its transpose: the smoother factors its blocks
-    as $L D L^\mathsf{T}$. The Krylov solve, its warm start and the
+    as $L D L^\mathsf{T}$. The Krylov solve, its initial guess and the
     preconditioner reuse across a sweep are `KrylovHandle`'s; this handle
     assembles the operator and builds the V-cycle on it (`VCycle`), and logs
     each build (`gfem._linalg.report.pmg_build`).

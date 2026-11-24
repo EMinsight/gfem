@@ -111,7 +111,7 @@ def test_direct_set_count_is_the_built_set(box, order):
 
 
 def test_direct_set_counts_a_cell_both_pml_and_poor_once():
-    # one sliver PML cell: its order-2 element, 6 edges x 2 + 4 faces x 2 DOFs
+    # one poor PML cell: its order-2 element, 6 edges x 2 + 4 faces x 2 DOFs
     nodes = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0.3, 0.3, 0.01]])
     tets = np.array([[0, 1, 2, 3]])
     assert pmg.cell_aspect(nodes, tets)[0] > pmg.POOR_ASPECT

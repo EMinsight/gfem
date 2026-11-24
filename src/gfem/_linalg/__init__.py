@@ -54,7 +54,7 @@ Backends:
 - ``"pmg_gmres"``: GMRES on one V-cycle of a two-level p-multigrid
   (`gfem._linalg.pmg`), to the same relative preconditioned residual as
   ``"bddc_gmres"``, with the same preconditioner reuse. Its direct level is
-  factored as ``"direct"`` factors; its smoother needs ``A^T = A``. It reads
+  factored as ``"direct"`` factors; its smoother needs :math:`A^T = A`. It reads
   the solve domain's cells from ``Operator.cells``.
 - ``"cudss"``: the ``direct`` solver on a GPU (``device="cuda"`` or
   ``"cuda:N"``), NVIDIA cuDSS. The host holds all data; the factors stay on
@@ -203,7 +203,7 @@ def auto_linear_solver(
         default: The linear solver where neither fits.
         unknowns: The system size, an upper bound.
         in_flight: The factorizations held at once (frequency workers).
-        general: Whether the operator is general (not ``A^T = A``).
+        general: Whether the operator is general (not :math:`A^T = A`).
         budget: Direct's bytes.
         pmg: The p-multigrid's inputs, or ``None`` where it does not apply.
         reason: Why ``default`` is the fallback, appended where it is chosen
@@ -750,7 +750,7 @@ class ResolvedLinearSolver:
             comm: The resolved communicator of a distributed solve.
             unknowns: The system size, an upper bound, for the rule.
             in_flight: The factorizations held at once (frequency workers).
-            general: Whether the operator is general (not ``A^T = A``).
+            general: Whether the operator is general (not :math:`A^T = A`).
             budget: The rule's bytes; required with ``unknowns``.
             reason: Why ``"auto"`` takes ``default`` without ``unknowns``, or
                 past ``budget``, for the log.

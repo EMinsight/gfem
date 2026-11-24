@@ -2,7 +2,7 @@
 
 `KrylovHandle` is what the ``bddc_gmres`` and ``pmg_gmres`` handles
 (`gfem._linalg.bddc`, `gfem._linalg.pmg`) do apart from building their
-preconditioner: the Krylov method, the warm start,
+preconditioner: the Krylov method, the initial guess,
 the preconditioner reuse across a sweep's frequencies and its iteration-count
 rules. A subclass builds and holds one preconditioner (`KrylovHandle._set_up`).
 

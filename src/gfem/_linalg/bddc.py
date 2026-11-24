@@ -154,7 +154,7 @@ class BddcHandle(KrylovHandle):
     BDDC reads the fixed DOFs from the space: the operator's free DOFs must
     be the space's ``FreeDofs()`` (build the space with ``dirichlet=``).
 
-    The Krylov solve, its warm start and the preconditioner reuse across a
+    The Krylov solve, its initial guess and the preconditioner reuse across a
     sweep are `gfem._linalg.krylov_handle.KrylovHandle`'s; this handle
     registers BDDC on the form before assembly, which sets it up. Every setup
     chooses its coarse factorization (`_coarse_inverse`) from the columns one
