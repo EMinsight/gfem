@@ -262,5 +262,7 @@ class SourceColumns:
                 c[range(len(block)), block] = loads.coefficients(w)
                 return c
 
-            out.append(AffineTerm(loads.vectors, dipole_coefficients))
+            # the sweep only multiplies the block, which a sparse matrix serves
+            sparse: Any = loads.vectors
+            out.append(AffineTerm(sparse, dipole_coefficients))
         return out
