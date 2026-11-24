@@ -78,6 +78,11 @@ v0.1.
   {py:obj}`gfem.dissipated_power` (a driven field's loss per region and
   metal surface) and {py:obj}`gfem.electric_energy`
   ({doc}`recipes/measurements`); the free-space measurements above.
+- **Circuits**: {py:obj}`gfem.SaxComponent` puts a driven solve in a SAX
+  circuit as a photonic block (wavelength in µm) or an RF block (frequency in
+  Hz, on one reference impedance for the circuit), answering any wavelength or
+  frequency in its band; `NetworkParameters.to_sdict` and `.to_skrf` hand a
+  solved S to SAX or scikit-rf ({doc}`recipes/sax-circuit`).
 - **Quantum metrics**: {py:obj}`gfem.quantum.dressed_modes` (the dressed
   frequencies, Lamb shifts, anharmonicities and dispersive shifts of one
   junction on the solved modes) and `EigenmodeResult.sheet_participation`
@@ -196,6 +201,12 @@ mesh's nodes (an electrode gap through a shape morph), each checked against
 finite differences; with respect to the optical model's permittivity or
 nodes it raises, because the mode is held constant
 ({doc}`recipes/electro-optic-gradient`).
+
+A SAX component's S differentiates as the driven problem's, with respect to
+every input its model function builds from its settings, so one `jax.grad` of
+a SAX circuit reaches gfem's inputs and SAX's analytic models together. With
+respect to the circuit's wavelength or frequency it is the derivative of the
+band's interpolation ({doc}`recipes/sax-circuit`).
 
 How each mark is checked: {doc}`verification`.
 
@@ -351,6 +362,12 @@ returning a wrong value:
   foundry sign-off; one flat GDS cell; layer grids only (no free-form 3D
   designs); length-scale constraints validated up to a rule of $1.25R$ and a
   pitch of $R/3$, for a filter radius $R$.
+- **SAX circuits**: a component answers only inside its band, interpolated
+  between its solved frequencies; every exposed wave port needs a polarity
+  reference, or for RF a voltage path; RF components need a 3D model and one
+  reference impedance for the whole circuit; build the circuit outside
+  `jax.jit`; no forward-mode derivatives. Details:
+  {doc}`recipes/sax-circuit`.
 
 ## Platforms
 
