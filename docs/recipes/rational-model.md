@@ -71,14 +71,15 @@ RationalModel(ports=['p1', 'p2'], n_poles=24, 0.05-20 GHz, error=0.000449, passi
 
 The model holds one real reference impedance per port, constant over
 frequency, fixed at the fit: power waves on it are what the netlist's ports
-see. It is chosen with the rules of `s.to_touchstone`:
+see. It is chosen at the fit:
 
 - Lumped ports have a real, constant reference, their resistance: the fit
   keeps it, as above.
 - When a port's reference is complex or changes with frequency, as the
-  $Z_{PV}$ of a wave port with a `voltage_path` usually does, the fit raises
-  `ValueError` and asks for `z0=`: `s.fit_rational(z0=50.0)` fits S
-  renormalized to 50 Ω first. One value per port, in port order, also works.
+  $Z_{PV}$ of a wave port with a `voltage_path` does on a lossy or
+  dispersive line, the fit raises `ValueError` and asks for `z0=`:
+  `s.fit_rational(z0=50.0)` fits S renormalized to 50 Ω first. One value
+  per port, in port order, also works.
 - A network without reference impedances (wave ports without a
   `voltage_path`, S on unit modal power) needs `z0=` too, as a nominal label
   only: S is fitted unchanged, `rational.nominal_reference` is `True`, and the
