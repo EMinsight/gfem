@@ -144,9 +144,6 @@ def floquet_ports(
 
 # --- result types ----------------------------------------------------------------
 
-Row = tuple[str, tuple[int, int], str]
-Incidence = tuple[str, tuple[int, int], Any]
-
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class Efficiencies:
@@ -173,8 +170,8 @@ class Efficiencies:
 
     frequency: np.ndarray
     values: jax.Array
-    rows: tuple[Row, ...]
-    incidence: Incidence
+    rows: tuple[tuple[str, tuple[int, int], str], ...]
+    incidence: tuple[str, tuple[int, int], Any]
 
     def __getitem__(self, key: Any) -> jax.Array:
         """One efficiency row, or an order's total over its two polarizations.
@@ -249,7 +246,7 @@ class PowerBalance:
     transmittance: jax.Array
     coupled: jax.Array
     absorptance: jax.Array
-    incidence: Incidence
+    incidence: tuple[str, tuple[int, int], Any]
 
     def __repr__(self) -> str:
         return (
@@ -439,7 +436,7 @@ class Incident:
     columns: dict[str, int]
 
     @property
-    def incidence(self) -> Incidence:
+    def incidence(self) -> tuple[str, tuple[int, int], Any]:
         return (self.surface, self.order, self.label)
 
     def columns_of(self, s_values: jax.Array) -> list[tuple[float, jax.Array]]:
@@ -739,7 +736,7 @@ def efficiencies(
     inc = incidence_of(cell, surface, polarization, order)
     f_idx = [cell.s.ports.index(n) for n in cell.floquet]
     if basis == "linear":
-        rows: list[Row] = [
+        rows: list[tuple[str, tuple[int, int], str]] = [
             (cell.info[n].surface, cell.info[n].order, cell.info[n].polarization)
             for n in cell.floquet
         ]
