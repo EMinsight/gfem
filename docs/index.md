@@ -86,6 +86,8 @@ recipes/gpu-direct-solver
 recipes/petsc-slepc
 recipes/distributed-solve
 recipes/frequency-sweep
+recipes/time-responses
+recipes/rational-model
 recipes/gsim
 ```
 

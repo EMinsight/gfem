@@ -391,5 +391,6 @@ and prints a second line, `gfem: note: ...`, that says where it is.
 - {doc}`distributed-solve`: run a job across the cores of a cluster.
 - {doc}`gpu-direct-solver`: run the same job on a GPU.
 - {doc}`measurements`: values at points, the power through a surface, losses.
+- {doc}`rational-model`: S as a SPICE subcircuit or a Verilog-A model.
 - {py:obj}`gfem.Job`, {py:obj}`gfem.NetworkParameters` and
   {py:obj}`gfem.Field` in the API reference.

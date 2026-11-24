@@ -167,30 +167,25 @@ Material data:
   `lithium_niobate_static`. Each returns a plain `gfem.Material` whose
   `name` carries its source, such as `"silica (Malitson 1965)"`; the
   dielectrics also give a constant at one frequency with `frequency=`.
-
 - **Fit a measured table.** `gfem.fit_permittivity` fits a passive law of a
   Drude term and Lorentz terms to tabulated $n$ and $k$, or to a complex
   permittivity, and returns a `gfem.PermittivityFit`: the law and its
   largest relative errors in $\varepsilon$, $n$ and $k$. It warns
   `gfem.PermittivityFitWarning` when it stops above its tolerance, and
   refuses gain, repeated frequencies and NaN with the remedy.
-
 - **Fitted range.** `PermittivityLaw.frequency_range` holds the frequencies
   a library or fitted law was matched over. A driven, eigenmode, port mode
   or electrostatic solve that reads the law outside it warns
   `gfem.FittedRangeWarning` once and runs on. A law without a range writes
   the same job file as before; a file with one needs this version of gfem
   to read it.
-
 - **Documentation.** A recipe, "Fit a measured n, k table to a permittivity
   law"; a "Take a law from cited data" section of the dispersive materials
   recipe; the extinction coefficient in the conventions; four glossary
   entries; and a "Material data" section of the licence page. The modulator
   tutorial takes lithium niobate's clamped constants from `gfem.materials`:
   its push-pull $V_\pi L$ moves from 1.61 to 1.62 V·cm.
-
 Design:
-
 - **Minimum width and spacing in the gradient.**
   `gfem.design.length_scale_constraints(blur, min_width=..., min_spacing=...)`
   turns a layer grid's minimum line width and minimum spacing into two
@@ -198,7 +193,6 @@ Design:
   drawn design's pattern keeps its rule, for an optimizer's inequality
   constraints or a penalty. `gfem.design.radius_for_length_scale` gives the filter radius
   whose robust triple holds a minimum length.
-
 - **Layer patterns.** `LayerGrid.pattern(rho, eta=0.5)` draws a layer-grid
   design as polygons (`gfem.design.LayerPattern` of `gfem.design.Polygon`):
   the region where the filtered density reaches the projection threshold,
@@ -208,14 +202,12 @@ Design:
   and `LayerGrid.area_fraction(pattern)` rasterizes one exactly back onto the
   pixels, to re-solve a pattern or pin fixed neighbours. contourpy is now a
   dependency.
-
 - **GDS export.** `gfem.design.write_gds(path, {(layer, datatype): pattern})`
   writes layer patterns to a GDSII file for a layout tool or fab: one flat
   cell, several layers, datatypes (e.g. robust variants for review) and
   patterns per layer, vertices snapped to a settable database grid (default
   1 nm), holes as keyhole cuts, large polygons split to stay within what
   strict readers accept. The same arguments give the same bytes.
-
 - **Minimum width and spacing checks.** `LayerPattern.check(min_width=...,
   min_spacing=...)` measures a layer pattern against a foundry's minimum width
   and spacing by its facing polygon edges, perpendicular to an edge, and
@@ -224,7 +216,6 @@ Design:
   (kind, distance, location and markers to plot), narrowest first. Edges on
   the footprint are not measured; periodic patterns are measured across the
   seam. It is a pre-check, not foundry sign-off.
-
 - **A fabrication model in the gradient.**
   `gfem.design.FabricationModel(grid, sigma=..., bias=...)` predicts the
   printed design of a drawn (projected) design: a Gaussian blur of standard
@@ -234,7 +225,6 @@ Design:
   dilated designs at the bias and $\pm$ a tolerance in metres, as the
   `Robust` tuple of `gfem.design.robust`, and `fab.pattern(drawn)` the
   printed layer pattern.
-
 - **Documentation.** The bend tutorial now ends at its drawn pattern: checked
   against an example width and spacing rule, written to a GDS file and solved
   again, within 0.02 of the optimizer's last $|S_{21}|^2$; its numbers after
@@ -243,6 +233,27 @@ Design:
   design for fabrication: etch, blur and minimum features", cover the
   fabrication model, minimum width and spacing constraints, fixed neighbours
   and acceptance checks; the glossary gains five terms.
+Broadband models:
+- **Time responses.** `NetworkParameters.step_response()` and
+  `impulse_response()` turn S on a harmonic grid ($f_k = k\,\Delta f$) into
+  a `gfem.TimeResponse`, as a network analyzer's low-pass mode does: the
+  reflected step (TDR), `TimeResponse.impedance(port)` for the impedance
+  profile, and the transmitted step (TDT). `impulse_response(mode="band_pass")`
+  takes any evenly spaced band, for guides with a cutoff. Both differentiate
+  with respect to S ({doc}`../recipes/time-responses`).
+- **Rational models.** `NetworkParameters.fit_rational()` fits S with poles
+  shared by every element, on one real reference impedance per port, and
+  makes the model passive by default: a `gfem.RationalModel`, evaluated with
+  `network(frequency)` and stepped exactly with `step_response(time)`. New
+  warnings `gfem.RationalFitNotConvergedWarning` and
+  `gfem.NonPassiveDataWarning`, and `gfem.PassivityEnforcementError`
+  ({doc}`../recipes/rational-model`).
+- **Netlists.** `RationalModel.to_spice()` and `to_verilog_a()` write the
+  model as a SPICE subcircuit and a Verilog-A module, with two pins per
+  port, checked in ngspice and VACASK.
+- **Documentation.** Two recipes, "See S in the time domain" and "Export S
+  as a SPICE or Verilog-A model"; a "Time responses" section of the
+  conventions and a "Broadband models" section of the glossary.
 
 ## 0.2.0 (2026-11-23)
 

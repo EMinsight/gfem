@@ -49,6 +49,8 @@ orphan: true
 - {doc}`petsc-slepc`
 - {doc}`distributed-solve`
 - {doc}`frequency-sweep`
+- {doc}`time-responses`
+- {doc}`rational-model`
 - {doc}`gsim`
 
 ## Free space

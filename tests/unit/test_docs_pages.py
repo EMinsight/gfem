@@ -299,6 +299,11 @@ USER_TERMS = (
     "Edge bias",
     "Minimum width",
     "Minimum spacing",
+    "Rational model",
+    "Passivity violation",
+    "Harmonic grid",
+    "Time response",
+    "Impedance profile",
 )
 
 
