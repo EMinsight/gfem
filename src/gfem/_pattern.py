@@ -536,14 +536,21 @@ def _names(k: int, n_rings: int) -> list[str]:
     ]
 
 
+#: Pieces per edge, on average, of the crossing check's candidate search: more
+#: cost more pieces, fewer more candidate pairs of long edges.
+_PIECES_PER_EDGE = 4
+
+
 def _check_crossings(polygons: tuple[Polygon, ...]) -> None:
     """Raise if a ring crosses itself or two rings cross.
 
     Within one ring any contact between non-adjacent edges breaks simplicity;
     between rings only a proper crossing is refused (touching at a vertex, or
     two guides abutting along an edge, is allowed). Candidate pairs: edges
-    whose midpoints lie within the longer edge's length (a k-d tree query from
-    each edge with its own length finds every pair from its longer edge).
+    with pieces whose midpoints lie within the longest piece of each other,
+    the edges cut into pieces a quarter of the mean edge long: long edges
+    beside close ones (a star's spikes) then pair only where they come close,
+    not along their whole length.
     """
     from scipy.spatial import KDTree  # only needed here
 
@@ -559,20 +566,18 @@ def _check_crossings(polygons: tuple[Polygon, ...]) -> None:
     ring = np.repeat(np.arange(len(rings)), sizes)
     position = np.arange(len(a)) - np.repeat(np.cumsum(sizes) - sizes, sizes)
     length = np.linalg.norm(b - a, axis=1)
-    near = KDTree(0.5 * (a + b)).query_ball_point(0.5 * (a + b), r=length)
-    i = np.repeat(np.arange(len(a)), [len(n) for n in near])
-    j = np.concatenate([np.asarray(n, dtype=np.int64) for n in near])
-    i, j = np.minimum(i, j), np.maximum(i, j)
-    pairs = np.unique(np.stack([i, j], axis=1), axis=0)
-    i, j = pairs[:, 0], pairs[:, 1]
+    longest = float(length.sum()) / (_PIECES_PER_EDGE * len(a))
+    start, end, edge = cut_edges(a, b, longest)
+    reach = float(np.linalg.norm(end - start, axis=1).max())
+    p, q = KDTree(0.5 * (start + end)).query_pairs(reach, output_type="ndarray").T
+    key = np.minimum(edge[p], edge[q]) * len(a) + np.maximum(edge[p], edge[q])
+    key = np.sort(key[edge[p] != edge[q]])
+    key = key[np.r_[True, key[1:] != key[:-1]]] if len(key) else key
+    i, j = np.divmod(key, len(a))
     same = ring[i] == ring[j]
     gap = np.abs(position[i] - position[j])
     adjacent = same & ((gap == 1) | (gap == sizes[ring[i]] - 1))
-    i, j, same = (
-        i[~adjacent & (i != j)],
-        j[~adjacent & (i != j)],
-        same[~adjacent & (i != j)],
-    )
+    i, j, same = i[~adjacent], j[~adjacent], same[~adjacent]
 
     def orient(p: np.ndarray, q: np.ndarray, r: np.ndarray) -> np.ndarray:
         return np.sign((q[:, 0] - p[:, 0]) * (r[:, 1] - p[:, 1])

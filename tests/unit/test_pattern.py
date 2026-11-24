@@ -458,6 +458,29 @@ def test_from_polygons_names_the_polygon_and_ring_at_fault(polygons, kwargs, mat
         design.LayerPattern.from_polygons(polygons, **kwargs)
 
 
+def _star(n, r_in, r_out):
+    """A star of ``n`` vertices about the origin, its edges long beside their gaps."""
+    angle = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    radius = np.where(np.arange(n) % 2, r_in, r_out)
+    return radius[:, None] * np.stack([np.cos(angle), np.sin(angle)], axis=1)
+
+
+def test_a_6000_vertex_star_validates_and_a_crossing_in_it_is_found():
+    star = _star(6000, 8.0, 10.0)
+    ((exterior, _),) = design.LayerPattern.from_polygons([star])
+    assert len(exterior) == 6001
+    # Two neighbouring tips swapped: their edges cross, far inside long edges.
+    crossed = star.copy()
+    crossed[[2000, 2002]] = crossed[[2002, 2000]]
+    with pytest.raises(ValueError, match="crosses itself"):
+        design.LayerPattern.from_polygons([crossed])
+    # A long bar across a ring of short edges crosses it between its vertices.
+    ring = 0.5 * _star(6000, 9.9, 10.0)
+    bar = _box(-6.0, -0.01, 6.0, 0.01)
+    with pytest.raises(ValueError, match="crosses"):
+        design.LayerPattern.from_polygons([ring, bar])
+
+
 def test_a_polygon_inside_another_ones_hole_is_allowed():
     pattern = design.LayerPattern.from_polygons([_frame(), _box(0.8, 0.8, 1.2, 1.2)])
     assert pattern.area == pytest.approx(3.16)
