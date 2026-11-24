@@ -123,6 +123,10 @@ def mode_derivative(
 ) -> ModeDerivative:
     r"""The mode derivative of the eigenpair :math:`(\lambda, x)` at ``k0``.
 
+    Its series of :math:`\lambda` holds ``lam`` itself, :math:`\lambda'` by
+    Hellmann-Feynman, then :math:`\lambda''/2` and :math:`\lambda'''/6` from
+    the Rayleigh series (`rayleigh_series`).
+
     Args:
         a: The pencil's pieces :math:`A_j` (sparse or dense).
         b: Its pieces :math:`B_j`.
