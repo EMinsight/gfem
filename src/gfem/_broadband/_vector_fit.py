@@ -36,7 +36,7 @@ import numpy as np
 import scipy.linalg
 
 from gfem._broadband._reference import constant_real
-from gfem._checks import is_traced, static_float
+from gfem._checks import is_staging, is_traced, static_float
 from gfem._linalg.gmres import _ONE_BLAS_THREAD, scipy_openblas
 from gfem._text import hertz, hertz_band
 from gfem.broadband import RationalModel
@@ -57,9 +57,10 @@ _MIN_FREQUENCIES = 6
 _MAX_POLES = 100
 _NOT_DIFFERENTIABLE = (
     "NetworkParameters.fit_rational relocates poles iteratively and picks its "
-    "order in steps, so gfem does not differentiate it: S, z_ref, z0 and "
-    "weights must be concrete values. Fit outside jax.grad, jax.jit or "
-    "jax.vmap, or wrap S in jax.lax.stop_gradient."
+    "order in steps, so gfem does not differentiate it: S, z_ref, z0, "
+    "weights and the options must be concrete values, and the fit cannot be "
+    "staged by jax.jit. Fit outside jax.grad, jax.jit or jax.vmap, or wrap S "
+    "in jax.lax.stop_gradient."
 )
 
 #: Pole relocations per order at most.
@@ -85,9 +86,20 @@ def fit_rational(
     z0: Any,
 ) -> RationalModel:
     """`NetworkParameters.fit_rational`: checks, reference, fit and model."""
-    if is_traced((net.values, net.z_ref, z0, weights)):
-        raise NonDifferentiableError(_NOT_DIFFERENTIABLE)
+    for name, value in (
+        ("max_poles", max_poles),
+        ("enforce_passivity", enforce_passivity),
+    ):
+        if is_traced(value):
+            raise NonDifferentiableError(
+                f"fit_rational {name} is a fixed value and gfem does not "
+                f"differentiate with respect to it. {_NOT_DIFFERENTIABLE}"
+            )
     tol = static_float(tolerance, "fit_rational tolerance", _NOT_DIFFERENTIABLE)
+    # under jax.jit even a closed-over network's S becomes a tracer once
+    # indexed, so staging is refused as such
+    if is_staging() or is_traced((net.values, net.z_ref, z0, weights)):
+        raise NonDifferentiableError(_NOT_DIFFERENTIABLE)
     if tol <= 0:
         raise ValueError(f"fit_rational tolerance must be > 0, got {tol!r}.")
     s = np.asarray(net._square("fit_rational()"))  # noqa: SLF001

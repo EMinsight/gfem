@@ -514,6 +514,22 @@ def test_a_traced_input_to_the_fit_raises_non_differentiable(which, transform):
         transform(lambda x: _traced_fit(which, x))(1.0)
 
 
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [("tolerance", 1e-3), ("max_poles", 8), ("enforce_passivity", True)],
+)
+def test_a_traced_option_of_the_fit_raises_non_differentiable(option, value):
+    net = _small()
+    with pytest.raises(gfem.NonDifferentiableError, match=f"fit_rational {option}"):
+        jax.jit(lambda v: jnp.asarray(net.fit_rational(**{option: v}).error))(value)
+
+
+def test_a_fit_inside_jit_raises_non_differentiable_even_on_a_concrete_network():
+    net = _small()
+    with pytest.raises(gfem.NonDifferentiableError, match="stop_gradient"):
+        jax.jit(lambda t: jnp.asarray(_fit(net).error) * t)(1.0)
+
+
 def _model(**changes):
     """A hand-built 2-port model: 1 real pole and 1 pair, on 50 and 30 ohm."""
     p = 2 * math.pi * 1e9

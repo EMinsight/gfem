@@ -1232,8 +1232,9 @@ class NetworkParameters:
                 port excited, or the reference impedance cannot be resolved
                 (complex or frequency-dependent without ``z0``, none without
                 ``z0``, or some ports without one).
-            NonDifferentiableError: S, `z_ref`, ``z0`` or ``weights`` is
-                traced by JAX.
+            NonDifferentiableError: S, `z_ref`, ``z0``, ``weights`` or an
+                option is traced by JAX, or the fit is staged by
+                ``jax.jit``.
             PassivityEnforcementError: Passivity violations remain after
                 the enforcement's 30 iterations; the message names them.
 
