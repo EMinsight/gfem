@@ -10,18 +10,22 @@ from __future__ import annotations
 from gfem._diffraction.aperture import ApertureField, propagate
 from gfem._diffraction.outputs import (
     Efficiencies,
+    Jones,
     PowerBalance,
     efficiencies,
     floquet_ports,
+    jones,
     power_balance,
 )
 
 __all__ = [
     "ApertureField",
     "Efficiencies",
+    "Jones",
     "PowerBalance",
     "efficiencies",
     "floquet_ports",
+    "jones",
     "power_balance",
     "propagate",
 ]

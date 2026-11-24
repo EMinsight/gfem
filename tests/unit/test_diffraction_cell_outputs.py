@@ -1,4 +1,4 @@
-"""Cell outputs of a periodic cell: `floquet_ports`, `efficiencies`, `power_balance`.
+"""Cell outputs of a periodic cell: ports, efficiencies, power balance, Jones.
 
 Identities on coarse F1 cells (an eps 4 slab on an eps 2.25 substrate under air,
 Floquet ports on both faces) at p = 2, and on the bare interface closed by PEC
@@ -15,6 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 import periodic_cases as pc
 import pytest
+import structured_meshes as sm
 
 import gfem
 from gfem import diffraction as dif
@@ -666,3 +667,537 @@ def test_floquet_ports_messages(model):
         dif.floquet_ports(model, "nowhere", F0)
     with pytest.raises(gfem.NonDifferentiableError, match="fixed"):
         jax.grad(lambda f: float(len(dif.floquet_ports(model, TOP, f))))(F0)
+
+
+# --- Jones, circular and Mueller ---------------------------------------------------
+
+#: The Stokes vectors of the four probe beams in the beam's own (theta, phi)
+#: frame: horizontal (theta), vertical (phi), diagonal, right-circular.
+_PROBES = ("H", "V", "D", "RCP")
+#: The surfaces and the (h_out, h_in) of the four blocks of the two-face cell.
+BLOCKS = (
+    (TOP, TOP, 1, -1),  # reflection from the top
+    (BOT, TOP, -1, -1),  # transmission downward
+    (TOP, BOT, 1, 1),  # transmission upward
+    (BOT, BOT, -1, 1),  # reflection from the bottom
+)
+SURFACES = tuple(b[:2] for b in BLOCKS)
+PAULI_SWAP = np.array([[0.0, 1.0], [1.0, 0.0]])
+
+
+def _u(h):
+    """Columns RCP, LCP; rows TM, TE (the convention, written out again)."""
+    return np.array([[1.0, 1.0], [-1j * h, 1j * h]]) / math.sqrt(2)
+
+
+def _stokes(b, h):
+    """Stokes vector of a beam with (TM, TE) components ``b`` and direction ``h``."""
+    b_theta, b_phi = h * b[0], b[1]
+    cross = b_theta * np.conj(b_phi)
+    return np.array(
+        [
+            abs(b_theta) ** 2 + abs(b_phi) ** 2,
+            abs(b_theta) ** 2 - abs(b_phi) ** 2,
+            2 * cross.real,
+            2 * cross.imag,
+        ]
+    )
+
+
+def _probe(name, h):
+    """The (TM, TE) components of a probe beam of direction ``h``."""
+    r = math.sqrt(0.5)
+    return {
+        "H": np.array([h, 0.0]),
+        "V": np.array([0.0, 1.0]),
+        "D": np.array([h * r, r]),
+        "RCP": _u(h)[:, 0],
+    }[name]
+
+
+@pytest.mark.parametrize(("out", "inc", "h_out", "h_in"), BLOCKS)
+def test_c1_jones_circular_columns_are_the_documented_combinations(
+    cell, out, inc, h_out, h_in
+):
+    result, model = cell
+    j = dif.jones(result, out, inc, model=model)
+    assert j.direction == (h_out, h_in)
+    assert j.outgoing == (out, (0, 0))
+    assert j.incident == (inc, (0, 0))
+    s = result.s
+    pre_out, pre_in = ("R" if out == TOP else "T"), ("R" if inc == TOP else "T")
+    col = {p: s.values[:, :, s.excited.index(f"{pre_in}_{p}")] for p in ("TM", "TE")}
+    row = {p: s.ports.index(f"{pre_out}_{p}") for p in ("TM", "TE")}
+    circ = j.circular
+    for c, sign in ((0, 1), (1, -1)):
+        # RCP/LCP incident: (S_TM + sign * i * (-h_in) ... ) from the top face
+        # (h_in = -1) the documented (S_TM + i S_TE)/sqrt2, from the bottom
+        # the conjugate combination
+        mix = (col["TM"] - sign * 1j * h_in * col["TE"]) / math.sqrt(2)
+        b_tm, b_te = mix[:, row["TM"]], mix[:, row["TE"]]
+        right = (b_tm + 1j * h_out * b_te) / math.sqrt(2)
+        left = (b_tm - 1j * h_out * b_te) / math.sqrt(2)
+        np.testing.assert_allclose(circ[:, 0, c], right, rtol=0, atol=EXACT)
+        np.testing.assert_allclose(circ[:, 1, c], left, rtol=0, atol=EXACT)
+
+
+@pytest.mark.parametrize(("out", "inc"), SURFACES)
+def test_c1_jones_values_are_the_tm_te_block_of_s(cell, out, inc):
+    result, model = cell
+    j = dif.jones(result, out, inc, model=model)
+    pre_out, pre_in = ("R" if out == TOP else "T"), ("R" if inc == TOP else "T")
+    for a, p in enumerate(("TM", "TE")):
+        for b, q in enumerate(("TM", "TE")):
+            np.testing.assert_array_equal(
+                j.values[:, a, b], result.s[f"{pre_out}_{p}", f"{pre_in}_{q}"]
+            )
+    np.testing.assert_array_equal(j.frequency, [F0, 1.1 * F0])
+    assert j.values.shape == (2, 2, 2)
+
+
+@pytest.mark.parametrize(("out", "inc", "h_out", "h_in"), BLOCKS)
+def test_c3_mueller_is_the_stokes_measured_matrix(cell, out, inc, h_out, h_in):
+    result, model = cell
+    j = dif.jones(result, out, inc, model=model)
+    m = np.asarray(j.mueller)
+    values = np.asarray(j.values)
+    assert m.shape == (2, 4, 4)
+    assert m.dtype.kind == "f"
+    for i in range(values.shape[0]):
+        s_in = np.stack([_stokes(_probe(n, h_in), h_in) for n in _PROBES], axis=1)
+        s_out = np.stack(
+            [_stokes(values[i] @ _probe(n, h_in), h_out) for n in _PROBES], axis=1
+        )
+        np.testing.assert_allclose(
+            m[i], s_out @ np.linalg.inv(s_in), rtol=0, atol=1e-13
+        )
+        np.testing.assert_allclose(
+            m[i, 0, 0], 0.5 * np.sum(np.abs(values[i]) ** 2), rtol=0, atol=1e-13
+        )
+
+
+@pytest.mark.parametrize(("out", "inc"), SURFACES)
+def test_c3_the_third_stokes_parameter_is_the_circular_power_difference(cell, out, inc):
+    result, model = cell
+    j = dif.jones(result, out, inc, model=model)
+    circ, m = np.asarray(j.circular), np.asarray(j.mueller)
+    for c, s_in in ((0, [1.0, 0, 0, 1.0]), (1, [1.0, 0, 0, -1.0])):
+        out_stokes = m @ np.asarray(s_in)
+        b = circ[:, :, c]
+        np.testing.assert_allclose(
+            out_stokes[:, 3],
+            np.abs(b[:, 0]) ** 2 - np.abs(b[:, 1]) ** 2,
+            rtol=0,
+            atol=1e-13,
+        )
+        np.testing.assert_allclose(
+            out_stokes[:, 0], np.sum(np.abs(b) ** 2, axis=1), rtol=0, atol=1e-13
+        )
+
+
+@pytest.fixture(scope="module", params=[0.0, 30.0], ids=["normal", "30deg"])
+def pec_jones(request, tmp_path_factory):
+    """Air above a PEC mirror, the Floquet face de-embedded onto the mirror."""
+    depth = 2 * pc.D * pc.UM
+    ports = [
+        gfem.FloquetPort(f"R_{p}", TOP, polarization=p, offset=depth)
+        for p in ("TE", "TM")
+    ]
+    # three lateral cells: the oblique plane wave's cross-polarized leakage is
+    # 1.4e-5 in M with two (1.5e-6 with three, measured), above the 1e-5 gate
+    lateral = np.linspace(0.0, pc.F1_A, 4)
+    cell = sm.periodic_cell(
+        (lateral, lateral, np.linspace(0.0, 2 * pc.D, 7)),
+        lambda _: "air",
+        paired="xy",
+    )
+    path = sm.write_msh22(tmp_path_factory.mktemp("mirror") / "mirror.msh", cell)
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="um"),
+        materials={"air": gfem.Material()},
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+            gfem.PEC(BOT),
+        ],
+        ports=ports,
+    )
+    k = None
+    if request.param:
+        theta = math.radians(request.param)
+        k = model.bloch_wave_vector(TOP, F0, theta=theta, phi=pc.F1_PHI)
+    options = gfem.SolverOptions(order=3, threads=2, linear_solver="direct")
+    return model, gfem.solve(model, gfem.Driven([F0], wave_vector=k), options=options)
+
+
+def test_c4_a_pec_mirror_reflects_with_minus_one_and_swaps_the_handedness(pec_jones):
+    model, result = pec_jones
+    j = dif.jones(result, TOP, TOP, model=model)
+    assert j.direction == (1, -1)
+    np.testing.assert_allclose(j.values[0], -np.eye(2), rtol=0, atol=1e-5)
+    np.testing.assert_allclose(j.circular[0], -PAULI_SWAP, rtol=0, atol=1e-5)
+    np.testing.assert_allclose(
+        j.mueller[0], np.diag([1.0, 1.0, -1.0, -1.0]), rtol=0, atol=1e-5
+    )
+
+
+@pytest.fixture(scope="module", params=["normal", "oblique"])
+def empty(request, mesh):
+    """F1's mesh with air everywhere: only the propagation between the faces."""
+    materials = {n: gfem.Material() for n in ("sub", "slab", "air")}
+    model = pc.f1(mesh).replace(materials=materials)
+    k = None
+    if request.param == "oblique":
+        k = model.bloch_wave_vector(TOP, F0, theta=pc.F1_THETA, phi=pc.F1_PHI)
+    problem = gfem.Driven([F0], wave_vector=k)
+    return model, gfem.solve(model, problem, options=OPTS), k
+
+
+def test_c5_an_empty_cell_transmits_the_phase_and_keeps_the_handedness(empty):
+    model, result, k = empty
+    length = (2 * pc.F1_D + pc.F1_H) * pc.UM
+    k0 = 2 * math.pi * F0 / pc.C0
+    kz = k0 if k is None else math.sqrt(k0**2 - k[0] ** 2 - k[1] ** 2)
+    phase = np.exp(-1j * kz * length)
+    for out, inc in ((BOT, TOP), (TOP, BOT)):
+        j = dif.jones(result, out, inc, model=model)
+        tol = pc.F1_COARSE_TOL
+        np.testing.assert_allclose(j.values[0], phase * np.eye(2), rtol=0, atol=tol)
+        circ = np.asarray(j.circular[0])
+        np.testing.assert_allclose(circ, np.diag(np.diag(circ)), rtol=0, atol=tol)
+        np.testing.assert_allclose(circ, phase * np.eye(2), rtol=0, atol=tol)
+        np.testing.assert_allclose(j.mueller[0], np.eye(4), rtol=0, atol=tol)
+    r = dif.jones(result, TOP, TOP, model=model)
+    assert float(jnp.abs(r.values).max()) <= pc.F1_COARSE_TOL
+
+
+@pytest.fixture(scope="module")
+def plate(mesh):
+    """The wave plate at 30 degrees under the conical 20/30 incidence."""
+    model = pc.waveplate(mesh, math.radians(30.0))
+    k = model.bloch_wave_vector(TOP, F0, theta=math.radians(20.0), phi=math.radians(30))
+    return model, gfem.solve(model, gfem.Driven([F0], wave_vector=k), options=OPTS)
+
+
+def test_c6_a_uniaxial_slab_is_admitted_and_conserves_power_on_a_coarse_mesh(plate):
+    model, result = plate
+    values = np.asarray(result.s.values)[0]
+    defect = np.abs(1 - np.sum(np.abs(values) ** 2, axis=0))
+    assert defect.max() <= 1e-3
+    for surface in (TOP, BOT):
+        for pol in ("TE", "TM", "RCP", "unpolarized"):
+            bal = dif.power_balance(result, surface, polarization=pol, model=model)
+            assert float(jnp.abs(bal.absorptance).max()) <= 1e-3
+
+
+def test_c6_the_wave_plate_converts_handedness_in_the_circular_view(plate):
+    model, result = plate
+    j = dif.jones(result, BOT, TOP, model=model)
+    circ = np.asarray(j.circular[0])
+    # an anisotropic plate mixes RCP and LCP: the off-diagonal circular
+    # entries are not small
+    assert abs(circ[1, 0]) > 0.1
+    np.testing.assert_allclose(
+        np.sum(np.abs(circ) ** 2), np.sum(np.abs(np.asarray(j.values[0])) ** 2)
+    )
+
+
+# --- jones: other behaviour -----------------------------------------------------------
+
+
+def test_jones_is_a_jax_function_of_s_and_a_result_enters_jit(normal, model):
+    def circ(result):
+        return dif.jones(result, BOT, TOP, model=model).circular
+
+    np.testing.assert_allclose(jax.jit(circ)(normal), circ(normal), rtol=0, atol=EXACT)
+
+    def mueller(result):
+        return dif.jones(result, TOP, TOP, model=model).mueller
+
+    np.testing.assert_allclose(
+        jax.jit(mueller)(normal), mueller(normal), rtol=0, atol=EXACT
+    )
+
+
+def test_jones_is_a_pytree_with_static_labels(normal, model):
+    j = dif.jones(normal, BOT, TOP, model=model)
+    leaves, tree = jax.tree.flatten(j)
+    assert len(leaves) == 1
+    again = jax.tree.unflatten(tree, leaves)
+    assert again.direction == (-1, -1)
+    assert again.outgoing == (BOT, (0, 0))
+    np.testing.assert_array_equal(again.values, j.values)
+
+
+def test_jones_a_sequence_is_the_stack_of_the_per_result_matrices(
+    normal, oblique, model
+):
+    both = [normal, oblique]
+    j = dif.jones(both, BOT, TOP, model=model)
+    assert j.values.shape == (2, 2, 2, 2)
+    assert j.circular.shape == (2, 2, 2, 2)
+    assert j.mueller.shape == (2, 2, 4, 4)
+    for i, r in enumerate(both):
+        one = dif.jones(r, BOT, TOP, model=model)
+        np.testing.assert_array_equal(j.values[i], one.values)
+        np.testing.assert_allclose(j.circular[i], one.circular, rtol=0, atol=EXACT)
+        np.testing.assert_allclose(j.mueller[i], one.mueller, rtol=0, atol=EXACT)
+
+
+@pytest.fixture(scope="module")
+def grating(tmp_path_factory):
+    """F2, the lamellar grating, with ports of the orders 0 and -1, 1 on both faces."""
+    mesh = pc.f2_mesh(tmp_path_factory.mktemp("grating"))
+    return pc.f2(mesh)
+
+
+def test_jones_an_evanescent_order_reads_zero_without_nan(grating):
+    # the orders +-1 propagate in the air at f0 and are evanescent at 0.8 f0
+    excite = ["R0,0_TE", "R0,0_TM"]
+    result = gfem.solve(
+        grating, gfem.Driven([F0, 0.8 * F0], excite=excite), options=OPTS
+    )
+    j = dif.jones(result, TOP, TOP, model=grating, order=(1, 0))
+    values = np.asarray(j.values)
+    np.testing.assert_array_equal(values[1], 0.0)
+    assert np.abs(values[0]).max() > 1e-2
+    for view in (j.values, j.circular, j.mueller):
+        assert np.isfinite(np.asarray(view)).all()
+    np.testing.assert_array_equal(np.asarray(j.mueller)[1], 0.0)
+    assert j.outgoing == (TOP, (1, 0))
+    assert j.incident == (TOP, (0, 0))
+    # into the substrate the order propagates at both frequencies
+    inside = dif.jones(result, BOT, TOP, model=grating, order=(1, 0))
+    assert (np.abs(np.asarray(inside.values)).max(axis=(1, 2)) > 1e-2).all()
+
+
+def test_jones_reads_an_incident_order_other_than_the_specular_one(grating):
+    result = gfem.solve(grating, gfem.Driven([F0]), options=OPTS)
+    j = dif.jones(result, TOP, TOP, model=grating, order=(0, 0), incident_order=(1, 0))
+    assert j.incident == (TOP, (1, 0))
+    assert j.outgoing == (TOP, (0, 0))
+    s = result.s
+    for a, p in enumerate(("TM", "TE")):
+        for b, q in enumerate(("TM", "TE")):
+            np.testing.assert_array_equal(
+                j.values[:, a, b], s[f"R0,0_{p}", f"R1,0_{q}"]
+            )
+    assert np.abs(np.asarray(j.values)).max() > 1e-2
+
+
+def test_jones_circular_and_mueller_follow_the_direction_signs():
+    values = np.arange(1, 9, dtype=complex).reshape(2, 2, 2) * (1 + 0.5j)
+    base = dict(frequency=[F0, 2 * F0], outgoing=(TOP, (0, 0)), incident=(BOT, (0, 0)))
+    for h_out, h_in in ((1, -1), (-1, -1), (1, 1), (-1, 1)):
+        j = dif.Jones(values=values, direction=(h_out, h_in), **base)
+        for i in range(2):
+            ref = _u(h_out).conj().T @ values[i] @ _u(h_in)
+            np.testing.assert_allclose(j.circular[i], ref, rtol=0, atol=EXACT)
+            assert j.mueller[i].shape == (4, 4)
+    j = dif.Jones(values=jnp.asarray(values), direction=(1, -1), **base)
+    assert j.direction == (1, -1)
+    assert isinstance(j.frequency, np.ndarray)
+
+
+def test_jones_the_constructor_refuses_what_it_cannot_read():
+    ok = dict(
+        frequency=[F0],
+        outgoing=(TOP, (0, 0)),
+        incident=(TOP, (0, 0)),
+        direction=(1, -1),
+    )
+    good = np.zeros((1, 2, 2), complex)
+    for shape in ((2, 2), (1, 2, 3), (1, 3, 3), (1, 2, 2, 1), (4,)):
+        with pytest.raises(
+            ValueError,
+            match=re.escape(
+                f"Jones: values must have shape (..., n_freq, 2, 2), got {shape}."
+            ),
+        ):
+            dif.Jones(values=np.zeros(shape, complex), **ok)
+    for bad in ((1, 0), (2, 1), (1,), (1, -1, 1), "ab", 1, (True, -1), (0.5, -1)):
+        with pytest.raises(
+            ValueError,
+            match=re.escape(
+                "Jones: direction must be two signs (h_out, h_in), each +1 or -1, "
+                f"got {bad!r}."
+            ),
+        ):
+            dif.Jones(values=good, **{**ok, "direction": bad})
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "Jones: frequency must hold 1 frequencies, one per entry of values' "
+            "frequency axis, got 2."
+        ),
+    ):
+        dif.Jones(values=good, **{**ok, "frequency": [F0, 2 * F0]})
+    # a stacked angle axis: the frequency axis is the third from last
+    dif.Jones(values=np.zeros((3, 1, 2, 2), complex), **ok)
+    with pytest.raises(ValueError, match="Jones: frequency must hold 2 frequencies"):
+        dif.Jones(values=np.zeros((1, 2, 2, 2), complex), **ok)
+
+
+def test_jones_validates_inside_a_transformation_without_failing_on_tracers():
+    def f(v):
+        j = dif.Jones(
+            values=v,
+            frequency=[F0],
+            outgoing=(TOP, (0, 0)),
+            incident=(TOP, (0, 0)),
+            direction=(1, -1),
+        )
+        return jnp.sum(j.mueller)
+
+    assert np.isfinite(float(jax.jit(f)(jnp.ones((1, 2, 2), complex))))
+
+
+def test_jones_messages_of_the_inputs(normal, one_excited, model, partial):
+    def raises(error, message, result=normal, out=BOT, inc=TOP, **kw):
+        kw = {"model": model} | kw
+        with pytest.raises(error, match=re.escape(message)):
+            dif.jones(result, out, inc, **kw)
+
+    raises(
+        TypeError,
+        "jones needs a gfem.DrivenResult or a sequence of them (an angle sweep), "
+        "got int.",
+        result=3,
+    )
+    raises(TypeError, "jones needs model= a gfem.Model, got str.", model="cell")
+    raises(
+        ValueError,
+        "jones: 'nowhere' carries no Floquet port of the result; its Floquet "
+        "surfaces are 'z_max', 'z_min'.",
+        out="nowhere",
+    )
+    raises(
+        ValueError,
+        "jones: 'nowhere' carries no Floquet port of the result; its Floquet "
+        "surfaces are 'z_max', 'z_min'.",
+        inc="nowhere",
+    )
+    raises(
+        ValueError,
+        "jones: no Floquet port reads order (1, 0) in TM on 'z_min' (a Jones "
+        "matrix needs both polarizations of each order). Add "
+        "gfem.FloquetPort(name, 'z_min', order=(1, 0), polarization='TM') to "
+        "the model.",
+        order=(1, 0),
+    )
+    raises(
+        ValueError,
+        "jones: no Floquet port reads order (0, 1) in TM on 'z_max' (a Jones "
+        "matrix needs both polarizations of each order). Add "
+        "gfem.FloquetPort(name, 'z_max', order=(0, 1), polarization='TM') to "
+        "the model.",
+        incident_order=(0, 1),
+    )
+    partial_model, partial_result = partial
+    raises(
+        ValueError,
+        "jones: no Floquet port reads order (0, 0) in TM on 'z_min' (a Jones "
+        "matrix needs both polarizations of each order). Add "
+        "gfem.FloquetPort(name, 'z_min', order=(0, 0), polarization='TM') to "
+        "the model.",
+        result=partial_result,
+        model=partial_model,
+    )
+    raises(
+        ValueError,
+        "jones: Floquet port 'R_TM' (order (0, 0), TM on 'z_max') was not "
+        "excited, so S has no column for it. Solve with Driven(..., "
+        "excite=None) or add 'R_TM' to Driven.excite.",
+        result=one_excited,
+    )
+    raises(
+        TypeError,
+        "jones: order must be two integers (m, n), got (0.5, 0).",
+        order=(0.5, 0),
+    )
+    raises(
+        TypeError,
+        "jones: incident_order must be two integers (m, n), got 'ab'.",
+        incident_order="ab",
+    )
+    raises(ValueError, "jones: the sequence of results is empty.", result=[])
+
+
+def test_jones_two_offsets_of_one_order_are_refused_for_either_side(normal, model):
+    for moved, out, inc in (("R_TM", TOP, BOT), ("T_TM", TOP, BOT), ("R_TM", BOT, TOP)):
+        result = normal.with_offsets({moved: 1e-7})
+        a, b = (moved, moved.replace("TM", "TE"))
+        surface = BOT if moved == "T_TM" else TOP
+        with pytest.raises(
+            ValueError,
+            match=re.escape(
+                f"jones: Floquet ports {a!r} and {b!r} read order (0, 0) on "
+                f"{surface!r} at different offsets (1e-07 m and 0 m), so their "
+                "relative phase mixes two reference planes. Give both the same "
+                "FloquetPort(offset=...), or align them with result.with_offsets(...)."
+            ),
+        ):
+            dif.jones(result, out, inc, model=model)
+
+
+# --- power balance of a fed cell ----------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def fed(tmp_path_factory):
+    """A feed sheet in front of a PEC, radiating into one Floquet face.
+
+    The lumped port is a sheet across the whole cell (periodic along y and z),
+    so the cell has one Floquet face and one lumped port; the port reads
+    power wherever the feed's polarization (z) meets it.
+    """
+    a = pc.F1_A
+    edges = (np.linspace(0.0, 0.5, 6), np.linspace(0.0, a, 3), np.linspace(0.0, a, 3))
+    raw = sm.periodic_cell(edges, sheets=(("feed", 0.2),), paired="yz")
+    path = sm.write_msh22(tmp_path_factory.mktemp("fed") / "fed.msh", raw)
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="um")
+    model = gfem.Model(
+        mesh,
+        materials={"cell": gfem.Material()},
+        boundaries=[
+            gfem.Periodic(("y_min", "y_max")),
+            gfem.Periodic(("z_min", "z_max")),
+            gfem.PEC("x_min"),
+        ],
+        ports=[
+            gfem.LumpedPort("feed", "feed", "+z", impedance=50.0),
+            gfem.FloquetPort("TE", "x_max", polarization="TE"),
+            gfem.FloquetPort("TM", "x_max", polarization="TM"),
+        ],
+    )
+    return model, gfem.solve(model, gfem.Driven([F0]), options=OPTS)
+
+
+@pytest.mark.parametrize("polarization", ["TE", "TM", "RCP", "LCP", "unpolarized"])
+def test_c2_a_fed_cell_counts_the_power_into_its_feed(fed, polarization):
+    model, result = fed
+    bal = dif.power_balance(result, "x_max", polarization=polarization, model=model)
+    total = bal.reflectance + bal.transmittance + bal.coupled + bal.absorptance
+    np.testing.assert_allclose(total, 1.0, rtol=0, atol=1e-12)
+    feed = np.asarray(result.s.values)[0, result.s.ports.index("feed")]
+    te, tm = (abs(feed[result.s.excited.index(p)]) ** 2 for p in ("TE", "TM"))
+    if polarization in ("TE", "TM"):
+        expected = {"TE": te, "TM": tm}[polarization]
+    else:  # RCP + LCP = TE + TM: the circular pair is a rotation of the linear one
+        expected = (te + tm) / 2
+    if polarization in ("RCP", "LCP"):
+        other = "LCP" if polarization == "RCP" else "RCP"
+        pair = dif.power_balance(result, "x_max", polarization=other, model=model)
+        np.testing.assert_allclose(
+            bal.coupled + pair.coupled, te + tm, rtol=0, atol=1e-12
+        )
+    else:
+        np.testing.assert_allclose(bal.coupled, [expected], rtol=0, atol=1e-12)
+    np.testing.assert_array_equal(bal.transmittance, 0.0)
+
+
+def test_c2_the_feed_of_a_fed_cell_takes_power_in_one_polarization(fed):
+    model, result = fed
+    bal = dif.power_balance(result, "x_max", polarization="TE", model=model)
+    assert float(bal.coupled[0]) > 0.1
+    assert float(bal.absorptance[0]) <= pc.F1_POWER_TOL

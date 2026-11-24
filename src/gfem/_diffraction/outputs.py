@@ -31,14 +31,19 @@ if TYPE_CHECKING:
 
 __all__ = [
     "Efficiencies",
+    "Jones",
     "PowerBalance",
     "efficiencies",
     "floquet_ports",
+    "jones",
     "power_balance",
 ]
 
 _NAMED = ("TE", "TM", "RCP", "LCP", "unpolarized")
 _SQRT_HALF = math.sqrt(0.5)
+#: Stokes analyser $A$, applied to $b \otimes b^*$ of the $(b_\theta, b_\phi)$ pair.
+_STOKES = np.asarray([[1, 0, 0, 1], [1, 0, 0, -1], [0, 1, 1, 0], [0, -1j, 1j, 0]])
+_STOKES_INV = np.linalg.inv(_STOKES)
 
 
 # --- floquet_ports ---------------------------------------------------------------
@@ -544,12 +549,7 @@ def incidence_of(
     else:
         pair = _pair(polarization, who)
         label = pair
-    surfaces = cell.surfaces
-    if surface not in surfaces:
-        raise ValueError(
-            f"{who}: {surface!r} carries no Floquet port of the result; its "
-            f"Floquet surfaces are {', '.join(map(repr, surfaces))}."
-        )
+    check_surface(cell, surface)
     combos, need, coherent = _combos(label, -cell.h_out(surface))
     columns: dict[str, int] = {}
     for pol in need:
@@ -578,6 +578,16 @@ def incidence_of(
     if coherent:
         check_offsets(cell, surface, order)
     return Incident(surface, order, label, combos, columns)
+
+
+def check_surface(cell: Cell, surface: str) -> None:
+    """Raise unless ``surface`` carries a Floquet port of the result (M5)."""
+    surfaces = cell.surfaces
+    if surface not in surfaces:
+        raise ValueError(
+            f"{cell.who}: {surface!r} carries no Floquet port of the result; its "
+            f"Floquet surfaces are {', '.join(map(repr, surfaces))}."
+        )
 
 
 def check_offsets(cell: Cell, surface: str, order: tuple[int, int]) -> None:
@@ -890,4 +900,231 @@ def power_balance(
         coupled=coup,
         absorptance=absn,
         incidence=inc.incidence,
+    )
+
+
+# --- Jones, circular and Mueller views -------------------------------------------
+
+
+def jones_block(s: Any, outgoing: Sequence[str], incident: Sequence[str]) -> jax.Array:
+    """The ``(n_freq, 2, 2)`` block of S between two orders, (TM, TE) both ways.
+
+    Reads the labels of ``s`` (``ports`` for the rows, ``excited`` for the
+    columns) and the ``jax.numpy`` array ``s.values``, so it serves a solve's
+    S and a cell response's `gfem.NetworkParameters` alike. ``outgoing`` and
+    ``incident`` are the port names of the TM then the TE wave of an order.
+    """
+    rows = [s.ports.index(n) for n in outgoing]
+    cols = [s.excited.index(n) for n in incident]
+    return jnp.asarray(s.values)[:, rows][:, :, cols]
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class Jones:
+    r"""The Jones matrix between two diffraction orders, for every frequency.
+
+    :math:`J_{ij} = S_{(p,i)\leftarrow(q,j)}`, :math:`i, j \in (\mathrm{TM},
+    \mathrm{TE})`: rows the outgoing polarization, columns the incident one,
+    no flip on reflection, in each order's own Floquet references (power-wave
+    entries; the field ratio is :math:`J_{ij}\sqrt{Z_{\text{out},i} /
+    Z_{\text{in},j}}`). At normal incidence it is the Jones matrix in the
+    lab :math:`(\hat e_1, \hat e_2)` frame.
+
+    ``values`` is the one stored representation; `circular` and `mueller` are
+    views computed from it, so they differentiate like S.
+
+    Attributes:
+        values: ``(..., n_freq, 2, 2)`` complex, a leading axis for an angle
+            sweep.
+        frequency: ``(n_freq,)`` Hz.
+        outgoing: ``(surface, order)`` the beam leaves through.
+        incident: ``(surface, order)`` the beam enters through.
+        direction: ``(h_out, h_in)``, the direction sign :math:`\pm1` of the
+            outgoing and of the incident beam along :math:`\hat e_3`.
+
+    Raises:
+        ValueError: ``values`` is not ``(..., n_freq, 2, 2)``, ``direction``
+            is not two signs, or ``frequency`` does not hold one value per
+            frequency of ``values``.
+    """
+
+    values: jax.Array
+    frequency: np.ndarray
+    outgoing: tuple[str, tuple[int, int]]
+    incident: tuple[str, tuple[int, int]]
+    direction: tuple[int, int]
+
+    def __post_init__(self) -> None:
+        shape = tuple(np.shape(self.values))
+        if len(shape) < 3 or shape[-2:] != (2, 2):
+            raise ValueError(
+                f"Jones: values must have shape (..., n_freq, 2, 2), got {shape}."
+            )
+        bad = ValueError(
+            "Jones: direction must be two signs (h_out, h_in), each +1 or -1, "
+            f"got {self.direction!r}."
+        )
+        try:
+            signs = tuple(self.direction)
+        except TypeError:
+            raise bad from None
+        if len(signs) != 2 or not all(
+            isinstance(h, (int, np.integer))
+            and not isinstance(h, (bool, np.bool_))
+            and h in (1, -1)
+            for h in signs
+        ):
+            raise bad
+        frequency = np.atleast_1d(np.asarray(self.frequency, float))
+        if frequency.ndim != 1 or len(frequency) != shape[-3]:
+            raise ValueError(
+                f"Jones: frequency must hold {shape[-3]} frequencies, one per "
+                "entry of values' frequency axis, got "
+                f"{len(np.atleast_1d(self.frequency))}."
+            )
+        object.__setattr__(self, "direction", (int(signs[0]), int(signs[1])))
+        object.__setattr__(self, "frequency", frequency)
+        object.__setattr__(
+            self, "outgoing", (self.outgoing[0], tuple(self.outgoing[1]))
+        )
+        object.__setattr__(
+            self, "incident", (self.incident[0], tuple(self.incident[1]))
+        )
+
+    @property
+    def circular(self) -> jax.Array:
+        r""":math:`U_{h_\text{out}}^\dagger J\,U_{h_\text{in}}` in (RCP, LCP).
+
+        ``(..., n_freq, 2, 2)``: rows the outgoing, columns the incident
+        handedness, right-handed (RCP) first, as seen looking into the beam
+        (IEEE). The columns of a top-face incidence are
+        :math:`(S_{:,\mathrm{TM}} + i S_{:,\mathrm{TE}})/\sqrt2` and
+        :math:`(S_{:,\mathrm{TM}} - i S_{:,\mathrm{TE}})/\sqrt2`, the bottom
+        face's the other way round.
+        """
+        h_out, h_in = self.direction
+        u_out = jnp.asarray(np.conj(unitary(h_out)).T)
+        return u_out @ jnp.asarray(self.values) @ jnp.asarray(unitary(h_in))
+
+    @property
+    def mueller(self) -> jax.Array:
+        r"""The real :math:`4\times4` Mueller matrix of the Jones matrix.
+
+        :math:`M = A (J_w \otimes J_w^*) A^{-1}`, ``(..., n_freq, 4, 4)``. The
+        Stokes vector
+        :math:`(S_0, S_1, S_2, S_3)` of a beam is :math:`A (b \otimes b^*)`
+        on the components :math:`(b_\theta, b_\phi) = (h\,b_\mathrm{TM},
+        b_\mathrm{TE})` in the beam's own :math:`(\hat\theta, \hat\phi)`
+        frame (:math:`e^{+i\omega t}`, :math:`S_3 = |b_\mathrm{R}|^2 -
+        |b_\mathrm{L}|^2`), and
+        :math:`J_w = \mathrm{diag}(h_\text{out}, 1)\, J\,
+        \mathrm{diag}(h_\text{in}, 1)`. :math:`M_{00}` is the efficiency
+        for unpolarized light.
+        """
+        h_out, h_in = self.direction
+        jw = (
+            jnp.asarray([h_out, 1.0])[:, None]
+            * jnp.asarray(self.values)
+            * jnp.asarray([h_in, 1.0])[None, :]
+        )
+        kron = jnp.einsum("...ij,...kl->...ikjl", jw, jnp.conj(jw))
+        kron = kron.reshape(*kron.shape[:-4], 4, 4)
+        return jnp.real(jnp.asarray(_STOKES) @ kron @ jnp.asarray(_STOKES_INV))
+
+    def __repr__(self) -> str:
+        return (
+            f"Jones({self.outgoing} <- {self.incident}, {len(self.frequency)} "
+            "frequencies)"
+        )
+
+
+register_fields(Jones, ("values",))
+
+
+def jones(
+    result: DrivenResult | Sequence[DrivenResult],
+    outgoing: str,
+    incident: str,
+    *,
+    model: Model,
+    order: tuple[int, int] = (0, 0),
+    incident_order: tuple[int, int] = (0, 0),
+) -> Jones:
+    r"""The Jones matrix of a cell between two diffraction orders.
+
+    The :math:`2\times2` block of S, in (TM, TE), from the wave of
+    ``incident_order`` entering through the face ``incident`` to the wave of
+    ``order`` leaving through the face ``outgoing`` (reflection is the
+    incident face named twice, ``jones(result, "top", "top", ...)``), for
+    every frequency. `Jones.circular` and `Jones.mueller` give the circular
+    and the Stokes views.
+
+    Both polarizations of each order need a Floquet port, and both incident
+    columns must be excited. The block of an outgoing order that is
+    evanescent at a frequency reads 0 there. A sequence of results (an angle
+    sweep) is stacked on a leading axis. Differentiable through S.
+
+    Args:
+        result: A `gfem.DrivenResult` of a model with Floquet ports, or a
+            sequence of them.
+        outgoing: The Floquet surface the outgoing beam leaves through.
+        incident: The Floquet surface the incident beam enters through.
+        model: The model the result was solved with.
+        order: The outgoing order.
+        incident_order: The incident order.
+
+    Returns:
+        A `Jones`.
+
+    Raises:
+        TypeError: ``result`` or ``model`` has the wrong type, an order is not
+            two integers.
+        ValueError: A surface without Floquet ports, a missing or unexcited
+            Floquet port, an order's two ports at different offsets, a
+            ``model`` that is not the solved one, an empty or inconsistent
+            sequence.
+    """
+    who = "jones"
+    cell = cell_of(result, model, who)
+    order = check_order(order, who)
+    incident_order = check_order(incident_order, who, "incident_order")
+    check_surface(cell, outgoing)
+    check_surface(cell, incident)
+    why = " (a Jones matrix needs both polarizations of each order)"
+    names: dict[str, list[str]] = {}
+    for side, surface, o in (
+        ("out", outgoing, order),
+        ("in", incident, incident_order),
+    ):
+        names[side] = []
+        for pol in ("TM", "TE"):
+            name = cell.port(surface, o, pol)
+            if name is None:
+                raise ValueError(
+                    f"{who}: no Floquet port reads order {o} in {pol} on "
+                    f"{surface!r}{why}. Add gfem.FloquetPort(name, {surface!r}, "
+                    f"order={o}, polarization={pol!r}) to the model."
+                )
+            names[side].append(name)
+    for name in names["in"]:
+        if name not in cell.s.excited:
+            d = cell.info[name]
+            raise ValueError(
+                f"{who}: Floquet port {name!r} (order {d.order}, {d.polarization} "
+                f"on {d.surface!r}) was not excited, so S has no column for it. "
+                f"Solve with Driven(..., excite=None) or add {name!r} to "
+                "Driven.excite."
+            )
+    check_offsets(cell, outgoing, order)
+    check_offsets(cell, incident, incident_order)
+    values = stack(
+        cell,
+        [jones_block(r.s, names["out"], names["in"]) for r in cell.results],
+    )
+    return Jones(
+        values=values,
+        frequency=cell.frequency,
+        outgoing=(outgoing, order),
+        incident=(incident, incident_order),
+        direction=(cell.h_out(outgoing), -cell.h_out(incident)),
     )

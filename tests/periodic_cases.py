@@ -976,6 +976,44 @@ def f1_airy(
     )
 
 
+#: The wave plate's uniaxial slab: ordinary and extraordinary permittivity.
+#: $\varepsilon_e$ makes the slab a quarter-wave plate for F1's thickness:
+#: $\arg(t_e / t_o) = -\pi/2$ at normal incidence (Fabry-Perot amplitudes
+#: differ, so the plate is not an ideal retarder).
+WAVEPLATE_EPS_O = 2.25
+WAVEPLATE_EPS_E = 5.126657
+
+
+def waveplate_tensor(psi: float) -> np.ndarray:
+    """The slab's permittivity tensor, the optic axis at ``(cos psi, sin psi, 0)``."""
+    a = np.array([math.cos(psi), math.sin(psi), 0.0])
+    return WAVEPLATE_EPS_O * np.eye(3) + (WAVEPLATE_EPS_E - WAVEPLATE_EPS_O) * np.outer(
+        a, a
+    )
+
+
+def waveplate(mesh: gfem.Mesh, psi: float) -> gfem.Model:
+    r"""A uniaxial slab between air and air: F1's mesh and ports, optic axis at ``psi``.
+
+    The slab has $\varepsilon_o = 2.25$ and $\varepsilon_e = 5.126657$ and
+    its axis at $(\cos\psi, \sin\psi, 0)$, ``psi`` in radians from
+    $\hat e_1$; both faces see air.
+    """
+    return gfem.Model(
+        mesh,
+        materials={
+            "sub": gfem.Material(),
+            "slab": gfem.Material(eps_r=waveplate_tensor(psi)),
+            "air": gfem.Material(),
+        },
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+        ],
+        ports=f1_ports(),
+    )
+
+
 # --- F2: lamellar grating between Floquet ports ------------------------------------
 
 #: F2's periods, um: 1.2 lambda0 along x (the grating), 0.4 lambda0 along y.
