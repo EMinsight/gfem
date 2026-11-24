@@ -113,12 +113,12 @@ def heat_flow(
 def _model_role(kind: tuple, rule: SteadyThermalRule) -> Role:
     """The role of a model leaf, by its `input_kind`."""
     from gfem._adjoint.solve_vjp import _describe
-    from gfem._engine.sensitivity import unsupported
+    from gfem._engine.sensitivity import is_thermal_value, unsupported
 
     described = _describe(kind)
     if kind[0] == "nodes":
         return Role("read", NODES_REASON, described)
-    if kind[0] == "material" and rule.role(kind) == "read":
+    if (kind[0] == "material" or is_thermal_value(kind)) and rule.role(kind) == "read":
         return Role("read", unsupported(rule.form, kind), described)
     return Role("unread", None, described)
 

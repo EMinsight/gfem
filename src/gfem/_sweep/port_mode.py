@@ -66,6 +66,7 @@ from gfem._engine import dispersion
 from gfem._engine.line_mode import ModeSpace, mode_space
 from gfem._engine.port_mode import PortModeSpace
 from gfem._engine.runtime import task_manager
+from gfem._engine.sensitivity import is_thermal_value
 from gfem._engine.solve_request import SolveRequest
 from gfem._linalg import report
 from gfem._linalg.superlu import backward_error, shift_invert_eigs
@@ -273,11 +274,12 @@ class PortModeRule:
         """``"read"`` if the port mode problem depends on input ``kind``.
 
         The electromagnetic material properties, the node coordinates and
-        any boundary value are read; thermal properties are not.
+        any boundary value are read; thermal properties and thermal boundary
+        values are not.
         """
         if kind[0] == "material":
             return "read" if kind[2] in self.reads else "unread"
-        return "read"
+        return "unread" if is_thermal_value(kind) else "read"
 
     def unsupported_input(self, kind: tuple) -> str | None:
         """Every read input: port modes are constants of a solve."""

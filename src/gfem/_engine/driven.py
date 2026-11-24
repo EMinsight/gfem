@@ -143,7 +143,14 @@ from gfem._engine.port_network import (
     split_cotangent,
 )
 from gfem._engine.runtime import task_manager
-from gfem._engine.sensitivity import FieldPair, Term, is_lumped, is_sheet, law_key
+from gfem._engine.sensitivity import (
+    FieldPair,
+    Term,
+    is_lumped,
+    is_sheet,
+    is_thermal_value,
+    law_key,
+)
 from gfem._engine.solve_request import SolveRequest
 from gfem._engine.source_columns import (
     ColumnContext,
@@ -1660,12 +1667,12 @@ class DrivenRule:
         """``"read"`` if the driven solve depends on input ``kind``.
 
         The electromagnetic material properties, the node coordinates and
-        any boundary or port value are read; thermal properties are not, so
-        their gradient is an exact zero.
+        any boundary or port value are read; thermal properties and thermal
+        boundary values are not, so their gradient is an exact zero.
         """
         if kind[0] == "material":
             return "read" if kind[2] in self.reads else "unread"
-        return "read"
+        return "unread" if is_thermal_value(kind) else "read"
 
     def terms(self, model: Model, *, nodes: bool) -> list[Term]:
         """The operator's pieces as the kernel sees them: one `Term` per piece.

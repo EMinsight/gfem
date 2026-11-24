@@ -278,9 +278,7 @@ def _volume_side(layout: _Layout, which: SideSpec) -> Side:
 def _surface_side(layout: _Layout, names: tuple[str, ...], boundaries: Any) -> Side:
     who, mesh = layout.who, layout.mesh
     dirichlet = boundaries.dirichlet
-    measured = {s for s, _, _ in boundaries.convection} | {
-        s for s, _ in boundaries.flux
-    }
+    measured = {s for s, _, _ in boundaries.convection} | set(boundaries.flux_surfaces)
     triangles = np.asarray(mesh.triangles)
     outer = np.zeros(len(triangles), bool)
     weight = np.zeros(len(layout.free))

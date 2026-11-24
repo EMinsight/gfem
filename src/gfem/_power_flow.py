@@ -39,7 +39,7 @@ import numpy as np
 from gfem import _pml
 from gfem._adjoint.measure import measure
 from gfem._adjoint.solve_vjp import input_kind
-from gfem._boundaries import surfaces_of
+from gfem._boundaries import THERMAL_VALUES, surfaces_of
 from gfem._checks import is_traced
 from gfem._probe import NODES_REASON
 from gfem.mesh import _at_imported_nodes
@@ -278,7 +278,7 @@ def _model_role(kind: tuple[Any, ...], model: Model, where: Surface) -> _Role:
                 described,
             )
         return _Role("unread", None, described)
-    if kind[0] == "boundary":
+    if kind[0] == "boundary" and kind[2] not in THERMAL_VALUES:
         boundary = model.boundaries[kind[1]]
         described = f"model.boundaries[{kind[1]}]" + "".join(f".{k}" for k in kind[2:])
         for name in surfaces_of(boundary):

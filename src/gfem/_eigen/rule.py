@@ -136,7 +136,7 @@ from gfem._engine.eigen import (
 )
 from gfem._engine.fields import dof_shape, fe_space, one_process_dofs, rank_piece
 from gfem._engine.runtime import task_manager
-from gfem._engine.sensitivity import FieldPair, Term, is_lumped
+from gfem._engine.sensitivity import FieldPair, Term, is_lumped, is_thermal_value
 from gfem._engine.solve_request import SolveRequest
 from gfem._linalg import Kind, ResolvedLinearSolver
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
@@ -1197,10 +1197,13 @@ class EigenmodeRule:
         }
 
     def role(self, kind: tuple) -> str:
-        """``"read"`` if the eigenmode solve depends on input ``kind``."""
+        """``"read"`` if the eigenmode solve depends on input ``kind``.
+
+        A thermal boundary value is not read: its gradient is an exact zero.
+        """
         if kind[0] == "material":
             return "read" if kind[2] in self.reads else "unread"
-        return "read"
+        return "unread" if is_thermal_value(kind) else "read"
 
     def unsupported_input(self, kind: tuple) -> str | None:
         """Why a read input cannot be differentiated here, or ``None``.

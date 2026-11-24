@@ -53,7 +53,12 @@ import scipy.sparse.csgraph
 
 from gfem import _objective
 from gfem._adjoint.solve_vjp import adjoint_tolerance, input_kind
-from gfem._boundaries import Convection, FixedTemperature, HeatFlux
+from gfem._boundaries import (
+    Convection,
+    FixedTemperature,
+    HeatFlux,
+    check_thermal_values,
+)
 from gfem._checks import is_traced
 from gfem._engine import heat_flow, quadrature
 from gfem._engine.cache import Entry, _alone, retain_budget
@@ -80,6 +85,7 @@ from gfem._engine.sensitivity import (
     LoadField,
     Term,
     element_integrals,
+    is_thermal_value,
 )
 from gfem._engine.solve_request import SolveRequest
 from gfem._linalg import Handle, Kind, Operator, ResolvedLinearSolver, report
@@ -323,25 +329,42 @@ class _Boundaries:
     fixed: tuple[tuple[str, float], ...]
     convection: tuple[tuple[str, float, float], ...]
     flux: tuple[tuple[str, float], ...]
+    #: Every `HeatFlux` surface, a zero flux included (it is still a boundary).
+    flux_surfaces: tuple[str, ...] = ()
+    #: Whether a value is traced: the values are then placeholders and the
+    #: structure that depends on them (a zero flux, a uniform temperature)
+    #: is decided on the host model of each forward.
+    traced: bool = False
 
     @classmethod
     def of(cls, model: Model) -> _Boundaries:
+        """The conditions of ``model``, a `HeatFlux` of value 0 dropped.
+
+        A traced value keeps its surface and is never dropped or compared.
+        """
         items = model.boundaries
+        traced = is_traced(items)
+
+        def value(v: Any) -> Any:
+            return v if traced else float(np.asarray(v))
+
         return cls(
+            traced=traced,
+            flux_surfaces=tuple(b.surface for b in items if isinstance(b, HeatFlux)),
             fixed=tuple(
-                (b.surface, b.temperature)
+                (b.surface, value(b.temperature))
                 for b in items
                 if isinstance(b, FixedTemperature)
             ),
             convection=tuple(
-                (b.surface, b.coefficient, b.ambient)
+                (b.surface, value(b.coefficient), value(b.ambient))
                 for b in items
                 if isinstance(b, Convection)
             ),
             flux=tuple(
-                (b.surface, b.flux)
+                (b.surface, value(b.flux))
                 for b in items
-                if isinstance(b, HeatFlux) and b.flux != 0
+                if isinstance(b, HeatFlux) and (traced or value(b.flux) != 0)
             ),
         )
 
@@ -362,6 +385,8 @@ class _Boundaries:
         ``None`` when they differ, when a heat flux is given (then the
         source-free temperature is not uniform), or with no value at all.
         """
+        if self.traced:
+            return None
         values = {t for _, t in self.fixed} | {a for _, _, a in self.convection}
         if len(values) != 1 or self.flux:
             return None
@@ -437,6 +462,25 @@ class ThermalRule:
                 density = np.asarray(source_density(problem, mesh))
                 face = np.asarray(source_face_density(problem, mesh))
             _check_heat_inside(mesh, self.active, density, face)
+
+    def _bind(self, model: Model) -> None:
+        """Read the boundary values of the forward's host ``model``.
+
+        A model built under `jax.grad`, `jax.jit` or `jax.vmap` reaches the
+        rule with traced values, so each forward and backward checks the values
+        and reads the structure they decide (a zero flux, a uniform
+        temperature) from the host model here.
+
+        Raises:
+            ValueError: A value is not finite, a temperature is not > 0 K, a
+                heat transfer coefficient is not > 0, or two fixed
+                temperatures with different values share a mesh node.
+        """
+        for item in model.boundaries:
+            if isinstance(item, FixedTemperature | Convection | HeatFlux):
+                check_thermal_values(item)
+        model._check_fixed_temperatures()  # noqa: SLF001
+        self.boundaries = _Boundaries.of(model)
 
     def vjp_problem(self, problem: Any) -> Loads:
         """The problem's differentiable leaves, resolved in JAX (`Loads`)."""
@@ -685,13 +729,16 @@ class ThermalRule:
     def role(self, kind: tuple) -> str:
         """``"read"`` if the thermal solve depends on input ``kind``.
 
-        The thermal properties in `reads`, the heat sources (problem
-        leaves) and the node coordinates are read; every other material
-        property (the electromagnetic ones, ``conductivity``) and every
-        electromagnetic boundary or port value is not: an exact zero.
+        The thermal properties in `reads`, the thermal boundary values, the
+        heat sources (problem leaves) and the node coordinates are read;
+        every other material property (the electromagnetic ones,
+        ``conductivity``) and every electromagnetic boundary or port value
+        is not: an exact zero.
         """
         if kind[0] == "material":
             return "read" if kind[2] in self.reads else "unread"
+        if is_thermal_value(kind):
+            return "read"
         if kind[0] in ("law", "boundary", "port"):
             return "unread"
         return "read"
@@ -822,6 +869,7 @@ class SteadyThermalRule(ThermalRule):
             `KeptHandle`, ``fields`` the two solutions) or ``None``.
         """
         del request  # a steady solve keeps the same whatever is wanted
+        self._bind(model)
         mesh = model.mesh
         check_properties(model, self.active, self.reads)
         density, face = self._checked_loads(mesh)
@@ -888,6 +936,7 @@ class SteadyThermalRule(ThermalRule):
         kept operator; an entry that lost it prepares it again. ``wanted``
         holds the wanted input kinds.
         """
+        self._bind(model)
         wanted = wanted or frozenset()
         conduction = "thermal_conductivity" in {
             k[2] for k in wanted if k[0] == "material"
@@ -1558,7 +1607,7 @@ class TransientThermalRule(ThermalRule):
             free = free_mask(space.FreeDofs(), space.ndof)
         return stiffness, capacity, free
 
-    def forward(
+    def forward(  # noqa: PLR0915
         self, model: Model, *, keep: bool, request: SolveRequest | None = None
     ) -> tuple[dict[str, np.ndarray], Entry | None]:
         """Step the rise over the time grid on one prepared operator.
@@ -1572,6 +1621,7 @@ class TransientThermalRule(ThermalRule):
             this forward reruns for a backward that lost its entry.
         """
         request = SolveRequest() if request is None else request
+        self._bind(model)
         mesh = model.mesh
         check_properties(model, self.active, self.reads)
         density, face = self._checked_loads(mesh)
@@ -1696,6 +1746,7 @@ class TransientThermalRule(ThermalRule):
         (`_HeatAdjoint`).
         ``wanted`` holds the wanted input kinds.
         """
+        self._bind(model)
         spec = self.spec
         loads = self._loads()
         wanted = wanted or frozenset()
