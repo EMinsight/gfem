@@ -289,7 +289,7 @@ class SolverOptions:
             dielectric cladding, with absorbing faces or a perfectly matched
             layer, and metal circuits. Its iterations stay near 10 as the
             model grows in wavelengths, where ``"bddc_gmres"``'s grow with
-            the size. At order 2 it needs about a third of the direct
+            the size. At order 2 it needs about a quarter of the direct
             solver's memory, and it is faster than the direct solver from a
             few million unknowns on. It solves driven problems at order 2 or
             3 on one process; a Bloch wave vector, periodic pairs, Floquet
