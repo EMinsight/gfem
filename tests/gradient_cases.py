@@ -16,7 +16,8 @@ pytest ``tmp_path_factory.mktemp`` directory).
 - `wave_mesh` / `wave_line`: a two-layer line between wave ports with a
   design "core" away from the port faces.
 - `hybrid_mesh` / `hybrid_line`: a line whose leads carry two hybrid modes,
-  both requested at each end (a shared port surface), with the same "core".
+  both requested at each end (a shared port surface), with the same "core";
+  lossy leads with ``tan_delta`` (the matrix's ``shared_lossy`` variant).
 - `sheet_mesh` / `sheet_line`: a parallel-plate line glued at mid-height,
   the interior surface "sheet" carrying a `gfem.SheetField`.
 - `sheet_cavity` / `cavity_model`: a PEC cavity with a resistive sheet where
@@ -368,8 +369,11 @@ def hybrid_mesh(directory: Path, cells: tuple[int, int, int] = (8, 8, 4)) -> gfe
     return _mesh(directory, "hybrid.msh", sm.structured(edges, volume, surface))
 
 
-def hybrid_line(mesh: gfem.Mesh) -> gfem.Model:
+def hybrid_line(mesh: gfem.Mesh, tan_delta: float = 0.0) -> gfem.Model:
     """Modes 1 and 2 at both ends of the hybrid line; a uniform eps 3 core.
+
+    ``tan_delta``: the loss tangent of both lead regions (a lossy shared
+    surface); the core stays lossless.
 
     The quadrant block makes the leads asymmetric in y and z, so their two
     propagating modes (from about 48 GHz) are hybrid and not orthogonal in
@@ -378,7 +382,10 @@ def hybrid_line(mesh: gfem.Mesh) -> gfem.Model:
     return gfem.Model(
         mesh,
         materials={
-            **{name: gfem.Material(eps_r=eps) for name, eps in HYBRID_EPS.items()},
+            **{
+                name: gfem.Material(eps_r=eps, tan_delta=tan_delta)
+                for name, eps in HYBRID_EPS.items()
+            },
             "core": gfem.Material(eps_r=3.0),
         },
         boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],

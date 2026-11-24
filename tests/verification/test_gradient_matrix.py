@@ -276,6 +276,14 @@ def _cells() -> list[Cell]:
                 for name in ("eps_r", "conductivity", "nodes")
                 if solver == "direct" or (name == "eps_r" and sweep == "uniform")
             ]
+            # the same surface with a loss tangent on the leads: the S
+            # functional is still parallel to the excitation, so the cross-mode
+            # entries' adjoint loads go through the same corrections, now complex
+            if solver == "direct":
+                cells += [
+                    Cell("driven_wave", name, solver, sweep, "shared_lossy")
+                    for name in ("eps_r", "conductivity", "nodes")
+                ]
         cells += [
             Cell("eigenmode", name, solver)
             for name in (
@@ -771,6 +779,8 @@ REFERENCE_CELLS = {
     Cell("driven_wave", "eps_r", "bddc_gmres", "uniform", "shared"),
     Cell("driven_wave", "conductivity", "direct", "adaptive", "shared"),
     Cell("driven_wave", "nodes", "direct", "adaptive", "shared"),
+    Cell("driven_wave", "conductivity", "direct", "adaptive", "shared_lossy"),
+    Cell("driven_wave", "nodes", "direct", "adaptive", "shared_lossy"),
 }
 CELL_PARAMS = [
     pytest.param(cell, marks=pytest.mark.reference, id=str(cell))
@@ -1092,6 +1102,8 @@ GRID = tuple(float(f) for f in np.linspace(10e9, 30e9, 11))
 WAVE_FREQUENCIES = (12e9, 24e9)
 WAVE_SAMPLES = (GRID[0], GRID[10], GRID[5], GRID[2])
 #: The hybrid line's grids: modes 1 and 2 propagate, mode 3 is cut off.
+#: The loss tangent of the hybrid line's leads, by cell variant.
+SHARED_LOSSY_TAN_DELTA = {"shared": 0.0, "shared_lossy": 0.05}
 HYBRID_FREQUENCIES = (55e9, 65e9)
 HYBRID_GRID = tuple(float(f) for f in np.linspace(52e9, 68e9, 9))
 HYBRID_SAMPLES = (HYBRID_GRID[0], HYBRID_GRID[8], HYBRID_GRID[4], HYBRID_GRID[2])
@@ -1122,9 +1134,9 @@ def _wave(d: Designs, cell: Cell):
 
     The ``"shared"`` variant excites p1_m1 of the hybrid line only: its
     cross-mode entries take adjoint loads through the shared surfaces' full
-    modal corrections.
+    modal corrections; ``"shared_lossy"`` puts a loss tangent on its leads.
     """
-    if cell.variant == "shared":
+    if cell.variant in ("shared", "shared_lossy"):
         mesh = d.hybrid_mesh
         problem, rows = _sweep(
             cell, HYBRID_FREQUENCIES, HYBRID_GRID, HYBRID_SAMPLES, excite="p1_m1"
@@ -1132,7 +1144,7 @@ def _wave(d: Designs, cell: Cell):
         rows = jnp.asarray(rows)
         return (
             mesh,
-            hybrid_line(mesh),
+            hybrid_line(mesh, tan_delta=SHARED_LOSSY_TAN_DELTA[cell.variant]),
             problem,
             lambda s: shared_surface_functional(s, rows),
         )
@@ -3712,10 +3724,10 @@ def _relative_norm(a, b) -> float:
     return float(jnp.linalg.norm(a - b) / jnp.linalg.norm(b))
 
 
-def _shared_surface_core(designs, problem, options, *, seed=0):
+def _shared_surface_core(designs, problem, options, *, seed=0, tan_delta=0.0):
     """The shared-surface objective in the core's eps_r, on ``problem``'s rows."""
     mesh = designs.hybrid_mesh
-    model = hybrid_line(mesh)
+    model = hybrid_line(mesh, tan_delta=tan_delta)
     values, _ = core_design(mesh, seed)
     rows = jnp.arange(len(problem.frequency))
 
@@ -3729,9 +3741,10 @@ def _shared_surface_core(designs, problem, options, *, seed=0):
     return objective, values["eps_r"]
 
 
+@pytest.mark.parametrize("tan_delta", [0.0, 0.05], ids=["lossless", "lossy"])
 @pytest.mark.parametrize("solver", SOLVERS)
 def test_gradient_matrix_shared_surface_reciprocity_equals_the_explicit_adjoint(
-    designs, solver
+    designs, solver, tan_delta
 ):
     # Exciting p1_m1 only leaves the cross-mode entries without p1_m2's and
     # p2_m2's solutions: their gradients take adjoint solves through the
@@ -3740,7 +3753,9 @@ def test_gradient_matrix_shared_surface_reciprocity_equals_the_explicit_adjoint(
     options = tight(solver)
 
     def gradient(problem):
-        objective, eps = _shared_surface_core(designs, problem, options, seed=3)
+        objective, eps = _shared_surface_core(
+            designs, problem, options, seed=3, tan_delta=tan_delta
+        )
         return jax.grad(objective)(eps)
 
     full = gradient(gfem.Driven(frequency=HYBRID_FREQUENCIES))
@@ -3749,15 +3764,18 @@ def test_gradient_matrix_shared_surface_reciprocity_equals_the_explicit_adjoint(
     assert error <= SHARED_SURFACE_RECIPROCITY[solver]
 
 
+@pytest.mark.parametrize("variant", ["shared", "shared_lossy"])
 def test_gradient_matrix_shared_surface_adaptive_equals_the_full_solve_at_the_samples(
-    designs,
+    designs, variant
 ):
     # at a sample the full solution lies in the frozen basis
     options = tight("direct")
-    cell = Cell("driven_wave", "eps_r", "direct", "adaptive", "shared")
+    cell = Cell("driven_wave", "eps_r", "direct", "adaptive", variant)
     adaptive = _wave_material(designs, cell, options, 0).objective
     problem = gfem.Driven(frequency=HYBRID_SAMPLES, excite="p1_m1")
-    full, eps = _shared_surface_core(designs, problem, options)
+    full, eps = _shared_surface_core(
+        designs, problem, options, tan_delta=SHARED_LOSSY_TAN_DELTA[variant]
+    )
     value, grad = jax.value_and_grad(adaptive)(eps)
     full_value, full_grad = jax.value_and_grad(full)(eps)
     value_error = abs(float(value) - float(full_value)) / abs(float(full_value))
