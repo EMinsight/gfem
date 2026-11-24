@@ -447,6 +447,8 @@ def test_a_fixed_angle_sweep_s_children_advance_their_parent_s_rows(board, monke
         port_names=("p1",),
         physics="em",
         stretch=None,
+        sources=(),
+        dipoles=(),
     )
     rule.children = FixedAngleChildren(rule)
     split = SweepSplit.of(rule)
