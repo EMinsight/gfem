@@ -297,3 +297,34 @@ def test_a_port_mode_reads_only_the_regions_beside_its_port():
     assert messages == []
     _, messages = _solve_noting(line(fitted, plain), problem)
     assert [m.split(":")[0] for m in messages] == ["region 'feed'"]
+
+
+ELECTROSTATIC = gfem.Electrostatic(terminals={"top": "top"}, ground="bottom")
+
+
+def test_an_electrostatic_solve_warns_with_the_static_value(tmp_path):
+    # law(0) = eps_inf + delta_eps = 3.5
+    law = gfem.PermittivityLaw(
+        eps_inf=2.0,
+        terms=[gfem.Lorentz(delta_eps=1.5, resonance_frequency=300 * THZ, damping=0.0)],
+        frequency_range=(50 * THZ, 900 * THZ),
+    )
+    model = _stack(tmp_path, law)
+    _, messages = _solve_noting(model, ELECTROSTATIC)
+    assert messages == [
+        "region 'core': its permittivity law was fitted over 50-900 THz, and this "
+        "electrostatic solve reads it at 0 Hz, static permittivity 3.5. The law "
+        "stays passive there, but its accuracy is unknown. Give the region a "
+        "constant gfem.Material(eps_r=<its static permittivity>) in the "
+        "electrostatic model, or clear the range with "
+        "dataclasses.replace(law, frequency_range=None) once checked."
+    ]
+
+    drude = gfem.PermittivityLaw(
+        terms=[gfem.Drude(plasma_frequency=2e15, damping=1e13)],
+        frequency_range=(50 * THZ, 900 * THZ),
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", gfem.FittedRangeWarning)
+        with pytest.raises(ValueError, match="Drude term"):
+            gfem.solve(_stack(tmp_path, drude), ELECTROSTATIC, options=OPTIONS)
