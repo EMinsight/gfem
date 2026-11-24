@@ -472,7 +472,7 @@ def _terms(rule: PiezoelectricRule, model: Model) -> list[Term]:
 
 def _parts(u: Any) -> tuple[Any, Any, Any, Any]:
     """The four components of a compound field ``u`` of the system's space."""
-    return tuple(u.components[i] for i in range(4))  # ty: ignore[invalid-return-type]
+    return tuple(u.components[i] for i in range(4))
 
 
 def _permittivity(model: Model, built: Any) -> ngs.CoefficientFunction:
