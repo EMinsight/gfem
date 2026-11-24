@@ -14,8 +14,8 @@ The measured errors and the gates are recorded in `multipole_cases`.
 import free_space_cases as fsc
 import multipole_cases as mc
 import numpy as np
-import scipy.constants as const
 import pytest
+import scipy.constants as const
 
 import gfem
 from gfem import _multipoles as mpm
@@ -82,7 +82,7 @@ MOMENT_GATE = 1e-2
 @pytest.mark.reference
 def test_rm2_the_anapole_has_no_exact_dipole_but_long_wavelength_moments(tmp_path):
     case = mc.CASES["D'"]
-    mesh, a_vol, frequency = mc.sphere_case(tmp_path / "anapole.msh", case)
+    mesh, _, frequency = mc.sphere_case(tmp_path / "anapole.msh", case)
     model = fsc.model(mesh, gfem.Material(eps_r=case.eps.real))
     problem = gfem.Driven(frequency, sources=AXIAL, keep_fields=True)
     result = gfem.solve(model, problem, options=OPTIONS)
