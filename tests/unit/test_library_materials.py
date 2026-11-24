@@ -112,6 +112,9 @@ def _table_rows(doc):
 
 
 def test_the_sources_table_lists_every_entry():
+    # each row gives the specimen, verbatim or refit, and the accuracy
+    for column in ("Specimen", "Law", "Accuracy"):
+        assert f"     - {column}\n" in materials.__doc__
     rows = _table_rows(materials.__doc__)
     assert sorted(rows) == sorted(ENTRIES)
     for entry, (_, dois, ranges) in SOURCES.items():

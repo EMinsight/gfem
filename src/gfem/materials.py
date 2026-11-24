@@ -52,40 +52,71 @@ Sources:
 
    * - Function
      - Source
+     - Specimen
+     - Law
      - Fitted range
+     - Accuracy
      - DOI
    * - `silicon`
-     - H. H. Li 1980, 293 K; lossless refit by gfem
+     - H. H. Li 1980
+     - crystalline silicon, 293 K
+     - gfem's lossless refit of the source's formula
      - 1.2-14 µm (21.41-249.8 THz)
+     - source :math:`\pm 2\times10^{-3}` in :math:`n`; refit within
+       :math:`8.3\times10^{-4}` of it
      - 10.1063/1.555624
    * - `silica`
-     - I. H. Malitson 1965, fused silica
+     - I. H. Malitson 1965
+     - fused silica, 20 °C
+     - the source's formula, verbatim
      - 0.21-3.71 µm (80.81-1428 THz)
+     - about :math:`10^{-5}` in :math:`n`
      - 10.1364/JOSA.55.001205
    * - `silicon_nitride`
-     - K. Luke et al. 2015, annealed LPCVD film; lossless refit by gfem
+     - K. Luke et al. 2015
+     - LPCVD film annealed at 1200 °C
+     - gfem's lossless refit of the source's formula
      - 0.31-5.504 µm (54.47-967.1 THz)
+     - none stated by the source; refit within :math:`7.1\times10^{-5}` of it
      - 10.1364/OL.40.004823
    * - `gold`
-     - A. D. Rakić et al. 1998, Lorentz-Drude model, evaporated films
+     - A. D. Rakić et al. 1998, Lorentz-Drude model
+     - evaporated films
+     - the source's parameters, verbatim
      - 0.1-6 eV, 0.21-12.4 µm (24.18-1451 THz)
+     - none stated by the source; 10-16 % from measured films, which
+       differ by 5-18 %
      - 10.1364/AO.37.005271
    * - `copper`
-     - A. D. Rakić et al. 1998, Lorentz-Drude model, evaporated films
+     - A. D. Rakić et al. 1998, Lorentz-Drude model
+     - evaporated films
+     - the source's parameters, verbatim
      - 0.1-6 eV, 0.21-12.4 µm (24.18-1451 THz)
+     - none stated by the source; 10-16 % from measured films, which
+       differ by 5-18 %
      - 10.1364/AO.37.005271
    * - `aluminium`
-     - A. D. Rakić et al. 1998, Lorentz-Drude model, evaporated films
+     - A. D. Rakić et al. 1998, Lorentz-Drude model
+     - evaporated films
+     - the source's parameters, verbatim
      - 0.1-6 eV, 0.21-12.4 µm (24.18-1451 THz)
+     - none stated by the source; 10-16 % from measured films, which
+       differ by 5-18 %
      - 10.1364/AO.37.005271
    * - `lithium_niobate`
-     - D. E. Zelmon et al. 1997, congruent (indices); E. H. Turner 1966,
-       clamped (electro-optic tensor)
+     - D. E. Zelmon et al. 1997 (indices); E. H. Turner 1966
+       (electro-optic tensor)
+     - congruent crystal, 21 °C; clamped tensor at 633 nm
+     - the sources' formulas and coefficients, verbatim, at one frequency
      - 0.4-5 µm (59.96-749.5 THz)
+     - none quoted here (see the entry)
      - 10.1364/JOSAB.14.003319, 10.1063/1.1754449
    * - `lithium_niobate_static`
-     - R. T. Smith and F. S. Welsh 1971, clamped
+     - R. T. Smith and F. S. Welsh 1971
+     - congruent crystal, clamped, 25 °C
+     - the source's values, verbatim
      - none: a static value
+     - none quoted here
      - 10.1063/1.1660528
 """
 
@@ -605,7 +636,11 @@ def lithium_niobate(*, frequency: float, axes: Any) -> Material:
     :math:`r_{22} = 3.4`, :math:`r_{33} = 30.8` and :math:`r_{51} = 28`
     pm/V at 633 nm, used unchanged at other wavelengths. Clamped values hold
     for thin films and for drives above the acoustic resonances; give
-    another tensor with `dataclasses.replace`.
+    another tensor with `dataclasses.replace`. No accuracy is quoted here
+    for either source, as neither paper's own figure has been checked; an
+    independent measurement of the clamped :math:`r_{22}` at 633 nm gives
+    :math:`3.8 \pm 0.3` pm/V (Abarkan et al., arXiv:0808.2802), against
+    Turner's 3.4.
 
     Laws are isotropic, so the material is a constant at ``frequency``.
     Fitted range of the index formulas: 0.4-5 µm (59.96-749.5 THz); a
