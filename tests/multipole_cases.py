@@ -24,6 +24,17 @@ type fails on a coefficient that is nearly zero (the anapole's
 
 Measured floors (order 3, the default free-space sphere and the prototype
 meshes) are recorded here as the verification tests measure them.
+
+- Induced-current route against the projection, lossy sphere, degree 1, both
+  types over the degree-1 norm: 2.6e-3 on the free-space default mesh
+  (maxh 0.4, sphere 0.2), 6.6e-4 at maxh 0.25, 2.4e-4 at maxh 0.2 with the
+  sphere at 0.1 (the mesh V6 uses; gate 1e-3). The difference is the far-field
+  layer's discretization, not the volume integral.
+- Toroidal correction, same sphere: :math:`|p_0 - ikT - p| / |p_0 - p| =
+  0.066`, gate 0.2.
+- Anapole D' (maxh 0.25, sphere 0.05, order 3): exact dipole 2.3e-3 of the
+  norm; :math:`p_{0,x}` 0.28661 and :math:`-ikT_x` -0.30678 against 0.287088
+  and -0.306525; :math:`|p_0 - ikT| / |p_0| = 0.070`. Gates 1e-2.
 """
 
 from __future__ import annotations
