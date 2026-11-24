@@ -189,7 +189,15 @@ Material data:
   tutorial takes lithium niobate's clamped constants from `gfem.materials`:
   its push-pull $V_\pi L$ moves from 1.61 to 1.62 V·cm.
 
-Designs:
+Design:
+
+- **Minimum width and spacing in the gradient.**
+  `gfem.design.length_scale_constraints(blur, min_width=..., min_spacing=...)`
+  turns a layer grid's minimum line width and minimum spacing into two
+  differentiable constraints on the filtered density, each at most 0 when the
+  printed pattern keeps its rule, for an optimizer's inequality constraints or
+  a penalty. `gfem.design.radius_for_length_scale` gives the filter radius
+  whose robust triple holds a minimum length.
 
 - **Layer patterns.** `LayerGrid.pattern(rho, eta=0.5)` draws a layer-grid
   design as polygons (`gfem.design.LayerPattern` of `gfem.design.Polygon`):

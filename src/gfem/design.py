@@ -39,6 +39,12 @@ import scipy.sparse as sp
 from gfem import _morph, _mpi, _pattern, _sparse, _spectral
 from gfem._checks import is_traced, static_float
 from gfem._dim2 import refuse_entry
+from gfem._length_scale import (
+    LengthScaleConstraints,
+    LengthScaleValues,
+    length_scale_constraints,
+    radius_for_length_scale,
+)
 from gfem._materials import PixelGeometry
 from gfem._pattern import LayerPattern, Polygon
 from gfem._pytree import register_fields
@@ -50,10 +56,14 @@ __all__ = [
     "LayerDensity",
     "LayerGrid",
     "LayerPattern",
+    "LengthScaleConstraints",
+    "LengthScaleValues",
     "Polygon",
     "Robust",
     "helmholtz_filter",
+    "length_scale_constraints",
     "project",
+    "radius_for_length_scale",
     "robust",
 ]
 
@@ -654,13 +664,21 @@ class HelmholtzFilter:
     """
 
     def __init__(
-        self, radius: float, shape: tuple[int, ...], apply: Callable, where: str
+        self,
+        radius: float,
+        shape: tuple[int, ...],
+        apply: Callable,
+        where: str,
+        grid: LayerGrid | None = None,
     ) -> None:
         """Wrap a linear map; use `helmholtz_filter` to build one."""
         self.radius = radius
         self.shape = shape
         self._apply = apply
         self._where = where
+        # The pixel grid it filters on (None on a free-form mesh): the
+        # length-scale constraints read its pitch, seams and sampled pixels.
+        self._grid = grid
 
     def __call__(self, rho: jax.Array) -> jax.Array:
         """The filtered density, same shape as ``rho``.
@@ -730,7 +748,11 @@ def helmholtz_filter(
                 "helmholtz_filter(grid, radius=...)."
             )
         return HelmholtzFilter(
-            radius, carrier.shape, _grid_filter(carrier, length), repr(carrier)
+            radius,
+            carrier.shape,
+            _grid_filter(carrier, length),
+            repr(carrier),
+            grid=carrier,
         )
     refuse_entry(carrier, "helmholtz_filter")
     if region is None:
