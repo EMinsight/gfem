@@ -185,7 +185,9 @@ Material data:
 - **Documentation.** A recipe, "Fit a measured n, k table to a permittivity
   law"; a "Take a law from cited data" section of the dispersive materials
   recipe; the extinction coefficient in the conventions; four glossary
-  entries; and a "Material data" section of the licence page.
+  entries; and a "Material data" section of the licence page. The modulator
+  tutorial takes lithium niobate's clamped constants from `gfem.materials`:
+  its push-pull $V_\pi L$ moves from 1.61 to 1.62 V·cm.
 
 ## 0.2.0 (2026-11-23)
 
