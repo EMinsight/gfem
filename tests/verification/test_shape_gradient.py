@@ -58,17 +58,29 @@ GRID = tuple(float(f) for f in np.linspace(10e9, 30e9, 11))
 
 def test_driven_kept_field_shape_gradient_matches_fd(line):
     # a field functional: one adjoint solve per frequency, then the same pass
+    # the layer interface moves along z, node by node (the side walls are
+    # absorbing on every element of this coarse line, so a boundary_morph,
+    # which holds the elements touching the truncation, would move nothing)
     problem = gfem.Driven(frequency=GRID[5], excite="p1", keep_fields=True)
-    morph = boundary_morph(line, "sub__cover", grows="sub")
     options = gfem.SolverOptions(order=2, linear_solver="direct")
+    mesh = line.mesh
+    triangles = np.asarray(mesh.triangles)
+    interface = np.unique(triangles[mesh.elements("sub__cover")])
+    ports = np.unique(
+        np.concatenate([triangles[mesh.elements(s)] for s in ("port1", "port2")])
+    )
+    interface = np.setdiff1d(interface, ports)
+    x0 = jnp.asarray(mesh.nodes)
+    treedef = jax.tree_util.tree_structure(mesh)
 
     def objective(t):
-        result = gfem.solve(line.replace(mesh=morph(t)), problem, options=options)
+        moved = jax.tree_util.tree_unflatten(treedef, [x0.at[interface, 2].add(t)])
+        result = gfem.solve(line.replace(mesh=moved), problem, options=options)
         e = result.e_field(GRID[5]).coefficients
         weights = np.random.default_rng(7).uniform(0.5, 1.5, e.shape[0])
         return jnp.sum(weights * jnp.abs(e) ** 2) * 1e-6
 
-    t = jnp.zeros(morph.n_params)
+    t = jnp.zeros(len(interface))
     rng = np.random.default_rng(3)
     assert_gradient_matches(objective, t, unit_directions(rng, t.shape, 2), step=STEP)
 
