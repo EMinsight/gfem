@@ -196,6 +196,10 @@ class LayerGrid:
         periodic: Per axis ``(x, y)``, whether the grid wraps around a seam.
         shape: ``(ny, nx)``.
         origin: Lower-left corner of the grid ``(x, y)`` (m).
+        bounds: The region's footprint, its xy bounding rectangle
+            ``(xmin, ymin, xmax, ymax)`` (m). The grid overhangs it by up to a
+            pixel when `pitch` does not divide it; on a periodic axis its
+            edges are the grid's.
         x: Pixel-centre x coordinates, ``(nx,)`` (m).
         y: Pixel-centre y coordinates, ``(ny,)`` (m).
         sampled: ``(ny, nx)`` bool, pixels some element (face) centroid
@@ -296,6 +300,7 @@ class LayerGrid:
         self.periodic = periodic
         self.shape = (n[1], n[0])
         self.origin = origin
+        self.bounds = (float(lo[0]), float(lo[1]), float(hi[0]), float(hi[1]))
         self.x = origin[0] + (np.arange(n[0]) + 0.5) * pitch
         self.y = origin[1] + (np.arange(n[1]) + 0.5) * pitch
         self.n_elements = len(cells) if volume else None
