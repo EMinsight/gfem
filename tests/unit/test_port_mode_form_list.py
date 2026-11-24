@@ -21,14 +21,15 @@ from gfem import _pml
 from gfem._boundaries import Conductor
 from gfem._engine import quadrature
 from gfem._engine.port_mode import (
+    ConductorScalar,
     FormItem,
+    LawEdgeScalar,
+    LawScalar,
     PortModeSpace,
     _admittance_groups,
     _edge_fill,
     _p0,
-    law_absorbing_theta,
     law_slope,
-    law_theta,
 )
 from gfem._port_section import port_section
 
@@ -108,7 +109,8 @@ def _reference(space: PortModeSpace):  # noqa: PLR0915
         if isinstance(item, Conductor):
             forms_a.append([edge_t])
             forms_b.append([edge_n])
-            extra.append(space._conductor_theta(item, factor))
+            h = None if item.thickness is None else factor * item.thickness
+            extra.append(ConductorScalar(item.conductivity, h, section.scale))
             slopes.append(space._conductor_slope(item, factor))
             continue
         if item.resistance is not None:
@@ -127,14 +129,14 @@ def _reference(space: PortModeSpace):  # noqa: PLR0915
         inside = _p0(space.mesh, (np.asarray(index) == g).astype(float))
         forms_a.append([inside * et * vt * dx])
         forms_b.append([inside * en * vn * dx])
-        extra.append(law_theta(law, section.scale))
+        extra.append(LawScalar(law, section.scale))
         slopes.append(law_slope(law, section.scale))
         if section.absorbing_law is not None and (section.absorbing_law == g).any():
             forms_a.append([et.Trace() * vt.Trace() * ds(f"law{g}")])
             forms_b.append([en.Trace() * vn.Trace() * ds(f"law{g}")])
             rows = np.asarray(index) == g
             mu = 1 / float(section.nu_nn[rows][0].real)
-            extra.append(law_absorbing_theta(law, mu, section.scale))
+            extra.append(LawEdgeScalar(law, mu, section.scale))
             slopes.append(None)
     a = tuple(space._matrix(f) for f in forms_a)
     b = tuple(space._matrix(f) for f in forms_b)

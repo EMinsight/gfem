@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import dataclasses
 import functools
-from collections.abc import Callable
+from typing import Any
 
 import netgen.meshing as ngm
 import ngsolve as ngs
@@ -43,13 +43,16 @@ import scipy.sparse as sp
 from gfem._engine import quadrature
 from gfem._engine.dispersion import susceptibility
 from gfem._engine.port_mode import (
+    LawEdgeScalar,
+    LawScalar,
     Pencil,
+    PencilScalar,
     PortModeSpace,
     admittance,
-    law_absorbing_theta,
-    law_theta,
     omega_of,
+    susceptibility_series,
 )
+from gfem._engine.taylor import Taylor
 from gfem._linalg.base import free_mask
 from gfem._line_section import LineSection
 from gfem._port_section import PortSection
@@ -83,6 +86,41 @@ def mode_space(
             )
         return LineModeSpace(section, order, polarization)
     return PortModeSpace(section, order)
+
+
+@dataclasses.dataclass(frozen=True)
+class InverseEpsScalar:
+    r""":math:`1/\varepsilon_r(\omega)` of a group of Hz segments.
+
+    Attributes:
+        eps: The relative permittivity (eps_inf beside a law).
+        sigma: The conductivity, S/m.
+        law: The permittivity law, or ``None``.
+        scale: The local unit in metres.
+    """
+
+    eps: complex
+    sigma: float
+    law: Any
+    scale: float
+
+    def __call__(self, k0: float) -> complex:
+        """The value at wavenumber ``k0`` (per local unit)."""
+        omega = omega_of(k0, self.scale)
+        value = self.eps - 1j * self.sigma / (omega * scipy.constants.epsilon_0)
+        if self.law is not None:
+            value += susceptibility(self.law, omega)
+        return 1 / value
+
+    def taylor(self, k0: float) -> np.ndarray:
+        r""":math:`\theta^{(n)}(k_0)/n!` for :math:`n \le 3` along real ``k0``."""
+        omega = Taylor.variable(k0) * (scipy.constants.c / self.scale)
+        value = self.eps - omega.reciprocal() * (
+            1j * self.sigma / scipy.constants.epsilon_0
+        )
+        if self.law is not None:
+            value = value + susceptibility_series(self.law, self.scale, k0)
+        return value.reciprocal().c
 
 
 class LineModeSpace:
@@ -173,14 +211,14 @@ class LineModeSpace:
         b = [self._p0(w), None, None]
         values: list[np.ndarray | None] = [np.asarray(w, complex), None, None]
         points = [None, None, self._end_points(law=False)]
-        extra: list[Callable[[float], complex]] = []
+        extra: list[PencilScalar] = []
         if ez:
             for g, (_, law) in enumerate(s.laws):
                 a.append([self._p0(index == g) * u * v * dx])
                 b.append(None)
                 values.append(None)
                 points.append(None)
-                extra.append(law_theta(law, s.scale))
+                extra.append(LawScalar(law, s.scale))
         else:
             for (eps, sigma, g), rows in groups.items():
                 inside = np.zeros(len(s.eps))
@@ -189,7 +227,8 @@ class LineModeSpace:
                 b.append(self._p0(inside))
                 values.append(inside.astype(complex))
                 points.append(None)
-                extra.append(self._inverse_eps_theta(eps, sigma, g))
+                law = None if g < 0 else s.laws[g][1]
+                extra.append(InverseEpsScalar(eps, sigma, law, s.scale))
         for g in range(len(s.laws)):
             beside = self._end_points(law=g)
             if beside is not None:
@@ -227,27 +266,12 @@ class LineModeSpace:
             found = True
         return out.tocsr() if found else None
 
-    def _inverse_eps_theta(
-        self, eps: complex, sigma: float, g: int
-    ) -> Callable[[float], complex]:
-        r""":math:`1/\varepsilon_r(\omega)` of a group of Hz segments."""
-        law = None if g < 0 else self.section.laws[g][1]
-
-        def theta(k0: float) -> complex:
-            omega = omega_of(k0, self.section.scale)
-            value = eps - 1j * sigma / (omega * scipy.constants.epsilon_0)
-            if law is not None:
-                value += susceptibility(law, omega)
-            return 1 / value
-
-        return theta
-
-    def _law_end_theta(self, g: int, *, ez: bool) -> Callable[[float], complex]:
+    def _law_end_theta(self, g: int, *, ez: bool) -> LawEdgeScalar:
         r""":math:`ik_0 Y(\omega)` of an absorbing end beside law ``g``."""
         s = self.section
         rows = np.asarray(s.law_index) == g
         mu = float(s.mu[rows][0].real)
-        return law_absorbing_theta(s.laws[g][1], mu, s.scale, inverse=not ez)
+        return LawEdgeScalar(s.laws[g][1], mu, s.scale, inverse=not ez)
 
     def _full_matrix(self, integrands) -> sp.csr_matrix:
         n = self.space.ndof
