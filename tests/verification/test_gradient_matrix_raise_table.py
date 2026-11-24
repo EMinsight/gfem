@@ -2443,6 +2443,16 @@ def _out_floquet_port_offset(_request):
     jax.grad(objective)(1e-7)
 
 
+def _out_propagate_distance(_request):
+    # the transfer function is built once, outside the trace (raised by propagate)
+    from gfem import diffraction as dif
+
+    x = (np.arange(8) - 3.5) * 0.5e-6
+    values = np.ones((1, 2, 8), dtype=complex)
+    field = dif.ApertureField(values, [3e14], x, None, 1.0, 0.0)
+    jax.grad(lambda d: dif.propagate(field, d).intensity.sum())(1e-5)
+
+
 def _out_bloch_wave_vector_angle(request):
     # the incidence of a Floquet port is a constant of the solve
     edges = (np.linspace(0, 1, 3), np.linspace(0, 1, 3), np.linspace(0, 1, 3))
@@ -4063,6 +4073,12 @@ OUT_OF_SCOPE = [
         _out_floquet_port_nodes_moved,
         HOST,
         r"PortGeometryError: FloquetPort 'R_TE': 1 node\(s\) of its surface 'z_max'",
+    ),
+    (
+        "propagate x distance",
+        _out_propagate_distance,
+        gfem.NonDifferentiableError,
+        r"propagate: distance and padding must be fixed numbers",
     ),
     # Floquet path rows
     (
