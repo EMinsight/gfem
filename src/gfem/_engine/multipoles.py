@@ -51,13 +51,13 @@ class Current:
     Attributes:
         points: ``(n, 3)``, m.
         weights: ``(n,)``, m³, the quadrature weights.
-        current: ``(n, 3)``, A/m², complex.
+        density: ``(n, 3)``, A/m², complex.
     """
 
-    def __init__(self, points: np.ndarray, weights: np.ndarray, current: np.ndarray):
+    def __init__(self, points: np.ndarray, weights: np.ndarray, density: np.ndarray):
         self.points = points
         self.weights = weights
-        self.current = current
+        self.density = density
 
 
 def elements(model: Model, background: Background) -> np.ndarray:

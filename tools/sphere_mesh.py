@@ -72,8 +72,8 @@ def write(
     near = Box(Pnt(-inner, 0.0 if half else -inner, -inner), Pnt(inner, inner, inner))
     air = Box(Pnt(-h, low, -h), Pnt(h, h, h)) - near
     air.mat("air")
-    inner = near - ball
-    inner.mat("air")
+    near_air = near - ball
+    near_air.mat("air")
     if half:
         ball = ball * Box(Pnt(-t, 0, -t), Pnt(t, t, t))
         ball.mat("sphere")
@@ -91,7 +91,7 @@ def write(
                 cell = Box(Pnt(x0, y0, z0), Pnt(x1, y1, z1))
                 cell.mat("pml")
                 pml.append(cell)
-    shape = Glue([ball, inner, air, *pml])
+    shape = Glue([ball, near_air, air, *pml])
     if half:
         for face in shape.faces:
             if abs(face.center.y) < 1e-9:

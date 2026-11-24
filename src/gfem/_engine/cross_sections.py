@@ -166,10 +166,18 @@ def check_truncation_layer(
                 )
 
 
-def check_side(model: Model, where: Surface, who: str) -> None:
+def check_side(
+    model: Model,
+    where: Surface,
+    who: str,
+    *,
+    remedy: str = "Keep the port outside the side, at least one element away, "
+    "or read the scattered field (part='scattered').",
+) -> None:
     """Raise if the side's closure reaches a wave port's surface.
 
     The load's rows there hold the port's terms, which need its modes.
+    ``remedy`` is the closing sentence of the message.
 
     Raises:
         ValueError: Naming the port.
@@ -187,8 +195,7 @@ def check_side(model: Model, where: Surface, who: str) -> None:
                 raise ValueError(
                     f"{who}: the side reaches wave port {port.name!r}'s surface "
                     f"{name!r}, where an incident field's load holds the port's "
-                    "terms. Keep the port outside the side, at least one element "
-                    "away, or read the scattered field (part='scattered')."
+                    f"terms. {remedy}"
                 )
 
 

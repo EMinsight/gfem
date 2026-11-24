@@ -36,15 +36,7 @@ from scipy.special import sph_harm_y, spherical_jn
 
 from gfem import _incident
 from gfem._background import Background, lossless
-from gfem._boundaries import (
-    PEC,
-    PMC,
-    Conductor,
-    Impedance,
-    LumpedPort,
-    WavePort,
-    surfaces_of,
-)
+from gfem._boundaries import PMC, WavePort, surfaces_of
 from gfem._checks import check_fixed, is_traced
 from gfem._dim2 import refuse_entry
 from gfem._far_field import _measure, engine
@@ -533,8 +525,13 @@ register_fields(CurrentMoments, ("long_wavelength_dipole", "toroidal_dipole"))
 
 # --- the entry ----------------------------------------------------------------------
 
-#: The surfaces that belong to the scatterer when they lie inside the mesh.
-_SCATTERER_SURFACES = (Conductor, Impedance, LumpedPort, PEC, PMC)
+#: The surfaces that belong to the scatterer when they lie inside the mesh: the
+#: ones a cross-section measurement counts, and a PMC face too, which a
+#: multipole expansion cannot take as a wall but reads as a magnetic sheet.
+_SCATTERER_SURFACES = (
+    *importlib.import_module("gfem._engine.cross_sections")._SCATTERER_SURFACES,  # noqa: SLF001
+    PMC,
+)
 
 
 def _background(model: Model, entry: str = "multipoles") -> Background:
@@ -693,6 +690,7 @@ def _column_coefficients(
     model: Model,
     origin: Any = (0.0, 0.0, 0.0),
     lmax: int | None = None,
+    layer: Layer | None = None,
 ) -> tuple[jax.Array, jax.Array]:
     r"""The absolute spherical coefficients of any kept column, V/m.
 
@@ -706,7 +704,8 @@ def _column_coefficients(
     incident = name in result.sources and isinstance(result.sources[name], INCIDENT)
     part = "scattered" if incident else "total"
     fields = [result.e_field(f, name, part=part) for f in frequencies]
-    layer = _build_layer(fields, model, incident)
+    if layer is None:
+        layer = _build_layer(fields, model, incident)
     if lmax is None:
         lmax = _default_lmax(model, origin_a, max(frequencies))
     k = np.array([_incident.wavenumber(_background(model), f) for f in frequencies])
@@ -716,7 +715,11 @@ def _column_coefficients(
 def _check_column(
     result: DrivenResult, source: str, model: Model, entry: str = "multipoles"
 ) -> tuple[Any, list[float], Any]:
-    """Rows 7 to 13 of the refusal table: ``(source, kept frequencies, background)``."""
+    """Validate the column: ``(source, kept frequencies, background)``.
+
+    Refuses a non-incident column, unkept fields, a missing, lossy or layered
+    background, and a PEC or PMC wall beside the physical region.
+    """
     from gfem.measurements import _column_kind
 
     kind = _column_kind(result, source)
@@ -757,6 +760,52 @@ def _check_column(
     return wave, frequencies, background
 
 
+def _check_types(result: Any, model: Any, entry: str) -> None:
+    """Refuse a 2D mesh and a result or model of the wrong type.
+
+    Raises:
+        TypeError: ``result`` is not a `gfem.DrivenResult` or ``model`` not a
+            `gfem.Model`.
+    """
+    from gfem.model import Model
+    from gfem.results import DrivenResult
+
+    refuse_entry(getattr(model, "mesh", None), entry)
+    if not isinstance(result, DrivenResult):
+        raise TypeError(
+            f"{entry} needs a gfem.DrivenResult, got {type(result).__name__}."
+        )
+    if not isinstance(model, Model):
+        raise TypeError(
+            f"{entry} needs model= a gfem.Model, got {type(model).__name__}."
+        )
+
+
+def _truncation_side(
+    model: Model, background: Background, field: Field, entry: str
+) -> Surface:
+    """The truncation side of ``field``, once no scatterer reaches its layer.
+
+    Raises:
+        ValueError: A scatterer region or surface reaches the truncation layer.
+    """
+    from gfem._truncation import truncation
+
+    xs = importlib.import_module("gfem._engine.cross_sections")
+    pf = importlib.import_module("gfem._engine.power_flow")
+    where = pf.surface_of(concrete_field(field), truncation(model).side, model)
+    xs.check_truncation_layer(
+        model,
+        background,
+        where,
+        entry=entry,
+        outcome="finite multipole expansion",
+        remedy="Leave at least one background element between every "
+        "scatterer and the PML layer or Absorbing face.",
+    )
+    return where
+
+
 def multipoles(
     result: DrivenResult,
     source: str,
@@ -792,6 +841,8 @@ def multipoles(
     material design in the scatterer (a `gfem.MaterialField`) carry its
     gradient; not by the node coordinates or ``origin``. ``intensity``,
     ``lmax``, the source and the frequency are fixed.
+    Call it outside `jax.jit`: the far-field layer is built on the host from
+    the mesh, so the call cannot be traced as a whole (`jax.grad` is fine).
 
     Args:
         result: A driven result with kept fields, solved with ``source``.
@@ -827,18 +878,8 @@ def multipoles(
             layer.
     """
     from gfem.measurements import _intensity
-    from gfem.model import Model
-    from gfem.results import DrivenResult
 
-    refuse_entry(getattr(model, "mesh", None), "multipoles")
-    if not isinstance(result, DrivenResult):
-        raise TypeError(
-            f"multipoles needs a gfem.DrivenResult, got {type(result).__name__}."
-        )
-    if not isinstance(model, Model):
-        raise TypeError(
-            f"multipoles needs model= a gfem.Model, got {type(model).__name__}."
-        )
+    _check_types(result, model, "multipoles")
     check_fixed(origin, "multipoles' origin must be fixed numbers")
     _check_nodes(model.mesh.nodes)
     origin_a = _origin(origin)
@@ -854,21 +895,14 @@ def multipoles(
             "again to decompose its scattered field."
         )
     xs = importlib.import_module("gfem._engine.cross_sections")
-    pf = importlib.import_module("gfem._engine.power_flow")
-    from gfem._truncation import truncation
-
     for field in totals:
-        where = pf.surface_of(concrete_field(field), truncation(model).side, model)
-        xs.check_truncation_layer(
+        where = _truncation_side(model, background, field, "multipoles")
+        xs.check_side(
             model,
-            background,
             where,
-            entry="multipoles",
-            outcome="finite multipole expansion",
-            remedy="Leave at least one background element between every "
-            "scatterer and the PML layer or Absorbing face.",
+            "multipoles",
+            remedy="Keep the port outside the side, at least one element away.",
         )
-        xs.check_side(model, where, "multipoles")
     fields = [result.e_field(f, source, part="scattered") for f in frequencies]
     layer = _build_layer(fields, model, True)
     k = np.array([_incident.wavenumber(background, f) for f in frequencies])
@@ -887,8 +921,8 @@ def multipoles(
             f"{_incident.wavenumber(background, top) * radius:.3g}, at "
             f"{top:.6g} Hz): give lmax <= {cap}, or None."
         )
-    c_alpha, c_beta = _expand(
-        fields, model, layer, origin=origin_a, lmax=lmax, wavenumbers=k
+    c_alpha, c_beta = _column_coefficients(
+        result, source, model=model, origin=origin_a, lmax=lmax, layer=layer
     )
     e_inc = jnp.asarray(_incident_amplitude(wave, i0, eta))[:, None]
     return Multipoles(
@@ -904,7 +938,7 @@ def multipoles(
 
 
 def _check_induced_current(model: Model, background: Background) -> None:
-    """Rows 19 and 20: what the induced current of a volume does not hold.
+    """Refuse what the induced current of a volume does not hold.
 
     Raises:
         NotImplementedError: A perfect conductor or magnetic wall, a
@@ -947,7 +981,7 @@ def _check_induced_current(model: Model, background: Background) -> None:
 
 
 def _check_wave_ports(model: Model, background: Background) -> None:
-    """Row 17: a scatterer element sharing a node with a wave port's surface.
+    """Refuse a scatterer element sharing a node with a wave port's surface.
 
     Raises:
         ValueError: Naming the region and the port.
@@ -1037,18 +1071,7 @@ def current_moments(
             permeability contrast in the scatterer.
         NonDifferentiableError: ``result``, ``model`` or ``origin`` is traced.
     """
-    from gfem.model import Model
-    from gfem.results import DrivenResult
-
-    refuse_entry(getattr(model, "mesh", None), "current_moments")
-    if not isinstance(result, DrivenResult):
-        raise TypeError(
-            f"current_moments needs a gfem.DrivenResult, got {type(result).__name__}."
-        )
-    if not isinstance(model, Model):
-        raise TypeError(
-            f"current_moments needs model= a gfem.Model, got {type(model).__name__}."
-        )
+    _check_types(result, model, "current_moments")
     if is_traced(result) or is_traced(model):
         raise NonDifferentiableError(
             "gfem.current_moments is not differentiable in this gfem version: "
@@ -1062,23 +1085,10 @@ def current_moments(
     check_fixed(origin, "current_moments' origin must be fixed numbers")
     origin_a = _origin(origin, "current_moments")
     _, frequencies, background = _check_column(result, source, model, "current_moments")
-    from gfem._truncation import truncation
-
-    xs = importlib.import_module("gfem._engine.cross_sections")
-    pf = importlib.import_module("gfem._engine.power_flow")
     fields = [result.e_field(f, source) for f in frequencies]
     # before the side is built: a port beside it is refused there with no region
     _check_wave_ports(model, background)
-    where = pf.surface_of(concrete_field(fields[0]), truncation(model).side, model)
-    xs.check_truncation_layer(
-        model,
-        background,
-        where,
-        entry="current_moments",
-        outcome="finite multipole expansion",
-        remedy="Leave at least one background element between every "
-        "scatterer and the PML layer or Absorbing face.",
-    )
+    _truncation_side(model, background, fields[0], "current_moments")
     _check_induced_current(model, background)
     k = np.array([_incident.wavenumber(background, f) for f in frequencies])
     p0, t = _induced_moments(
@@ -1113,7 +1123,7 @@ def _induced_moments(
         omega = 2 * math.pi * f
         cur = engine_.current(field, model, background, rows, omega)
         r = cur.points - origin
-        j = cur.current
+        j = cur.density
         w = cur.weights[:, None]
         p0[i] = np.sum(w * j, axis=0) / (1j * omega)
         rj = np.sum(r * j, axis=1)[:, None]
@@ -1221,7 +1231,7 @@ def _volume_coefficients(
                 out[i, j] = (
                     -(k**2)
                     * eta
-                    * np.sum(cur.weights * np.sum(np.conj(rg) * cur.current, axis=1))
+                    * np.sum(cur.weights * np.sum(np.conj(rg) * cur.density, axis=1))
                 )
     return c_alpha, c_beta
 
