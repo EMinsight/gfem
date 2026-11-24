@@ -1506,7 +1506,7 @@ def _check_crystal_frame(
     The order and sign of the axes matter: a matrix input derives axes of
     neither, a reflection flips the sign of every electro-optic or
     piezoelectric coefficient and of the stiffness entries with one index
-    along the reflected axis (c14 of a trigonal crystal), and an axis swap
+    along the reflected axis (:math:`c_{14}` of a trigonal crystal), and an axis swap
     that a permittivity with two equal principal values does not see changes
     the stiffness.
     """
@@ -1993,7 +1993,7 @@ def _has_crystal(*materials: Material) -> bool:
 
 
 def _blend_solid(void: Material, solid: Material, axes: Any, w: Any) -> dict:
-    r"""A solid's stiffness, piezoelectric tensor and Q_m blended by weight ``w``.
+    r"""A solid's stiffness, piezoelectric tensor and :math:`Q_m`, blended by ``w``.
 
     The tensors blend linearly in the frame of ``axes``: the piezoelectric
     tensor with an end without one counting as zero, the stiffness only

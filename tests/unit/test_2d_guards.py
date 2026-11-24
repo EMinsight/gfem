@@ -136,6 +136,17 @@ def test_a_2d_electromagnetic_solve_of_an_anisotropic_material_refuses_by_name(
     _raises(remedy, lambda: gfem.solve(model, gfem.Driven(1e9, polarization="Ez")))
 
 
+@pytest.mark.parametrize("item", ANISOTROPIC)
+def test_a_2d_port_mode_solve_of_an_anisotropic_material_refuses_by_name(mesh, item):
+    change, remedy = ANISOTROPIC[item]
+    model = gfem.Model(
+        mesh, materials=materials() | change, boundaries=(gfem.PEC("outer"),)
+    )
+    _raises(
+        remedy, lambda: gfem.solve(model, gfem.PortMode("p", 1e9, polarization="Ez"))
+    )
+
+
 # --- the solve entry -----------------------------------------------------------
 
 F = 1e9

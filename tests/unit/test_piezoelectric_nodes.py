@@ -72,14 +72,6 @@ MAPS = {
 }
 
 
-@pytest.fixture(scope="module", params=("lines", "meshed"))
-def device(request, tmp_path_factory):
-    variant = request.param
-    path = tmp_path_factory.mktemp(variant) / "idt.msh"
-    mesh = pc.mesh(path, variant)
-    return variant, mesh, pc.model(mesh, variant)
-
-
 def _admittance(model, mesh, node_map, p):
     moved = mesh.with_nodes(node_map(jnp.asarray(mesh.imported_nodes), p))
     result = gfem.solve(model.replace(mesh=moved), pc.problem())

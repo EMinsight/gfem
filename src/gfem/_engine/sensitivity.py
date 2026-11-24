@@ -1004,7 +1004,7 @@ def _moment_pass(
 def _moments(
     built: Any, pair: FieldPair, blocks: Sequence[MomentBlock]
 ) -> dict[str, np.ndarray]:
-    """``sum_k int entries(left_k, right_k)`` of each block, per gfem tetrahedron."""
+    r"""Each block's :math:`\sum_k \int \mathrm{entries}(l_k, r_k)` per tetrahedron."""
     blocks = [b for b in blocks if any(pair.weights.get(t, 0) != 0 for t in b.terms)]
     total = sum(b.size for b in blocks)
     if not total:

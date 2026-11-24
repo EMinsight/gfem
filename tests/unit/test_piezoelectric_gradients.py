@@ -19,16 +19,8 @@ import pytest
 
 import gfem
 
-VARIANTS = ("lines", "meshed")
 LN_REGIONS = ("ln", "ln_frame")
 NAMES = ("Re Y", "Im Y", "C0", "field")
-
-
-@pytest.fixture(scope="module", params=VARIANTS)
-def device(request, tmp_path_factory):
-    variant = request.param
-    path = tmp_path_factory.mktemp(variant) / "idt.msh"
-    return variant, pc.mesh(path, variant)
 
 
 def _model(mesh, variant, edit):
@@ -109,7 +101,7 @@ def _objectives(model, weights):
 @pytest.fixture(scope="module")
 def weights(device):
     """Fixed random weights on the kept coefficients."""
-    variant, mesh = device
+    variant, mesh, _ = device
     model = _model(mesh, variant, lambda _: None)
     result = gfem.solve(model, pc.problem(keep_fields=True))
     rng = np.random.default_rng(3)
@@ -122,7 +114,7 @@ def weights(device):
 
 @pytest.mark.parametrize("name", LEAVES)
 def test_a_material_gradient_matches_finite_differences(device, weights, name):
-    variant, mesh = device
+    variant, mesh, _ = device
     if name == "isotropic_stiffness" and variant == "lines":
         pytest.skip("the lines variant has no metal")
     edit, shape, count, depends_on_c0 = LEAVES[name]
@@ -164,7 +156,7 @@ def test_a_material_gradient_matches_finite_differences(device, weights, name):
 
 
 def test_a_traced_permittivity_law_parameter_raises(device):
-    variant, mesh = device
+    variant, mesh, _ = device
     base = pc.model(mesh, variant)
 
     def objective(eps_inf):
@@ -182,7 +174,7 @@ def test_a_traced_permittivity_law_parameter_raises(device):
 
 
 def test_an_unread_property_has_an_exact_zero_gradient(device):
-    variant, mesh = device
+    variant, mesh, _ = device
 
     def objective(sigma):
         model = _model(
@@ -194,3 +186,51 @@ def test_an_unread_property_has_an_exact_zero_gradient(device):
         return result.clamped_capacitance_per_length[0, 0]
 
     assert float(jax.grad(objective)(1.0)) == 0.0
+
+
+def _field_reading_vjp(device, weights):
+    """``(value, pullback)`` of the kept-field reading in the density, at 0."""
+    variant, mesh, _ = device
+
+    def reading(p):
+        model = _model(mesh, variant, lambda fields: _density(fields, p))
+        return _objectives(model, weights)[3]
+
+    return jax.vjp(reading, jnp.asarray(0.0))
+
+
+def test_a_kept_field_cotangent_reuses_the_forwards_factorization(
+    device, weights, monkeypatch
+):
+    from gfem._engine import piezoelectric
+
+    factorizations, assemblies = [], []
+    real_handle = piezoelectric.DirectHandle
+    real_assemble = piezoelectric.PiezoelectricSystem._assemble
+
+    def counting_handle(*args, **kwargs):
+        factorizations.append(1)
+        return real_handle(*args, **kwargs)
+
+    def counting_assemble(self, *args, **kwargs):
+        assemblies.append(1)
+        return real_assemble(self, *args, **kwargs)
+
+    monkeypatch.setattr(piezoelectric, "DirectHandle", counting_handle)
+    monkeypatch.setattr(
+        piezoelectric.PiezoelectricSystem, "_assemble", counting_assemble
+    )
+    _, pullback = _field_reading_vjp(device, weights)
+    forward = (len(factorizations), len(assemblies))
+    (kept,) = pullback(jnp.asarray(1.0))
+    assert (len(factorizations), len(assemblies)) == forward
+
+    # the same gradient where the factorization was not kept: it is factorized
+    # again, on a system reassembled for it
+    monkeypatch.setattr(piezoelectric.KeptFactors, "offer", lambda *_: False)
+    _, pullback = _field_reading_vjp(device, weights)
+    forward = (len(factorizations), len(assemblies))
+    (again,) = pullback(jnp.asarray(1.0))
+    assert len(factorizations) == forward[0] + 1
+    assert len(assemblies) == forward[1] + 1
+    assert abs(kept - again) <= 1e-12 * abs(again)

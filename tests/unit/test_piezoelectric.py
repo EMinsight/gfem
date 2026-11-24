@@ -6,16 +6,6 @@ import pytest
 
 import gfem
 
-VARIANTS = ("lines", "meshed")
-
-
-@pytest.fixture(scope="module", params=VARIANTS)
-def device(request, tmp_path_factory):
-    variant = request.param
-    path = tmp_path_factory.mktemp(variant) / "idt.msh"
-    mesh = pc.mesh(path, variant)
-    return variant, mesh, pc.model(mesh, variant)
-
 
 def test_a_solve_gives_the_admittance_and_the_clamped_capacitance(device):
     _, _, model = device

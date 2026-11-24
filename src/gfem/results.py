@@ -173,13 +173,7 @@ class ElectrostaticResult:
         Raises:
             KeyError: ``terminal`` is not a terminal of this result.
         """
-        try:
-            return self.terminals.index(terminal)
-        except ValueError:
-            raise KeyError(
-                f"No terminal {terminal!r}; the terminals are "
-                f"{', '.join(repr(t) for t in self.terminals)}."
-            ) from None
+        return _terminal_index(self.terminals, terminal)
 
     def to_xarray(self) -> xarray.Dataset:
         """The capacitance matrix and region energies as an `xarray.Dataset`.
@@ -238,6 +232,21 @@ class ElectrostaticResult:
 
 
 register_fields(ElectrostaticResult, ("capacitance", "energy", "potential"))
+
+
+def _terminal_index(terminals: Sequence[str], terminal: str) -> int:
+    """The position of ``terminal`` in ``terminals``.
+
+    Raises:
+        KeyError: ``terminal`` is not one of them.
+    """
+    try:
+        return list(terminals).index(terminal)
+    except ValueError:
+        raise KeyError(
+            f"No terminal {terminal!r}; the terminals are "
+            f"{', '.join(repr(t) for t in terminals)}."
+        ) from None
 
 
 def _not_a_section(owner: str, name: str, total: str) -> ValueError:
@@ -331,13 +340,7 @@ class DCConductionResult:
         Raises:
             KeyError: ``terminal`` is not a terminal of this result.
         """
-        try:
-            return self.terminals.index(terminal)
-        except ValueError:
-            raise KeyError(
-                f"No terminal {terminal!r}; the terminals are "
-                f"{', '.join(repr(t) for t in self.terminals)}."
-            ) from None
+        return _terminal_index(self.terminals, terminal)
 
     def to_xarray(self) -> xarray.Dataset:
         """The conductance matrix as an `xarray.Dataset`.
@@ -2663,13 +2666,7 @@ class PiezoelectricResult:
         Raises:
             KeyError: ``terminal`` is not a terminal of this result.
         """
-        try:
-            return self.terminals.index(terminal)
-        except ValueError:
-            raise KeyError(
-                f"No terminal {terminal!r}; the terminals are "
-                f"{', '.join(repr(t) for t in self.terminals)}."
-            ) from None
+        return _terminal_index(self.terminals, terminal)
 
     def displacement(self, frequency: float, terminal: str | None = None) -> FieldMap:
         """The kept displacement at ``frequency`` for 1 V on ``terminal``.
