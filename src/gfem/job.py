@@ -949,9 +949,14 @@ for _cls in (Material, MaterialField):
         # "density": the mass density as gfem 0.1 wrote it (a read alias)
         names=[f.name for f in dataclasses.fields(_cls) if f.init] + ["density"],
     )
-for _cls in (
-    # a Material's eps_r may hold a law: tags of their own, no Material key
+# a Material's eps_r may hold a law: tags of their own, no Material key; a law
+# without a fitted range is written as an older gfem wrote it, so the file
+# and its solve key are unchanged
+_codec.register(
     PermittivityLaw,
+    to_args=_unset_omitted(PermittivityLaw, frequency_range=None),
+)
+for _cls in (
     Drude,
     Lorentz,
     Debye,
