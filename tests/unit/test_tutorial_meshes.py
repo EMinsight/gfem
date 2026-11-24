@@ -10,11 +10,13 @@ the metagrating meshes are gmsh-built by tools/metagrating_mesh.py
 heater_straight.msh) are gmsh-built by tools/heater_section_mesh.py
 (`just heater-section-mesh`); sphere.msh is netgen-built by tools/sphere_mesh.py
 (`just sphere-mesh`) and nanosphere.msh by tools/nanosphere_mesh.py
-(`just nanosphere-mesh`).
+(`just nanosphere-mesh`); grating.msh is gmsh-built by tools/grating_mesh.py
+(`just grating-mesh`) and pinned by test_grating_mesh.py.
 """
 
 from pathlib import Path
 
+import grating_mesh
 import heater_section_mesh
 import make_tutorial_meshes
 import meshio
@@ -29,6 +31,7 @@ GMSH_BUILT = (
     | metagrating_mesh.MESHES
     | heater_section_mesh.MESHES
     | heater_section_mesh.STRAIGHT
+    | grating_mesh.MESHES
     | {"sphere.msh": None, "nanosphere.msh": None}
 )
 COMMITTED = sorted(
