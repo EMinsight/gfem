@@ -386,6 +386,14 @@ def test_s_that_is_not_finite_is_refused():
         _fit(_net(F20, s))
 
 
+def test_s_that_is_not_finite_is_named_before_a_missing_reference():
+    poles, residues, d = _two_port()
+    s = _rational_s(F20, poles, residues, d)
+    s[3, 0, 1] = np.nan
+    with pytest.raises(ValueError, match="finite S"):
+        _fit(_net(F20, s, z_ref=np.nan), z0=50.0)
+
+
 def test_a_partially_excited_network_is_refused():
     poles, residues, d = _two_port()
     s = _rational_s(F20, poles, residues, d)[:, :, :1]

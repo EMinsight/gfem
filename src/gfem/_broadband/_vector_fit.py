@@ -107,11 +107,11 @@ def fit_rational(
     _check_frequencies(f)
     n_max = _max_poles(max_poles, f.size)
     w = _weights(weights, f.size)
-    s, z_ref, nominal = _reference(net, s, z0)
     if not np.isfinite(s).all():
         raise ValueError(
             "fit_rational needs finite S; the network has NaN or infinite values."
         )
+    s, z_ref, nominal = _reference(net, s, z0)
     from gfem._broadband import _passivity
 
     order = np.argsort(f)
