@@ -17,6 +17,9 @@ read without NGSolve. Meshes are in mm, wave vectors in rad/m.
   transfer-matrix roots, `tmm_frequency`.
 - C4, `c4`: an empty vacuum cube periodic along x, y and z (no other
   boundary); its lowest band is a doublet at `empty_lattice`.
+- Rods, `rods`: a square lattice of dielectric rods in air, one element
+  thick between PEC (TM) or PMC (TE) plates, the rod staircased on the
+  structured grid; with loss in the rod only, the loss varies in space.
 - G, `g`: the gradient cell, periodic along x and y, with two lumped
   ports, a PEC ground, an absorbing top, a resistive `gfem.Impedance` sheet
   touching both pairs and a sidewall "wall" crossing the x seam (the
@@ -357,6 +360,57 @@ def c4(mesh: gfem.Mesh) -> gfem.Model:
         materials={"cell": gfem.Material()},
         boundaries=[gfem.Periodic((f"{a}_min", f"{a}_max")) for a in "xyz"],
     )
+
+
+# --- Rods: a square lattice of dielectric rods ----------------------------------------
+
+ROD_A = 10.0  # the lattice constant, mm
+ROD_EPS = 8.9
+ROD_R = 0.2  # the rod radius over ROD_A
+
+
+def rods_mesh(directory: Path, cells: int = 8) -> gfem.Mesh:
+    """The rods cell's mesh: ``cells`` x ``cells`` x 1, one element thick.
+
+    The rod ("rod", radius ``ROD_R * ROD_A`` at the cell's centre) is
+    staircased: a tetrahedron is "rod" when its centroid is inside the
+    circle, "air" otherwise. The thickness is ``ROD_A / cells``.
+    """
+    edges = _edges((ROD_A, ROD_A, ROD_A / cells), (cells, cells, 1))
+
+    def volume(c):
+        inside = math.hypot(c[0] - ROD_A / 2, c[1] - ROD_A / 2) < ROD_R * ROD_A
+        return "rod" if inside else "air"
+
+    cell = sm.periodic_cell(edges, volume, paired="xy")
+    return _mesh(directory, f"rods{cells}", cell)
+
+
+def rods(mesh: gfem.Mesh, *, tan_delta: float = 0.0, tm: bool = True) -> gfem.Model:
+    """The rods cell: periodic in x and y, loss tangent ``tan_delta`` in the rod only.
+
+    PEC z faces leave the z-uniform modes with $E$ along z, the 2D TM
+    problem; PMC z faces (``tm=False``) leave the TE one.
+    """
+    wall = gfem.PEC if tm else gfem.PMC
+    return gfem.Model(
+        mesh,
+        materials={
+            "rod": gfem.Material(eps_r=ROD_EPS, tan_delta=tan_delta),
+            "air": gfem.Material(eps_r=1.0),
+        },
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+            wall("z_min"),
+            wall("z_max"),
+        ],
+    )
+
+
+def rods_frequency(u: float) -> float:
+    r"""The frequency, Hz, of the normalized frequency $u = \omega a / 2\pi c$."""
+    return u * C0 / (ROD_A * MM)
 
 
 # --- G: the gradient cell ---------------------------------------------------------
