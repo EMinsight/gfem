@@ -259,7 +259,7 @@ def test_layer_grid_gradients(stack):
 
 # --- helmholtz_filter --------------------------------------------------------------
 # The filter solves -r^2 lap(u) + u = rho with Neumann edges, r = radius / (2
-# sqrt(3)) (the cone filter of the same radius has the same second moment). On a
+# sqrt(3)) (the 1D hat filter of the same radius has the same second moment). On a
 # cosine of wavenumber k that fits the Neumann edges the exact attenuation is
 # 1 / (1 + r^2 k^2).
 
@@ -538,3 +538,28 @@ def test_periodic_grid_needs_whole_pixels_and_a_bool_per_axis(plate):
             design.LayerGrid(plate, "design", pitch=0.05 * MM, periodic=bad)
     grid = design.LayerGrid(plate, "design", pitch=0.05 * MM, periodic=(True, False))
     assert "periodic=(True, False)" in repr(grid)
+
+
+# --- LayerGrid.bounds: the footprint rectangle --------------------------------------
+
+
+@pytest.mark.parametrize("region", ["design", "substrate__design"])
+def test_bounds_is_the_region_footprint_rectangle(stack, region):
+    grid = design.LayerGrid(stack, region, pitch=0.25 * MM)
+    assert isinstance(grid.bounds, tuple)
+    assert all(type(v) is float for v in grid.bounds)
+    np.testing.assert_allclose(grid.bounds, (0.0, 0.0, 1.0 * MM, 0.5 * MM), atol=1e-15)
+
+
+def test_bounds_is_not_the_grid_extent_when_the_pitch_does_not_divide_it(plate):
+    # 1 mm x 0.5 mm at 0.3 mm: 4 x 2 pixels, 1.2 mm x 0.6 mm, centred on the plate
+    grid = design.LayerGrid(plate, "design", pitch=0.3 * MM)
+    np.testing.assert_allclose(grid.bounds, (0.0, 0.0, 1.0 * MM, 0.5 * MM), atol=1e-15)
+    np.testing.assert_allclose(grid.origin, [-0.1 * MM, -0.05 * MM], atol=1e-15)
+
+
+def test_bounds_is_the_grid_extent_on_a_periodic_axis(plate):
+    grid = design.LayerGrid(plate, "design", pitch=0.05 * MM, periodic=(True, False))
+    xmin, _, xmax, _ = grid.bounds
+    assert xmin == pytest.approx(grid.origin[0], abs=1e-15)
+    assert xmax == pytest.approx(grid.origin[0] + grid.shape[1] * grid.pitch, abs=1e-15)

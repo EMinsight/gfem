@@ -25,6 +25,7 @@ classifiers = [
 # floor is the oldest JAX the unit tier passes on (CI's lowest job), low
 # enough to share an environment with packages capping JAX below 0.10.
 dependencies = [
+  "contourpy>=1.3",
   "jax>=0.8.3",
   "meshio>=5.3.5",
   "ngsolve>=6.2.2608,<6.3",
@@ -99,7 +100,7 @@ site = [
   "trame-pyvista",
   "trame-vtk",
 ]
-test = ["pytest>=8.3", "pytest-cov>=6.0", "rich>=14.2", "xarray>=2024.10"]
+test = ["gdstk>=0.9.61", "pytest>=8.3", "pytest-cov>=6.0", "rich>=14.2", "xarray>=2024.10"]
 
 [build-system]
 requires = ["uv_build>=0.13,<0.14"]

@@ -19,6 +19,7 @@ orphan: true
 
 - {doc}`sheet-design`
 - {doc}`robust-optimization`
+- {doc}`fabricable-layout`
 - {doc}`remesh-and-restart`
 
 ## Solving

@@ -53,6 +53,7 @@ recipes/electro-optic-gradient
 
 recipes/sheet-design
 recipes/robust-optimization
+recipes/fabricable-layout
 recipes/remesh-and-restart
 ```
 

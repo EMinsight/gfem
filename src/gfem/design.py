@@ -35,24 +35,43 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import scipy.sparse as sp
-from jax.scipy import fft
 
-from gfem import _morph, _mpi, _sparse
+from gfem import _morph, _mpi, _pattern, _sparse, _spectral
 from gfem._checks import is_traced, static_float
 from gfem._dim2 import refuse_entry
+from gfem._fabrication import FabricationModel
+from gfem._feature_check import PatternCheck, Violation
+from gfem._gds import write_gds
+from gfem._length_scale import (
+    LengthScaleConstraints,
+    LengthScaleValues,
+    length_scale_constraints,
+    radius_for_length_scale,
+)
 from gfem._materials import PixelGeometry
+from gfem._pattern import LayerPattern, Polygon
 from gfem._pytree import register_fields
 from gfem.errors import UnsampledPixelsWarning
 from gfem.mesh import Mesh
 
 __all__ = [
+    "FabricationModel",
     "HelmholtzFilter",
     "LayerDensity",
     "LayerGrid",
+    "LayerPattern",
+    "LengthScaleConstraints",
+    "LengthScaleValues",
+    "PatternCheck",
+    "Polygon",
     "Robust",
+    "Violation",
     "helmholtz_filter",
+    "length_scale_constraints",
     "project",
+    "radius_for_length_scale",
     "robust",
+    "write_gds",
 ]
 
 
@@ -197,6 +216,10 @@ class LayerGrid:
         periodic: Per axis ``(x, y)``, whether the grid wraps around a seam.
         shape: ``(ny, nx)``.
         origin: Lower-left corner of the grid ``(x, y)`` (m).
+        bounds: The region's footprint, its xy bounding rectangle
+            ``(xmin, ymin, xmax, ymax)`` (m). The grid overhangs it by up to a
+            pixel when `pitch` does not divide it; on a periodic axis its
+            edges are the grid's.
         x: Pixel-centre x coordinates, ``(nx,)`` (m).
         y: Pixel-centre y coordinates, ``(ny,)`` (m).
         sampled: ``(ny, nx)`` bool, pixels some element (face) centroid
@@ -297,6 +320,7 @@ class LayerGrid:
         self.periodic = periodic
         self.shape = (n[1], n[0])
         self.origin = origin
+        self.bounds = (float(lo[0]), float(lo[1]), float(hi[0]), float(hi[1]))
         self.x = origin[0] + (np.arange(n[0]) + 0.5) * pitch
         self.y = origin[1] + (np.arange(n[1]) + 0.5) * pitch
         self.n_elements = len(cells) if volume else None
@@ -359,7 +383,7 @@ class LayerGrid:
                 "map a sheet design to its faces with grid.to_faces(rho)."
             )
         if self._points:
-            return LayerDensity(self._pixels(rho, "to_elements"), self)
+            return LayerDensity(self._pixels(rho, "LayerGrid.to_elements"), self)
         return self._interpolate(rho, "to_elements")
 
     def to_faces(self, rho: jax.Array) -> jax.Array:
@@ -383,18 +407,110 @@ class LayerGrid:
             )
         return self._interpolate(rho, "to_faces")
 
-    def _pixels(self, rho: jax.Array, name: str) -> jax.Array:
-        """``rho`` as an array, or raise for a wrong shape."""
+    def pattern(self, rho: Any, *, eta: float = 0.5) -> LayerPattern:
+        r"""The layer pattern: the polygons where the filtered density reaches ``eta``.
+
+        Contours the **filtered** density (``blur(rho)``, before `project`)
+        at the projection threshold, read through the grid's own bilinear
+        map, the field a solve samples. The edge is the
+        :math:`\beta \to \infty` limit of ``project(filtered, beta, eta)``,
+        the drawn design, placed between pixel centres to a few hundredths
+        of a pixel. A projected or binary design works too, but only to
+        about half a pixel (its values saturate at the centres).
+        Solid is ``rho >= eta``; a saddle cell joins its two solid corners
+        when the mean of its four corners reaches ``eta``.
+
+        Solid touching the footprint closes exactly along `bounds`, and a
+        grid overhanging the footprint is clipped to it. A periodic axis
+        gives one period, cut at the seam with matching vertices on both
+        sides. `sampled` is ignored: set pixels outside a non-rectangular
+        footprint void before the filter (``jnp.where(grid.sampled, rho,
+        0.0)``). The same on a volume, a sheet and a 2D model. Not
+        differentiable: call it on the final design, outside `jax.grad`.
+
+        Args:
+            rho: Filtered pixel densities, shape `shape` (on a 2D model the
+                pixel array, not the `LayerDensity`).
+            eta: Projection threshold, in (0, 1), as given to `project`;
+                ``eta + delta`` and ``eta - delta`` give the eroded and
+                dilated patterns of `robust`.
+
+        Returns:
+            The pattern, with this grid's `region`, `bounds` and `periodic`.
+
+        Raises:
+            TypeError: ``rho`` is a `LayerDensity` (pass ``density.pixels``).
+            ValueError: ``rho`` has the wrong shape, holds NaN, or is
+                computed inside `jax.grad`, `jax.jit` or `jax.vmap`; ``eta``
+                outside (0, 1).
+        """
+        return _pattern.contour(
+            self,
+            rho,
+            eta,
+            lambda points: _bilinear(
+                points, self.origin, self.pitch, self.shape, self.periodic
+            ),
+        )
+
+    def area_fraction(self, pattern: LayerPattern) -> np.ndarray:
+        """Each pixel's share of its area inside the footprint that the pattern covers.
+
+        The exact area fraction (no point sampling): the pattern's edges
+        are split at the pixel lines and each piece's area accumulated in its
+        pixel. The denominator is the pixel's area inside `bounds`, so a fully solid
+        pattern gives 1 in the pixels overhanging the footprint too, and
+        polygons reaching past the footprint (guides drawn long) are clipped.
+        Uses: re-solving a pattern (``grid.to_elements(grid.area_fraction(
+        pattern))``), hand-drawn designs, and fixed neighbours pinned in a
+        margin band of the grid::
+
+            fixed = grid.area_fraction(design.LayerPattern.from_polygons(guides))
+            rho = jnp.where(in_margin, fixed, rho)
+
+        Args:
+            pattern: A layer pattern in metres, from any grid or
+                `LayerPattern.from_polygons`.
+
+        Returns:
+            ``(ny, nx)`` float64 values in [0, 1], a plain array (not
+            differentiable in the pattern).
+
+        Raises:
+            TypeError: ``pattern`` is not a `LayerPattern`.
+            ValueError: The pattern has polygons but none overlaps the
+                footprint (lengths are in metres).
+        """
+        return _pattern.area_fraction(self, pattern)
+
+    def _pixels(
+        self, rho: Any, where: str, *, real: bool = False, remedy: str = ""
+    ) -> jax.Array:
+        """``rho`` as a pixel array of this grid, or raise naming ``where``.
+
+        Args:
+            rho: The pixel values.
+            where: The caller, named in the messages.
+            real: Whether to refuse complex values too.
+            remedy: Appended to the shape message.
+        """
+        if isinstance(rho, LayerDensity):
+            raise TypeError(
+                f"{where}: rho is a LayerDensity; it acts on the pixel array "
+                "before to_elements: pass density.pixels."
+            )
         rho = jnp.asarray(rho)
         if rho.shape != self.shape:
             raise ValueError(
-                f"LayerGrid.{name}: rho has shape {rho.shape}, but the grid "
-                f"on {self.region!r} has shape {self.shape} (ny, nx)."
+                f"{where}: rho has shape {rho.shape}, but the grid on "
+                f"{self.region!r} has shape {self.shape} (ny, nx).{remedy}"
             )
+        if real and jnp.iscomplexobj(rho):
+            raise ValueError(f"{where}: densities must be real.")
         return rho
 
     def _interpolate(self, rho: jax.Array, name: str) -> jax.Array:
-        rho = self._pixels(rho, name)
+        rho = self._pixels(rho, f"LayerGrid.{name}")
         return jnp.sum(rho.reshape(-1)[self._index] * self._weight, axis=1)
 
     def __repr__(self) -> str:
@@ -552,8 +668,11 @@ def _bilinear(
 
 # --- Helmholtz filter ---------------------------------------------------------------
 
-#: PDE length per filter radius: a cone (linear hat) filter of radius R and the
-#: Helmholtz filter of length R / (2 sqrt(3)) have the same second moment.
+#: PDE length per filter radius: the 1D hat filter of radius :math:`R` and the 1D
+#: Helmholtz filter of length :math:`R/(2\sqrt3)` have the same second moment,
+#: :math:`R^2/6` (the convention of Lazarov and Sigmund 2011). In 2D the Helmholtz
+#: filter is a little wider than a cone of the same radius:
+#: :math:`\langle r^2\rangle = R^2/3` against :math:`0.3R^2`.
 PDE_LENGTH_PER_RADIUS = 1 / (2 * math.sqrt(3))
 
 
@@ -568,13 +687,21 @@ class HelmholtzFilter:
     """
 
     def __init__(
-        self, radius: float, shape: tuple[int, ...], apply: Callable, where: str
+        self,
+        radius: float,
+        shape: tuple[int, ...],
+        apply: Callable,
+        where: str,
+        grid: LayerGrid | None = None,
     ) -> None:
         """Wrap a linear map; use `helmholtz_filter` to build one."""
         self.radius = radius
         self.shape = shape
         self._apply = apply
         self._where = where
+        # The pixel grid it filters on (None on a free-form mesh): the
+        # length-scale constraints read its pitch, seams and sampled pixels.
+        self._grid = grid
 
     def __call__(self, rho: jax.Array) -> jax.Array:
         """The filtered density, same shape as ``rho``.
@@ -606,10 +733,11 @@ def helmholtz_filter(
 
     The filtered density :math:`u` solves :math:`-r^2 \nabla^2 u + u = \rho`
     with zero-flux (Neumann) edges, :math:`r` = ``radius`` /
-    :math:`(2\sqrt{3})`: the filter has
-    the second moment of a cone filter of radius ``radius``, and features
-    much smaller than ``radius`` are smoothed away. Constants pass unchanged
-    and the (volume-weighted) total density is kept.
+    :math:`(2\sqrt{3})`: ``radius`` is that of the 1D hat (linear) filter
+    with the same second moment; in 2D the Helmholtz filter is slightly wider
+    than a cone filter of that radius. Features much smaller than ``radius``
+    are smoothed away. Constants pass unchanged and the (volume-weighted)
+    total density is kept.
 
     - On a `LayerGrid`, the filter acts on the pixel array (a 2D screened
       Poisson solve with second differences, by cosine transforms). Along a
@@ -643,7 +771,11 @@ def helmholtz_filter(
                 "helmholtz_filter(grid, radius=...)."
             )
         return HelmholtzFilter(
-            radius, carrier.shape, _grid_filter(carrier, length), repr(carrier)
+            radius,
+            carrier.shape,
+            _grid_filter(carrier, length),
+            repr(carrier),
+            grid=carrier,
         )
     refuse_entry(carrier, "helmholtz_filter")
     if region is None:
@@ -662,36 +794,10 @@ def helmholtz_filter(
 
 
 def _grid_filter(grid: LayerGrid, length: float) -> Callable:
-    # The second-difference Laplacian with reflecting (Neumann) edges is
-    # diagonal in the orthonormal type-II cosine transform; with periodic
-    # (wrapped) edges, in the discrete Fourier transform. The transforms act on
-    # separate axes, so they commute.
-    h = grid.pitch
-    wrap = (grid.periodic[1], grid.periodic[0])  # array axes (y, x)
-    ky, kx = (
-        (2 / h * np.sin(np.pi * np.arange(n) / (n if w else 2 * n))) ** 2
-        for n, w in zip(grid.shape, wrap, strict=True)
+    # The screened-Poisson solve is a gain per mode of the second differences.
+    return _spectral.function_of_laplacian(
+        grid.shape, grid.pitch, grid.periodic, lambda k: 1 / (1 + length**2 * k)
     )
-    gain = jnp.asarray(1 / (1 + length**2 * (ky[:, None] + kx[None, :])))
-    if not any(wrap):
-
-        def apply(rho: jax.Array) -> jax.Array:
-            return fft.idctn(gain * fft.dctn(rho, type=2, norm="ortho"), norm="ortho")
-
-        return apply
-    cosine = tuple(a for a in (0, 1) if not wrap[a])
-    fourier = tuple(a for a in (0, 1) if wrap[a])
-
-    def apply_wrapped(rho: jax.Array) -> jax.Array:
-        if cosine:
-            rho = fft.dctn(rho, type=2, norm="ortho", axes=cosine)
-        # The gain is even in the wavenumber, so the result is real.
-        rho = jnp.fft.ifftn(gain * jnp.fft.fftn(rho, axes=fourier), axes=fourier).real
-        if cosine:
-            rho = fft.idctn(rho, type=2, norm="ortho", axes=cosine)
-        return rho
-
-    return apply_wrapped
 
 
 def _mesh_filter(mesh: Mesh, region: str, length: float) -> tuple[Callable, int]:

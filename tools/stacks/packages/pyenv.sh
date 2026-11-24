@@ -20,6 +20,7 @@ PBS_RELEASE=20260211
 # netgen and their OpenBLAS. tests/unit/test_stacks.py fails
 # when uv.lock moves away from this list.
 PIP_RUNTIME=(
+  contourpy==1.4.0
   jax==0.12.0
   jaxlib==0.12.0
   markdown-it-py==4.2.0

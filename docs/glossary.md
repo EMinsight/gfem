@@ -663,6 +663,30 @@ Layer grid
   footprint, each value held constant through the volume's thickness and mapped
   onto the volume's elements.
 
+Layer pattern
+  The polygons where a {term}`layer grid` design is solid: the part of the
+  grid's footprint where the filtered density reaches the projection threshold,
+  each polygon an outer boundary with its holes. It is what a GDS file holds.
+
+Fabrication model
+  A Gaussian blur of the drawn design followed by a threshold set by the
+  {term}`edge bias`. The drawn design is the projected density an optimization
+  ends with, whose {term}`layer pattern` goes to GDS; the printed design is the
+  model's prediction of the wafer, and it stays differentiable.
+
+Edge bias
+  The outward shift, in metres, of a printed design's straight edges against the
+  drawn ones; positive grows the solid. A line's width changes by twice the edge
+  bias.
+
+Minimum width
+  The smallest distance a foundry allows across solid between facing edges of a
+  {term}`layer pattern`, measured perpendicular to an edge.
+
+Minimum spacing
+  The smallest distance a foundry allows across void between facing edges of a
+  {term}`layer pattern`, of the same or different polygons.
+
 Design parameters
   The vector of quantities an optimization adjusts, such as per-element
   densities or mesh node positions, upstream of the {term}`material field` or

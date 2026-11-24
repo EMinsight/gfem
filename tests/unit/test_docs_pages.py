@@ -294,6 +294,11 @@ USER_TERMS = (
     "Permittivity fit",
     "Extinction coefficient",
     "Fitted range",
+    "Layer pattern",
+    "Fabrication model",
+    "Edge bias",
+    "Minimum width",
+    "Minimum spacing",
 )
 
 

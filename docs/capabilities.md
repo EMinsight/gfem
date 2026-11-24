@@ -68,6 +68,11 @@ v0.1.
   silicon, silica, silicon nitride, gold, copper, aluminium and lithium
   niobate from cited sources, and {py:obj}`gfem.fit_permittivity` fits a
   law to a measured table ({doc}`recipes/fit-measured-data`).
+- **Fabricable layer patterns**: a layer-grid design's pattern as polygons
+  ({py:obj}`gfem.design.LayerPattern`), checked against a minimum width and
+  spacing and written to GDS ({py:obj}`gfem.design.write_gds`); a fabrication
+  model (blur, edge bias) and length-scale constraints inside the gradient
+  ({doc}`recipes/fabricable-layout`, {doc}`recipes/robust-optimization`).
 - **Measurements**: {py:obj}`gfem.characteristic_impedance`,
   {py:obj}`gfem.interface_participation`, {py:obj}`gfem.power_flow`,
   {py:obj}`gfem.dissipated_power` (a driven field's loss per region and
@@ -336,6 +341,10 @@ returning a wrong value:
   the electrodes, so their absorption is absent. No gradient goes through the
   mode: the ridge's shape or width takes a difference over remeshes. Details:
   {doc}`recipes/electro-optic-phase`, {doc}`recipes/electro-optic-gradient`.
+- **Layer patterns**: width and spacing only (no minimum area), and a pre-check, not
+  foundry sign-off; one flat GDS cell; layer grids only (no free-form 3D
+  designs); length-scale constraints validated up to a rule of $1.25R$ and a
+  pitch of $R/3$, for a filter radius $R$.
 
 ## Platforms
 

@@ -189,6 +189,61 @@ Material data:
   tutorial takes lithium niobate's clamped constants from `gfem.materials`:
   its push-pull $V_\pi L$ moves from 1.61 to 1.62 V·cm.
 
+Design:
+
+- **Minimum width and spacing in the gradient.**
+  `gfem.design.length_scale_constraints(blur, min_width=..., min_spacing=...)`
+  turns a layer grid's minimum line width and minimum spacing into two
+  differentiable constraints on the filtered density, each at most 0 when the
+  drawn design's pattern keeps its rule, for an optimizer's inequality
+  constraints or a penalty. `gfem.design.radius_for_length_scale` gives the filter radius
+  whose robust triple holds a minimum length.
+
+- **Layer patterns.** `LayerGrid.pattern(rho, eta=0.5)` draws a layer-grid
+  design as polygons (`gfem.design.LayerPattern` of `gfem.design.Polygon`):
+  the region where the filtered density reaches the projection threshold,
+  the $\beta \to \infty$ design, with sub-pixel edges, closed along the
+  footprint and cut at a periodic seam. `LayerPattern.from_polygons` builds
+  and validates one from your own polygons (feed guides, hand-drawn designs),
+  and `LayerGrid.area_fraction(pattern)` rasterizes one exactly back onto the
+  pixels, to re-solve a pattern or pin fixed neighbours. contourpy is now a
+  dependency.
+
+- **GDS export.** `gfem.design.write_gds(path, {(layer, datatype): pattern})`
+  writes layer patterns to a GDSII file for a layout tool or fab: one flat
+  cell, several layers, datatypes (e.g. robust variants for review) and
+  patterns per layer, vertices snapped to a settable database grid (default
+  1 nm), holes as keyhole cuts, large polygons split to stay within what
+  strict readers accept. The same arguments give the same bytes.
+
+- **Minimum width and spacing checks.** `LayerPattern.check(min_width=...,
+  min_spacing=...)` measures a layer pattern against a foundry's minimum width
+  and spacing by its facing polygon edges, perpendicular to an edge, and
+  returns a `gfem.design.PatternCheck`: the narrowest width and spacing (the
+  margin, also when it passes), `passed`, and each `gfem.design.Violation`
+  (kind, distance, location and markers to plot), narrowest first. Edges on
+  the footprint are not measured; periodic patterns are measured across the
+  seam. It is a pre-check, not foundry sign-off.
+
+- **A fabrication model in the gradient.**
+  `gfem.design.FabricationModel(grid, sigma=..., bias=...)` predicts the
+  printed design of a drawn (projected) design: a Gaussian blur of standard
+  deviation `sigma` (m) and a threshold that moves a straight edge outwards
+  by the edge bias (m), differentiable in the design and in the bias.
+  `fab.robust(drawn, beta=..., tolerance=...)` gives the eroded, nominal and
+  dilated designs at the bias and $\pm$ a tolerance in metres, as the
+  `Robust` tuple of `gfem.design.robust`, and `fab.pattern(drawn)` the
+  printed layer pattern.
+
+- **Documentation.** The bend tutorial now ends at its drawn pattern: checked
+  against an example width and spacing rule, written to a GDS file and solved
+  again, within 0.02 of the optimizer's last $|S_{21}|^2$; its numbers after
+  the optimization are now those of the pattern. A new recipe, "Export a
+  design's layer pattern to GDS", and the robust optimization recipe, now "Optimize a
+  design for fabrication: etch, blur and minimum features", cover the
+  fabrication model, minimum width and spacing constraints, fixed neighbours
+  and acceptance checks; the glossary gains five terms.
+
 ## 0.2.0 (2026-11-23)
 
 - **Native 2D models.** A gmsh file of triangles at one height reads as a
