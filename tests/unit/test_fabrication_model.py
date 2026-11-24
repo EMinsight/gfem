@@ -125,6 +125,29 @@ def test_robust_triple_is_nested_and_its_bias_spread_symmetric(grid):
     assert edges[1] - edges[2] == pytest.approx(t, abs=0.02 * SIGMA)
 
 
+def test_robust_takes_a_bias_per_call_as_the_printed_design_does(grid, small):
+    t = 0.25 * SIGMA
+    fab = design.FabricationModel(grid, sigma=SIGMA, bias=-0.25 * SIGMA)
+    drawn = _blob(grid)
+    for bias in (0.5 * SIGMA, None):
+        own = fab.bias if bias is None else bias
+        triple = fab.robust(drawn, beta=16.0, tolerance=t, bias=bias)
+        for printed, shift in zip(triple, (-t, 0.0, t), strict=True):
+            np.testing.assert_array_equal(
+                printed, fab(drawn, beta=16.0, bias=own + shift)
+            )
+    # |b + t| beyond 2 sigma is refused for the bias given, not the model's
+    with pytest.raises(ValueError, match=r"(?s)bias \+ tolerance.*2 sigma"):
+        fab.robust(drawn, beta=16.0, tolerance=t, bias=1.9 * SIGMA)
+    # a traced bias differentiates, the dilated design growing with it
+    model = design.FabricationModel(small, sigma=2 * PITCH)
+    rho = jax.random.uniform(jax.random.key(4), small.shape)
+    grad = jax.grad(
+        lambda b: jnp.sum(model.robust(rho, beta=8.0, tolerance=PITCH, bias=b).dilated)
+    )(0.0)
+    assert grad > 0
+
+
 def test_without_bias_void_prints_as_solid_does(grid):
     # eta(-b) = 1 - eta(b) and the blur keeps constants: eroding the solid is
     # dilating the void

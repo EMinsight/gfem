@@ -157,7 +157,9 @@ class FabricationModel:
 
         return project(self.image(rho), beta, self._threshold(bias))
 
-    def robust(self, rho: jax.Array, *, beta: float, tolerance: float) -> Robust:
+    def robust(
+        self, rho: jax.Array, *, beta: float, tolerance: float, bias: Any = None
+    ) -> Robust:
         r"""The printed designs at the edge bias and :math:`\pm` a tolerance.
 
         The physical form of `robust`: the eroded, nominal and dilated
@@ -174,27 +176,34 @@ class FabricationModel:
             beta: The projection sharpness, > 0: the drawn design's.
             tolerance: The bias spread :math:`t` (m), > 0, with
                 :math:`|b \pm t|` within :math:`2\sigma`. It may be traced.
+            bias: The edge bias :math:`b` (m), the model's if ``None``. It
+                may be traced.
 
         Returns:
             ``Robust(eroded, nominal, dilated)``.
 
         Raises:
             TypeError: ``rho`` is a `LayerDensity` (pass ``density.pixels``).
-            ValueError: ``tolerance`` not > 0, :math:`|b \pm t|` above
-                :math:`2\sigma`, ``rho`` of the wrong shape or complex, or
-                ``beta`` not > 0.
+            ValueError: ``tolerance`` not > 0, :math:`|b|` or
+                :math:`|b \pm t|` above :math:`2\sigma`, ``rho`` of the wrong
+                shape or complex, or ``beta`` not > 0.
         """
         # imported here: gfem.design imports this module
         from gfem.design import Robust, project
 
         where = "FabricationModel.robust"
-        b, t = self.bias, tolerance
+        b = self.bias if bias is None else bias
+        if not is_traced(b):
+            b = static_float(b, f"{where} bias", "")
+            self._check_bias(b, "bias", where)
+        t = tolerance
         if not is_traced(t):
             t = static_float(t, f"{where} tolerance", "")
             if not t > 0:
                 raise ValueError(f"{where}: tolerance must be > 0 m, got {t:g} m.")
-            self._check_bias(b - t, "bias - tolerance", where)
-            self._check_bias(b + t, "bias + tolerance", where)
+            if not is_traced(b):
+                self._check_bias(b - t, "bias - tolerance", where)
+                self._check_bias(b + t, "bias + tolerance", where)
         image = self.image(rho)
         return Robust(
             eroded=project(image, beta, self._eta(b - t)),
