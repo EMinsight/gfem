@@ -281,7 +281,8 @@ def test_l4_lens_2d():
     X, Y = np.meshgrid(x0, x0, indexing="ij")
     u0 = np.exp(1j * k * (np.sqrt(X**2 + Y**2 + f**2) - f))
     # a circular pupil of the same NA
-    inside = X**2 + Y**2 <= (n * a / 2) ** 2
+    radius = n * a / 2
+    inside = np.hypot(X, Y) <= radius
     u0 = np.where(inside, u0, 0.0)
     field = _field(u0, x0 * UM, x0 * UM, freq=C0 / (lam * UM))
     out = dif.propagate(field, f * UM, padding=2.0)
