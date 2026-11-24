@@ -713,6 +713,47 @@ def test_a_chain_of_reused_steps_ends_when_the_last_reaches_the_mean_cost():
     assert not krylov_handle._chain_ended([46, 20, 21])
 
 
+def test_a_bddc_handle_ends_a_chain_of_reused_steps_and_a_capped_step_opens_one(
+    built, monkeypatch
+):
+    def operator(shift):
+        return _laplace(built, complex_valued=True, shift=shift, order=4)[0]
+
+    def refactorize(handle, shift):
+        handle.refactorize(operator(shift), frequency=1.0, sweep=True)
+        return handle.last_action, handle.last_reason
+
+    handle = prepare(operator(1 - 2j), symmetry="complex_symmetric", kind="bddc_gmres")
+    rng = np.random.default_rng(41)
+    B = rng.standard_normal((handle.ndof, 2)) + 0j
+    previous = handle.solve(B)
+    n_ref = handle._reference_iterations
+    # the first step counts the setup and (floored at n_ref) its iterations
+    assert refactorize(handle, 1.01 - 2j) == ("reused", None)
+    assert handle._chain == [(krylov_handle.SETUP_ITERATIONS + 2 * n_ref) / 2]
+    # a cheap reused step (per column, whatever its width) leaves the chain open
+    handle._count_step([1, 1, 1])
+    assert refactorize(handle, 1.02 - 2j) == ("reused", None)
+    assert len(handle._chain) == 2
+    # a step as costly as the mean per step ends it, before the next solve
+    handle._count_step([100, 100])
+    assert refactorize(handle, 1.03 - 2j) == ("factorized", "chain")
+    assert handle._chain == []
+    previous = handle.solve(B)
+    # a capped column sets up inside the solve: the open chain is dropped
+    assert refactorize(handle, 1.05 - 2j) == ("reused", None)
+    handle._count_step([1, 1])
+    assert refactorize(handle, 1.06 - 2j) == ("reused", None)
+    assert len(handle._chain) == 2
+    monkeypatch.setattr(krylov_handle, "_slack", lambda _: 0)
+    handle.refactorize(operator(-40 + 1j), frequency=1.0, sweep=True)
+    handle.solve(B, x0=previous)
+    assert handle.last_action == "reused, capped, refactorized"
+    assert refactorize(handle, -40.1 + 1j) == ("reused", None)
+    assert len(handle._chain) == 1
+    handle.free()
+
+
 def test_a_bddc_handle_sets_up_before_a_step_an_octave_from_its_setup(
     built, monkeypatch
 ):

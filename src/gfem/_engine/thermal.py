@@ -659,6 +659,41 @@ class ThermalRule:
             gf.Set(values, ngs.BND, definedon=region)
         return gf.vec.FV().NumPy().copy()
 
+    def _boundary_mass(
+        self, built: EngineMesh, space: ngs.FESpace, surface: str
+    ) -> scipy.sparse.csr_matrix:
+        r"""The boundary mass :math:`\int_S u v` ``h``'s operator reads (file units)."""
+        u, v = space.TnT()
+        region = boundary_region(built, (surface,))
+        form = ngs.BilinearForm(space)
+        form += (
+            built.scale * u * v * quadrature.ds(self.options.order, definedon=region)
+        )
+        form.Assemble()
+        return _sparse(form.mat)
+
+    def _surface_load(
+        self, built: EngineMesh, space: ngs.FESpace, surface: str
+    ) -> np.ndarray:
+        r""":math:`\int_S v` (file units): a unit flux or :math:`h T_\infty` load."""
+        v = space.TestFunction()
+        region = boundary_region(built, (surface,))
+        form = ngs.LinearForm(space)
+        form += built.scale * v * quadrature.ds(self.options.order, definedon=region)
+        form.Assemble()
+        return form.vec.FV().NumPy().copy()
+
+    def _unit_lift(
+        self, built: EngineMesh, space: ngs.FESpace, surface: str
+    ) -> np.ndarray:
+        """`_lift` of a unit temperature on ``surface`` and zero on the others."""
+        gf = ngs.GridFunction(space)
+        unit = {s: float(s == surface) for s, _ in self.boundaries.fixed}
+        values = built.mesh.BoundaryCF(unit, default=ngs.CF(0.0))
+        region = boundary_region(built, self.boundaries.dirichlet)
+        gf.Set(values, ngs.BND, definedon=region)
+        return gf.vec.FV().NumPy().copy()
+
     def _boundary_data(
         self, built: EngineMesh, space: ngs.FESpace
     ) -> tuple[np.ndarray, np.ndarray]:
@@ -1021,19 +1056,6 @@ class SteadyThermalRule(ThermalRule):
         """The thermal boundary values' cotangents of the last backward."""
         return getattr(self, "_explicit", {})
 
-    def _surface_integral(
-        self, built: EngineMesh, space: ngs.FESpace, surface: str, *fields: Any
-    ) -> float:
-        r""":math:`\int_S \prod f\,\mathrm{d}s` of coefficient vectors, file units."""
-        region = boundary_region(built, (surface,))
-        integrand: Any = built.scale
-        for vector in fields:
-            gf = ngs.GridFunction(space)
-            gf.vec.FV().NumPy()[:] = vector
-            integrand = integrand * gf
-        ds = quadrature.ds(self.options.order, definedon=region)
-        return float(ngs.Integrate(integrand * ds, built.mesh))
-
     def _boundary_terms(  # noqa: PLR0917
         self,
         model: Model,
@@ -1081,29 +1103,23 @@ class SteadyThermalRule(ThermalRule):
             lam0 = self._adjoint(handle, load[:, None], reused=True)[:, 0]
         ones = self._constant(space, 1.0)
         out: dict[tuple, np.ndarray] = {}
-        fixed_names = [
-            b.surface for b in model.boundaries if isinstance(b, FixedTemperature)
-        ]
         for kind in kinds:
             _, index, name = kind
             item = model.boundaries[index]
             if name == "coefficient":
                 ambient = float(np.asarray(item.ambient))
-                value = -self._surface_integral(
-                    built, space, item.surface, lam, rise
-                ) - self._surface_integral(
-                    built, space, item.surface, lam0, t0 - ambient * ones
+                mass = self._boundary_mass(built, space, item.surface)
+                value = -float(lam @ (mass @ rise)) - float(
+                    lam0 @ (mass @ (t0 - ambient * ones))
                 )
             elif name == "ambient":
                 h = float(np.asarray(item.coefficient))
-                value = h * self._surface_integral(
-                    built, space, item.surface, lam0, ones
-                )
+                value = h * float(lam0 @ self._surface_load(built, space, item.surface))
             elif name == "flux":
-                value = self._surface_integral(built, space, item.surface, lam0, ones)
+                value = float(lam0 @ self._surface_load(built, space, item.surface))
             else:
                 value = self._fixed_term(
-                    built, space, handle, item.surface, fixed_names, lam0, direct
+                    built, space, handle, item.surface, lam0, direct
                 )
             out[kind] = np.asarray(value)
         return out
@@ -1114,17 +1130,11 @@ class SteadyThermalRule(ThermalRule):
         space: ngs.FESpace,
         handle: Handle,
         surface: str,
-        fixed: list[str],
         lam0: np.ndarray,
         direct: np.ndarray | None,
     ) -> float:
         r""":math:`c_T \cdot \chi_s - \lambda_0^T A \chi_s` of fixed ``surface``."""
-        values = {name: (1.0 if name == surface else 0.0) for name in fixed}
-        gf = ngs.GridFunction(space)
-        field = built.mesh.BoundaryCF(values, default=ngs.CF(0.0))
-        region = boundary_region(built, self.boundaries.dirichlet)
-        gf.Set(field, ngs.BND, definedon=region)
-        chi = gf.vec.FV().NumPy().copy()
+        chi = self._unit_lift(built, space, surface)
         read = 0.0 if direct is None else float(direct @ chi)
         return read - float(lam0 @ handle.apply(chi[:, None])[:, 0])
 
@@ -2150,19 +2160,6 @@ class TransientThermalRule(ThermalRule):
         self._explicit = explicit
         return pairs
 
-    def _boundary_mass(
-        self, built: EngineMesh, space: ngs.FESpace, surface: str
-    ) -> scipy.sparse.csr_matrix:
-        """The boundary mass ``h``'s operator reads: ``int_S u v`` (file units)."""
-        u, v = space.TnT()
-        region = boundary_region(built, (surface,))
-        form = ngs.BilinearForm(space)
-        form += (
-            built.scale * u * v * quadrature.ds(self.options.order, definedon=region)
-        )
-        form.Assemble()
-        return _sparse(form.mat)
-
     @staticmethod
     def _add_convection(
         totals: dict[tuple, float],
@@ -2170,35 +2167,13 @@ class TransientThermalRule(ThermalRule):
         left: np.ndarray,
         right: np.ndarray,
     ) -> None:
-        """Add a step's ``left^T M_S right`` to each coefficient's total.
+        r"""Add a step's :math:`\mathrm{left}^T M_S\, \mathrm{right}` to each total.
 
-        The coefficient enters the stepping operator as ``h M_S`` beside the
-        conduction, so its pair is the conduction pair's fields on ``M_S``.
+        The coefficient enters the stepping operator as :math:`h M_S` beside the
+        conduction, so its pair is the conduction pair's fields on :math:`M_S`.
         """
         for kind, mass in masses.items():
             totals[kind] += float(np.sum(left * (mass @ right)))
-
-    def _surface_load(
-        self, built: EngineMesh, space: ngs.FESpace, surface: str
-    ) -> np.ndarray:
-        """``int_S v`` (file units): a unit flux or ``h T_amb`` of one surface."""
-        v = space.TestFunction()
-        region = boundary_region(built, (surface,))
-        form = ngs.LinearForm(space)
-        form += built.scale * v * quadrature.ds(self.options.order, definedon=region)
-        form.Assemble()
-        return form.vec.FV().NumPy().copy()
-
-    def _unit_lift(
-        self, built: EngineMesh, space: ngs.FESpace, surface: str
-    ) -> np.ndarray:
-        """`_lift` of a unit temperature on ``surface`` and zero on the others."""
-        gf = ngs.GridFunction(space)
-        unit = {s: float(s == surface) for s, _ in self.boundaries.fixed}
-        values = built.mesh.BoundaryCF(unit, default=ngs.CF(0.0))
-        region = boundary_region(built, self.boundaries.dirichlet)
-        gf.Set(values, ngs.BND, definedon=region)
-        return gf.vec.FV().NumPy().copy()
 
     def _boundary_gradients(  # noqa: PLR0917 - one backward's state
         self,
@@ -2277,20 +2252,15 @@ class TransientThermalRule(ThermalRule):
         apply: Any,
     ) -> dict[tuple, np.ndarray]:
         """Each wanted value's cotangent from ``lam`` (see `_boundary_gradients`)."""
-        last = {
-            b.surface: i for i, b in enumerate(items) if isinstance(b, FixedTemperature)
-        }
         out: dict[tuple, np.ndarray] = {}
         for kind in values:
             item = items[kind[1]]
             name = kind[2]
             if name == "temperature":
-                grad = 0.0
-                if last[item.surface] == kind[1]:
-                    chi = self._unit_lift(built, space, item.surface)
-                    grad = float(full_cotangent @ chi)
-                    if apply is not None:
-                        grad -= float(lam @ apply(chi))
+                chi = self._unit_lift(built, space, item.surface)
+                grad = float(full_cotangent @ chi)
+                if apply is not None:
+                    grad -= float(lam @ apply(chi))
             else:
                 load = self._surface_load(built, space, item.surface)
                 grad = float(lam @ load)
@@ -2307,7 +2277,7 @@ class TransientThermalRule(ThermalRule):
         """Whether T0 depends on the conductivity (else it is one constant)."""
         if not self.loose.any() and self.boundaries.uniform is not None:
             return False
-        return not (self.loose.all() or not self.boundaries.sinks)
+        return bool(self.boundaries.sinks) and not self.loose.all()
 
     def _trace_gradients(
         self,

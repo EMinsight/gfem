@@ -2,14 +2,7 @@
 
 ## Unreleased
 
-Solvers:
-
-- **Fewer stale iterations across a frequency sweep.** A reused BDDC or
-  p-multigrid preconditioner is now set up again before a step an octave from
-  the frequency it was set up at, and when a reused step costs as much as the
-  mean per step since the setup, instead of after one slow step.
-
-Jobs and results:
+Jobs and files:
 
 - **A refused value names both versions.** A job or result bundle written by
   another gfem version, whose value this version refuses, now says which
@@ -158,6 +151,11 @@ Piezoelectric acoustics:
   verification page.
 
 Linear solvers:
+
+- **Fewer stale iterations across a frequency sweep.** A reused BDDC or
+  p-multigrid preconditioner is now set up again before a step an octave from
+  the frequency it was set up at, and when a reused step costs as much as the
+  mean per step since the setup, instead of after one slow step.
 
 - **A p-multigrid linear solver.** `SolverOptions(linear_solver="pmg_gmres")`
   solves driven problems with GMRES on a two-level p-multigrid

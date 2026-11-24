@@ -149,9 +149,9 @@ def _model_role(kind: tuple, laws: dict[str, PermittivityLaw]) -> Role:
 
 
 class _EnergyKernel(RoleKernel):
-    """The regions' unit-weight energies and their pullback.
+    r"""The regions' unit-weight energies and their pullback.
 
-    The forward gives the energy of each region (J, ``w = 1`` on a law
+    The forward gives the energy of each region (J, :math:`w = 1` on a law
     region); the backward the field's coefficient cotangent (field term) and
     the read model leaves' (explicit term).
     """

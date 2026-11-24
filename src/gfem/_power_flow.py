@@ -66,12 +66,6 @@ __all__ = ["LAYER_REMEDY", "balance", "concrete_field", "power_flow"]
 #: wrapper adds jax.lax.stop_gradient as the other way out).
 LAYER_REMEDY = "move the surface one element away from the design region"
 
-#: Why a field's frequency has no gradient.
-_FREQUENCY_REASON = (
-    "a field's angular frequency is fixed: differentiate the solve's "
-    "frequency through the kept field instead"
-)
-
 
 @overload
 def side_names(side: Any, who: str) -> SideSpec: ...
@@ -194,7 +188,6 @@ def balance(
             else field_role(
                 name,
                 field,
-                omega=_FREQUENCY_REASON,
                 reduced=reduced_reason("power"),
             )
         ),

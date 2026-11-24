@@ -38,6 +38,7 @@ from gfem._field_kernels import (
     Role,
     RoleKernel,
     design_key,
+    engine,
     field_inputs,
     field_role,
     model_inputs,
@@ -58,17 +59,6 @@ if TYPE_CHECKING:
     from gfem.results import DrivenResult
 
 __all__ = ["FarField", "far_field"]
-
-#: Why a field's frequency has no gradient.
-_FREQUENCY_REASON = (
-    "a field's angular frequency is fixed: differentiate the solve's "
-    "frequency through the kept field instead"
-)
-
-
-def engine() -> Any:
-    """The NGSolve far-field module, imported on first use."""
-    return importlib.import_module("gfem._engine.far_field")
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -354,7 +344,7 @@ def far_field(
             "instead, so that its surface is known before the transformation runs."
         )
     concrete = concrete_field(fields[0])
-    ff = engine()
+    ff = engine("far_field")
     layer = ff.exterior_layer(
         concrete,
         model,
@@ -458,7 +448,6 @@ def _measure(
         lambda name: field_role(
             name,
             field,
-            omega=_FREQUENCY_REASON,
             reduced=reduced_reason("far field"),
             nodes=None,
         ),
@@ -531,14 +520,11 @@ class _FarFieldKernel(RoleKernel):
 
     # --- host -------------------------------------------------------------------
 
-    def _unflatten(self, values: dict[str, np.ndarray]) -> tuple[Field, Model]:
-        return rebuild(self.field_def, values), rebuild(self.model_def, values)
-
     def _probe(self, nodes: np.ndarray, field: Field) -> Any:
         from gfem._engine import probe
         from gfem._probe import layout
 
-        ff = engine()
+        ff = engine("far_field")
         bary, _ = ff.rule(self.order)
         mesh = Mesh(nodes, self.topology)
         located = ff.located(self.layer, bary)
@@ -561,7 +547,7 @@ class _FarFieldKernel(RoleKernel):
         self, nodes: np.ndarray, omega: float
     ) -> tuple[Callable[..., Any], np.ndarray]:
         """``(F(corners, E, curl E) -> (n_dir, 2), corners at the nodes)``."""
-        ff = engine()
+        ff = engine("far_field")
         mesh = Mesh(nodes, self.topology)
         corners0 = ff.corners(mesh, self.layer, nodes)
         chi = ff.chi_corners(mesh, self.layer)
@@ -591,7 +577,10 @@ class _FarFieldKernel(RoleKernel):
         return function, corners0
 
     def forward(self, values: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-        field, model = self._unflatten(values)
+        field, model = (
+            rebuild(self.field_def, values),
+            rebuild(self.model_def, values),
+        )
         pf = importlib.import_module("gfem._engine.power_flow")
         pf.check_nodes(field, model)
         nodes = np.asarray(values["nodes"], float)
@@ -613,7 +602,10 @@ class _FarFieldKernel(RoleKernel):
         cotangents: dict[str, np.ndarray],
         wanted: tuple[str, ...],
     ) -> dict[str, np.ndarray]:
-        field, model = self._unflatten(values)
+        field, model = (
+            rebuild(self.field_def, values),
+            rebuild(self.model_def, values),
+        )
         positions = np.asarray(values["nodes"], float)
         omega = float(np.asarray(values["omega"]).real)
         e = np.asarray(values["coefficients"])

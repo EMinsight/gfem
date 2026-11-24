@@ -1,12 +1,13 @@
-"""The electric energy a solved field stores in each region, as unit-weight integrals.
+r"""The electric energy a solved field stores in each region, as unit-weight integrals.
 
 The host half of `gfem.electric_energy` (`gfem._energy`): per physical
-region ``r``, ``1/4 eps0 ∫_r w E . conj(E)`` over the region's tetrahedra
-in the solve domain, at quadrature order ``2 order``, exact for the discrete
-field and an element-wise permittivity. The weight ``w`` is ``Re(eps_r)``
-(the full real tensor) off a permittivity law region and 1 on one: the
-region's Brillouin weight ``Re d(omega eps)/d omega`` is a function of the
-law and the field's frequency, which JAX multiplies in, so that the host
+region :math:`r`, :math:`\frac{1}{4} \varepsilon_0 \int_r w\, E \cdot \bar E`
+over the region's tetrahedra in the solve domain, at quadrature order
+``2 order``, exact for the discrete field and an element-wise permittivity.
+The weight :math:`w` is :math:`\mathrm{Re}(\varepsilon_r)` (the full real
+tensor) off a permittivity law region and 1 on one: the region's Brillouin
+weight :math:`\mathrm{Re}\, d(\omega \varepsilon)/d\omega` is a function of
+the law and the field's frequency, which JAX multiplies in, so that the host
 reads no law parameter. A perfectly matched layer's regions get no entry.
 The field's coefficients are on the unpaired space of the driven operator,
 also on a model with `gfem.Periodic` pairs.
@@ -52,16 +53,16 @@ def regions(model: Model, support: np.ndarray) -> tuple[str, ...]:
 
 
 class EnergyParts:
-    """The unit-weight energy integrals of a model's regions.
+    r"""The unit-weight energy integrals of a model's regions.
 
     Attributes:
         op: The driven operator whose unpaired space the field lives on
             (nothing assembled).
-        unit: ``1/4 eps0`` times the operator's scale: the integral of a
-            part's form is ``unit`` times the energy in J.
+        unit: :math:`\frac{1}{4} \varepsilon_0` times the operator's scale:
+            the integral of a part's form is ``unit`` times the energy in J.
         regions: The regions, in the output's order.
-        parts: Each region's `EnergyPart`: the form ``∫ w u . v`` on its
-            tetrahedra of the support.
+        parts: Each region's `EnergyPart`: the form
+            :math:`\int w\, u \cdot v` on its tetrahedra of the support.
         laws: The regions with a permittivity law (their weight is 1).
     """
 

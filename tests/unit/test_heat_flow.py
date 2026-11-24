@@ -257,6 +257,8 @@ def _flow_of_values(mesh, side, x):
         ],
     )
     result = gfem.solve(model, gfem.SteadyThermal(_heat(mesh)), options=DIRECT)
+    if mesh.section_thickness is not None:
+        return gfem.heat_flow_per_length(result, side, model=model)
     return gfem.heat_flow(result, side, model=model)
 
 
@@ -268,6 +270,22 @@ def test_the_four_boundary_values_match_finite_differences(brick, side):
         return _flow_of_values(brick, side, v) / 1e-4
 
     grad = np.asarray(jax.grad(objective)(x))
+    for i in range(4):
+        d = np.eye(4)[i]
+        assert_gradient_matches(objective, x, [d], step=1e-2, grad=grad)
+
+
+@pytest.mark.parametrize("side", ["bottom", "top", "right", "left"])
+def test_the_four_boundary_values_match_finite_differences_per_length(section, side):
+    # the cross-section's flow per length: the same four values through the
+    # section's thickness scale
+    x = jnp.ones(4)
+
+    def objective(v):
+        return _flow_of_values(section, side, v) / 100.0
+
+    grad = np.asarray(jax.grad(objective)(x))
+    assert np.any(grad != 0.0)
     for i in range(4):
         d = np.eye(4)[i]
         assert_gradient_matches(objective, x, [d], step=1e-2, grad=grad)

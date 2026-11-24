@@ -34,6 +34,7 @@ from gfem._dim2 import refuse_entry
 from gfem._field_kernels import (
     Role,
     RoleKernel,
+    engine,
     field_inputs,
     field_role,
     model_inputs,
@@ -53,11 +54,6 @@ if TYPE_CHECKING:
 
 __all__ = ["beam_coupling"]
 
-#: Why a field's frequency has no gradient.
-_FREQUENCY_REASON = (
-    "a field's angular frequency is fixed: differentiate the solve's "
-    "frequency through the kept field instead"
-)
 #: A `gfem.GaussianBeam` seen with less power than this through the side is
 #: clipped by it: part of the beam misses the layer.
 CLIPPED = 0.999
@@ -73,11 +69,6 @@ LAYER_REASON = (
     "the side, which must be a constant material: move the design one element "
     "away from the side's surface, or wrap the material in jax.lax.stop_gradient"
 )
-
-
-def engine() -> Any:
-    """The NGSolve beam-coupling module, imported on first use."""
-    return importlib.import_module("gfem._engine.beam_coupling")
 
 
 def beam_coupling(
@@ -225,12 +216,12 @@ def beam_coupling(
     for field, frequency in zip(fields, frequencies, strict=True):
         concrete = concrete_field(field)
         nodes = np.asarray(concrete.mesh.nodes)
-        layer = engine().coupling_layer(
+        layer = engine("beam_coupling").coupling_layer(
             concrete, model, names, beam, frequency, nodes=nodes, incident=incident
         )
         reference = None
         if isinstance(beam, IncidentField):
-            reference = engine().frozen_reference(
+            reference = engine("beam_coupling").frozen_reference(
                 concrete,
                 model,
                 layer=layer,
@@ -313,7 +304,6 @@ def _kernel(
         lambda name: field_role(
             name,
             field,
-            omega=_FREQUENCY_REASON,
             reduced=reduced_reason("far field"),
             nodes=None,
         ),
@@ -400,9 +390,6 @@ class _CouplingKernel(RoleKernel):
 
     # --- host -------------------------------------------------------------------
 
-    def _unflatten(self, values: dict[str, np.ndarray]) -> tuple[Field, Model]:
-        return rebuild(self.field_def, values), rebuild(self.model_def, values)
-
     def _probe(self, nodes: np.ndarray, field: Field) -> Any:
         from gfem._engine import far_field as ff
         from gfem._engine import probe
@@ -414,7 +401,7 @@ class _CouplingKernel(RoleKernel):
         return probe.probe(mesh, layout(field), located, self.comm)
 
     def _test(self, omega: float) -> Callable[[Any, Any], tuple[Any, Any]]:
-        bc = engine()
+        bc = engine("beam_coupling")
         if self.reference is not None:
             return bc.frozen_test(*self.reference)
         return bc.gaussian_test(self.beam, self.layer, omega / (2 * math.pi))
@@ -425,7 +412,7 @@ class _CouplingKernel(RoleKernel):
         """``(c(corners, E, curl E), corners at the nodes)``."""
         from gfem._engine import far_field as ff
 
-        bc = engine()
+        bc = engine("beam_coupling")
         tets = np.asarray(Mesh(nodes, self.topology).tetrahedra)[self.layer.tetrahedra]
         corners0 = np.asarray(nodes, float)[tets]
         chi = self.layer.chi[tets]
@@ -446,7 +433,7 @@ class _CouplingKernel(RoleKernel):
         """The beam's power through the side's layer, W."""
         from gfem._engine import far_field as ff
 
-        bc = engine()
+        bc = engine("beam_coupling")
         tets = np.asarray(Mesh(nodes, self.topology).tetrahedra)[self.layer.tetrahedra]
         corners = jnp.asarray(np.asarray(nodes, float)[tets])
         bary, weights = ff.rule(self.order)
@@ -465,7 +452,7 @@ class _CouplingKernel(RoleKernel):
     def _check_frozen(self, nodes: np.ndarray) -> None:
         if self.reference is None:
             return
-        n, d = engine().moved_layer(self.layer, self.model, nodes)
+        n, d = engine("beam_coupling").moved_layer(self.layer, self.model, nodes)
         if n:
             raise ValueError(
                 f"beam_coupling reads the IncidentField {self.beam.name!r} as "
@@ -479,7 +466,10 @@ class _CouplingKernel(RoleKernel):
     def _values(
         self, values: dict[str, np.ndarray]
     ) -> tuple[Field, np.ndarray, float, np.ndarray]:
-        field, model = self._unflatten(values)
+        field, model = (
+            rebuild(self.field_def, values),
+            rebuild(self.model_def, values),
+        )
         pf = importlib.import_module("gfem._engine.power_flow")
         pf.check_nodes(field, model)
         nodes = np.asarray(values["nodes"], float)

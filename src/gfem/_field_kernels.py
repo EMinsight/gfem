@@ -99,11 +99,18 @@ def reduced_reason(quantity: str) -> str:
     )
 
 
+#: Why a field's frequency has no gradient.
+FREQUENCY_REASON = (
+    "a field's angular frequency is fixed: differentiate the solve's "
+    "frequency through the kept field instead"
+)
+
+
 def field_role(
     name: str,
     field: Field,
     *,
-    omega: str,
+    omega: str = FREQUENCY_REASON,
     reduced: str,
     nodes: str | None = NODES_REASON,
 ) -> Role:

@@ -127,8 +127,10 @@ def prepare_pooled(
     if pooled is not None and not isinstance(pooled, Refactorable):
         pooled.free()
         pooled = None
-    if pooled is not None and tolerance is not None:
-        pooled.tolerance = tolerance
+    if pooled is not None:
+        # a pooled handle keeps its last user's tolerance (a backward's, maybe
+        # looser): ``None`` means the linear solver's
+        pooled.tolerance = linear.tolerance if tolerance is None else tolerance
     handle = refactorize_or_prepare(pooled, operator, prepare, frequency=0.0)
     setattr(handle, _SITE, site)
     return handle

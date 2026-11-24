@@ -198,14 +198,12 @@ How large a model each solver has finished, and in what time:
 
 The thermal rows differentiate the temperature, the traces, the heat flow,
 the conductance and the phase with respect to per-element thermal and
-electrical conductivity, the thermo-optic coefficient, the boundary values (a fixed
-temperature, a convection's coefficient and ambient, a heat flux), a
-transient's mass
-density and specific heat, the heat sources and the drive
-({doc}`recipes/thermal-gradient`). The heat rows differentiate the
-dissipated power and the temperature it heats with respect to the driven
-solve's materials, sheets and drive
-({doc}`recipes/electromagnetic-heating`).
+electrical conductivity, the thermo-optic coefficient, the boundary values (a
+fixed temperature, a convection's coefficient and ambient, a heat flux), a
+transient's mass density and specific heat, the heat sources and the drive
+({doc}`recipes/thermal-gradient`). The heat rows differentiate the dissipated
+power and the temperature it heats with respect to the driven solve's
+materials, sheets and drive ({doc}`recipes/electromagnetic-heating`).
 
 The electro-optic shift differentiates with respect to its tensor, the
 static permittivity of every element, the drive and the electrostatic

@@ -347,3 +347,24 @@ def test_a_transient_with_traced_boundary_values_holds_the_t0_operator(brick, re
     # and both find the source-free handle the forward returned to the pool
     assert backward[per_design - 2 : per_design] == ["held", "held"]
     assert backward[-2:] == ["held", "held"]
+
+
+def test_a_pooled_handle_taken_without_a_tolerance_solves_at_the_options(monkeypatch):
+    # a pooled handle keeps its last user's tolerance (a backward's, maybe
+    # looser than the forward's): a caller that names none gets the options'
+    from types import SimpleNamespace
+
+    from gfem._engine import scalar_plans
+
+    held = SimpleNamespace(tolerance=1e-3)
+    monkeypatch.setattr(scalar_plans, "Refactorable", object)
+    monkeypatch.setattr(scalar_plans.ENTRIES, "take_plan", lambda _: held)
+    monkeypatch.setattr(
+        scalar_plans, "refactorize_or_prepare", lambda pooled, *_, **__: pooled
+    )
+    linear = SimpleNamespace(tolerance=1e-9)
+    site = scalar_plans.PlanSite(("key",), None, 0)
+    scalar_plans.prepare_pooled(linear, site, None)
+    assert held.tolerance == 1e-9
+    scalar_plans.prepare_pooled(linear, site, None, tolerance=1e-5)
+    assert held.tolerance == 1e-5
