@@ -47,7 +47,14 @@ import numpy as np
 import scipy.linalg
 import scipy.optimize
 
-from gfem._broadband._vector_fit import _basis, _Poles, _stack, _state_matrix
+from gfem._broadband._poles import (
+    Poles,
+    basis,
+    coefficients,
+    response,
+    stack,
+    state_matrix,
+)
 from gfem._linalg.gmres import _ONE_BLAS_THREAD, scipy_openblas
 from gfem._text import hertz, hertz_band
 from gfem.errors import PassivityEnforcementError
@@ -149,7 +156,7 @@ def enforce(
         # the change of S on the data is |Phi dc| per element: with Phi = QR,
         # y = R dc turns the least change into a least-norm problem
         (r,) = scipy.linalg.qr(
-            _stack(_basis(x, model.poles) * np.asarray(weights, float)[:, None]),
+            stack(basis(x, model.poles) * np.asarray(weights, float)[:, None]),
             mode="r",
             check_finite=False,
         )
@@ -232,7 +239,7 @@ class _Model:
 
     def __init__(
         self,
-        poles: _Poles,
+        poles: Poles,
         c: np.ndarray,
         d: np.ndarray,
         scale: float,
@@ -250,24 +257,11 @@ class _Model:
         poles = np.asarray(poles, complex).reshape(-1)
         residues = np.asarray(residues, complex)
         d = np.asarray(d, float)
-        n_ports = d.shape[0]
         scale = float(np.abs(poles).max(initial=0.0)) or 1.0
+        pole_set, c = coefficients(poles, residues, scale)
         real = np.flatnonzero(poles.imag == 0)
         pairs = np.flatnonzero(poles.imag > 0)
-        flat = residues.reshape(poles.size, n_ports * n_ports) / scale
-        # (n_el, 2 * n_pairs): the real and imaginary parts of each pair's
-        # residue, side by side
-        pair = np.stack([flat[pairs].real, flat[pairs].imag], axis=-1)
-        c = np.hstack(
-            [flat[real].real.T, pair.transpose(1, 0, 2).reshape(flat.shape[1], -1)]
-        )
-        return cls(
-            _Poles(poles[real].real / scale, poles[pairs] / scale),
-            c,
-            d,
-            scale,
-            (real, pairs, poles.size),
-        )
+        return cls(pole_set, c, d, scale, (real, pairs, poles.size))
 
     def with_c(self, c: np.ndarray) -> _Model:
         """The same model with other coefficients."""
@@ -291,9 +285,7 @@ class _Model:
 
     def s(self, w: np.ndarray) -> np.ndarray:
         """S ``(len(w), P, P)`` at scaled angular frequencies ``w``."""
-        n_ports = self.d.shape[0]
-        terms = _basis(1j * np.asarray(w, float), self.poles) @ self.c.T
-        return self.d[None] + terms.reshape(-1, n_ports, n_ports)
+        return response(1j * np.asarray(w, float), self.poles, self.c, self.d)
 
     def sigma_max(self, w: np.ndarray) -> np.ndarray:
         """The largest singular value of S at each of ``w``."""
@@ -339,7 +331,7 @@ class _Model:
         if not self.poles.size:
             return np.zeros(0)
         n_ports = self.d.shape[0]
-        a_p, b_p = _state_matrix(self.poles)
+        a_p, b_p = state_matrix(self.poles)
         n = a_p.shape[0]
         a = np.kron(np.eye(n_ports), a_p)
         b = np.kron(np.eye(n_ports), b_p[:, None])
@@ -375,7 +367,7 @@ class _Model:
         peak; ``g`` is ``(rows, n_el * N)``.
         """
         n_ports = self.d.shape[0]
-        phi = _basis(1j * peaks, self.poles)
+        phi = basis(1j * peaks, self.poles)
         u, sv, vh = np.linalg.svd(self.s(peaks))
         rows, rhs = [], []
         for f, k in zip(*np.nonzero(sv > 1 - _ACTIVE * MARGIN), strict=True):

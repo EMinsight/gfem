@@ -25,6 +25,7 @@ import jax.numpy as jnp
 import numpy as np
 from numpy.typing import ArrayLike
 
+from gfem._broadband._poles import evaluate
 from gfem._checks import is_traced
 from gfem._pytree import register_fields
 from gfem._text import hertz, hertz_band
@@ -388,9 +389,7 @@ class RationalModel:
                     "model is not extrapolated above its data. Fit over a wider "
                     "band."
                 )
-        s = 2j * math.pi * f
-        terms = 1 / (s[:, None] - self.poles[None, :])
-        values = self.d[None] + np.einsum("fn,nij->fij", terms, self.residues)
+        values = evaluate(2j * math.pi * f, self.poles, self.residues, self.d)
         n = len(self.ports)
         return NetworkParameters(
             values=jnp.asarray(values),

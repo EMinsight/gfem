@@ -35,6 +35,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import scipy.linalg
 
+from gfem._broadband import _passivity
+from gfem._broadband._poles import Poles, basis, evaluate, stack, state_matrix
 from gfem._broadband._reference import constant_real
 from gfem._checks import is_staging, is_traced, static_float
 from gfem._linalg.gmres import _ONE_BLAS_THREAD, scipy_openblas
@@ -114,8 +116,6 @@ def fit_rational(
             "fit_rational needs finite S; the network has NaN or infinite values."
         )
     s, z_ref, nominal = _reference(net, s, z0)
-    from gfem._broadband import _passivity
-
     order = np.argsort(f)
     omega, s = 2 * math.pi * f[order], s[order]
     # the factorizations are small: a threaded BLAS made them tens of times
@@ -138,9 +138,9 @@ def fit_rational(
     residues, d, error = fit.residues, fit.d, fit.error
     if enforce_passivity:
         residues, d = _passivity.enforce(fit.poles, residues, d, omega, w[order])
-        enforced = _evaluate(omega, fit.poles, residues, d)
+        enforced = evaluate(1j * omega, fit.poles, residues, d)
         error = _rms(enforced - s)
-        moved = _rms(enforced - _evaluate(omega, fit.poles, fit.residues, fit.d))
+        moved = _rms(enforced - evaluate(1j * omega, fit.poles, fit.residues, fit.d))
         if moved > tol:
             sigma, where = _passivity.worst_violation(
                 fit.poles, fit.residues, fit.d, bands
@@ -163,14 +163,6 @@ def fit_rational(
         ),
         nominal_reference=nominal,
     )
-
-
-def _evaluate(
-    omega: np.ndarray, poles: np.ndarray, residues: np.ndarray, d: np.ndarray
-) -> np.ndarray:
-    """S ``(K, P, P)`` of a pole-residue model at angular frequencies."""
-    terms = 1 / (1j * omega[:, None] - poles[None, :])
-    return d[None] + np.einsum("kn,nij->kij", terms, residues)
 
 
 def _rms(diff: np.ndarray) -> float:
@@ -341,23 +333,10 @@ class PoleResidueFit:
 
 
 @dataclasses.dataclass(frozen=True)
-class _Poles:
-    """Normalized poles: real ones, and one pole per pair (``Im > 0``)."""
-
-    real: np.ndarray
-    pairs: np.ndarray
-
-    @property
-    def size(self) -> int:
-        """The number of poles, counting both of each pair."""
-        return self.real.size + 2 * self.pairs.size
-
-
-@dataclasses.dataclass(frozen=True)
 class _Fit:
     """Poles, real residue coefficients ``(n_el, size)``, ``d`` and the error."""
 
-    poles: _Poles
+    poles: Poles
     c: np.ndarray
     d: np.ndarray
     error: float
@@ -400,7 +379,7 @@ def vector_fit(
     return _physical(best, scale, n_ports, converged=False)
 
 
-def _initial_poles(x: np.ndarray, n_pairs: int) -> _Poles:
+def _initial_poles(x: np.ndarray, n_pairs: int) -> Poles:
     r"""Lightly damped pairs spread over the band, :math:`-\beta/100 \pm i\beta`."""
     positive = x[x > 0]
     lo, hi = float(positive[0]), float(positive[-1])
@@ -410,10 +389,10 @@ def _initial_poles(x: np.ndarray, n_pairs: int) -> _Poles:
         beta = np.geomspace(lo, hi, n_pairs)
     else:
         beta = np.linspace(lo, hi, n_pairs)
-    return _Poles(np.zeros(0), -beta / 100 + 1j * beta)
+    return Poles(np.zeros(0), -beta / 100 + 1j * beta)
 
 
-def _fit_order(x: np.ndarray, h: np.ndarray, w: np.ndarray, poles: _Poles) -> _Fit:
+def _fit_order(x: np.ndarray, h: np.ndarray, w: np.ndarray, poles: Poles) -> _Fit:
     """Relocate the poles until the error stalls; the best iterate."""
     floor = 1e-15 * float(np.abs(h).max(initial=0.0))
     best = fit = _residues(x, h, w, _relocate(x, h, w, poles))
@@ -427,24 +406,9 @@ def _fit_order(x: np.ndarray, h: np.ndarray, w: np.ndarray, poles: _Poles) -> _F
     return best
 
 
-def _basis(x: np.ndarray, poles: _Poles) -> np.ndarray:
-    """Real-coefficient basis ``(K, size)``: real poles, then (Re, Im) per pair."""
-    a = 1 / (x[:, None] - poles.pairs[None, :])
-    b = 1 / (x[:, None] - np.conj(poles.pairs)[None, :])
-    pair = np.empty((x.size, 2 * poles.pairs.size), complex)
-    pair[:, 0::2] = a + b
-    pair[:, 1::2] = 1j * (a - b)
-    return np.hstack([1 / (x[:, None] - poles.real[None, :]), pair])
-
-
-def _stack(m: np.ndarray) -> np.ndarray:
-    """Real and imaginary rows of ``m`` stacked along the second-to-last axis."""
-    return np.concatenate([m.real, m.imag], axis=-2)
-
-
-def _relocate(x: np.ndarray, h: np.ndarray, w: np.ndarray, poles: _Poles) -> _Poles:
+def _relocate(x: np.ndarray, h: np.ndarray, w: np.ndarray, poles: Poles) -> Poles:
     """One fast relaxed relocation: the zeros of the scaling function."""
-    phi = _basis(x, poles)
+    phi = basis(x, poles)
     n_freq, n = phi.shape
     n_el = h.shape[0]
     wphi = w[:, None] * phi
@@ -454,7 +418,7 @@ def _relocate(x: np.ndarray, h: np.ndarray, w: np.ndarray, poles: _Poles) -> _Po
     for he in h:
         block = np.hstack([wphi, w[:, None], -he[:, None] * wphi, -(he * w)[:, None]])
         (r,) = scipy.linalg.qr(
-            _stack(block), mode="r", overwrite_a=True, check_finite=False
+            stack(block), mode="r", overwrite_a=True, check_finite=False
         )
         rows.append(r[n + 1 : 2 * n + 2, n + 1 :])
     a = np.vstack(rows)
@@ -467,60 +431,41 @@ def _relocate(x: np.ndarray, h: np.ndarray, w: np.ndarray, poles: _Poles) -> _Po
     if abs(d) < _RELAX_GUARD:
         d = math.copysign(_RELAX_GUARD, d)
         c = _solve(a[:, :n], -a[:, n] * d)
-    state, b = _state_matrix(poles)
+    state, b = state_matrix(poles)
     zeros = scipy.linalg.eigvals(state - np.outer(b, c) / d)
     return _split(zeros)
 
 
 def _solve(a: np.ndarray, rhs: np.ndarray) -> np.ndarray:
-    """Least squares with unit-norm columns, for conditioning."""
+    """Least squares with unit-norm columns, for conditioning.
+
+    ``rhs`` is one right-hand side ``(rows,)`` or several, as its columns.
+    """
     norms = np.linalg.norm(a, axis=0)
     norms[norms == 0] = 1.0
-    return scipy.linalg.lstsq(a / norms, rhs, check_finite=False)[0] / norms
+    x = scipy.linalg.lstsq(a / norms, rhs, check_finite=False)[0]
+    return (x.T / norms).T
 
 
-def _state_matrix(poles: _Poles) -> tuple[np.ndarray, np.ndarray]:
-    """Real block-diagonal state matrix and input vector of the pole set."""
-    n_real = poles.real.size
-    a = np.zeros((poles.size, poles.size))
-    b = np.zeros(poles.size)
-    a[np.arange(n_real), np.arange(n_real)] = poles.real
-    b[:n_real] = 1.0
-    for k, p in enumerate(poles.pairs):
-        i = n_real + 2 * k
-        a[i, i] = a[i + 1, i + 1] = p.real
-        a[i, i + 1] = p.imag
-        a[i + 1, i] = -p.imag
-        b[i] = 2.0
-    return a, b
-
-
-def _split(zeros: np.ndarray) -> _Poles:
+def _split(zeros: np.ndarray) -> Poles:
     """Stable real poles and pairs from the eigenvalues of a real matrix."""
     # flip unstable poles; keep every pole strictly inside the left half-plane
     re = -np.maximum(np.abs(zeros.real), 1e-12 * np.maximum(np.abs(zeros), 1.0))
     zeros = re + 1j * zeros.imag
     real = np.abs(zeros.imag) <= 1e-9 * np.abs(zeros)
-    return _Poles(
+    return Poles(
         np.sort(zeros[real].real), np.sort_complex(zeros[~real & (zeros.imag > 0)])
     )
 
 
-def _residues(x: np.ndarray, h: np.ndarray, w: np.ndarray, poles: _Poles) -> _Fit:
+def _residues(x: np.ndarray, h: np.ndarray, w: np.ndarray, poles: Poles) -> _Fit:
     """Residues and ``d`` of every element on fixed poles, and the error."""
-    phi = _basis(x, poles)
+    phi = basis(x, poles)
     m = np.hstack([phi, np.ones((x.size, 1))]) * w[:, None]
-    coef = _solve_many(_stack(m), _stack((h * w[None, :]).T))
+    coef = _solve(stack(m), stack((h * w[None, :]).T))
     c, d = coef[:-1].T, coef[-1]
     error = _error(phi, c, d, h)
     return _Fit(poles, c, d, error)
-
-
-def _solve_many(a: np.ndarray, rhs: np.ndarray) -> np.ndarray:
-    """`_solve` for several right-hand sides (columns of ``rhs``)."""
-    norms = np.linalg.norm(a, axis=0)
-    norms[norms == 0] = 1.0
-    return scipy.linalg.lstsq(a / norms, rhs, check_finite=False)[0] / norms[:, None]
 
 
 def _error(phi: np.ndarray, c: np.ndarray, d: np.ndarray, h: np.ndarray) -> float:
@@ -532,7 +477,7 @@ def _error(phi: np.ndarray, c: np.ndarray, d: np.ndarray, h: np.ndarray) -> floa
 def _terms(phi: np.ndarray, c: np.ndarray) -> np.ndarray:
     """``c @ phi.T`` (complex ``(n_el, K)``) by SciPy's BLAS, on real arrays."""
     gemm = scipy.linalg.get_blas_funcs("gemm", dtype=np.float64)
-    stacked = gemm(1.0, _stack(phi), c, trans_b=True)
+    stacked = gemm(1.0, stack(phi), c, trans_b=True)
     n_freq = phi.shape[0]
     return (stacked[:n_freq] + 1j * stacked[n_freq:]).T
 
@@ -541,7 +486,7 @@ def _prune(
     x: np.ndarray, h: np.ndarray, w: np.ndarray, fit: _Fit, tolerance: float
 ) -> _Fit:
     """Drop poles contributing below a tenth of the tolerance in band; refit."""
-    phi = _basis(x, fit.poles)
+    phi = basis(x, fit.poles)
     n_real = fit.poles.real.size
     threshold = _PRUNE * tolerance
     groups = [[k] for k in range(n_real)] + [
@@ -554,7 +499,7 @@ def _prune(
     if keep.all():
         return fit
     pruned = _residues(
-        x, h, w, _Poles(fit.poles.real[keep_real], fit.poles.pairs[keep_pairs])
+        x, h, w, Poles(fit.poles.real[keep_real], fit.poles.pairs[keep_pairs])
     )
     return pruned if pruned.error <= tolerance else fit
 
