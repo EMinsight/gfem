@@ -58,11 +58,11 @@ class ApertureField:
     Args:
         values: Complex tangential field in V/m, shape ``(n_freq, 2, n1)``
             for a one-axis aperture or ``(n_freq, 2, n1, n2)``. Axis 1 holds
-            the components along $\hat e_1$ and $\hat e_2$ (TM, TE).
+            the components along :math:`\hat e_1` and :math:`\hat e_2` (TM, TE).
         frequency: ``(n_freq,)`` frequencies in Hz.
-        x: ``(n1,)`` sample positions along $\hat e_1$ in m, evenly spaced,
+        x: ``(n1,)`` sample positions along :math:`\hat e_1` in m, evenly spaced,
             measured from the aperture centre.
-        y: ``(n2,)`` positions along $\hat e_2$ in m, or ``None`` for a
+        y: ``(n2,)`` positions along :math:`\hat e_2` in m, or ``None`` for a
             one-axis aperture.
         index: Refractive index of the half-space the field propagates into.
         distance: Distance in m from the outgoing reference plane (0 at the
@@ -134,7 +134,10 @@ class ApertureField:
 
     @property
     def intensity(self) -> jax.Array:
-        r"""$|E_1|^2 + |E_2|^2$, shape ``(n_freq, n1)`` or ``(n_freq, n1, n2)``."""
+        r""":math:`|E_1|^2 + |E_2|^2`.
+
+        Shape ``(n_freq, n1)`` or ``(n_freq, n1, n2)``.
+        """
         return jnp.sum(jnp.abs(self.values) ** 2, axis=1)
 
 
@@ -142,7 +145,7 @@ register_fields(ApertureField, ("values",))
 
 
 def _wavenumber_z(q2: np.ndarray, k: float) -> np.ndarray:
-    r"""$k_z$: real where propagating, $-i\sqrt{q^2-k^2}$ where evanescent."""
+    r""":math:`k_z`, real where propagating, :math:`-i\sqrt{q^2-k^2}` where not."""
     d = k**2 - q2
     return np.where(
         d >= 0, np.sqrt(np.maximum(d, 0.0)), -1j * np.sqrt(np.maximum(-d, 0.0))
@@ -179,25 +182,25 @@ def propagate(
     r"""Propagate an aperture field to a parallel plane by the angular spectrum.
 
     The field is zero-padded to ``padding`` times the aperture's width along
-    each axis, every plane-wave component is multiplied by $e^{-ik_zd}$ with
-    $k_z=\sqrt{k^2-q^2}$ (propagating) or $-i\sqrt{q^2-k^2}$ (evanescent,
-    $e^{-|k_z|d}$) and $k = 2\pi n f/c_0$, the components whose walk-off
-    $d|q_i|/k_z$ exceeds half the padded window $L_i$ along an axis are
+    each axis, every plane-wave component is multiplied by :math:`e^{-ik_zd}` with
+    :math:`k_z=\sqrt{k^2-q^2}` (propagating) or :math:`-i\sqrt{q^2-k^2}` (evanescent,
+    :math:`e^{-|k_z|d}`) and :math:`k = 2\pi n f/c_0`, the components whose walk-off
+    :math:`d|q_i|/k_z` exceeds half the padded window :math:`L_i` along an axis are
     dropped (Matsushima and Shimobaba's band limit, which keeps the
     periodic window's wrap-around out of the result), and the field is
     cropped back to the input grid. A one-axis aperture propagates along
-    $\hat e_1$ only.
+    :math:`\hat e_1` only.
 
     The transfer function is a host NumPy constant, so the whole map is a
     linear JAX operation on ``values``: `jax.jit`, `jax.grad` and `jax.vmap`
     work through it. Padding 2 keeps the focal spot of a lens within
-    $1.4\times10^{-4}$ of the peak and the field across the footprint
-    within $10^{-3}$; padding 3 gives $4\times10^{-5}$.
+    :math:`1.4\times10^{-4}` of the peak and the field across the footprint
+    within :math:`10^{-3}`; padding 3 gives :math:`4\times10^{-5}`.
 
     Args:
         field: The field to propagate.
-        distance: Propagation distance in m, $\ge 0$; a fixed number.
-        padding: FFT window as a multiple of the aperture's width, $\ge 1$;
+        distance: Propagation distance in m, :math:`\ge 0`; a fixed number.
+        padding: FFT window as a multiple of the aperture's width, :math:`\ge 1`;
             a fixed number.
 
     Returns:
