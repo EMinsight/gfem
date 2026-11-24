@@ -28,6 +28,21 @@ reaction weighted by its lifting, :math:`q'_{ij} = -w_i^T A x_j`, and
 :math:`-x_i^T A x_j`. The clamped capacitance is the quadratic form of the
 potential alone with :math:`\varepsilon^S` and no displacement.
 
+**Gradients.** Every terminal state is the solution of a system whose free rows
+vanish, so :math:`\delta Y'_{ij} = -i\omega\,x_i^T\,\delta A\,x_j` needs no
+adjoint solve, and neither does :math:`C'_0`; a cotangent on a kept field takes
+one solve :math:`A\lambda = g` per frequency that carries one, on that
+frequency's factorization. The backward hands the kernel **field pairs** whose
+weights are those of the five pieces of :math:`A` (stiffness 1, loss
+:math:`i`, coupling 1, dielectric 1, mass :math:`-\omega^2`), and the material
+leaves come from the **tensor pass**: per-element lab-frame moments of the
+strain, the potential gradient and the displacement
+(`gfem._engine.sensitivity.MomentBlock`), contracted into the crystal frame
+through the transpose of the rotation of each region's `axes` (the rotation is
+linear in :math:`c` and :math:`e`). The loss factor enters as
+:math:`1/Q_m + \eta\,r^2`, so its moments are the strain moments weighted by
+the frame's :math:`\eta r^2`.
+
 Lengths are the mesh file's unit (``scale`` metres): the strain and the
 potential gradient carry :math:`1/\text{scale}` and the area
 :math:`\text{scale}^2`, so the stiffness and permittivity forms are the
@@ -37,26 +52,28 @@ displacement is in m per V.
 
 from __future__ import annotations
 
+from collections.abc import Hashable
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 import ngsolve as ngs
 import numpy as np
 import scipy.constants
 
 from gfem._boundaries import PEC, Absorbing
-from gfem._checks import is_traced
 from gfem._engine import quadrature
-from gfem._engine.cache import discretization
-from gfem._engine.coefficients import p0, permittivity
+from gfem._engine.cache import Entry, discretization
+from gfem._engine.coefficients import element_axes, p0, permittivity
 from gfem._engine.domain import boundary_region, em_region, h1_space, region_domain
 from gfem._engine.runtime import task_manager
+from gfem._engine.sensitivity import FieldPair, MomentBlock, Tensors
 from gfem._engine.solve_request import SolveRequest
 from gfem._field import FieldMap
 from gfem._linalg.base import free_mask
 from gfem._linalg.direct import DirectHandle
 from gfem._materials import piezoelectric_in_frame, stiffness_in_frame
-from gfem.errors import MissingMaterialPropertyError, NonDifferentiableError
+from gfem.errors import MissingMaterialPropertyError
 from gfem.model import Model
 from gfem.options import SolverOptions
 from gfem.problems import Piezoelectric
@@ -75,6 +92,22 @@ class PiezoelectricRule:
     """
 
     physics = "em"
+    #: The operator family (a key of `sensitivity.PROPERTIES`).
+    form = "piezoelectric"
+    #: Material properties the solve reads.
+    reads = frozenset(
+        {
+            "stiffness",
+            "piezoelectric_tensor",
+            "eps_r",
+            "mass_density",
+            "mechanical_quality_factor",
+        }
+    )
+    #: Outputs whose cotangents the backward pass handles.
+    differentiable_outputs = frozenset(
+        {"admittance", "capacitance", "displacement", "potential"}
+    )
 
     def __init__(
         self,
@@ -89,7 +122,6 @@ class PiezoelectricRule:
         Raises:
             NotImplementedError: ``linear_solver="petsc"``, or
                 ``frequency_workers`` above 1.
-            NonDifferentiableError: The model's leaves are traced by JAX.
             RegionNotFoundError: A name is not a region of the mesh.
             ValueError: The problem does not fit the model; the message gives
                 the remedy.
@@ -112,11 +144,6 @@ class PiezoelectricRule:
                 "factorization each: leave frequency_workers at 1 (threads= sets "
                 "the cores)."
             )
-        if is_traced(model):
-            raise NonDifferentiableError(
-                "gradients of a Piezoelectric solve are not available yet: wrap "
-                "the model's leaves in jax.lax.stop_gradient."
-            )
         self.mechanical = _check_mechanical(model)
         self.electrodes = _check_electrodes(model, problem)
         _check_clamped(model, problem)
@@ -134,6 +161,13 @@ class PiezoelectricRule:
             r for r in mesh.volumes if domain.active[mesh.elements(r)].any()
         )
         self._mesh = mesh
+        #: The kept ``(frequency, terminal)`` labels, in output order.
+        self.kept = tuple(
+            (f, name)
+            for f in problem.frequency
+            if f in problem.kept_frequencies
+            for name in problem.terminal_names
+        )
         self._mechanical_excluded = mechanical.excluded
         self._em_excluded = domain.excluded
 
@@ -141,46 +175,63 @@ class PiezoelectricRule:
         self,
         model: Model,
         *,
-        keep: bool,  # noqa: ARG002
+        keep: bool,
         request: SolveRequest | None = None,  # noqa: ARG002
-    ) -> tuple[dict[str, Any], None]:
+    ) -> tuple[dict[str, Any], Entry | None]:
         """Solve every frequency and terminal.
 
         Returns:
             ``{"admittance": (n_f, n_t, n_t) S/m, symmetrized,
             "admittance_raw": the same before the symmetrization,
-            "capacitance": (n_t, n_t) F/m, "fields": the kept (frequency,
-            terminal) columns}``, and no cache entry.
+            "capacitance": (n_t, n_t) F/m, "displacement": (n_kept, 3,
+            n_dof) m/V and "potential": (n_kept, n_dof) V/V, the kept
+            columns in `kept` order}``, and with ``keep`` the entry a backward
+            reads: the terminals' state at each frequency and the potential
+            of :math:`C'_0`.
         """
+        problem = self.problem
         with task_manager(self.options.threads, self.comm):
-            system = PiezoelectricSystem(model, self.problem, self.options, self)
+            system = PiezoelectricSystem(model, problem, self.options, self)
+            states: list[np.ndarray] | None = [] if keep else None
             raw, kept = system.admittance(
-                self.problem.frequency, self.problem.kept_frequencies
+                problem.frequency, problem.kept_frequencies, states
             )
-            capacitance = system.clamped_capacitance()
+            capacitance, potential = system.clamped_capacitance()
         admittance = 0.5 * (raw + np.swapaxes(raw, 1, 2))
+        nu = system.offset // 3
+        displacement = np.zeros((len(self.kept), 3, nu if self.kept else 0), complex)
+        phi = np.zeros(
+            (len(self.kept), system.ndof - system.offset if self.kept else 0), complex
+        )
+        for i, label in enumerate(self.kept):
+            displacement[i] = [kept[label][axis] for axis in "xyz"]
+            phi[i] = kept[label]["phi"]
         outputs = {
             "admittance": admittance,
             "admittance_raw": raw,
             "capacitance": 0.5 * (capacitance + capacitance.T),
-            "fields": kept,
+            "displacement": displacement,
+            "potential": phi,
         }
-        return outputs, None
+        if states is None:
+            return outputs, None
+        fields = {f"x{k}": x for k, x in enumerate(states)}
+        fields["phi"] = potential
+        return outputs, Entry("em", fields=fields)
 
     def result(self, outputs: dict[str, Any]) -> PiezoelectricResult:
         """The public result from the forward outputs."""
         problem, order = self.problem, self.options.order
-        displacement, potential, labels = [], [], []
+        displacement, potential = [], []
         mesh = self._mesh
         mechanical = self._mechanical_excluded
-        for (f, name), parts in outputs["fields"].items():
+        for i, (f, _) in enumerate(self.kept):
             omega = jnp.asarray(2 * np.pi * f)
-            labels.append((f, name))
             displacement.append(
                 FieldMap(
                     {
                         axis: Field(
-                            coefficients=parts[axis],
+                            coefficients=outputs["displacement"][i][a],
                             mesh=mesh,
                             quantity=f"u{axis}",
                             unit="m",
@@ -190,14 +241,14 @@ class PiezoelectricRule:
                             omega=omega,
                             _excluded=mechanical,
                         )
-                        for axis in "xyz"
+                        for a, axis in enumerate("xyz")
                     },
                     label="component",
                 )
             )
             potential.append(
                 Field(
-                    coefficients=parts["phi"],
+                    coefficients=outputs["potential"][i],
                     mesh=mesh,
                     quantity="V",
                     unit="V",
@@ -215,8 +266,364 @@ class PiezoelectricRule:
             frequencies=problem.frequency,
             displacement_fields=displacement,
             potential_fields=potential,
-            kept=tuple(labels),
+            kept=self.kept,
         )
+
+    # --- the solve_vjp interface ---------------------------------------------------
+
+    def output_specs(self, model: Model) -> dict[str, jax.ShapeDtypeStruct]:
+        """Shape and dtype of each forward output (from the mesh topology)."""
+        problem = self.problem
+        nf, nt = len(problem.frequency), len(problem.terminals)
+        nu = nphi = 0
+        if self.kept:
+            with task_manager(self.options.threads, self.comm):
+                system = PiezoelectricSystem(
+                    model, problem, self.options, self, assemble=False
+                )
+            nu, nphi = system.offset // 3, system.ndof - system.offset
+        nk = len(self.kept)
+        return {
+            "admittance": jax.ShapeDtypeStruct((nf, nt, nt), jnp.complex128),
+            "capacitance": jax.ShapeDtypeStruct((nt, nt), jnp.float64),
+            "displacement": jax.ShapeDtypeStruct((nk, 3, nu), jnp.complex128),
+            "potential": jax.ShapeDtypeStruct((nk, nphi), jnp.complex128),
+        }
+
+    def role(self, kind: tuple) -> str:
+        """``"read"`` if the solve depends on input ``kind``.
+
+        The five material properties, the permittivity law's parameters (which
+        `unsupported_input` refuses) and the node coordinates are read; every
+        other property, boundary and port value is not, so its gradient is an
+        exact zero.
+        """
+        if kind[0] == "material":
+            return "read" if kind[2] in self.reads else "unread"
+        if kind[0] in ("boundary", "port"):
+            return "unread"
+        return "read"
+
+    def unsupported_input(self, kind: tuple) -> str | None:
+        """Why input ``kind`` cannot be differentiated, or ``None``."""
+        if kind[0] == "nodes":
+            return (
+                "node gradients of a Piezoelectric solve are not available yet "
+                "(its materials are)"
+            )
+        if kind[0] == "law":
+            return (
+                "a permittivity law's parameters are not design inputs of a "
+                "Piezoelectric solve, which reads the law's static permittivity"
+            )
+        return None
+
+    def nondifferentiable_output(self, name: str) -> str:  # pragma: no cover
+        """The error message for a cotangent on output ``name``."""
+        return f"gfem cannot differentiate the Piezoelectric output {name!r}."
+
+    def backward(
+        self,
+        model: Model,
+        entry: Entry,
+        cotangents: dict[str, np.ndarray],
+        *,
+        wanted: frozenset | None = None,  # noqa: ARG002
+    ) -> list[FieldPair]:
+        r"""Fold the output cotangents into field pairs, per frequency and for C0.
+
+        With :math:`x_j` the terminal states (lifting included) and
+        :math:`G = (W + W^T)/2` for the admittance cotangent :math:`W` at a
+        frequency, the pair is left :math:`X`, right :math:`X(-i\omega G)^T`: no
+        solve. A cotangent :math:`g` on kept fields adds the pair
+        :math:`(-\lambda, X)` with :math:`A\lambda = g` on the free DOFs.
+        The capacitance cotangent gives the pair :math:`(\Phi, \Phi G^T)` on
+        the dielectric piece alone, with weight :math:`-1` (the form is
+        :math:`-K_\varphi` in :math:`A`), the potentials embedded in the
+        compound space.
+        """
+        problem, options = self.problem, self.options
+        nt = len(problem.terminals)
+        pairs: list[FieldPair] = []
+        with task_manager(options.threads, self.comm):
+            system = PiezoelectricSystem(model, problem, options, self, assemble=False)
+            ndof, offset = system.ndof, system.offset
+            ct_y = cotangents.get("admittance")
+            loads = self._kept_loads(cotangents, ndof, offset)
+            for k, f in enumerate(problem.frequency):
+                omega = 2 * np.pi * f
+                left, right = [], []
+                x = entry.fields[f"x{k}"]
+                if ct_y is not None and np.any(ct_y[k]):
+                    ct = np.asarray(ct_y[k], dtype=complex)
+                    g = 0.5 * (ct + ct.T)
+                    left.append(x)
+                    right.append(x @ (-1j * omega * g).T)
+                if k in loads:
+                    lam = system.adjoint(f, loads[k])
+                    left.append(-lam)
+                    right.append(x)
+                if left:
+                    pairs.append(
+                        FieldPair(
+                            space=system.space,
+                            left=np.concatenate(left, axis=1),
+                            right=np.concatenate(right, axis=1),
+                            weights=_weights(omega),
+                            order=options.order,
+                            domain=system.diel,
+                        )
+                    )
+            ct_c = cotangents.get("capacitance")
+            if ct_c is not None and np.any(ct_c):
+                ct = np.asarray(ct_c, dtype=float)
+                phi = np.zeros((ndof, nt), complex)
+                phi[offset:] = entry.fields["phi"]
+                pairs.append(
+                    FieldPair(
+                        space=system.space,
+                        left=phi,
+                        right=phi @ (0.5 * (ct + ct.T)).T,
+                        weights={"dielectric": -1.0},
+                        order=options.order,
+                        domain=system.diel,
+                    )
+                )
+        return pairs
+
+    def _kept_loads(
+        self, cotangents: dict[str, np.ndarray], ndof: int, offset: int
+    ) -> dict[int, np.ndarray]:
+        """The cotangents on kept fields as loads ``(ndof, n_t)`` by frequency index."""
+        ct_u, ct_p = cotangents.get("displacement"), cotangents.get("potential")
+        names = self.problem.terminal_names
+        frequencies = self.problem.frequency
+        loads: dict[int, np.ndarray] = {}
+        for i, (f, name) in enumerate(self.kept):
+            g = np.zeros(ndof, complex)
+            if ct_u is not None:
+                g[:offset] = np.asarray(ct_u[i]).reshape(-1)
+            if ct_p is not None:
+                g[offset:] = ct_p[i]
+            if not g.any():
+                continue
+            k = frequencies.index(f)
+            load = loads.setdefault(k, np.zeros((ndof, len(names)), complex))
+            load[:, names.index(name)] = g
+        return loads
+
+    def tensors(self, model: Model, wanted: frozenset) -> Tensors:
+        """The tensor pass of the wanted material leaves (see `Tensors`)."""
+        return _tensors(self, model, wanted)
+
+
+def _weights(omega: float) -> dict[str, complex]:
+    """The weights of the five pieces of :math:`A` at angular frequency ``omega``."""
+    return {
+        "stiffness": 1.0,
+        "loss": 1j,
+        "coupling": 1.0,
+        "dielectric": 1.0,
+        "mass": -(omega**2),
+    }
+
+
+# --- the tensor pass ----------------------------------------------------------------
+
+#: The strains that are not zero when nothing varies along z (Voigt order).
+_ACTIVE = (0, 1, 3, 4, 5)
+#: The 15 entries ``I <= J`` of a symmetric moment of the active strains.
+_UPPER = tuple((i, j) for a, i in enumerate(_ACTIVE) for j in _ACTIVE[a:])
+#: The 10 entries ``(a, I)`` of the coupling moment: in-plane gradient, active strain.
+_COUPLED = tuple((a, i) for a in range(2) for i in _ACTIVE)
+#: The 3 entries ``a <= b`` of the symmetric in-plane gradient moment.
+_PLANE = ((0, 0), (1, 1), (0, 1))
+
+
+def _strains(u: Any) -> ngs.CoefficientFunction:
+    """The strain of a compound field ``u`` of the system's space."""
+    return _strain(*(u.components[i] for i in range(3)))
+
+
+def _gradient(u: Any) -> ngs.CoefficientFunction:
+    """The in-plane gradient of the potential of a compound field."""
+    g = ngs.grad(u.components[3])
+    return ngs.CF((g[0], g[1]))
+
+
+def _strain_moment(
+    weight: ngs.CoefficientFunction | None,
+) -> Any:
+    """``(left, right) -> (1/2)(S_I(l) S_J(r) + S_J(l) S_I(r))``, ``I <= J``."""
+
+    def entries(left: Any, right: Any) -> ngs.CoefficientFunction:
+        sl, sr = _strains(left), _strains(right)
+        out = ngs.CF(tuple(0.5 * (sl[i] * sr[j] + sl[j] * sr[i]) for i, j in _UPPER))
+        return out if weight is None else weight * out
+
+    return entries
+
+
+def _coupling_moment(left: Any, right: Any) -> ngs.CoefficientFunction:
+    """``g_a(l) S_I(r) + g_a(r) S_I(l)`` for the gradient ``g`` of the potential."""
+    gl, gr = _gradient(left), _gradient(right)
+    sl, sr = _strains(left), _strains(right)
+    return ngs.CF(tuple(gl[a] * sr[i] + gr[a] * sl[i] for a, i in _COUPLED))
+
+
+def _gradient_moment(left: Any, right: Any) -> ngs.CoefficientFunction:
+    """``(1/2)(g_a(l) g_b(r) + g_b(l) g_a(r))``, ``a <= b``."""
+    gl, gr = _gradient(left), _gradient(right)
+    return ngs.CF(tuple(0.5 * (gl[a] * gr[b] + gl[b] * gr[a]) for a, b in _PLANE))
+
+
+def _displacement_moment(left: Any, right: Any) -> ngs.CoefficientFunction:
+    """``u(l) . u(r)``."""
+    return sum(
+        (left.components[i] * right.components[i] for i in range(1, 3)),
+        left.components[0] * right.components[0],
+    )
+
+
+def _symmetric(values: np.ndarray, pairs: tuple[tuple[int, int], ...], n: int):
+    """Entries ``(e, k)`` of a symmetric moment as ``(e, n, n)`` matrices."""
+    out = np.zeros((len(values), n, n), dtype=values.dtype)
+    for k, (i, j) in enumerate(pairs):
+        out[:, i, j] = out[:, j, i] = values[:, k]
+    return out
+
+
+def _rotation_rows(shape: tuple[int, int], axes: Any, rotate: Any) -> np.ndarray:
+    """The transpose of the rotation into the lab frame, as a matrix.
+
+    The rotation of a tensor of ``shape`` from the frame of ``axes`` to the lab
+    frame is linear: ``vec(rotate(t)) = L vec(t)``. This is ``L^T``, so a
+    cotangent of the lab-frame tensor maps to the crystal frame as ``L^T g``.
+    """
+    n = shape[0] * shape[1]
+    unit = np.eye(n).reshape(n, *shape)
+    return np.asarray(rotate(unit, axes, None)).reshape(n, n)
+
+
+def _tensors(rule: PiezoelectricRule, model: Model, wanted: frozenset) -> Tensors:
+    """The moment blocks and the contraction of the wanted material leaves."""
+    kinds = [k for k in wanted if k[0] == "material"]
+    props = {k[2] for k in kinds}
+    built = discretization(model.mesh).built
+    mech = em_region(model, built, "mechanical")
+    diel = em_region(model, built, "em")
+    blocks = []
+    if props & {"stiffness", "mechanical_quality_factor"}:
+        blocks.append(
+            MomentBlock(
+                "SS", len(_UPPER), _strain_moment(None), mech, ("stiffness", "loss")
+            )
+        )
+    if "stiffness" in props and rule.frame is not None:
+        eta = _frame_depth(model, built, rule.frame)
+        blocks.append(
+            MomentBlock("SSeta", len(_UPPER), _strain_moment(eta), mech, ("loss",))
+        )
+    if "piezoelectric_tensor" in props:
+        blocks.append(
+            MomentBlock("ES", len(_COUPLED), _coupling_moment, mech, ("coupling",))
+        )
+    if "eps_r" in props:
+        blocks.append(
+            MomentBlock("EE", len(_PLANE), _gradient_moment, diel, ("dielectric",))
+        )
+    if "mass_density" in props:
+        blocks.append(MomentBlock("uu", 1, _displacement_moment, mech, ("mass",)))
+    return Tensors(blocks, _Contraction(model, kinds, built.scale))
+
+
+class _Contraction:
+    r"""Moments of one pair to the cotangent of each wanted material leaf.
+
+    With the pair's weights :math:`\theta` (`_weights`), :math:`M` its moments
+    and :math:`L` the rotation of a region's tensor into the lab frame:
+
+    - :math:`\bar c_\mathrm{lab} = \theta_s M_{SS} + \theta_l (Q_m^{-1}
+      M_{SS} + M_{S\eta})`, :math:`\bar c = L^T \bar c_\mathrm{lab}`;
+    - :math:`\bar e_\mathrm{lab} = \theta_c M_{ES}`, :math:`\bar e = L^T
+      \bar e_\mathrm{lab}`;
+    - :math:`\bar\varepsilon_\mathrm{lab} = -\theta_d \varepsilon_0 M_{EE}`, read
+      along each principal axis or as its trace;
+    - :math:`\bar\rho = \theta_m\,\text{scale}^2 M_{uu}`;
+    - :math:`\bar Q_m = -\theta_l Q_m^{-2}\, c_\mathrm{lab} : M_{SS}`.
+    """
+
+    def __init__(self, model: Model, kinds: list[tuple], scale: float) -> None:
+        self.model = model
+        self.kinds = kinds
+        self.scale = scale
+        self.arrays = _element_arrays(model)
+        self._by_property = {
+            "stiffness": self._stiffness,
+            "mechanical_quality_factor": self._quality,
+            "piezoelectric_tensor": self._piezoelectric,
+            "eps_r": self._permittivity,
+            "mass_density": self._density,
+        }
+
+    def __call__(self, weights, moments) -> dict[Hashable, np.ndarray]:
+        out = {}
+        for kind in self.kinds:
+            _, region, prop = kind
+            index = self.model.mesh.elements(region)
+            material = self.model.materials[region]
+            out[kind] = self._by_property[prop](weights, moments, index, material)
+        return out
+
+    def _strain_moment(self, moments, index) -> np.ndarray | None:
+        if "SS" not in moments:
+            return None
+        return _symmetric(moments["SS"][index], _UPPER, 6)
+
+    def _stiffness(self, weights, moments, index, material) -> np.ndarray:
+        n = len(index)
+        lab = np.zeros((n, 6, 6), complex)
+        ss = self._strain_moment(moments, index)
+        loss = weights.get("loss", 0)
+        if ss is not None:
+            factor = weights.get("stiffness", 0) + loss * self.arrays["loss"][index]
+            lab += factor[:, None, None] * ss
+        if "SSeta" in moments:
+            lab += loss * _symmetric(moments["SSeta"][index], _UPPER, 6)
+        rows = _rotation_rows((6, 6), material.axes, stiffness_in_frame)
+        return (lab.reshape(n, 36) @ rows.T).reshape(n, 6, 6)
+
+    def _quality(self, weights, moments, index, material) -> np.ndarray:  # noqa: ARG002
+        ss = self._strain_moment(moments, index)
+        if ss is None:
+            return np.zeros(len(index), complex)
+        loss = self.arrays["loss"][index]
+        along = np.einsum("eij,eij->e", self.arrays["c"][index], ss)
+        return -weights.get("loss", 0) * loss**2 * along
+
+    def _piezoelectric(self, weights, moments, index, material) -> np.ndarray:
+        n = len(index)
+        lab = np.zeros((n, 3, 6), complex)
+        if "ES" in moments:
+            for k, (a, i) in enumerate(_COUPLED):
+                lab[:, a, i] = weights.get("coupling", 0) * moments["ES"][index, k]
+        rows = _rotation_rows((3, 6), material.axes, piezoelectric_in_frame)
+        return (lab.reshape(n, 18) @ rows.T).reshape(n, 3, 6)
+
+    def _permittivity(self, weights, moments, index, material) -> np.ndarray:
+        lab = np.zeros((len(index), 3, 3), complex)
+        if "EE" in moments:
+            ee = _symmetric(moments["EE"][index], _PLANE, 2)
+            lab[:, :2, :2] = -weights.get("dielectric", 0) * EPS0 * ee
+        if material.has_principal_values("eps_r"):
+            axes = element_axes(self.model)[index]
+            return np.real(np.einsum("eki,eij,ekj->ek", axes, lab, axes))
+        return np.real(np.trace(lab, axis1=1, axis2=2))
+
+    def _density(self, weights, moments, index, material) -> np.ndarray:  # noqa: ARG002
+        if "uu" not in moments:
+            return np.zeros(len(index), complex)
+        return weights.get("mass", 0) * self.scale**2 * moments["uu"][index, 0]
 
 
 # --- checks ------------------------------------------------------------------------
@@ -523,6 +930,8 @@ class PiezoelectricSystem:
         problem: Piezoelectric,
         options: SolverOptions,
         rule: PiezoelectricRule,
+        *,
+        assemble: bool = True,
     ) -> None:
         self.rule = rule
         self.model = model
@@ -552,7 +961,8 @@ class PiezoelectricSystem:
         self.offset = 3 * vu.ndof
         self.ndof = space.ndof
 
-        self._assemble(model, rule)
+        if assemble:
+            self._assemble(model, rule)
         self.lifts, self.free = self._electrodes(vp, electrodes)
         self.potential_free = self._potential_free(vp, electrodes)
         self.free_bits = ngs.BitArray(self.free.tolist())
@@ -655,17 +1065,23 @@ class PiezoelectricSystem:
 
     # --- solves --------------------------------------------------------------------
 
-    def state(self, frequency: float) -> tuple[np.ndarray, np.ndarray]:
-        """``(x, A x)``: the terminals' states at ``frequency``, ``(ndof, n_t)``."""
+    def _factor(self, frequency: float) -> DirectHandle:
+        r"""The factorization of :math:`A = K - \omega^2 M` at ``frequency``."""
+        if not hasattr(self, "_k"):
+            self._assemble(self.model, self.rule)
         omega = 2 * np.pi * frequency
         self.matrix.AsVector().FV().NumPy()[:] = self._k - omega**2 * self._m
-        handle = DirectHandle(
+        return DirectHandle(
             self.matrix,
             self.free_bits,
             "complex_symmetric",
             is_complex=True,
             cholesky=True,
         )
+
+    def state(self, frequency: float) -> tuple[np.ndarray, np.ndarray]:
+        """``(x, A x)``: the terminals' states at ``frequency``, ``(ndof, n_t)``."""
+        handle = self._factor(frequency)
         try:
             lifts = self.lifts.astype(complex)
             x = lifts + handle.solve(-handle.apply(lifts))
@@ -673,10 +1089,28 @@ class PiezoelectricSystem:
         finally:
             handle.free()
 
+    def adjoint(self, frequency: float, loads: np.ndarray) -> np.ndarray:
+        """:math:`A^{-1} g` on the free DOFs for each column of ``loads``.
+
+        :math:`A` is complex symmetric, so the adjoint of a state is solved
+        without a transpose. The result is zero on the fixed DOFs.
+        """
+        handle = self._factor(frequency)
+        try:
+            return handle.solve(np.where(self.free[:, None], loads, 0.0))
+        finally:
+            handle.free()
+
     def admittance(
-        self, frequencies: tuple[float, ...], kept: tuple[float, ...]
+        self,
+        frequencies: tuple[float, ...],
+        kept: tuple[float, ...],
+        states: list[np.ndarray] | None = None,
     ) -> tuple[np.ndarray, dict[tuple[float, str], dict[str, np.ndarray]]]:
-        """:math:`Y'` over ``frequencies`` (before symmetrizing) and the kept fields."""
+        """:math:`Y'` over ``frequencies`` (before symmetrizing) and the kept fields.
+
+        With ``states`` a list, each frequency's terminal states are appended.
+        """
         nt = self.lifts.shape[1]
         out = np.zeros((len(frequencies), nt, nt), complex)
         names = self.rule.problem.terminal_names
@@ -684,6 +1118,8 @@ class PiezoelectricSystem:
         nu = self.offset // 3
         for k, f in enumerate(frequencies):
             x, ax = self.state(f)
+            if states is not None:
+                states.append(x)
             out[k] = -1j * 2 * np.pi * f * (self.lifts.T @ ax)
             if f in kept:
                 for j, name in enumerate(names):
@@ -695,8 +1131,11 @@ class PiezoelectricSystem:
                     fields[(f, name)] = parts
         return out, fields
 
-    def clamped_capacitance(self) -> np.ndarray:
-        r""":math:`C'_0`: the potential alone, with :math:`\varepsilon^S`, no motion."""
+    def clamped_capacitance(self) -> tuple[np.ndarray, np.ndarray]:
+        r""":math:`C'_0` and the potentials: :math:`\varepsilon^S` alone, no motion.
+
+        The potentials are ``(n_potential_dofs, n_t)``, real.
+        """
         model, built, order = self.model, self.built, self.order
         electrodes = self.rule.electrodes
         vr = h1_space(model, built, order, electrodes.lines, physics="em")
@@ -718,7 +1157,7 @@ class PiezoelectricSystem:
         try:
             lifts = np.real(self.lifts[self.offset :])
             x = lifts + handle.solve(-handle.apply(lifts))
-            return x.T @ handle.apply(x)
+            return x.T @ handle.apply(x), x
         finally:
             handle.free()
 
