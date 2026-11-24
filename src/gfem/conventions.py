@@ -81,9 +81,12 @@ reference, a line matched to its own characteristic impedance has
   symmetry by the ratio of their normalizations on a lossy line.
   ``WavePort(offset=d)`` refers S to a plane :math:`d` inside the
   domain: :math:`S_{ij}` times :math:`e^{\gamma_i d_i} e^{\gamma_j d_j}`.
-  Without a ``voltage_path``, the sign of a wave port's row and column of
-  S is fixed by a mesh-dependent rule; every :math:`|S|` and power is
-  unaffected.
+  Without a ``voltage_path`` or a ``polarity``, the sign of a wave port's
+  row and column of S is fixed by a mesh-dependent rule and, in 3D, by the
+  model's orientation in the global frame; every :math:`|S|` and power is
+  unaffected. With a ``polarity``, the mode's field at the given point
+  along the given direction (the field normal to the plane on a line port)
+  is real and positive at every frequency.
 - ``NetworkParameters.y()``, ``.z()`` and ``.renormalize(z_new)`` use the
   pseudo-wave formulas; ``to_touchstone`` labels a file with ``z_ref`` only
   when it is one real value, and otherwise needs ``z0=`` to renormalize

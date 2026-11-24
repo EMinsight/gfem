@@ -32,7 +32,8 @@ and two modes never follow the same candidate. Each mode is normalized to
 1 W. Its phase is fixed at the lowest frequency by a quadrant integral of its
 tangential magnetic field and is continuous after it (the overlap with the
 previous frequency's mode is real and positive); with a voltage path,
-``Re V > 0`` at every frequency.
+``Re V > 0`` at every frequency; with a polarity, the field at the port's
+point along its direction is real and positive at every frequency instead.
 """
 
 from __future__ import annotations
@@ -439,7 +440,7 @@ def port_mode_sweep(
         modes: Which modes at the lowest frequency, in rank order (distinct).
         tolerance: Backward error a reduced mode must reach.
         ports: The wave port of each mode (its name for messages, its
-            voltage path).
+            voltage path or polarity).
 
     Returns:
         One `PortModeSweep` per mode, sharing ``space``, ``basis`` and

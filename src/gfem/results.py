@@ -592,7 +592,9 @@ class PortModeField:
     Peak phasor of the mode carrying 1 W time-averaged power through the
     port (1 W/m through a line port of a 2D mesh), propagating into the solve
     domain as :math:`e^{-\gamma s}`, :math:`s` the distance along the inward
-    port normal. Fields follow :math:`e^{+i\omega t}`.
+    port normal. Fields follow :math:`e^{+i\omega t}`. Under the port's
+    ``polarity`` the field at its point along its direction is real and
+    positive at every frequency.
 
     Attributes:
         quantity: ``"E"``; on a line port, ``"Ez"`` or ``"Hz"``.
