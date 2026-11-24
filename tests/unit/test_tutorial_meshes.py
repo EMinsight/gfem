@@ -9,7 +9,8 @@ the metagrating meshes are gmsh-built by tools/metagrating_mesh.py
 (`just metagrating-mesh`); the heater meshes (and the thermo-optic recipe's extruded
 heater_straight.msh) are gmsh-built by tools/heater_section_mesh.py
 (`just heater-section-mesh`); sphere.msh is netgen-built by tools/sphere_mesh.py
-(`just sphere-mesh`).
+(`just sphere-mesh`) and nanosphere.msh by tools/nanosphere_mesh.py
+(`just nanosphere-mesh`).
 """
 
 from pathlib import Path
@@ -28,7 +29,7 @@ GMSH_BUILT = (
     | metagrating_mesh.MESHES
     | heater_section_mesh.MESHES
     | heater_section_mesh.STRAIGHT
-    | {"sphere.msh": None}
+    | {"sphere.msh": None, "nanosphere.msh": None}
 )
 COMMITTED = sorted(
     path.name for path in DATA.glob("*.msh") if path.name not in GMSH_BUILT
