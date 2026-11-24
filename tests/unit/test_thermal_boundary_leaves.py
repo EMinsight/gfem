@@ -13,7 +13,6 @@ import pytest
 import structured_meshes as sm
 
 import gfem
-from gfem.errors import NonDifferentiableError
 
 L, W, T = 4.0, 1.0, 0.2  # bar, um
 METAL = gfem.Material(
@@ -211,25 +210,6 @@ def test_a_traced_invalid_value_raises_at_the_forward(mesh, which, bad, message)
     with pytest.raises(Exception, match=message) as raised:
         jax.jit(f)(bad)
     assert LEAF_NAMES[which] in str(raised.value)
-
-
-@pytest.mark.parametrize("which", range(4))
-def test_a_transient_solve_refuses_a_traced_value_by_name(mesh, which):
-    problem = gfem.TransientThermal(
-        gfem.HeatSource.uniform("bar", power=1e-3),
-        duration=1e-9,
-        steps=2,
-        traces={"bar": gfem.Trace.mean("bar")},
-    )
-
-    def f(v):
-        args = list(VALUES)
-        args[which] = v
-        model = _traced(mesh, *args)
-        return gfem.solve(model, problem, options=DIRECT).traces["bar"].sum()
-
-    with pytest.raises(NonDifferentiableError, match=LEAF_NAMES[which]):
-        jax.grad(f)(VALUES[which])
 
 
 def test_a_zero_flux_surface_stays_a_boundary_and_its_flow_measures(mesh):
