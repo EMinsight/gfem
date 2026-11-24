@@ -37,7 +37,7 @@ import scipy.linalg
 
 from gfem._broadband import _passivity
 from gfem._broadband._poles import Poles, basis, evaluate, stack, state_matrix
-from gfem._broadband._reference import constant_real
+from gfem._broadband._reference import resolve
 from gfem._checks import is_staging, is_traced, static_float
 from gfem._linalg.gmres import _ONE_BLAS_THREAD, scipy_openblas
 from gfem._text import hertz, hertz_band
@@ -115,7 +115,8 @@ def fit_rational(
         raise ValueError(
             "fit_rational needs finite S; the network has NaN or infinite values."
         )
-    s, z_ref, nominal = _reference(net, s, z0)
+    ref = resolve(net, z0, "fit_rational", nominal_z0=True)
+    s = np.asarray(ref.network._square("fit_rational()"))  # noqa: SLF001
     order = np.argsort(f)
     omega, s = 2 * math.pi * f[order], s[order]
     # the factorizations are small: a threaded BLAS made them tens of times
@@ -153,7 +154,7 @@ def fit_rational(
         poles=fit.poles,
         residues=residues,
         d=d,
-        z_ref=z_ref,
+        z_ref=np.asarray(ref.z_ref),
         ports=net.ports,
         frequency_range=band,
         error=error,
@@ -161,7 +162,7 @@ def fit_rational(
         passivity_violations=tuple(
             (lo / (2 * math.pi), hi / (2 * math.pi)) for lo, hi in bands
         ),
-        nominal_reference=nominal,
+        nominal_reference=ref.nominal,
     )
 
 
@@ -243,73 +244,6 @@ def _weights(weights: Any, n_freq: int) -> np.ndarray:
             f"frequency in the network's order; got shape {w.shape}."
         )
     return w
-
-
-def _reference(
-    net: NetworkParameters, s: np.ndarray, z0: Any
-) -> tuple[np.ndarray, np.ndarray, bool]:
-    """S on one constant real reference per port, and that reference.
-
-    The flag says whether the reference is a nominal label. The rules are
-    those of `NetworkParameters.to_touchstone`, except that a reference real
-    and constant to round-off counts as constant, at its mean real value.
-    """
-    z_ref = np.asarray(net.z_ref)
-    if np.isnan(z_ref).all() and np.isfinite(s).all():
-        if z0 is None:
-            raise ValueError(
-                "No port has a reference impedance (z_ref is NaN: wave ports "
-                "without voltage_path), so S is normalized to unit modal power "
-                "and has no impedance to fit it on. Pass z0= (e.g. z0=50.0) to "
-                "fit S unchanged under that nominal label, or give each WavePort "
-                "a voltage_path."
-            )
-        return s, _z0(z0, net.ports), True
-    missing = [
-        p for p, bad in zip(net.ports, np.isnan(z_ref).any(axis=0), strict=True) if bad
-    ]
-    if missing:
-        raise ValueError(
-            f"Port {', '.join(map(repr, missing))} has no reference impedance "
-            "(z_ref is NaN): a LumpedPort without a resistance, a WavePort "
-            "without a voltage_path, or a FloquetPort whose order is evanescent "
-            "somewhere in the band. S cannot be fitted on a reference without "
-            "one; give the port a resistance or a voltage_path, or for a "
-            "FloquetPort drop the port or narrow the grid."
-        )
-    if z0 is None:
-        constant = constant_real(z_ref)
-        if constant is None:
-            found = np.unique(np.round(z_ref, 12))
-            raise ValueError(
-                "A rational model needs one constant real reference impedance "
-                f"per port, but z_ref takes the values {found.tolist()} ohm. "
-                "Pass z0= (e.g. z0=50.0) to renormalize S to it before the fit."
-            )
-        return s, constant, False
-    z = _z0(z0, net.ports)
-    return np.asarray(net.renormalize(z).values), z, False
-
-
-def _z0(z0: Any, ports: tuple[str, ...]) -> np.ndarray:
-    """``z0`` checked: one real value > 0, or one per port; ``(n_ports,)``."""
-    try:
-        z = np.asarray(z0)
-        ok = (
-            not np.iscomplexobj(z)
-            and z.dtype != bool
-            and z.ndim <= 1
-            and (z.ndim == 0 or z.shape == (len(ports),))
-        )
-        z = z.astype(float) if ok else z
-    except (TypeError, ValueError):
-        ok = False
-    if not ok or not (np.isfinite(z).all() and (z > 0).all()):
-        raise ValueError(
-            "fit_rational z0 must be one real reference impedance > 0 ohm, or "
-            f"one per port ({', '.join(map(repr, ports))}); got {z0!r}."
-        )
-    return np.broadcast_to(z, (len(ports),)).copy()
 
 
 @dataclasses.dataclass(frozen=True)

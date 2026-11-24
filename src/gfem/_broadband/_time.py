@@ -23,11 +23,10 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any, Literal
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 
-from gfem._broadband._reference import constant_real
+from gfem._broadband._reference import resolve
 from gfem._checks import is_traced, static_float
 from gfem._text import hertz, hertz_band
 from gfem.broadband import TimeResponse
@@ -85,7 +84,8 @@ def _low_pass(
 ) -> TimeResponse:
     zero, positive, df = _harmonic_grid(net.frequency, kind)
     n = _n_time(n_time, len(positive), f"{kind}_response")
-    s, z_ref, excited = _reference(net, z0, f"{kind}_response")
+    ref = resolve(net, z0, f"{kind}_response", nominal_z0=False)
+    s = ref.network.values
     s_pos = s[jnp.asarray(positive)]
     if zero is None:
         # S is Hermitian, so Re S is even in f: the polynomial in f^2 through
@@ -104,9 +104,9 @@ def _low_pass(
     return TimeResponse(
         time=_time_axis(n, df),
         values=values,
-        z_ref=z_ref,
+        z_ref=ref.z_ref,
         ports=net.ports,
-        excited=excited,
+        excited=ref.network.excited,
         kind=kind,
         mode="low_pass",
     )
@@ -117,17 +117,19 @@ def _band_pass(
 ) -> TimeResponse:
     order, df = _even_grid(net.frequency)
     n = _n_time(n_time, len(order), "impulse_response")
-    s, z_ref, excited = _reference(net, z0, "impulse_response")
+    ref = resolve(net, z0, "impulse_response", nominal_z0=False)
     window = np.kaiser(len(order), beta)
-    h = jnp.fft.ifft(s[jnp.asarray(order)] * window[:, None, None], n=n, axis=0)
+    h = jnp.fft.ifft(
+        ref.network.values[jnp.asarray(order)] * window[:, None, None], n=n, axis=0
+    )
     # the kernel's peak is at t = 0: sum(w) / n
     values = jnp.fft.fftshift(jnp.abs(h), axes=0) / (window.sum() / n)
     return TimeResponse(
         time=_time_axis(n, df),
         values=values,
-        z_ref=z_ref,
+        z_ref=ref.z_ref,
         ports=net.ports,
-        excited=excited,
+        excited=ref.network.excited,
         kind="impulse",
         mode="band_pass",
     )
@@ -250,99 +252,4 @@ def _even_grid(frequency: tuple[float, ...]) -> tuple[np.ndarray, float]:
         "not evenly spaced. Solve on np.linspace(f_lo, f_hi, n), or resample S "
         "explicitly through a rational model: "
         "s.fit_rational().network(np.linspace(f_lo, f_hi, n))."
-    )
-
-
-def _reference(
-    net: NetworkParameters, z0: Any, what: str
-) -> tuple[jax.Array, jax.Array, tuple[str, ...]]:
-    """S on one real reference per port, that reference ``(n_ports,)``, excited.
-
-    ``z0`` given: S renormalized to it (every port excited). Otherwise
-    ``z_ref`` must be one real value per port over frequency, to round-off
-    (the port's mean real value), or NaN for every port (S on unit modal
-    power; the reference stays NaN).
-    """
-    n_ports = len(net.ports)
-    z_ref = net.z_ref
-    if not is_traced(z_ref):
-        _check_defined(net, np.asarray(z_ref), z0, what)
-    if z0 is not None:
-        if not is_traced(z0):
-            arr = np.asarray(z0)
-            if (
-                np.iscomplexobj(arr)
-                or arr.dtype == bool
-                or arr.ndim > 1
-                or (arr.ndim == 1 and arr.shape != (n_ports,))
-                or not np.isfinite(arr.astype(float)).all()
-                or not (arr.astype(float) > 0).all()
-            ):
-                raise ValueError(
-                    f"{what} z0 is one real reference impedance > 0 ohm, or one "
-                    f"per port ({n_ports}: {', '.join(map(repr, net.ports))}); "
-                    f"got {z0!r}."
-                )
-        z = jnp.broadcast_to(jnp.asarray(z0, dtype=float), (n_ports,))
-        renormalized = net.renormalize(z)
-        return renormalized.values, z, renormalized.excited
-    if is_traced(z_ref):
-        # a traced reference cannot be checked to be one real value per port,
-        # and reading it as one would be wrong physics for a complex Z_PV
-        raise ValueError(
-            f"{what} needs one real reference impedance per port, constant over "
-            "frequency, but z_ref is traced by JAX (jax.jit, jax.grad or "
-            "jax.vmap) and cannot be checked. Pass z0= (e.g. z0=50.0) to "
-            "renormalize S to one fixed real reference first."
-        )
-    arr = np.asarray(z_ref)
-    if np.isnan(arr).all():
-        return net.values, jnp.full(n_ports, jnp.nan), net.excited
-    constant = constant_real(arr)
-    if constant is None:
-        found = np.unique(np.round(arr, 12))
-        raise ValueError(
-            f"{what} needs one real reference impedance per port, constant over "
-            f"frequency, but z_ref takes the values {found.tolist()} ohm (a "
-            "WavePort's Z_PV is complex and frequency dependent). Pass z0= "
-            "(e.g. z0=50.0) to renormalize S to one reference first."
-        )
-    return net.values, jnp.asarray(constant), net.excited
-
-
-def _check_defined(
-    net: NetworkParameters, z_ref: np.ndarray, z0: Any, what: str
-) -> None:
-    """Refuse a port without a reference impedance where one is needed.
-
-    Every port NaN (with finite S) is a modal network: fine without ``z0``,
-    which cannot renormalize it. Some ports NaN: never.
-    """
-    nan = np.isnan(z_ref).any(axis=0)
-    if not nan.any():
-        return
-    finite = is_traced(net.values) or np.isfinite(np.asarray(net.values)).all()
-    if np.isnan(z_ref).all() and finite:
-        if z0 is None:
-            return
-        raise ValueError(
-            "No port has a reference impedance (z_ref is NaN: wave ports "
-            "without voltage_path), so S cannot be renormalized to z0. Call "
-            f"{what} without z0 for the response of S on unit modal power, or "
-            "give each WavePort a voltage_path."
-        )
-    missing = [p for p, bad in zip(net.ports, nan, strict=True) if bad]
-    where = np.isnan(z_ref[:, nan]).any(axis=1)
-    freqs = ", ".join(
-        hertz(float(f))
-        for f, bad in zip(np.asarray(net.frequency), where, strict=True)
-        if bad
-    )
-    raise ValueError(
-        f"Port {', '.join(map(repr, missing))} has no reference impedance "
-        "(z_ref is NaN): a LumpedPort without a resistance, a WavePort "
-        "without a voltage_path beside ports with one, or a FloquetPort whose "
-        f"order is evanescent at {freqs}. Its waves are undefined, so {what} "
-        "has no response for it; give the port a resistance or a "
-        "voltage_path, or for a FloquetPort drop the port or narrow the grid."
     )
