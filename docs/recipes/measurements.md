@@ -297,8 +297,13 @@ p_sub = 2 * (2 * np.pi * f) * tan_delta * w["substrate"]
   `power_flow`: a driven result does not carry its materials.
 - **Physical regions only.** The regions of a {term}`perfectly matched layer`
   get no entry: the field there is not physical.
-- **Not differentiable.** `electric_energy` inside `jax.grad` raises
-  `gfem.NonDifferentiableError`.
+- **Differentiable.** `electric_energy` inside `jax.grad`, `jax.jit` or
+  `jax.vmap` has a gradient with respect to the field (a driven field or a
+  mode's), the permittivity of a region without a law, a law's parameters,
+  a mode's frequency and the node coordinates. The loss tangent, the
+  conductivity and the permeability enter through the field only. The field
+  of an adaptive sweep raises `gfem.NonDifferentiableError`: solve with
+  `sweep="uniform"` at the frequency you differentiate.
 - **A region with a permittivity law** is weighed with $\operatorname{Re} \mathrm{d}(\omega\varepsilon)/\mathrm{d}\omega$ at the
   field's frequency, the energy of a dispersive medium. Where that weight is
   not positive (loss dominates the law) it raises `ValueError`; model such a

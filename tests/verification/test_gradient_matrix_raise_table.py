@@ -203,6 +203,17 @@ TABLE_LAW = gfem.PermittivityLaw(
         gfem.DjordjevicSarkar(delta_eps=1.1, low_frequency=1e3, high_frequency=1e12),
     ],
 )
+#: `TABLE_LAW` with the pole off the heat cases' frequency: the energy is
+#: undefined inside a pole's linewidth.
+ENERGY_LAW = dataclasses.replace(
+    TABLE_LAW,
+    terms=[
+        dataclasses.replace(t, resonance_frequency=30e9)
+        if isinstance(t, gfem.Lorentz)
+        else t
+        for t in TABLE_LAW.terms
+    ],
+)
 LAW_KINDS = [
     ("law", "core", "eps_inf"),
     *(
@@ -983,7 +994,11 @@ _PROBLEM_KINDS = {
 }
 EXPECTED |= {
     (name, out, kind): (
-        RAISES if kind == ("nodes",) else GRADIENT if kind in reads else ZERO
+        RAISES
+        if kind == ("nodes",) and not name.startswith("electric_energy")
+        else GRADIENT
+        if kind in reads or kind == ("nodes",)
+        else ZERO
     )
     for name, leaves in THERMAL_READS.items()
     for out, reads in leaves.items()
@@ -1122,6 +1137,10 @@ HEAT_READS = {
     "dissipated_power": {"lower": _EM_READS, "upper": set(), "sheet": _EM_READS},
     "dissipated_power_law": dict.fromkeys(("lower", "upper", "sheet"), _LAW_READS),
     "dissipated_power_blend": dict.fromkeys(("lower", "upper", "sheet"), _BLEND_READS),
+    # the energy of every region reads the solve's inputs through the field
+    # and its own permittivity (a law's weight in JAX), and has node terms
+    "electric_energy": dict.fromkeys(("lower", "upper"), _EM_READS),
+    "electric_energy_law": dict.fromkeys(("lower", "upper"), _LAW_READS),
     "electromagnetic_heating": {
         "temperature.coefficients": _HEATING_READS | {_K, _SINK},
         "temperature.mesh.nodes": set(),
@@ -1135,14 +1154,22 @@ HEAT_READS = {
 }
 EXPECTED |= {
     (name, out, kind): (
-        RAISES if kind == ("nodes",) else GRADIENT if kind in reads else ZERO
+        RAISES
+        if kind == ("nodes",) and not name.startswith("electric_energy")
+        else GRADIENT
+        if kind in reads or kind == ("nodes",)
+        else ZERO
     )
     for name, leaves in HEAT_READS.items()
     for out, reads in leaves.items()
     for kind in [
         *HEAT_KINDS,
         *(DRIVE_KINDS if name == "electromagnetic_heating" else ()),
-        *(HEAT_LAW_KINDS if name == "dissipated_power_law" else ()),
+        *(
+            HEAT_LAW_KINDS
+            if name in ("dissipated_power_law", "electric_energy_law")
+            else ()
+        ),
         *(HEAT_BLEND_KINDS if name == "dissipated_power_blend" else ()),
     ]
 }
@@ -1879,7 +1906,17 @@ def heat_cases(sheet_mesh):
             scheme="index",
         ),
     )
+
+    def stored(model, _drive):
+        field = gfem.solve(model, problem).e_field(HEAT_FREQUENCY, "p1")
+        return gfem.electric_energy(field, model=model)
+
+    energy_law = model.with_material(
+        "upper", gfem.Material(eps_r=ENERGY_LAW, thermal_conductivity=1.0)
+    )
     return {
+        "electric_energy": (model, stored),
+        "electric_energy_law": (energy_law, stored),
         "dissipated_power": (model, lost),
         "dissipated_power_law": (law, lost),
         "dissipated_power_blend": (blend, lost),
@@ -2697,16 +2734,21 @@ def _out_probe_in_the_node_coordinates(request):
     jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
 
 
-def _out_electric_energy_of_a_traced_field(request):
-    # forward only: the measurement takes fixed fields and models
-    model = request.getfixturevalue("driven_model")
-    problem = gfem.Driven(frequency=5e9, keep_fields=True)
-    eps = model.materials["dielectric"].eps_r
+def _out_electric_energy_of_a_reduced_field(request):
+    # an adaptive sweep's basis holds no adjoint of the energy
+    model = request.getfixturevalue("wave_model")
+    problem = gfem.Driven(
+        frequency=(18e9, 20e9, 22e9),
+        sweep="adaptive",
+        samples=(18e9, 22e9),
+        keep_fields=20e9,
+    )
+    eps = model.materials["core"].eps_r
 
     def objective(e):
-        m = model.with_material("dielectric", gfem.MaterialField(eps_r=e))
-        field = gfem.solve(m, problem).e_field(5e9, "p1")
-        return gfem.electric_energy(field, model=m)["dielectric"]
+        m = model.with_material("core", gfem.MaterialField(eps_r=e))
+        field = gfem.solve(m, problem).e_field(20e9, "p1")
+        return gfem.electric_energy(field, model=m)["core"]
 
     jax.make_jaxpr(jax.grad(objective))(eps)
 
@@ -3703,10 +3745,10 @@ OUT_OF_SCOPE = [
         r"mesh node coordinates.*stop_gradient",
     ),
     (
-        "electric energy of a field",
-        _out_electric_energy_of_a_traced_field,
+        "electric energy of an adaptive sweep's field",
+        _out_electric_energy_of_a_reduced_field,
         gfem.NonDifferentiableError,
-        r"gfem\.electric_energy is not differentiable",
+        r"adaptive sweep.*frozen reduced basis.*sweep=\"uniform\"",
     ),
     (
         "cross_sections x design in the truncation layer",

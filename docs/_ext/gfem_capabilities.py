@@ -165,7 +165,14 @@ ROWS = {
         recipe="recipes/measurements",
         front=False,
     ),
-    # the loss of a driven field and the heat it gives: Capabilities page only
+    # the energy of a field, the loss of a driven field and the heat it
+    # gives: Capabilities page only
+    "electric_energy": Row(
+        "Electric energy",
+        "energy per region of a driven or mode field",
+        recipe="recipes/measurements",
+        front=False,
+    ),
     "dissipated_power": Row(
         "Dissipated power",
         "loss per region and sheet of a driven field",
@@ -274,7 +281,12 @@ PROBLEMS = {
     "driven_magnetic_dipole": Problem(
         "driven_magnetic_dipole", "emitted_power.d", "wave"
     ),
-    # the loss of a driven field (also beside a law), and its heat under a drive
+    # the energy of a field (also beside a law; a mode field and a periodic
+    # cell are cell-only keys), the loss of a driven field and its heat
+    "electric_energy": Problem("electric_energy", "lower"),
+    "electric_energy_law": Problem("electric_energy", "lower"),
+    "electric_energy_eigenmode": Problem("electric_energy", "lower"),
+    "electric_energy_periodic": Problem("electric_energy", "lower"),
     "dissipated_power": Problem("dissipated_power", "lower"),
     "dissipated_power_law": Problem("dissipated_power", "lower"),
     "dissipated_power_blend": Problem("dissipated_power", "lower"),
@@ -511,9 +523,9 @@ RAISES_LABELS = {
     "probe x node coordinates": (
         "A field value at points (`Field.at`), with respect to node coordinates"
     ),
-    "electric energy of a field": (
-        "The electric energy of a field per region (`electric_energy`), with "
-        "respect to the field or the model"
+    "electric energy of an adaptive sweep's field": (
+        "The electric energy of a field per region (`electric_energy`) of a "
+        "field of an adaptive sweep, with respect to anything the field depends on"
     ),
     "cross_sections x design in the truncation layer": (
         "Cross sections (`cross_sections`), with respect to a material field "

@@ -264,6 +264,15 @@ Material data:
 
 Design:
 
+- **The electric energy differentiates.** `gfem.electric_energy` may be
+  traced by `jax.grad`, `jax.jit` and `jax.vmap`, instead of raising, in the
+  field's coefficients (a driven field or an eigenmode's), the permittivity
+  of a region without a law (a scalar, per element or per axis), a
+  permittivity law's parameters, a mode field's frequency and the node
+  coordinates. The field of an adaptive sweep is read but raises
+  `gfem.NonDifferentiableError`; solve with `sweep="uniform"`
+  ({doc}`../recipes/measurements`).
+
 - **Minimum width and spacing in the gradient.**
   `gfem.design.length_scale_constraints(blur, min_width=..., min_spacing=...)`
   turns a layer grid's minimum line width and minimum spacing into two

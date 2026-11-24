@@ -42,7 +42,8 @@ GRID = {
     "eigenmode_periodic_bloch": (V, V, V, V),
     "eigenmode_participation": (V, V, V, V),
     "eigenmode_field": (V, V, V, R),
-    # the heat kernel has no shape terms
+    # the energy has node terms; the heat kernel has none
+    "electric_energy": (V, V, V, V),
     "dissipated_power": (V, V, V, R),
     "electromagnetic_heating": (V, V, V, R),
     # sources: the plane wave's load and the magnetic dipole's have no node
@@ -117,6 +118,7 @@ def test_principal_value_cells_fold_into_their_property_column(derived):
         ("eigenmode", "conductivity"),
         ("electrostatic", "eps_r"),
         ("eigenmode_participation", "eps_r"),
+        ("electric_energy", "eps_r"),
     }
     for row in derived["rows"]:
         for cell in row["cells"]:
@@ -146,6 +148,8 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
         ("driven_periodic_plain", ["permittivity-law parameters"], 1),
         ("eigenmode_participation", ["lumped values"], 6),
         ("eigenmode_field", ["lumped values"], 1),
+        ("electric_energy", ["loss tangent"], 1),
+        ("electric_energy", ["permittivity-law parameters"], 1),
         ("dissipated_power", ["loss tangent"], 1),
         ("dissipated_power", ["lumped values"], 1),
         ("dissipated_power", ["permittivity-law parameters"], 1),
@@ -192,6 +196,11 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
         ),
         "Eigenmode, participations with respect to the lumped values (direct solver)",
         "Eigenmode, mode field with respect to the lumped values (direct solver)",
+        "Electric energy with respect to the loss tangent (direct solver)",
+        (
+            "Electric energy with respect to the permittivity-law parameters "
+            "(direct solver)"
+        ),
         (
             "Dissipated power with respect to the loss tangent "
             "(principal values only, direct solver)"
