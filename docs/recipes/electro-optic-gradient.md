@@ -121,7 +121,7 @@ print(f"phase at 1 V: {float(value):.5f} rad")
 ```
 
 ```text
-phase at 1 V: -0.19603 rad
+phase at 1 V: -0.19565 rad
 ```
 
 - The phase is negative on arm a: the static field there points from the
@@ -156,15 +156,15 @@ print(f"V dphi/dV / phi:         {float(volts * d_volts / value):.6f}")
 
 ```text
 sum r dphi/dr / phi:     1.000000
-  r13: +0.0191
-  r22: +0.0000
-  r33: +0.9643
-  r51: +0.0166
-sum eps dphi/deps / phi: +4.8e-15
-  crystal x: +0.0258
-  crystal y: -0.0002
-  crystal z: -0.1099
-  oxide:     +0.0893
+  r13: +0.0188
+  r22: -0.0000
+  r33: +0.9645
+  r51: +0.0167
+sum eps dphi/deps / phi: +1.0e-15
+  crystal x: +0.0232
+  crystal y: +0.0002
+  crystal z: -0.1086
+  oxide:     +0.0901
   air:       -0.0050
 V dphi/dV / phi:         1.000000
 ```
@@ -239,19 +239,19 @@ for step in (1e-9, 2e-9):  # m
 ```
 
 ```text
-d ln|dn/dV| / d gap: -0.2945 per um
-against a difference at 1 nm: 9.5e-08
-against a difference at 2 nm: 9.7e-01
+d ln|dn/dV| / d gap: -0.2949 per um
+against a difference at 1 nm: 9.6e-08
+against a difference at 2 nm: 3.8e-07
 ```
 
 A wider gap weakens the field: about 30 % less shift per µm of gap, to
-first order. At a 1 nm step the difference agrees with the gradient. At
-2 nm it does not: the window and the static mesh are separate meshes, and
-between 1 and 2 nm one of the window's points crosses a face of the moving
-static mesh, where the shift jumps slightly. The gradient is that of the
-smooth piece the design is on. Check it with steps that stay on that piece,
-or with the optical model on the static model's own mesh, whose points never
-leave their elements.
+first order. The difference agrees with the gradient at both steps. The
+window and the static mesh are separate meshes: a step large enough to carry
+one of the window's points across a face of the moving static mesh would
+make the shift jump slightly there, and the gradient is that of the smooth
+piece the design is on. Check it with steps that stay on that piece, or with
+the optical model on the static model's own mesh, whose points never leave
+their elements.
 
 ## The ridge width, by a difference over remeshes
 
@@ -281,7 +281,7 @@ print(f"d ln|dn/dV| / d width: {float(d_width / s0) * um:+.4f} per um")
 ```
 
 ```text
-d ln|dn/dV| / d width: -0.0136 per um
+d ln|dn/dV| / d width: +0.0703 per um
 ```
 
 Each remesh moves every node, so such a difference is noisy at about
