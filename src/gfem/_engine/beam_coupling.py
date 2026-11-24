@@ -112,26 +112,6 @@ class CouplingLayer:
         return Background(self.material)
 
 
-def host_field(
-    beam: GaussianBeam | IncidentField,
-    material: Material,
-    points: np.ndarray,
-    frequency: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    r"""The beam's :math:`E` and :math:`\nabla\times E` at ``points``, NumPy.
-
-    A `gfem.GaussianBeam` in closed form; a `gfem.IncidentField`'s curl by
-    central differences of its values.
-    """
-    background = Background(material)
-    if isinstance(beam, GaussianBeam):
-        return _beam.field_and_curl(beam, background, points, frequency)
-    e = _incident.values(beam, background, points, frequency)
-    h = _incident.magnetic(beam, background, points, frequency)
-    mu = const.mu_0 * float(np.real(complex(np.asarray(material.mu_r))))
-    return e, -1j * 2 * math.pi * frequency * mu * h
-
-
 # --- the layer ----------------------------------------------------------------------
 
 
@@ -316,7 +296,7 @@ def _face_flux(
         if not constant_isotropic(material):
             continue
         rows = regions[owner] == region
-        e, curl = host_field(beam, material, centroid[rows], frequency)
+        e, curl = _incident.field_and_curl(beam, material, centroid[rows], frequency)
         mu = const.mu_0 * float(np.real(complex(np.asarray(material.mu_r))))
         h = curl / (-1j * omega * mu)
         poynting = 0.5 * np.real(np.cross(e, np.conj(h)))
@@ -417,7 +397,7 @@ def _check_walls(
         return
     nodes = np.asarray(nodes, float)
     tets = np.asarray(model.mesh.tetrahedra)[layer.tetrahedra]
-    peak_e, peak_curl = host_field(
+    peak_e, peak_curl = _incident.field_and_curl(
         beam, layer.material, nodes[tets].mean(axis=1), frequency
     )
     scale = {"PEC": np.abs(peak_e).max(), "PMC": np.abs(peak_curl).max()}
@@ -442,7 +422,7 @@ def _check_walls(
         n = np.cross(x[:, 1] - x[:, 0], x[:, 2] - x[:, 0])
         n /= np.linalg.norm(n, axis=1)[:, None]
         points = np.concatenate([x.mean(axis=1), *(x[:, j] for j in range(3))])
-        e, curl = host_field(beam, layer.material, points, frequency)
+        e, curl = _incident.field_and_curl(beam, layer.material, points, frequency)
         value = e if kind == "PEC" else curl
         tangential = np.cross(np.tile(n, (4, 1)), value)
         ratio = float(np.abs(tangential).max() / max(scale[kind], 1e-300))

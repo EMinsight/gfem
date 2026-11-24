@@ -1064,7 +1064,6 @@ def cross_sections(
         NonDifferentiableError: While `jax.grad` traces it: a material design
             with an element in the truncation layer, or the node coordinates.
     """
-    from gfem._sources import INCIDENT
     from gfem.model import Model
     from gfem.results import DrivenResult
 
@@ -1084,7 +1083,6 @@ def cross_sections(
             "gfem.IncidentField)."
         )
     wave = result.sources[source]
-    assert isinstance(wave, INCIDENT)  # noqa: S101 - _column_kind checked
     frequencies = [f for f, label in result.kept if label == source]
     if not frequencies:
         raise ValueError(
@@ -1157,15 +1155,14 @@ def _intensity(
         ValueError: Missing for an `gfem.IncidentField`, given for another
             source, or not positive and finite.
     """
-    from gfem import _beam
-    from gfem._incident import impedance_of, incidence_material
-    from gfem._sources import GaussianBeam, IncidentField, PlaneWave
+    from gfem import _incident
 
     n = len(frequencies)
-    if isinstance(source, IncidentField):
+    own = _incident.intensity(source, background, frequencies)
+    if own is None:
         if intensity is None:
             raise ValueError(
-                f"cross_sections of the IncidentField {source.name!r} needs "
+                f"cross_sections of the {type(source).__name__} {source.name!r} needs "
                 "intensity= (W/m², a number or one per kept frequency): gfem "
                 "cannot tell the intensity of a field it only evaluates."
             )
@@ -1191,14 +1188,7 @@ def _intensity(
             f"intensity of the {type(source).__name__} {source.name!r} is its "
             "own (see gfem.cross_sections)."
         )
-    if isinstance(source, PlaneWave):
-        eta = impedance_of(incidence_material(source, background))
-        return np.full(n, abs(source.amplitude) ** 2 / (2 * eta))
-    assert isinstance(source, GaussianBeam)  # noqa: S101 - the incident sources
-    eta = _beam.impedance(source, background)
-    return np.array(
-        [_beam.focal_field(source, background, f) ** 2 / (2 * eta) for f in frequencies]
-    )
+    return own
 
 
 # --- region mean -----------------------------------------------------------------

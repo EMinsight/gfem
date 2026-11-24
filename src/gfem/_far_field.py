@@ -30,14 +30,14 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.constants as const
 
-from gfem import _pml
+from gfem import _incident, _pml
 from gfem._adjoint.measure import measure
 from gfem._adjoint.solve_vjp import input_kind
 from gfem._checks import check_fixed, is_traced
 from gfem._dim2 import refuse_entry
 from gfem._power_flow import _model_role, _Role, concrete_field, side_names
 from gfem._pytree import register_fields
-from gfem._sources import DIPOLES, INCIDENT, PlaneWave
+from gfem._sources import DIPOLES, INCIDENT
 from gfem.errors import NonDifferentiableError
 from gfem.mesh import Mesh
 
@@ -424,9 +424,8 @@ def _normalization(
     if isinstance(source, DIPOLES):
         emitted = jnp.asarray(result.emitted_power[name])[np.asarray(rows)]
         return emitted, emitted, None
-    if isinstance(source, PlaneWave):
-        return None, None, jnp.full(len(rows), abs(source.amplitude))
-    return None, None, None
+    peak = _incident.amplitude(source)
+    return None, None, None if peak is None else jnp.full(len(rows), peak)
 
 
 def _measure(

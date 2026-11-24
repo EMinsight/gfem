@@ -48,13 +48,13 @@ from __future__ import annotations
 import dataclasses
 import math
 from collections.abc import Callable, Iterable, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeGuard
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from gfem import _beam, _incident
+from gfem import _incident
 from gfem._background import Background, lossless
 from gfem._boundaries import (
     PEC,
@@ -71,7 +71,6 @@ from gfem._incident import Incident, IncidentPart, layered
 from gfem._linalg.base import free_mask
 from gfem._linalg.layout import ONE_PROCESS
 from gfem._materials import Material, MaterialField, _is_law
-from gfem._sources import GaussianBeam
 from gfem._transfer_matrix import layer_index, number
 from gfem.mesh import _TET_FACES, Mesh
 from gfem.model import Model
@@ -138,7 +137,7 @@ def same_material(material: Any, layer: Material) -> bool:
         return False
 
 
-def constant_isotropic(material: Any) -> bool:
+def constant_isotropic(material: Any) -> TypeGuard[Material]:
     """Whether ``material`` is a `Material` of one constant isotropic pair.
 
     Its ``eps_r`` and ``mu_r`` are numbers: no permittivity law, no tensor,
@@ -690,9 +689,8 @@ def check_contact(
     if not sources or background is None:
         return
     for source in sources:
-        if isinstance(source, GaussianBeam):
-            for f in frequencies:
-                _beam.check_waist(source, background, f)
+        for f in frequencies:
+            _incident.check_frequency(source, background, f)
     checks = _checks(model, background)
     if not checks:
         return

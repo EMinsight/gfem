@@ -30,7 +30,7 @@ from __future__ import annotations
 import dataclasses
 import importlib
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, overload
 
 import jax
 import jax.numpy as jnp
@@ -68,6 +68,14 @@ class _Role(NamedTuple):
     description: str
 
 
+@overload
+def side_names(
+    side: Any, who: str
+) -> tuple[str, ...] | Callable[[np.ndarray], np.ndarray]: ...
+@overload
+def side_names(
+    side: Any, who: str, *, default: str
+) -> tuple[str, ...] | Callable[[np.ndarray], np.ndarray] | None: ...
 def side_names(
     side: Any, who: str, *, default: str | None = None
 ) -> tuple[str, ...] | Callable[[np.ndarray], np.ndarray] | None:
