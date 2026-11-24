@@ -21,6 +21,7 @@ import structured_meshes as sm
 import gfem
 from gfem import _codec
 
+DATA = Path(__file__).parents[2] / "docs" / "tutorials" / "data"
 THZ = 1e12
 LORENTZ = gfem.Lorentz(delta_eps=1.5, resonance_frequency=300 * THZ, damping=1 * THZ)
 
@@ -201,3 +202,60 @@ def test_a_driven_sweep_outside_warns_once(line, sweep):
     inside = gfem.Driven(frequency=[2 * GHZ, 4 * GHZ, 6 * GHZ], sweep=sweep)
     _, messages = _solve_noting(model, inside)
     assert messages == []
+
+
+def test_a_2d_driven_sweep_outside_warns():
+    mesh = gfem.Mesh.from_gmsh(DATA / "line2d.msh", length_unit="mm")
+    model = gfem.Model(
+        mesh,
+        materials={"feed": gfem.Material(), "design": gfem.Material(eps_r=FITTED)},
+        ports=(gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")),
+    )
+    _, messages = _solve_noting(model, gfem.Driven(frequency=[1 * GHZ, 4 * GHZ], polarization="Ez"))
+    assert messages == [
+        "region 'design': its permittivity law was fitted over 2-6 GHz, and this "
+        "driven solve reads it at 1 of 2 frequencies, 1 GHz. The law stays passive "
+        "there, but its accuracy is unknown. Narrow the frequencies or fit data "
+        "that cover them, or clear the range with "
+        "dataclasses.replace(law, frequency_range=None) once checked."
+    ]
+
+
+def _box_law(frequency_range):
+    # lossless, eps about 2 near 20 GHz: a closed box's lowest modes there
+    return gfem.PermittivityLaw(
+        eps_inf=1.0,
+        terms=[gfem.Lorentz(delta_eps=1.0, resonance_frequency=200 * GHZ, damping=0.0)],
+        frequency_range=frequency_range,
+    )
+
+
+def test_an_eigenmode_target_and_a_mode_outside_warn_once(tmp_path):
+    path = sm.write_msh22(
+        tmp_path / "box.msh",
+        sm.plate(10.0, 8.0, (("lower", 2.5), ("upper", 2.5)), (5, 4, 2)),
+    )
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={
+            # the target (20 GHz) lies outside the lower law's range
+            "lower": gfem.Material(eps_r=_box_law((1 * GHZ, 10 * GHZ))),
+            # the target lies inside the upper law's, its two modes outside
+            "upper": gfem.Material(eps_r=_box_law((19 * GHZ, 21 * GHZ))),
+        },
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top"), gfem.PEC("side")],
+    )
+    result, messages = _solve_noting(model, gfem.Eigenmode(target=20 * GHZ, n_modes=2))
+    found = np.sort(np.real(np.asarray(result.omega))) / (2 * np.pi)
+    assert found[0] < 19 * GHZ and found[1] > 21 * GHZ
+    target, modes = messages
+    assert target.startswith(
+        "region 'lower': its permittivity law was fitted over 1-10 GHz, and this "
+        "eigenmode target reads it at 20 GHz."
+    )
+    # the lower region is not repeated
+    assert "'lower'" not in modes
+    assert modes.startswith(
+        "region 'upper': its permittivity law was fitted over 19-21 GHz, and this "
+        "eigenmode reads it at 2 of 2 modes, "
+    )
