@@ -33,6 +33,7 @@ from gfem.bands import (  # noqa: E402
     band_diagram,
     wave_vector_path,
 )
+from gfem.broadband import RationalModel, TimeResponse  # noqa: E402
 from gfem.electro_optic import ElectroOpticShift, electro_optic_shift  # noqa: E402
 from gfem.errors import (  # noqa: E402
     AntiBoundRootWarning,
