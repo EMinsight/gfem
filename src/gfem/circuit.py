@@ -20,10 +20,11 @@ import collections
 import dataclasses
 import inspect
 import os
+import threading
 import types
 import weakref
 from collections.abc import Callable, Mapping
-from typing import Any, Literal
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -31,16 +32,28 @@ import numpy as np
 import scipy.constants
 
 from gfem._checks import is_traced
+from gfem._circuit_ports import (
+    DEFAULT_Z0,
+    Circuit,
+    check_circuit,
+    circuit_ports,
+    circuit_z0,
+)
 from gfem._text import hertz_band
 from gfem.model import FloquetPort, LumpedPort, Model, WavePort
 from gfem.options import SolverOptions
 from gfem.problems import Driven
-from gfem.results import NetworkParameters, _circuit_ports, _circuit_z0
+from gfem.results import NetworkParameters
 from gfem.solve import solve
 
-__all__ = ["SaxComponent"]
+try:  # public in jax.extend.core in newer JAX, in jax.core before
+    from jax.extend.core import get_opaque_trace_state as _trace_state
+except ImportError:
+    from jax.core import (
+        get_opaque_trace_state as _trace_state,  # ty: ignore[unresolved-import]
+    )
 
-Circuit = Literal["optical", "rf"]
+__all__ = ["SaxComponent"]
 
 #: Setting names the component owns: a model function may not use them.
 _RESERVED = ("wl", "f", "z0")
@@ -123,13 +136,14 @@ class SaxComponent:
     circuit is built, calls at new wavelengths and a block that is not
     differentiated cost no solve. A design computed inside `jax.grad`,
     `jax.jit` or `jax.vmap` is solved on every call, except that instances
-    fed the very same traced value (one tracer object, not an equal one)
-    share one forward and one backward solve, kept only while that tracer
-    lives. A call inside a transformation keeps no concrete entry. With an
-    adaptive template (``sweep="adaptive"``) without ``samples``, the
-    constructor's solve is the greedy sweep: its sampled frequencies are
-    frozen into `problem`, so every later solve, traced ones included, uses
-    them.
+    fed the very same traced value (one tracer object, not an equal one) in
+    the same trace share one forward and one backward solve, kept only while
+    that tracer lives; a `jax.jit` or `jax.lax.map` body that closes over
+    the value is a trace of its own. A call inside a transformation keeps no
+    concrete entry. With an adaptive template (``sweep="adaptive"``)
+    without ``samples``, the constructor's solve is the greedy sweep: its
+    sampled frequencies are frozen into `problem`, so every later solve,
+    traced ones included, uses them.
 
     Build the circuit once, outside the transformed function, and pass
     designs as instance settings.
@@ -212,7 +226,8 @@ class SaxComponent:
     _band: np.ndarray
     _solved: Driven
     _memo: collections.OrderedDict[tuple, NetworkParameters]
-    _traced: dict[tuple, tuple[list[weakref.ref], NetworkParameters]]
+    _traced: dict[tuple, tuple[list[weakref.ref], Any, NetworkParameters]]
+    _lock: threading.RLock
 
     def __init__(
         self,
@@ -225,12 +240,11 @@ class SaxComponent:
         cache: str | os.PathLike | None = None,
     ) -> None:
         """Validate, then solve at the defaults (see the class docstring)."""
-        if circuit not in ("optical", "rf"):
-            raise ValueError(
-                f"circuit must be 'optical' or 'rf', got {circuit!r}: it sets the "
-                "circuit's frequency setting, the time convention and the "
-                "normalization of S, so it is never inferred."
-            )
+        check_circuit(
+            circuit,
+            "the circuit's frequency setting, the time convention and the "
+            "normalization of S",
+        )
         if options is not None and not isinstance(options, SolverOptions):
             raise TypeError(
                 "SaxComponent options must be a gfem.SolverOptions, got "
@@ -239,7 +253,7 @@ class SaxComponent:
         function = _model_function(model)
         defaults = _defaults(function)
         built = _build(function, defaults)
-        exposed = _circuit_ports(ports, built.port_names)
+        exposed = circuit_ports(ports, built.port_names)
         _check_references(built, exposed, circuit)
         band, solved = _template(problem, exposed)
         greedy = None
@@ -256,7 +270,7 @@ class SaxComponent:
         middle = 0.5 * (band[0] + band[-1])
         default_f = float(band[np.argmin(np.abs(band - middle))])
         if circuit == "rf":
-            settings = {**defaults, "f": default_f, "z0": 50.0}
+            settings = {**defaults, "f": default_f, "z0": DEFAULT_Z0}
         else:
             settings = {**defaults, "wl": _wavelength(default_f)}
         fields = {
@@ -273,6 +287,8 @@ class SaxComponent:
             "_solved": solved,
             "_memo": collections.OrderedDict(),
             "_traced": {},
+            # reentrant: a weakref callback may run while the lock is held
+            "_lock": threading.RLock(),
             # SAX reads the settings from the signature; no return annotation,
             # since SAX takes one naming a model or callable for a factory
             "__signature__": inspect.Signature(
@@ -300,8 +316,8 @@ class SaxComponent:
 
         Raises:
             TypeError: A setting is not one of `settings`.
-            ValueError: ``wl`` is outside the band (outside JAX
-                transformations; NaN inside them).
+            ValueError: ``wl`` (``f``) is outside the band, checked before
+                the solve (outside JAX transformations; NaN inside them).
         """
         unknown = [k for k in settings if k not in self.settings]
         if unknown:
@@ -310,17 +326,25 @@ class SaxComponent:
                 f"settings are {', '.join(map(repr, self.settings))}."
             )
         values = {**self.settings, **settings}
-        # z0 is no solve input: checked first, so a bad one costs no solve
-        z0 = _circuit_z0(values["z0"]) if self.circuit == "rf" else None
-        network = self._network({k: values[k] for k in self._design})
+        # z0 and the frequency are no solve inputs: checked first, so a bad
+        # one costs no solve
         if self.circuit == "rf":
-            # renormalized on the band grid, before the interpolation
-            grid = network.to_sdict(circuit="rf", ports=self.ports, z0=z0)
-            return self._at(grid, jnp.asarray(values["f"], dtype=float))
-        grid = network.to_sdict(circuit="optical", ports=self.ports)
-        # the circuit's wavelength in um, as a frequency in Hz
-        frequency = scipy.constants.c / (jnp.asarray(values["wl"], dtype=float) * 1e-6)
-        return self._at(grid, frequency)
+            z0 = circuit_z0(values["z0"])
+            frequency = jnp.asarray(values["f"], dtype=float)
+        else:
+            z0 = None
+            # the circuit's wavelength in um, as a frequency in Hz
+            wl = jnp.asarray(values["wl"], dtype=float)
+            frequency = scipy.constants.c / (wl * 1e-6)
+        if not is_traced(frequency):
+            self._check_in_band(np.asarray(frequency))
+        network = self._network({k: values[k] for k in self._design})
+        # renormalized (RF) on the band grid, before the interpolation
+        grid = network.to_sdict(circuit=self.circuit, ports=self.ports, z0=z0)
+        keys = list(grid)
+        stacked = jnp.stack([grid[k] for k in keys], axis=-1)
+        out = _hermite(frequency, jnp.asarray(self._band), stacked)
+        return {k: out[..., i] for i, k in enumerate(keys)}
 
     def __repr__(self) -> str:
         """Circuit, ports, settings and band."""
@@ -353,14 +377,15 @@ class SaxComponent:
         self._keep(key, network)
         return network
 
-    def _key(self, design: dict[str, Any]) -> tuple[tuple, list[Any]] | None:
-        """The memo key of ``design`` and the band, with its tracers, or ``None``.
+    def _key(self, design: dict[str, Any]) -> _Key | None:
+        """The memo key of ``design`` and the band, or ``None``.
 
         A concrete setting is keyed by its exact value, a traced one by the
-        identity of its tracer (the tracers are returned, for the weak
-        references that guard the identities); a setting that is not a
-        number, an array of numbers, a string, a bool or ``None`` is never
-        keyed, so it is solved every time rather than mistaken.
+        identity of its tracer; the key then also holds the tracers, for the
+        weak references that guard the identities, and the current trace. A
+        setting that is not a number, an array of numbers, a string, a bool
+        or ``None`` is never keyed, so it is solved every time rather than
+        mistaken.
         """
         parts: list[Any] = [tuple(self._band)]
         tracers: list[Any] = []
@@ -377,63 +402,63 @@ class SaxComponent:
             if part is None:
                 return None
             parts.append((name, part))
-        return tuple(parts), tracers
+        # a design closed over inside jax.jit or jax.lax.map is solved there,
+        # into that inner trace's values, which another trace cannot use
+        trace = _trace_state() if tracers else None
+        return _Key(tuple(parts), tracers, trace)
 
-    def _lookup(self, key: tuple[tuple, list[Any]]) -> NetworkParameters | None:
+    def _lookup(self, key: _Key) -> NetworkParameters | None:
         """The kept network for ``key``, or ``None``."""
-        parts, tracers = key
-        if tracers:
-            hit = self._traced.get(parts)
-            # an id is reused once its tracer dies: the entry must hold these
-            if hit is not None and all(
-                ref() is tracer for ref, tracer in zip(hit[0], tracers, strict=True)
-            ):
-                return hit[1]
-            return None
-        if parts in self._memo:
-            self._memo.move_to_end(parts)
-            return self._memo[parts]
-        return None
+        with self._lock:
+            if key.tracers:
+                hit = self._traced.get(key.parts)
+                if hit is None:
+                    return None
+                refs, trace, network = hit
+                # an id is reused once its tracer dies: the entry must hold these
+                alive = all(
+                    ref() is tracer
+                    for ref, tracer in zip(refs, key.tracers, strict=True)
+                )
+                return network if alive and trace == key.trace else None
+            network = self._memo.get(key.parts)
+            if network is not None:
+                self._memo.move_to_end(key.parts)
+            return network
 
-    def _keep(
-        self, key: tuple[tuple, list[Any]] | None, network: NetworkParameters
-    ) -> None:
+    def _keep(self, key: _Key | None, network: NetworkParameters) -> None:
         """Keep ``network`` under ``key``, least recent out.
 
         A concrete key keeps NumPy arrays only, so a solve staged inside
-        `jax.jit` (tracers) is dropped. A traced key keeps the network
-        until one of its tracers dies, which is when the trace ends.
+        `jax.jit` (tracers) is dropped. A traced key keeps the network, for
+        calls in the same trace, until one of its tracers dies, which is
+        when the trace ends.
         """
         if key is None:
             return
-        parts, tracers = key
-        if tracers:
+        parts = key.parts
+        if key.tracers:
 
             def drop(_ref: weakref.ref, parts: tuple = parts) -> None:
-                self._traced.pop(parts, None)
+                with self._lock:
+                    self._traced.pop(parts, None)
 
-            self._traced[parts] = ([weakref.ref(t, drop) for t in tracers], network)
+            refs = [weakref.ref(t, drop) for t in key.tracers]
+            with self._lock:
+                self._traced[parts] = (refs, key.trace, network)
             return
         if is_traced((network.values, network.z_ref)):
             return
-        self._memo[parts] = dataclasses.replace(
+        kept = dataclasses.replace(
             network, values=np.asarray(network.values), z_ref=np.asarray(network.z_ref)
         )
-        while len(self._memo) > _MEMO_SIZE:
-            self._memo.popitem(last=False)
+        with self._lock:
+            self._memo[parts] = kept
+            self._memo.move_to_end(parts)
+            while len(self._memo) > _MEMO_SIZE:
+                self._memo.popitem(last=False)
 
     # -- the band -----------------------------------------------------------------
-
-    def _at(
-        self, grid: dict[tuple[str, str], jax.Array], frequency: jax.Array
-    ) -> dict[tuple[str, str], jax.Array]:
-        """``grid`` (S over the band) read at ``frequency`` (Hz, any shape)."""
-        if not is_traced(frequency):
-            self._check_in_band(np.asarray(frequency))
-        keys = list(grid)
-        stacked = jnp.stack([grid[k] for k in keys], axis=-1)
-        values = _hermite(frequency, jnp.asarray(self._band), stacked)
-        return {k: values[..., i] for i, k in enumerate(keys)}
 
     def _check_in_band(self, frequency: np.ndarray) -> None:
         """Raise if a concrete frequency lies outside the band."""
@@ -454,6 +479,14 @@ class SaxComponent:
                 f"({hertz_band(lo, hi)}); widen the frequencies of its Driven "
                 "template to cover it."
             )
+
+
+class _Key(NamedTuple):
+    """A memo key: band and design; a traced design's tracers and trace."""
+
+    parts: tuple
+    tracers: list[Any]
+    trace: Any
 
 
 def _model_function(model: Any) -> Callable[..., Any]:
@@ -679,10 +712,13 @@ def _hermite(x: jax.Array, xp: jax.Array, fp: jax.Array) -> jax.Array:
         inside = jnp.abs(flat - xp[0]) <= _SLACK * xp[0]
         out = jnp.broadcast_to(fp[0], flat.shape + tail)
     else:
+        # only the interval is clipped: a clip of x itself would halve the
+        # gradient at a band end, where min and max split a tie; t from the
+        # unclipped x extrapolates the end cubic over the slack
         xc = jnp.clip(flat, xp[0], xp[-1])
         i = jnp.clip(jnp.searchsorted(xp, xc, side="right") - 1, 0, n - 2)
         h = (xp[i + 1] - xp[i]).reshape(column)
-        t = ((xc - xp[i]) / (xp[i + 1] - xp[i])).reshape(column)
+        t = ((flat - xp[i]) / (xp[i + 1] - xp[i])).reshape(column)
         m = _slopes(xp, fp)
         t2, t3 = t * t, t * t * t
         out = (
