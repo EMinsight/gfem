@@ -767,7 +767,11 @@ def power_flow(
     The power comes from the residual of the discrete equations on the
     outside element layer, not from an integral of
     :math:`\frac{1}{2} \mathrm{Re}(E \times H^*)`, so
-    it is exact for the solved field (to the solver's residual) and the
+    it is exact for the solved field (to the solver's residual; with
+    ``"bddc_gmres"`` or ``"pmg_gmres"`` that is the true residual, not the
+    preconditioned one ``SolverOptions.tolerance`` bounds, and at low
+    frequency it divides by a small :math:`\omega`, see
+    `SolverOptions.tolerance`) and the
     same through every surface that encloses the same ports and losses.
     In lossy media it is the power entering ``side`` through its ports,
     minus what its elements and faces absorb (dielectric loss,

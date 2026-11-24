@@ -309,7 +309,17 @@ class SolverOptions:
             the fields: with ``"bddc_gmres"`` at the default 1e-6, S was
             within 7e-7 of the exact solve on a short line and within 5e-5
             on a 100-frequency microstrip sweep. To judge the accuracy,
-            solve again at a tighter ``tolerance`` and compare S. A direct
+            solve again at a tighter ``tolerance`` and compare S. At low
+            frequency the magnetic flux density of a field (`Field.b`) and
+            `gfem.power_flow` divide by the angular frequency
+            :math:`\omega`, so a residual left at the tolerance is
+            amplified by :math:`1/\omega` and they lose more digits than
+            S. On a 10 mm parallel-plate line at 500 kHz, the default left
+            B 1.7 % and the power through a cut 2.8e-3 W (per W incident)
+            off with ``"bddc_gmres"``, and 4e-4 and 1.2e-5 W with
+            ``"pmg_gmres"``. Each error falls with the tolerance: to read
+            them, solve again at 1e-8 or 1e-10 and compare the quantity
+            read, not only S. A direct
             solve, the default for a driven problem that fits in memory, is
             exact, except in an optimization of a model above the reuse
             floor, where a design may be solved on the factorization of an

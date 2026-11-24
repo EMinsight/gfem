@@ -1009,7 +1009,8 @@ class Driven:
         :math:`k_0 h_\mathrm{min} \approx 3 \times 10^{-8}`. With
         ``bddc_gmres`` or ``pmg_gmres``, S stays at
         ``SolverOptions.tolerance``, but a capacitance read from S is good only to about
-        ``tolerance`` / :math:`(\omega C Z_0)`.
+        ``tolerance`` / :math:`(\omega C Z_0)`, while B and `gfem.power_flow`
+        lose more (see ``SolverOptions.tolerance``).
 
         The wave ports' mode problem is not gauged and keeps its own floor:
         below the floor, the modes of a `gfem.WavePort`, and S through them, carry

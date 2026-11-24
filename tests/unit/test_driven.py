@@ -372,6 +372,26 @@ def test_the_iterative_tolerance_is_the_preconditioned_residual(
     np.testing.assert_allclose(s, direct, rtol=0, atol=10 * tolerance)
 
 
+@pytest.mark.parametrize("linear_solver", KRYLOV_KINDS)
+def test_a_tighter_tolerance_recovers_b_and_power_flow_at_low_frequency(
+    line, linear_solver
+):
+    # at 500 kHz B and the residual-based power flow divide by omega and lose
+    # more digits than S at the stop; a tighter tolerance brings both back to
+    # the gauged direct solve's (the default's drift is not pinned here)
+    problem = gfem.Driven(frequency=5e5, keep_fields=True)
+
+    def read(**options):
+        field = _s(line, problem, **options).e_fields[0]
+        power = gfem.power_flow(field, lambda c: c[:, 0] < 5e-3, model=line)
+        return float(power), np.asarray(field.b().coefficients)
+
+    power, b = read(gauge="auto")
+    power_it, b_it = read(linear_solver=linear_solver, tolerance=1e-10)
+    assert abs(power_it - power) < 1e-6
+    assert np.linalg.norm(b_it - b) <= 1e-5 * np.linalg.norm(b)
+
+
 def _count_prepares(monkeypatch) -> list[int]:
     """Spy on the driven sweep's `prepare`: one entry per base handle."""
     calls = []
