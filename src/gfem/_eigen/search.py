@@ -707,10 +707,14 @@ def _contraction(seed: complex, shift: complex, ritz: np.ndarray) -> float:
 
     ``|seed - shift|`` over the distance from ``shift`` to the nearest other
     Ritz value: the component of that mode grows unless the ratio is below 1.
+    The static fields at $k = 0$ count as a Ritz value.
     """
     others = ritz[np.abs(ritz - seed) > _MULTIPLE * abs(seed)]
-    if not len(others):
-        return 0.0
+    # the projection keeps the static fields out of the seed solve, not out
+    # of the seed: one that is not exactly divergence-free (a lossy cell
+    # whose loss varies in space) carries a part of them, which a shift
+    # nearer 0 than the seed amplifies at each refinement step
+    others = np.append(others, 0.0)
     nearest = float(np.min(np.abs(others - shift)))
     return abs(seed - shift) / nearest if nearest > 0 else math.inf
 

@@ -378,6 +378,15 @@ Circuits:
   "Circuits" section of the glossary, and a scikit-rf section in "Save and
   export results".
 
+Eigenmode solves:
+
+- **Rerun eigenmode results on lossy models with a target far below the
+  modes.** On a model whose loss varies in space (a lossy region beside a
+  lossless one), with the target well below the nearest mode, `gfem.Eigenmode`
+  could drop that mode without a word and return the next ones. It now
+  returns the modes nearest the target; such results from earlier versions
+  should be rerun.
+
 ## 0.2.0 (2026-11-23)
 
 - **Native 2D models.** A gmsh file of triangles at one height reads as a

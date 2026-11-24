@@ -18,6 +18,7 @@ import warnings
 import jax
 import jax.numpy as jnp
 import numpy as np
+import periodic_cases as pc
 import pytest
 import scipy.constants as const
 import structured_meshes as sm
@@ -319,6 +320,21 @@ def test_target_far_below_the_mode_still_finds_the_resonance(mesh):
     # the divergence-free projection keeps it out
     result = gfem.solve(terminated_line(mesh, 1000.0), gfem.Eigenmode(target=1e9))
     np.testing.assert_allclose(result.omega, line_roots(1000.0, [1]), rtol=1e-5)
+
+
+def test_a_lossy_pec_box_returns_its_nearest_mode(tmp_path):
+    # loss in a rod only: the projection keeps the static fields out of the
+    # seed solve but not out of the seed, and refined at a target far below
+    # it, the seed would drift to them
+    walls = [gfem.PEC(f"{a}_{side}") for a in "xyz" for side in ("min", "max")]
+    mesh = pc.rods_mesh(tmp_path)
+    problem = gfem.Eigenmode(pc.rods_frequency(0.02), n_modes=1)
+
+    def omega(tan_delta):
+        model = pc.rods(mesh, tan_delta=tan_delta).replace(boundaries=walls)
+        return np.asarray(gfem.solve(model, problem).omega)
+
+    np.testing.assert_allclose(omega(0.01).real, omega(0.0).real, rtol=1e-3)
 
 
 @pytest.mark.parametrize(

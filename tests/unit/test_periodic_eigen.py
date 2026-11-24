@@ -100,6 +100,20 @@ def test_lossy_bloch_mode_is_refined_two_sided(c3_mesh):
         eop.free_handle()
 
 
+def test_a_lossy_bloch_cell_returns_its_nearest_band(tmp_path):
+    # loss in the rod only: the seed is not exactly divergence-free, and
+    # refined at a target far below it, it would drift to the static fields
+    mesh = pc.rods_mesh(tmp_path)
+    k = (0.5 * math.pi / (pc.ROD_A * MM), 0.0, 0.0)
+    problem = gfem.Eigenmode(pc.rods_frequency(0.02), n_modes=1, wave_vector=k)
+
+    def omega(tan_delta):
+        model = pc.rods(mesh, tan_delta=tan_delta)
+        return np.asarray(gfem.solve(model, problem).omega)
+
+    np.testing.assert_allclose(omega(0.01).real, omega(0.0).real, rtol=1e-3)
+
+
 def test_a_discretization_keeps_the_spaces_of_eight_bloch_phase_sets(c2_mesh):
     # a band path: every wave vector adds its spaces to the discretization
     model = pc.c2(c2_mesh)
