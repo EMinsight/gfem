@@ -49,6 +49,8 @@ result.sweep.sampled_frequencies  # the frequencies solved in full, Hz
   to converge.
 - On a short grid the sweep may run out of frequencies. It then solves every
   one in full, as a uniform sweep does, and reports `converged=True`.
+- For time responses, sweep a {term}`harmonic grid`,
+  `df * np.arange(1, n + 1)` ({doc}`time-responses`).
 
 ## Set the accuracy of an adaptive sweep
 

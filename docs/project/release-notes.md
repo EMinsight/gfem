@@ -244,6 +244,29 @@ Design:
   fabrication model, minimum width and spacing constraints, fixed neighbours
   and acceptance checks; the glossary gains five terms.
 
+Broadband models:
+
+- **Time responses.** `NetworkParameters.step_response()` and
+  `impulse_response()` turn S on a harmonic grid ($f_k = k\,\Delta f$) into
+  a `gfem.TimeResponse`, as a network analyzer's low-pass mode does: the
+  reflected step (TDR), `TimeResponse.impedance(port)` for the impedance
+  profile, and the transmitted step (TDT). `impulse_response(mode="band_pass")`
+  takes any evenly spaced band, for guides with a cutoff. Both differentiate
+  with respect to S ({doc}`../recipes/time-responses`).
+- **Rational models.** `NetworkParameters.fit_rational()` fits S with poles
+  shared by every element, on one real reference impedance per port, and
+  makes the model passive by default: a `gfem.RationalModel`, evaluated with
+  `network(frequency)` and stepped exactly with `step_response(time)`. New
+  warnings `gfem.RationalFitNotConvergedWarning` and
+  `gfem.NonPassiveDataWarning`, and `gfem.PassivityEnforcementError`
+  ({doc}`../recipes/rational-model`).
+- **Netlists.** `RationalModel.to_spice()` and `to_verilog_a()` write the
+  model as a SPICE subcircuit and a Verilog-A module, with two pins per
+  port, checked in ngspice and VACASK.
+- **Documentation.** Two recipes, "See S in the time domain" and "Export S
+  as a SPICE or Verilog-A model"; a "Time responses" section of the
+  conventions and a "Broadband models" section of the glossary.
+
 ## 0.2.0 (2026-11-23)
 
 - **Native 2D models.** A gmsh file of triangles at one height reads as a

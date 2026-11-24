@@ -479,6 +479,45 @@ class SweepRankDeficientWarning(UserWarning):
     """
 
 
+class RationalFitNotConvergedWarning(UserWarning):
+    """A rational fit reached its pole cap above its tolerance.
+
+    `gfem.NetworkParameters.fit_rational` raised the order up to
+    ``max_poles`` without its largest per-element RMS error reaching
+    ``tolerance``. The most accurate model tried is still returned; its
+    ``fit_error`` says how far it is. Raise ``max_poles``, fit a narrower
+    band, or remove a known delay first: a long line needs about one pole
+    pair per phase wrap in the band, and a wave port's reference plane can
+    be moved with ``DrivenResult.with_offsets``. Filter it with Python's
+    `warnings` module.
+    """
+
+
+class NonPassiveDataWarning(UserWarning):
+    """Making a rational fit passive moved S by more than the fit tolerance.
+
+    `gfem.NetworkParameters.fit_rational` fitted S within ``tolerance``, but
+    the passivity enforcement then changed it by more: the data themselves
+    are not passive on this reference (a singular value of S above 1). The
+    passive model is still returned; its ``error`` is above its
+    ``fit_error``. The message names the largest singular value of the data
+    and where. Usual causes: a reference plane moved by
+    ``DrivenResult.with_offsets`` past a lossy line, a nominal modal
+    reference on a lossy mode, or a mesh too coarse for S. Filter it with
+    Python's `warnings` module.
+    """
+
+
+class PassivityEnforcementError(RuntimeError):
+    """A rational fit could not be made passive.
+
+    The residue perturbation of `gfem.NetworkParameters.fit_rational`
+    ended with S still above 1 somewhere. The message names the remaining
+    intervals in Hz. Fit with ``enforce_passivity=False`` to inspect the
+    model's ``passivity_violations``.
+    """
+
+
 class UnsampledPixelsWarning(UserWarning):
     """Some pixels of a `gfem.design.LayerGrid` are sampled by no centroid.
 

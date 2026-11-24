@@ -101,6 +101,59 @@ reference, a line matched to its own characteristic impedance has
   excited port and :math:`r_p` a point of port p, when :math:`k \cdot r` is
   constant over each port.
 
+Time responses
+--------------
+``NetworkParameters.impulse_response`` and ``step_response`` transform S
+to time under the same :math:`e^{+i\omega t}`, so positive time is later:
+:math:`h(t) = \int S(f)\, e^{+2\pi i f t}\, df`, the plain inverse transform
+with no conjugation. Data from a code that writes :math:`e^{-i\omega t}`
+must be conjugated first, or its reflections land at negative times.
+
+- Low pass needs a harmonic grid, :math:`f_k = k\,\Delta f` for
+  :math:`k = 1..N`, plus an optional 0 Hz point. Without one, DC is
+  :math:`S(0) = \mathrm{Re}(15 S_1 - 6 S_2 + S_3)/10`, the even polynomial
+  in :math:`f` through the first three points. S is weighted by the upper
+  half of a Kaiser window of parameter :math:`\beta` (6 by default).
+- The record is two-sided and periodic,
+  :math:`t_m = (m - n_t/2) / (n_t\,\Delta f)` for :math:`m = 0..n_t - 1`,
+  of length :math:`1/\Delta f`.
+- The impulse is divided by the window kernel's peak, so it is
+  dimensionless and an isolated reflection :math:`\Gamma` peaks at
+  :math:`\Gamma`. The step is the cumulative sum of the impulse over the
+  whole record, before that division, and ends at :math:`S(0)`.
+- Band pass (impulse only): any evenly spaced band, a full Kaiser window,
+  and the magnitude :math:`|h(t)|`, normalized the same way.
+- The impedance profile of a port with a real reference :math:`Z_0` is
+  :math:`Z(t) = Z_0 \frac{1 + \rho(t)}{1 - \rho(t)}`, with :math:`\rho` its
+  reflected step.
+
+Rational models
+---------------
+A `gfem.RationalModel` writes S as poles shared by every element,
+residue matrices and a constant:
+
+.. math::
+
+    S(f) = D + \sum_n \frac{R_n}{2\pi i f - p_n},
+
+with :math:`s = i\omega` the Laplace variable under :math:`e^{+i\omega t}`,
+poles :math:`p_n` in rad/s with :math:`\mathrm{Re}\, p_n < 0` (stable), real
+or in conjugate pairs with conjugate residues (a response real in time),
+and :math:`D` real, S as :math:`f \to \infty`. There is no term
+proportional to :math:`s`. The DC limit is :math:`D - \sum_n R_n / p_n`.
+The response to a unit step of incident wave at :math:`t = 0` is
+:math:`D + \sum_n \frac{R_n}{p_n} (e^{p_n t} - 1)` for :math:`t \ge 0`
+and 0 before.
+
+S is referred to one constant real reference impedance per port
+(``z_ref``), fixed when the model is fitted
+(`gfem.NetworkParameters.fit_rational`): a real ``z_ref`` constant over
+frequency is kept, anything else is renormalized to ``z0=`` first; a network
+without reference impedances (wave ports without ``voltage_path``) is
+fitted unchanged and its ``z0`` is only a label. On that reference the model
+is passive when the largest singular value of :math:`S(f)` is at most 1 at
+every frequency.
+
 Time-averaged densities
 -----------------------
 For peak phasors, the time average of a product of two harmonic quantities

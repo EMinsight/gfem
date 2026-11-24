@@ -738,6 +738,36 @@ beam's zero focal phase): by reciprocity it is the wave the port receives
 when that beam lights the device. The module's "Port waves and beam
 coupling" section has the formulas.
 
+## Time responses
+
+`NetworkParameters.step_response` and `impulse_response` turn S into
+{term}`time responses <time response>` under the same `TIME_DEPENDENCE`, so
+positive time is later: $h(t) = \int S(f)\, e^{+2\pi i f t}\, df$, the plain
+inverse transform, with no conjugation. On a {term}`harmonic grid`
+$f_k = k\,\Delta f$ the record lasts $1/\Delta f$, negative times included.
+The impulse is dimensionless, scaled so that an isolated reflection $\Gamma$
+peaks at $\Gamma$, and the step ends at $S(0)$. On the line, the ceramic's
+front face reflects $2 \times 10\ \mathrm{mm}/c = 66.7$ ps after the edge
+leaves port 1:
+
+```python
+grid = gfem.Driven(frequency=0.2e9 * np.arange(1, 101), sweep="adaptive")
+impulse = gfem.solve(model, grid).s.impulse_response()
+h = np.asarray(impulse["p1", "p1"])
+print(f"{impulse.time[np.argmin(h)] * 1e12:.1f} ps")  # the most negative peak
+```
+
+```text
+65.9 ps
+```
+
+Data from a code that writes $e^{-i\omega t}$ are the complex conjugate of
+gfem's: conjugate them first, or this reflection lands at $-66$ ps. A
+{term}`rational model` writes S as $D + \sum_n R_n/(2\pi i f - p_n)$, poles
+$p_n$ in rad/s with $\mathrm{Re}\,p_n < 0$, on one real reference impedance
+per port. The module's "Time responses" and "Rational models" sections have
+the formulas, and {doc}`recipes/time-responses` the whole calculation.
+
 ## Next
 
 - {py:obj}`gfem.conventions`: every convention in full, with the formulas

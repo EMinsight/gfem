@@ -1275,6 +1275,10 @@ lint = [
     { name = "ruff", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (sys_platform == 'darwin' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (sys_platform == 'linux' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (sys_platform == 'win32' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13')" },
     { name = "ty", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (sys_platform == 'darwin' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (sys_platform == 'linux' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (sys_platform == 'win32' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13')" },
 ]
+netlist = [
+    { name = "sedes", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (sys_platform == 'darwin' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (sys_platform == 'linux' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (sys_platform == 'win32' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13')" },
+    { name = "vacask-bin", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (sys_platform == 'darwin' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (sys_platform == 'linux' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (sys_platform == 'win32' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13')" },
+]
 site = [
     { name = "myst-nb", marker = "(python_full_version >= '3.13' and platform_machine == 'arm64' and sys_platform == 'darwin') or (python_full_version >= '3.13' and platform_machine == 'x86_64' and sys_platform == 'linux') or (python_full_version >= '3.13' and platform_machine == 'AMD64' and sys_platform == 'win32') or (python_full_version < '3.13' and sys_platform == 'darwin' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (python_full_version < '3.13' and sys_platform == 'linux' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (python_full_version < '3.13' and sys_platform == 'win32' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (platform_machine != 'arm64' and sys_platform == 'darwin' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (platform_machine != 'AMD64' and sys_platform == 'win32' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13')" },
     { name = "myst-parser", marker = "(python_full_version >= '3.13' and platform_machine == 'arm64' and sys_platform == 'darwin') or (python_full_version >= '3.13' and platform_machine == 'x86_64' and sys_platform == 'linux') or (python_full_version >= '3.13' and platform_machine == 'AMD64' and sys_platform == 'win32') or (python_full_version < '3.13' and sys_platform == 'darwin' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (python_full_version < '3.13' and sys_platform == 'linux' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (python_full_version < '3.13' and sys_platform == 'win32' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (platform_machine != 'arm64' and sys_platform == 'darwin' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (platform_machine != 'AMD64' and sys_platform == 'win32' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13')" },
@@ -1333,6 +1337,10 @@ docs = [
 lint = [
     { name = "ruff", specifier = ">=0.14" },
     { name = "ty", specifier = "==0.0.85" },
+]
+netlist = [
+    { name = "sedes", specifier = "==0.1.10" },
+    { name = "vacask-bin", specifier = "==0.3.4.dev7" },
 ]
 site = [
     { name = "myst-nb", marker = "python_full_version >= '3.13'", specifier = "~=1.4" },
@@ -3854,6 +3862,21 @@ wheels = [
 ]
 
 [[package]]
+name = "sedes"
+version = "0.1.10"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (sys_platform == 'darwin' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (sys_platform == 'linux' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13') or (sys_platform == 'win32' and extra == 'extra-4-gfem-cuda12' and extra == 'extra-4-gfem-cuda13')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/39/fe/1be1d4b4953fdc906f448ad6c2c3e2c3987369814f82a7d694fca3fcf58b/sedes-0.1.10.tar.gz", hash = "sha256:60326e24cc5fa5e9eff26a7f72ad106d0fc9b2a5e3f3c33217d1b3191131921b", size = 2715648, upload-time = "2026-06-16T12:11:04.052Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7f/97/b2fbe4f84f0a967c964dbb937bd05283409ed538b8815c5e2b18b88bbbe2/sedes-0.1.10-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:7b35de353386e04ab1554c53bba208868ca59d2de1abcdefe3f90a5ad321cb54", size = 4357947, upload-time = "2026-06-16T12:10:57.649Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/e8/9304972adaff2edd17c3346c137bcfaa9d034d98bb133890a47bbb74eede/sedes-0.1.10-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:71784f15f173d8a001774dc4989f3f41b46979b1c67b61be0aa6d30c5b9cbdec", size = 3918559, upload-time = "2026-06-16T12:10:59.352Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/a9/79ffb5385de38f8e4cd03d5ce399f6f91e910775d6172d88f74d45e36cb1/sedes-0.1.10-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:8f12113f4a7c24f95346d2d64f307ef714a23b58808583fb71901a7a29f036c5", size = 5419618, upload-time = "2026-06-16T12:11:00.806Z" },
+    { url = "https://files.pythonhosted.org/packages/d6/70/6fbbba587769a52edf6c3a21c58beacdaf6928088bedb3d1f0684a62d590/sedes-0.1.10-cp310-abi3-win_amd64.whl", hash = "sha256:cf1baf7510a0a894b7011836491e907912406c39a88fdc6f5cd078303381e095", size = 5169670, upload-time = "2026-06-16T12:11:02.655Z" },
+]
+
+[[package]]
 name = "shibuya"
 version = "2026.7.12"
 source = { registry = "https://pypi.org/simple" }
@@ -4372,6 +4395,17 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e3/05/b17359e1cefb4f909b5e40b1b90a496d987258916dbbf88e842c729f510e/urllib3-2.8.0.tar.gz", hash = "sha256:63bf2ead4c879426ebf22ef2a781eeb4aa3b4ae798a0435506f8687fd5bb9b63", size = 458972, upload-time = "2026-09-15T19:29:36.253Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/92/9d/c4e665119135114480843e7ab388fa94d8480650450e6f8e26b70d323a4c/urllib3-2.8.0-py3-none-any.whl", hash = "sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3", size = 135717, upload-time = "2026-09-15T19:29:34.577Z" },
+]
+
+[[package]]
+name = "vacask-bin"
+version = "0.3.4.dev7"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/af/23/7f785bb2130baed23572dd54e241eef41380b050da859fc310cd6ff6da47/vacask_bin-0.3.4.dev7-py3-none-macosx_15_0_arm64.whl", hash = "sha256:040c57f4fa7735ab69e238ed9f4f051bdcb64c043194e60f74684a2c1c343beb", size = 49972109, upload-time = "2026-11-12T18:54:14.505Z" },
+    { url = "https://files.pythonhosted.org/packages/d6/c9/dc2415534d004174abd08be9065c4e8744d8d7ae268bf3ba9034766a92ac/vacask_bin-0.3.4.dev7-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:d492676b81ee39733f020391b72eea1ca61ca4bd98f8a0503ee7bede5a083c37", size = 82234583, upload-time = "2026-11-12T18:54:18.151Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/7e/2eb018b55229ffb15fedd98c323c14ab7f0f90bf31c82dac1d5558ad400c/vacask_bin-0.3.4.dev7-py3-none-manylinux_2_34_x86_64.whl", hash = "sha256:fd9cfb16e6b5606e7fe73fe2bb8d4074a43a6f1841e0076a4062530643a604ac", size = 94228668, upload-time = "2026-11-12T18:54:30.306Z" },
+    { url = "https://files.pythonhosted.org/packages/31/ea/b23018356449dfe42d2ee1c01af2147c426a50a79d4d73ba4db2d7d00209/vacask_bin-0.3.4.dev7-py3-none-win_amd64.whl", hash = "sha256:feddcc819f4e0ee347f51080283716dc1a41f819de8621fdf5016ec461e98b59", size = 92119846, upload-time = "2026-11-12T18:54:35.497Z" },
 ]
 
 [[package]]

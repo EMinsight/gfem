@@ -1242,3 +1242,38 @@ Progress row
   running outside any loop, and disappears when it ends. It is never a log
   record and is never written to a file.
 ```
+
+## Broadband models
+
+```{glossary}
+Rational model
+  S over a band written as a constant matrix plus pole-residue terms,
+  $S(f) = D + \sum_n R_n/(2\pi i f - p_n)$, whose poles every element of S
+  shares, on one real reference impedance per port
+  ({py:obj}`gfem.RationalModel`). Fitted to S by vector fitting, made
+  passive by default, and written as a SPICE subcircuit or a Verilog-A
+  module.
+
+Passivity violation
+  A frequency interval where the largest singular value of a
+  {term}`rational model`'s S exceeds 1: there the model would give back more
+  power than it receives. The fit removes them by default.
+
+Harmonic grid
+  Frequencies $f_k = k\,\Delta f$ for $k = 1, \dots, N$, optionally with
+  0 Hz, on which a low-pass {term}`time response` is computed. Its record
+  lasts $1/\Delta f$, and $f_N$ sets the rise time of an edge.
+
+Time response
+  The impulse or step response of S, from its windowed inverse Fourier
+  transform: on a {term}`harmonic grid` (low pass), or over an evenly spaced
+  band as a magnitude (band pass). The reflected step at a port is its TDR,
+  the transmitted step its TDT ({py:obj}`gfem.TimeResponse`). Not a
+  {term}`trace`, which is a thermal solve's record over time.
+
+Impedance profile
+  $Z(t) = Z_0 (1 + \rho(t))/(1 - \rho(t))$, read from the reflected step
+  $\rho$ of a port with real reference impedance $Z_0$: the impedance along
+  the line, in round-trip time. Exact up to the first round trip past the
+  first discontinuity; later, multiple reflections mix in.
+```

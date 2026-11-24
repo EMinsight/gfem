@@ -116,6 +116,12 @@ v0.1.
   and push-pull) and `ElectrostaticResult.capacitance_per_length`. Materials
   take an `electro_optic_tensor` on explicit `axes`
   ({doc}`recipes/electro-optic-phase`).
+- **Broadband models and time responses**:
+  `NetworkParameters.fit_rational` (a passive {term}`rational model` of S,
+  written as a SPICE subcircuit or a Verilog-A module) and
+  `NetworkParameters.step_response` / `impulse_response` (TDR, TDT and the
+  {term}`impedance profile`, differentiable; the fit is not)
+  ({doc}`recipes/rational-model`, {doc}`recipes/time-responses`).
 
 ## Solvers
 

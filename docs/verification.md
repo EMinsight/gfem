@@ -933,6 +933,53 @@ Tests: [p-multigrid](https://github.com/benvial/gfem/blob/main/tests/unit/test_p
 [guides and metal lines](https://github.com/benvial/gfem/blob/main/tests/reference/test_driven.py),
 [`"auto"`](https://github.com/benvial/gfem/blob/main/tests/unit/test_auto_solver.py).
 
+## Broadband models and time responses
+
+The time responses and rational models of S ({doc}`recipes/time-responses`,
+{doc}`recipes/rational-model`) are checked against closed forms, and the
+netlists against the model they were written from.
+
+- **Time responses of a known line.** A lossless 75 Ω line behind a 50 Ω
+  port, ended by 30 Ω, has a closed-form S. Its reflected step reads 75 Ω
+  on the line and settles on the load's 30 Ω; its impulse peaks at each
+  reflection's $\Gamma$, at its round trip, and conjugated data put the
+  reflections at negative times. The rise time of each Kaiser window
+  follows from the window, and S renormalized to another reference gives
+  the same profile.
+- **Rational fits.** Exact rational S, written out from known poles and
+  residues, gives those poles back; lossless lines several phase wraps long
+  fit within the tolerance, with a pole count that grows with the number of
+  wraps. Passivity enforcement finds every interval where a singular value
+  of S exceeds 1, and leaves a passive model close to the passive truth.
+  The model's closed-form step matches the inverse Laplace transform of its
+  terms, and the windowed step of its own S.
+- **Netlists.** A small AC solver of the subcircuit's cards, in the tests,
+  gives the model's S on every platform. In one CI job, ngspice runs the
+  SPICE file and the Verilog-A module, and VACASK the module, with S equal
+  to the model's to $10^{-9}$; a transient of the subcircuit follows the
+  model's closed-form ramp response. These run on every change.
+- **Solved devices.** The parallel-plate line of {doc}`get-started`, with
+  its ceramic section, seen by a reflectometer: the impedance profile reads
+  $Z_0/\sqrt{10}$ on the ceramic and $Z_0$ beyond it, the impulse peaks at
+  the front face's reflection and round trip, and the first edge rises in
+  about $0.99/f_\mathrm{max}$. Its rational model gives the same step as its
+  S. A wave-port line 10 phase wraps long matches the exact TEM line, and
+  its fit needs about two poles per wrap. A dielectric insert in a
+  waveguide above cutoff gives the band-pass impulse of mode matching. These
+  solved cases run nightly and before each release.
+- **Wave ports.** On a lossy parallel-plate line, solved on every change,
+  the fit asks for `z0=` on the mode's complex $Z_{PV}$, and S with more
+  gain than the line's loss makes it warn that the data are not passive and
+  still return a passive model.
+
+Tests: [time responses](https://github.com/benvial/gfem/blob/main/tests/unit/test_time_responses.py),
+[rational fits](https://github.com/benvial/gfem/blob/main/tests/unit/test_rational_fit.py),
+[closed-form step](https://github.com/benvial/gfem/blob/main/tests/unit/test_rational_step.py),
+[netlists](https://github.com/benvial/gfem/blob/main/tests/unit/test_netlist_export.py),
+[circuit simulators](https://github.com/benvial/gfem/blob/main/tests/unit/test_netlist_simulators.py),
+[wave ports](https://github.com/benvial/gfem/blob/main/tests/unit/test_broadband_wave_ports.py),
+[solved devices](https://github.com/benvial/gfem/blob/main/tests/verification/test_broadband_fem.py).
+
 (verification-petsc)=
 ## PETSc and SLEPc
 

@@ -281,3 +281,20 @@ def test_the_electro_optic_section_states_the_tensor_frame(page):
     module = " ".join(gfem.conventions.__doc__.split())
     assert "Electro-optic shift" in module
     assert "Voigt" in module
+
+
+# -- Time responses: the line's impulse response on a 5 ns record
+
+
+def test_a_reflection_arrives_at_a_positive_time(ran, page):
+    """Under exp(+i omega t) the ceramic's echo comes 2 x 10 mm / c after the edge."""
+    (at,) = _printed(ran, "Time responses")
+    assert at == pytest.approx(2 * 10e-3 / 299792458.0 * 1e12, abs=3)  # 66.7 ps
+    section = dp._prose(dp.section(page, "Time responses"))
+    for text in (
+        "e^{+2\\pi i f t}",
+        "no conjugation",
+        "{doc}`recipes/time-responses`",
+        "{term}`harmonic grid`",
+    ):
+        assert text in section, text

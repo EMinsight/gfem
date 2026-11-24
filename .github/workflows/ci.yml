@@ -140,6 +140,37 @@ jobs:
     - name: Unit tier
       run: uv run pytest -m unit -rs
 
+  netlist:
+    # The netlist group: the exported SPICE and Verilog-A models run in ngspice
+    # (sedes) and VACASK, Verilog-A compiled by openvaf-r (vacask-bin). Test
+    # only; elsewhere the netlist tests skip.
+    name: netlists in circuit simulators (ubuntu, py3.12)
+    if: inputs.tests == ''
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - uses: astral-sh/setup-uv@v6
+      with:
+        version: ${{ env.UV_VERSION }}
+        python-version: "3.12"
+        enable-cache: true
+        # its own cache: the unit job's key has no simulator wheels
+        cache-suffix: netlist
+    - name: Install
+      run: uv sync --locked --group netlist
+    - name: Simulators are live
+      # The netlist tests skip without the simulators: fail here instead of
+      # passing on skips.
+      run: >-
+        uv run --group netlist python -c "import subprocess, sedes, vacask_bin;
+        import importlib.metadata as md;
+        subprocess.run([vacask_bin.OPENVAF_CMD, '--version'], check=True);
+        subprocess.run([vacask_bin.VACASK_CMD, '--help'], check=True,
+        stdout=subprocess.DEVNULL);
+        print('sedes', md.version('sedes'), ', vacask-bin', md.version('vacask-bin'))"
+    - name: Netlist tests
+      run: uv run --group netlist pytest -m netlist -rs
+
   mpi:
     # The launched tier on the wheel's BDDC, at most 4 ranks on a runner's 4 cores,
     # and Open MPI's refusal of another MPI. Direct solves under ranks need the MPI

@@ -14,6 +14,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import scipy.constants
+from numpy.typing import ArrayLike
 
 from gfem import _objective
 from gfem._checks import is_traced, static_float
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
     from gfem._line_section import LineSection
     from gfem._pml import PML
     from gfem._port_section import PortSection
+    from gfem.broadband import RationalModel, TimeResponse
     from gfem.problems import Polarization
 
 __all__ = [
@@ -1165,6 +1167,200 @@ class NetworkParameters:
             s = np.asarray(self.renormalize(z0).values)
         path.write_text(_touchstone(self, s, z0))
         return path
+
+    def fit_rational(
+        self,
+        *,
+        tolerance: float = 1e-3,
+        max_poles: int | None = None,
+        weights: ArrayLike | None = None,
+        enforce_passivity: bool = True,
+        z0: float | Sequence[float] | None = None,
+    ) -> RationalModel:
+        r"""Fit a rational model to S over the network's frequencies.
+
+        :math:`S(f) = D + \sum_n R_n / (2\pi i f - p_n)` with poles shared by
+        every element (`gfem.RationalModel`), by fast relaxed vector fitting:
+        real poles and conjugate pairs, a fitted constant :math:`D` and no
+        term proportional to frequency. The order rises in steps of 4 poles
+        until the largest per-element RMS of :math:`|S_\mathrm{model} -
+        S_\mathrm{data}|` over the data is at most ``tolerance``; poles
+        contributing less than ``tolerance``/10 anywhere in the band are then
+        removed and the residues refitted. A zero-frequency sample in the
+        network is used like any other; none is added. A long line needs
+        about one pole pair per phase wrap in the band (two when reflections
+        bounce on it).
+
+        By default the model is then made passive (no singular value of S
+        above 1 at any frequency, the bounded-real condition on a real
+        reference): the poles are kept and the residues changed by the least
+        weighted change of S on the data, until the Hamiltonian test finds no
+        passivity violation; the singular values of :math:`D` are clipped to
+        :math:`1 - 10^{-4}`. The model's ``fit_error`` is the error before
+        this, ``error`` after. The test's cost grows as :math:`(2NP)^3` for
+        :math:`N` poles and :math:`P` ports.
+
+        The model has one constant real reference impedance per port, fixed
+        here: a `z_ref` real and constant over frequency is kept, each port
+        at its mean real value (real and constant to a relative
+        :math:`10^{-9}`, as a TEM wave port's :math:`Z_{PV}` is up to the
+        mode solve's round-off); otherwise ``z0`` is needed and S is
+        renormalized to it first; a network in which no port has a reference
+        impedance (wave ports without ``voltage_path``) is fitted unchanged
+        under ``z0`` as a nominal label. Not collective: deterministic host
+        work, the same on every rank. Not differentiable.
+
+        Args:
+            tolerance: Target of the largest per-element RMS error, > 0.
+            max_poles: The most poles tried, from 4 to the number of
+                frequencies minus one; default ``min(100, n_freq - 1)``.
+            weights: Positive per-frequency weights ``(n_freq,)``, in the
+                network's frequency order; None for uniform. The reported
+                errors are unweighted.
+            enforce_passivity: Make the model passive. False fits only: the
+                model still reports its ``passivity_violations`` and
+                `gfem.RationalModel.passive`.
+            z0: Reference impedance to fit on, ohm: one real value > 0 or one
+                per port in `ports` order; the nominal label of a network
+                without reference impedances.
+
+        Returns:
+            The model, with its errors on the data.
+
+        Raises:
+            ValueError: An argument is out of range, fewer than 6 distinct
+                frequencies, a negative frequency, S not finite or not every
+                port excited, or the reference impedance cannot be resolved
+                (complex or frequency-dependent without ``z0``, none without
+                ``z0``, or some ports without one).
+            NonDifferentiableError: S, `z_ref`, ``z0``, ``weights`` or an
+                option is traced by JAX, or the fit is staged by
+                ``jax.jit``.
+            PassivityEnforcementError: Passivity violations remain after
+                the enforcement's 30 iterations; the message names them.
+
+        Warns:
+            RationalFitNotConvergedWarning: No order up to ``max_poles``
+                reached ``tolerance``; the most accurate model is returned.
+            NonPassiveDataWarning: Making the model passive changed S by
+                more than ``tolerance``: the data are not passive on this
+                reference.
+        """
+        from gfem._broadband._vector_fit import fit_rational
+
+        return fit_rational(
+            self,
+            tolerance=tolerance,
+            max_poles=max_poles,
+            weights=weights,
+            enforce_passivity=enforce_passivity,
+            z0=z0,
+        )
+
+    def impulse_response(
+        self,
+        *,
+        mode: Literal["low_pass", "band_pass"] = "low_pass",
+        kaiser_beta: float = 6.0,
+        n_time: int | None = None,
+        z0: float | Sequence[float] | None = None,
+    ) -> TimeResponse:
+        r"""The impulse response of S, a `gfem.TimeResponse` (dimensionless).
+
+        Low pass (default), as a network analyzer's low-pass mode: S must be
+        on a harmonic grid, :math:`f_k = k\,\Delta f` for :math:`k = 1..N`
+        (:math:`N \ge 3`, checked to :math:`10^{-6}`; a 0 Hz point, if
+        present, is the DC value). Without one, DC is
+        :math:`\mathrm{Re}(15 S_1 - 6 S_2 + S_3)/10`, the even polynomial
+        through the first three points. S times the upper half of a Kaiser
+        window of parameter :math:`\beta` goes through a real inverse FFT,
+        with no conjugation under :math:`e^{+i\omega t}`, so a delay is
+        positive time. The result is divided by the window kernel's peak:
+        a frequency-independent reflection :math:`\Gamma` peaks at
+        :math:`\Gamma`. The record is two-sided and periodic,
+        :math:`t_m = (m - n_t/2)/(n_t\,\Delta f)`, of length
+        :math:`T = 1/\Delta f`: later responses alias, so the record should
+        be at least 5 times the settling time. Resolution is set by the
+        span and :math:`\beta`; ``n_time`` only interpolates.
+
+        Band pass: any evenly spaced grid (no DC needed, e.g. a waveguide
+        above cutoff), a full Kaiser window over the band, a complex
+        inverse FFT, and the magnitude :math:`|h(t)|`, kernel-peak
+        normalized, on the same two-sided axis; the sign of a reflection is
+        lost.
+
+        Written in `jax.numpy`: differentiates with respect to S and ``z0``.
+
+        Args:
+            mode: ``"low_pass"`` or ``"band_pass"``.
+            kaiser_beta: The Kaiser window's :math:`\beta`, finite,
+                :math:`\ge 0`: 0 (no window, the sharpest edges, 13 dB
+                sidelobes), 6 (the usual default), 13 (the smoothest).
+            n_time: Samples in the record, even and :math:`\ge 2N`; default
+                the smallest power of two :math:`\ge 20N`.
+            z0: Reference impedance to renormalize S to first, ohm (real,
+                :math:`> 0`; one value or one per port in `ports` order;
+                needs every port excited). Without it, `z_ref` must be one
+                real value per port over frequency, to a relative
+                :math:`10^{-9}` (each port then on its mean real value), or
+                NaN for every port (the response of S on unit modal power);
+                when `z_ref` is traced by JAX this cannot be checked, and
+                ``z0`` is needed.
+
+        Raises:
+            ValueError: The grid is not harmonic (low pass) or not evenly
+                spaced (band pass), and the message gives the grid to solve
+                on and the explicit resampling through a rational model; an
+                argument is out of range; or `z_ref` is complex, frequency
+                dependent, NaN for some ports only or traced by JAX (pass
+                ``z0=``).
+            NonDifferentiableError: ``mode``, ``kaiser_beta`` or ``n_time``
+                is traced by JAX.
+        """
+        from gfem._broadband import _time
+
+        return _time.impulse_response(
+            self, mode=mode, kaiser_beta=kaiser_beta, n_time=n_time, z0=z0
+        )
+
+    def step_response(
+        self,
+        *,
+        kaiser_beta: float = 6.0,
+        n_time: int | None = None,
+        z0: float | Sequence[float] | None = None,
+    ) -> TimeResponse:
+        r"""The step response of S, a `gfem.TimeResponse` (dimensionless).
+
+        The low-pass impulse response (`impulse_response`, before its
+        normalization) summed over the whole two-sided record, so it starts
+        near 0 and settles at :math:`S(0)`. The reflected step at a port is
+        what a TDR shows, and `gfem.TimeResponse.impedance` its impedance
+        profile; ``step["p2", "p1"]`` is the transmitted step (TDT), a wave
+        ratio (the voltage ratio is
+        :math:`S_{21} \sqrt{Z_{0,2}/Z_{0,1}}`). The 10-90 % rise of an edge
+        is about :math:`0.99/f_\mathrm{max}` at :math:`\beta = 6`. Needs a
+        harmonic grid (see `impulse_response`): a step needs DC, so there is
+        no band-pass step.
+
+        Written in `jax.numpy`: differentiates with respect to S and ``z0``.
+
+        Args:
+            kaiser_beta: The Kaiser window's :math:`\beta` (see
+                `impulse_response`).
+            n_time: Samples in the record, even and :math:`\ge 2N`; default
+                the smallest power of two :math:`\ge 20N`.
+            z0: Reference impedance to renormalize S to first (see
+                `impulse_response`).
+
+        Raises:
+            ValueError: As `impulse_response` in low pass.
+            NonDifferentiableError: ``kaiser_beta`` or ``n_time`` is traced
+                by JAX.
+        """
+        from gfem._broadband import _time
+
+        return _time.step_response(self, kaiser_beta=kaiser_beta, n_time=n_time, z0=z0)
 
     def _square(self, what: str) -> jax.Array:
         """S with every port as a column, in `ports` order."""
