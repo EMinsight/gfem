@@ -469,6 +469,16 @@ class SweepNotConvergedWarning(UserWarning):
     """
 
 
+class SweepRankDeficientWarning(UserWarning):
+    """An adaptive sweep's rational interpolation lost rank.
+
+    The sweep is near the accuracy of its full solves. The sweep goes on.
+    Tighten ``SolverOptions.tolerance`` or loosen
+    ``SolverOptions.adaptive_tolerance`` if it then fails to converge. Filter
+    it with Python's `warnings` module.
+    """
+
+
 class RationalFitNotConvergedWarning(UserWarning):
     """A rational fit reached its pole cap above its tolerance.
 
@@ -505,16 +515,6 @@ class PassivityEnforcementError(RuntimeError):
     ended with S still above 1 somewhere. The message names the remaining
     intervals in Hz. Fit with ``enforce_passivity=False`` to inspect the
     model's ``passivity_violations``.
-    """
-
-
-class SweepRankDeficientWarning(UserWarning):
-    """An adaptive sweep's rational interpolation lost rank.
-
-    The sweep is near the accuracy of its full solves. The sweep goes on.
-    Tighten ``SolverOptions.tolerance`` or loosen
-    ``SolverOptions.adaptive_tolerance`` if it then fails to converge. Filter
-    it with Python's `warnings` module.
     """
 
 
