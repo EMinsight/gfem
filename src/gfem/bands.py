@@ -591,14 +591,14 @@ class BandDiagram:
         """The diagram as an `xarray.Dataset` over ``("wave_vector", "band")``.
 
         Coordinates: ``wave_vector`` and ``band`` (numbered from 0, the
-        lowest), ``axis`` (x, y, z), ``distance`` (rad/m), ``label`` (the
+        lowest), ``direction`` (x, y, z), ``distance`` (rad/m), ``label`` (the
         high-symmetry point's name, ``""`` elsewhere) and ``k`` (rad/m).
         Data variables: ``omega`` (rad/s), ``frequency`` (Hz), ``q``,
-        ``error``, ``cluster``, ``v_g`` (m/s, over the ``axis`` too),
+        ``error``, ``cluster``, ``v_g`` (m/s, over the ``direction`` too),
         ``connection``, ``connection_by_overlap``, ``static``, ``lost``,
         ``anchored`` (over ``wave_vector``), and the participations over
-        ``port``, ``region``, ``anisotropic_region`` (with ``principal_axis``,
-        0, 1, 2 in each material's ``axes`` order) and ``sheet``, as
+        ``port``, ``region``, ``anisotropic_region`` (with ``axis``, 0, 1, 2
+        in each material's ``axes`` order) and ``sheet``, as
         `EigenmodeResult.to_xarray` (NaN where a port has no value). The
         attributes are ``target`` (Hz) and ``lattice``. The fields are not
         exported. Needs the ``xarray`` extra: ``pip install "gfem[xarray]"``.
@@ -617,10 +617,12 @@ class BandDiagram:
         coords: dict[str, Any] = {
             "wave_vector": np.arange(n_k),
             "band": np.arange(self.n_bands),
-            "axis": _AXES,
+            "direction": _AXES,
             "distance": _variable(("wave_vector",), self.path.distance, "rad/m"),
             "label": _variable(("wave_vector",), labels.astype(str)),
-            "k": _variable(("wave_vector", "axis"), self.path.wave_vectors, "rad/m"),
+            "k": _variable(
+                ("wave_vector", "direction"), self.path.wave_vectors, "rad/m"
+            ),
         }
         data = {
             "omega": _variable(d, self.omega, "rad/s"),
@@ -628,7 +630,7 @@ class BandDiagram:
             "q": _variable(d, self.q),
             "error": _variable(d, self.error),
             "cluster": _variable(d, self.cluster),
-            "v_g": _variable((*d, "axis"), self.v_g, "m/s"),
+            "v_g": _variable((*d, "direction"), self.v_g, "m/s"),
             "connection": _variable(d, self.connection),
             "connection_by_overlap": _variable(d, self.connection_by_overlap),
             "static": _variable(d, self.static),
@@ -658,9 +660,9 @@ class BandDiagram:
                 )
         if self.principal_participation:
             coords["anisotropic_region"] = list(self.principal_participation)
-            coords["principal_axis"] = np.arange(3)
+            coords["axis"] = np.arange(3)
             data["principal_participation"] = _variable(
-                (*d, "anisotropic_region", "principal_axis"),
+                (*d, "anisotropic_region", "axis"),
                 np.stack(
                     [np.asarray(v) for v in self.principal_participation.values()], 2
                 ),

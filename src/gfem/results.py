@@ -2529,7 +2529,7 @@ class EigenmodeResult:
         `principal_participation` over ``("mode", "anisotropic_region",
         "axis")`` (axis 0, 1, 2 in each material's ``axes`` order),
         `sheet_participation` over ``("mode", "sheet")``, and `v_g` (m/s)
-        over ``("mode", "axis")`` of a Bloch solve. The fields
+        over ``("mode", "direction")`` (x, y, z) of a Bloch solve. The fields
         and materials are not exported. Needs the ``xarray`` extra: ``pip
         install "gfem[xarray]"``.
 
@@ -2567,9 +2567,9 @@ class EigenmodeResult:
             )
         if self.principal_participation:
             coords["anisotropic_region"] = list(self.principal_participation)
-            coords["principal_axis"] = np.arange(3)
+            coords["axis"] = np.arange(3)
             data["principal_participation"] = _variable(
-                ("mode", "anisotropic_region", "principal_axis"),
+                ("mode", "anisotropic_region", "axis"),
                 np.stack(
                     [np.asarray(v) for v in self.principal_participation.values()], 1
                 ),
@@ -2581,8 +2581,8 @@ class EigenmodeResult:
                 np.stack([np.asarray(v) for v in self.sheet_participation.values()], 1),
             )
         if self.v_g is not None:
-            coords["axis"] = ["x", "y", "z"]
-            data["v_g"] = _variable(("mode", "axis"), self.v_g, "m/s")
+            coords["direction"] = ["x", "y", "z"]
+            data["v_g"] = _variable(("mode", "direction"), self.v_g, "m/s")
         return xr.Dataset(data, coords=coords)
 
     def __repr__(self) -> str:

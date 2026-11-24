@@ -765,7 +765,7 @@ def c2_diagram(c2_cell, c2_path):
 
 def test_band_diagram_principal_participation_has_its_own_axis(c2_diagram):
     # the principal axes follow a material's ``axes`` order, not x, y, z: they
-    # sit on their own dimension, beside the Cartesian ``axis`` of v_g and k
+    # sit on ``axis``, beside the Cartesian ``direction`` of v_g and k
     shape = np.asarray(c2_diagram.omega).shape
     bd = dataclasses.replace(
         c2_diagram, principal_participation={"m": jnp.zeros((*shape, 3))}
@@ -775,10 +775,10 @@ def test_band_diagram_principal_participation_has_its_own_axis(c2_diagram):
         "wave_vector",
         "band",
         "anisotropic_region",
-        "principal_axis",
+        "axis",
     )
-    assert ds.principal_axis.values.tolist() == [0, 1, 2]
-    assert ds.axis.values.tolist() == ["x", "y", "z"]
+    assert ds.axis.values.tolist() == [0, 1, 2]
+    assert ds.direction.values.tolist() == ["x", "y", "z"]
 
 
 def test_bands_are_ascending_and_gamma_reports_static_bands(
@@ -807,15 +807,15 @@ def test_bands_are_ascending_and_gamma_reports_static_bands(
 def test_band_diagram_to_xarray(c2_diagram):
     ds = c2_diagram.to_xarray()
     assert ds.frequency.dims == ("wave_vector", "band")
-    assert ds.v_g.dims == ("wave_vector", "band", "axis")
+    assert ds.v_g.dims == ("wave_vector", "band", "direction")
     assert ds.v_g.attrs["units"] == "m/s"
     assert ds.omega.attrs["units"] == "rad/s"
     assert ds.anchored.dims == ("wave_vector",)
     assert ds.distance.attrs["units"] == "rad/m"
     assert ds.k.attrs["units"] == "rad/m"
     assert ds.label.values.tolist() == ["Γ", "", "X"]
-    assert ds.axis.values.tolist() == ["x", "y", "z"]
-    assert ds.k.dims == ("wave_vector", "axis")
+    assert ds.direction.values.tolist() == ["x", "y", "z"]
+    assert ds.k.dims == ("wave_vector", "direction")
     assert ds.bulk_participation.dims == ("wave_vector", "band", "region")
     for name in ("connection", "connection_by_overlap", "static", "lost", "cluster"):
         assert ds[name].dims == ("wave_vector", "band")
