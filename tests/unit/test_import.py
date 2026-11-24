@@ -54,6 +54,15 @@ def test_importing_gfem_never_imports_petsc():
     assert out == "[]"
 
 
+def test_importing_gfem_never_imports_sax():
+    # scikit-rf too: the S-parameter export imports it only when called.
+    out = _run_fresh(
+        "import gfem, sys; print([m for m in ('sax', 'klujax', 'skrf') "
+        "if m in sys.modules])"
+    )
+    assert out == "[]"
+
+
 def test_a_one_process_mesh_never_imports_mpi4py():
     path = Path(__file__).parent / "data" / "two_box_msh22.msh"
     out = _run_fresh(
@@ -100,6 +109,36 @@ def _imports(path: Path) -> set[str]:
         elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
             out.add(node.module.split(".")[0])
     return out
+
+
+def _dynamic_imports(path: Path) -> set[str]:
+    """The top-level package of every literal ``import_module`` or ``__import__``."""
+    out = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        first = node.args[0]
+        if (
+            name in {"import_module", "__import__"}
+            and isinstance(first, ast.Constant)
+            and isinstance(first.value, str)
+        ):
+            out.add(first.value.split(".")[0])
+    return out
+
+
+def test_sax_is_never_imported_by_gfem():
+    # A SAX component returns a plain dictionary: gfem needs no SAX, not even
+    # for type hints, so a user without it can still call one.
+    root = Path(gfem.__file__).parent
+    offenders = [
+        str(p.relative_to(root))
+        for p in root.rglob("*.py")
+        if {"sax", "klujax"} & (_imports(p) | _dynamic_imports(p))
+    ]
+    assert offenders == []
 
 
 def test_ngsolve_is_imported_only_by_the_engine():
