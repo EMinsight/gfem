@@ -600,8 +600,8 @@ Permittivity fit
   (`gfem.fit_permittivity`).
 
 Extinction coefficient
-  The imaginary part $k \ge 0$ of a tabulated refractive index. It measures
-  absorption and does not depend on the time convention; under
+  The imaginary part $k \ge 0$ of a tabulated refractive index $n + ik$. It
+  measures absorption and does not depend on the time convention; under
   $e^{+i\omega t}$ the permittivity is $\varepsilon = (n - ik)^2$. Not the
   extinction cross section, which is a power.
 
