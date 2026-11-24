@@ -48,6 +48,7 @@ order and mesh.
 """
 
 import math
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -70,6 +71,10 @@ C2_BAND_RTOL = 3e-4
 C2_PHASE_TOL = 1e-2
 #: Relative error of a complex C3 frequency.
 C3_FREQ_RTOL = 2e-6
+#: |v_g - exact| on the C2 bands, as a fraction of c (6e-4 measured, band 4).
+C2_VG_TOL = 3e-3
+#: |v_g - exact| on the C3 bands, as a fraction of c (1.8e-7 measured).
+C3_VG_TOL = 5e-6
 #: Relative error of the lowest C4 doublet.
 C4_RTOL = 1e-4
 #: Relative error of the complex resonance of C1 loaded by its ports
@@ -314,13 +319,17 @@ def c3_mesh(directory: Path, cells: tuple[int, int, int] = (10, 1, 1)) -> gfem.M
     return _mesh(directory, "c3", cell)
 
 
-def c3(mesh: gfem.Mesh, tan_delta: float = 0.0) -> gfem.Model:
-    """C3: periodic in x, PEC at z = 0 and H, default PMC y walls."""
+def c3(mesh: gfem.Mesh, tan_delta: float | tuple[float, float] = 0.0) -> gfem.Model:
+    """C3: periodic in x, PEC at z = 0 and H, default PMC y walls.
+
+    ``tan_delta``: the loss tangent of both layers, or of (low, high).
+    """
+    low, high = (tan_delta, tan_delta) if np.isscalar(tan_delta) else tan_delta
     return gfem.Model(
         mesh,
         materials={
-            "low": gfem.Material(eps_r=C3_EPS_LOW, tan_delta=tan_delta),
-            "high": gfem.Material(eps_r=C3_EPS_HIGH, tan_delta=tan_delta),
+            "low": gfem.Material(eps_r=C3_EPS_LOW, tan_delta=low),
+            "high": gfem.Material(eps_r=C3_EPS_HIGH, tan_delta=high),
         },
         boundaries=[
             gfem.Periodic(("x_min", "x_max")),
@@ -330,29 +339,77 @@ def c3(mesh: gfem.Mesh, tan_delta: float = 0.0) -> gfem.Model:
     )
 
 
-def tmm_frequency(k: float, guess: complex, tan_delta: float = 0.0) -> complex:
+def _tmm_dispersion(
+    tan_delta: float | tuple[float, float],
+) -> tuple[Callable, Callable]:
+    """The C3 Rytov function F(k0) of the two layers and its derivative by k0.
+
+    ``tan_delta``: the loss tangent of both layers, or of (low, high). The
+    band is F(k0) = cos(k a), with n = sqrt(eps (1 - i tan_delta)).
+    """
+    a, d1 = C3_A * MM, C3_D1 * MM
+    d2 = a - d1
+    low, high = (tan_delta, tan_delta) if np.isscalar(tan_delta) else tan_delta
+    n1 = np.sqrt(C3_EPS_LOW * (1 - 1j * low))
+    n2 = np.sqrt(C3_EPS_HIGH * (1 - 1j * high))
+    r = 0.5 * (n1 / n2 + n2 / n1)
+
+    def terms(k0):
+        return (
+            np.cos(n1 * k0 * d1),
+            np.sin(n1 * k0 * d1),
+            np.cos(n2 * k0 * d2),
+            np.sin(n2 * k0 * d2),
+        )
+
+    def value(k0):
+        c1, s1, c2, s2 = terms(k0)
+        return c1 * c2 - r * s1 * s2
+
+    def slope(k0):
+        c1, s1, c2, s2 = terms(k0)
+        return (
+            -n1 * d1 * s1 * c2
+            - n2 * d2 * c1 * s2
+            - r * (n1 * d1 * c1 * s2 + n2 * d2 * s1 * c2)
+        )
+
+    return value, slope
+
+
+def tmm_frequency(
+    k: float, guess: complex, tan_delta: float | tuple[float, float] = 0.0
+) -> complex:
     """The C3 band frequency (Hz, complex when lossy) nearest ``guess`` at k (rad/m).
 
     The root of the transfer-matrix (Rytov) dispersion relation of the two
     layers, cos(n1 k0 d1) cos(n2 k0 d2) - (n1/n2 + n2/n1)/2 sin(n1 k0 d1)
-    sin(n2 k0 d2) = cos(k a), with n = sqrt(eps (1 - i tan_delta)).
+    sin(n2 k0 d2) = cos(k a), with n = sqrt(eps (1 - i tan_delta)); a pair
+    ``tan_delta`` is the loss of (low, high).
     """
-    a, d1 = C3_A * MM, C3_D1 * MM
-    d2 = a - d1
-    n1 = np.sqrt(C3_EPS_LOW * (1 - 1j * tan_delta))
-    n2 = np.sqrt(C3_EPS_HIGH * (1 - 1j * tan_delta))
+    value, _ = _tmm_dispersion(tan_delta)
+    a = C3_A * MM
 
     def residual(fz):
-        k0 = 2 * math.pi * (fz[0] + 1j * fz[1]) / C0
-        r = (
-            np.cos(n1 * k0 * d1) * np.cos(n2 * k0 * d2)
-            - 0.5 * (n1 / n2 + n2 / n1) * np.sin(n1 * k0 * d1) * np.sin(n2 * k0 * d2)
-            - np.cos(k * a)
-        )
+        r = value(2 * math.pi * (fz[0] + 1j * fz[1]) / C0) - np.cos(k * a)
         return [r.real, r.imag]
 
     re, im = scipy.optimize.fsolve(residual, [guess.real, guess.imag], xtol=1e-14)
     return complex(re, im)
+
+
+def tmm_group_velocity(
+    k: float, frequency: complex, tan_delta: float | tuple[float, float] = 0.0
+) -> complex:
+    """The C3 band's d omega / dk (m/s, complex when lossy) at the root ``frequency``.
+
+    By implicit differentiation of the Rytov relation of `tmm_frequency`:
+    F'(k0) dk0 = -a sin(k a) dk, with omega = c k0 and ``frequency`` (Hz) the
+    root at k (rad/m) it returns.
+    """
+    _, slope = _tmm_dispersion(tan_delta)
+    k0 = 2 * math.pi * frequency / C0
+    return C0 * (-C3_A * MM * np.sin(k * C3_A * MM)) / slope(k0)
 
 
 # --- C4: empty cube, three pairs ------------------------------------------------------

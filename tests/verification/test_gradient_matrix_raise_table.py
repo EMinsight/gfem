@@ -705,6 +705,17 @@ EXPECTED |= {
     + [("material", "low", p) for p in PERIODIC_EIGEN_PROPERTIES]
 }
 
+# The Bloch band group velocity is read from the modes, not differentiable
+# by anything: every cell of its leaf raises (OUT_OF_SCOPE, "eigenmode band
+# group velocity"). Only a Bloch solve has the leaf.
+EXPECTED |= {
+    ("eigenmode_periodic_bloch", "v_g", kind): _eigen_outcome(
+        "v_g", kind, periodic=True
+    )
+    for kind in [("nodes",)]
+    + [("material", "low", p) for p in PERIODIC_EIGEN_PROPERTIES]
+}
+
 # Eigenmode with a perfectly matched layer (the leaky guide: a dielectric
 # core radiating through an air tail into a PEC-backed layer; no ports): as
 # the non-periodic resonator, region "core", whose material field carries
@@ -3172,6 +3183,20 @@ def _out_eigenmode_traced_wave_vector(request):
     jax.make_jaxpr(jax.grad(objective))(math.pi / (pc.C3_A * pc.MM))
 
 
+def _out_eigenmode_band_group_velocity(request):
+    # the band group velocity is read from the modes: a cotangent on it raises
+    # at the trace, before any host work
+    model = request.getfixturevalue("bragg_cell")
+    n = len(model.mesh.elements("low"))
+    problem = _bloch_eigenmode(math.pi / (pc.C3_A * pc.MM))
+
+    def objective(e):
+        m = model.with_material("low", gfem.MaterialField(eps_r=e))
+        return jnp.real(gfem.solve(m, problem).v_g[0, 0])
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.full(n, pc.C3_EPS_LOW))
+
+
 def _out_bloch_eigenmode_on_bddc(request):
     # two-sided refinement solves the transposed system on the shift's
     # factors: a Bloch eigenmode solve refuses BDDC + GMRES before assembly
@@ -3894,6 +3919,12 @@ OUT_OF_SCOPE = [
         _out_bloch_eigenmode_on_bddc,
         ValueError,
         "linear_solver='direct'",
+    ),
+    (
+        "eigenmode band group velocity",
+        _out_eigenmode_band_group_velocity,
+        gfem.NonDifferentiableError,
+        "'v_g'",
     ),
     # eigenmode mode-field outputs
     (

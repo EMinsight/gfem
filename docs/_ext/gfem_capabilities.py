@@ -611,6 +611,10 @@ RAISES_LABELS = {
     "Bloch eigenmode x bddc_gmres": (
         '`Eigenmode` with a Bloch `wave_vector` on `linear_solver="bddc_gmres"`'
     ),
+    "eigenmode band group velocity": (
+        "The band group velocity of Bloch eigenmodes (`EigenmodeResult.v_g`), "
+        "with respect to anything"
+    ),
     "eigenmode backward error": (
         "The backward error of eigenmodes (`EigenmodeResult.error`), with "
         "respect to anything"

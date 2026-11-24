@@ -822,13 +822,14 @@ def _field_args(field: Any, _: _codec.Context) -> dict[str, Any]:
 
 
 def _with_layer_args(result: Any, _: _codec.Context) -> dict[str, Any]:
-    """A result's arguments, its layer only when set.
+    """A result's arguments, its layer and group velocity only when set.
 
-    A result without a layer then encodes as before.
+    A result without them then encodes as before.
     """
     out = {f.name: getattr(result, f.name) for f in dataclasses.fields(result)}
-    if out["pml"] is None:
-        del out["pml"]
+    for name in ("pml", "v_g"):
+        if name in out and out[name] is None:
+            del out[name]
     return out
 
 

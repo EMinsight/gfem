@@ -365,6 +365,7 @@ PERIODIC_RAISES = {
     "boundary_morph x paired moving surface": "ValueError",
     "Bloch driven x adaptive sweep": "NotImplementedError",
     "Bloch eigenmode x bddc_gmres": "ValueError",
+    "eigenmode band group velocity": "NonDifferentiableError",
 }
 
 
