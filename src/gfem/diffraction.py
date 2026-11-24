@@ -17,12 +17,15 @@ from gfem._diffraction.outputs import (
     jones,
     power_balance,
 )
+from gfem._diffraction.sweep import AngleSweepResult, angle_sweep
 
 __all__ = [
+    "AngleSweepResult",
     "ApertureField",
     "Efficiencies",
     "Jones",
     "PowerBalance",
+    "angle_sweep",
     "efficiencies",
     "floquet_ports",
     "jones",
