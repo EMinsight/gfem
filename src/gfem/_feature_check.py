@@ -6,8 +6,10 @@ opposite ways (:math:`\hat u_i \cdot \hat u_j < 0`) and the other edge lies on
 the solid side of each (a width) or on the void side of each (a spacing).
 Their distance is measured perpendicular to one edge, from an endpoint of the
 other whose foot falls on it (the projection metric): the least of the four
-endpoint projections. So two edges meeting at a corner of 90° or more never
-pair, and an acute corner does. Measuring along the shortest straight line
+endpoint projections, on the whole edges, so it does not depend on the rule:
+a rule fails exactly when it exceeds the narrowest distance. So two edges
+meeting at a corner of 90° or more never pair, and an acute corner does.
+Measuring along the shortest straight line
 (the Euclidean metric) would instead pair facets of one pixel-faceted curve
 and fail a disk wider than the rule.
 """
@@ -22,6 +24,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 import numpy as np
 
 from gfem._checks import positive_length
+from gfem._pattern import cut_edges
 
 if TYPE_CHECKING:
     from gfem._pattern import LayerPattern
@@ -40,7 +43,8 @@ class Violation(NamedTuple):
     Attributes:
         kind: ``"width"`` (across solid) or ``"spacing"`` (across void).
         distance: The narrowest distance here (m).
-        location: The midpoint of the narrowest marker, ``(2,)`` (m).
+        location: The midpoint of the narrowest edge pair's shortest
+            marker, ``(2,)`` (m).
         markers: Every too-narrow edge pair here, ``(n, 2, 2)`` (m).
     """
 
@@ -117,8 +121,8 @@ def _nm(length: float) -> str:
     return f"{length / 1e-9:.4g} nm"
 
 
-#: A pair closer than this times the rule is two edges sharing a vertex, not a
-#: feature: adjacent edges of a ring meet at distance zero.
+#: Two edges sharing a vertex meet at distance zero: a distance at most this
+#: times the pattern's extent is such a vertex, not a feature.
 _SHARED = 1e-9
 #: Edges whose ends lie this close (times the footprint's larger side) to a
 #: footprint line lie on it: contoured seam vertices match only to round-off.
@@ -147,12 +151,17 @@ def check(
     edges = _Edges(pattern)
     violations: list[Violation] = []
     narrowest: dict[str, float] = {}
-    for kind, rule in rules.items():
-        markers, distance = edges.pairs(kind, rule, _SHARED * rule)
-        violations += edges.sites(kind, markers, distance, rule)
-        narrowest[kind] = (
-            float(distance.min()) if len(distance) else edges.narrowest(kind, rule)
-        )
+    for rule in sorted(set(rules.values())):
+        kinds = tuple(k for k, r in rules.items() if r == rule)
+        least, involved, _ = edges.distances(kinds, rule)
+        for kind in kinds:
+            if least[kind] < rule:  # then the least of all pairs
+                narrowest[kind] = least[kind]
+                markers, distance, local = edges.markers(kind, rule, involved[kind])
+                violations += edges.sites(kind, markers, distance, local, rule)
+    unknown = tuple(k for k in rules if k not in narrowest)
+    if unknown:
+        narrowest |= edges.narrowest(unknown, min(rules[k] for k in unknown))
     violations.sort(key=lambda v: (v.distance, v.kind, *v.location))
     return PatternCheck(
         region=pattern.region,
@@ -164,6 +173,11 @@ def check(
     )
 
 
+#: Edge pairs as ``(i, j, shift_i, shift_j)``: both edges' indices and the
+#: period shifts ``(n, 2)`` of their copies.
+_Pairs = tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+
+
 class _Edges:
     """A pattern's polygon edges, directed with the solid on their left.
 
@@ -171,6 +185,12 @@ class _Edges:
     the left of every edge. Edges on the footprint rectangle are gfem's cut,
     not the pattern's: what lies beyond is the user's layout (or the next
     period, across a seam), so they are never measured.
+
+    A pair's distance is measured on the two edges themselves, never on
+    pieces of them, so it does not depend on the rule: a rule above the
+    narrowest distance always finds it, and one below never does. Edges are
+    cut into pieces to find candidate pairs, and to draw a violation's
+    markers along it.
     """
 
     def __init__(self, pattern: LayerPattern) -> None:
@@ -182,6 +202,7 @@ class _Edges:
             a = b = np.zeros((0, 2))
         self.bounds = pattern.bounds
         self.periodic = pattern.periodic
+        self.period = np.zeros(2)
         if self.bounds is not None:
             xmin, ymin, xmax, ymax = self.bounds
             tolerance = _ON_FOOTPRINT * max(xmax - xmin, ymax - ymin)
@@ -192,90 +213,145 @@ class _Edges:
                 )
             a, b = a[~on], b[~on]
             extent = np.array([xmax - xmin, ymax - ymin])
+            self.period = extent
         else:
             points = np.concatenate([a, b]) if len(a) else np.zeros((1, 2))
             extent = np.ptp(points, axis=0)
         self.a, self.b = a, b
+        length = np.linalg.norm(b - a, axis=1)
+        self.u = (b - a) / length[:, None]
+        # Candidate pieces need not be shorter than a typical edge: the search
+        # then stays local whatever the rule, a tiny one included.
+        self.typical = float(np.median(length)) if len(a) else 0.0
         self.diagonal = float(np.hypot(*extent))
+        self.floor = _SHARED * self.diagonal
 
-    def narrowest(self, kind: str, rule: float) -> float:
-        """The least distance of any facing pair, ``inf`` if none.
+    def narrowest(self, kinds: tuple[str, ...], rule: float) -> dict[str, float]:
+        """The least distance of any facing pair per kind, ``inf`` if none.
 
         Searches with a radius doubling from twice the rule: the first search
-        that finds a pair has found every closer one.
+        that finds a pair closer than its radius has found every closer one,
+        and a search that saw every pair has found the least.
         """
+        out: dict[str, float] = {}
         radius = 2 * rule
         while True:
-            _, distance = self.pairs(kind, radius, _SHARED * rule)
-            if len(distance):
-                return float(distance.min())
+            left = tuple(k for k in kinds if k not in out)
+            least, _, complete = self.distances(left, radius)
+            for kind in left:
+                if complete or least[kind] < radius:
+                    out[kind] = least[kind]
+            if len(out) == len(kinds):
+                return out
             if radius > self.diagonal:
-                return math.inf
+                return out | {k: math.inf for k in kinds if k not in out}
             radius *= 2
 
-    def pairs(
-        self, kind: str, rule: float, floor: float
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """The facing pairs closer than ``rule``: markers ``(n, 2, 2)``, distances.
+    def distances(
+        self, kinds: tuple[str, ...], rule: float
+    ) -> tuple[dict[str, float], dict[str, np.ndarray], bool]:
+        """The least distance of the facing pairs seen, per kind.
 
-        Edges longer than half the rule are cut into collinear pieces, so the
-        midpoints of a pair closer than the rule lie within the rule plus the
-        longest piece of each other.
+        Every pair closer than ``rule`` is seen; whether every pair was seen
+        is the third value. Candidates are pieces whose midpoints lie within
+        the rule plus the longest piece: an endpoint and its foot closer than
+        the rule lie in such pieces. Also returns, per kind, the edges of the
+        pairs closer than the rule.
         """
         from scipy.spatial import KDTree  # only needed here
 
-        a, b = _cut_edges(self.a, self.b, rule / 2)
+        least = dict.fromkeys(kinds, math.inf)
+        close: dict[str, list[np.ndarray]] = {k: [np.zeros(0, np.int64)] for k in kinds}
+        a, b, edge = cut_edges(self.a, self.b, max(rule / 2, self.typical))
         n = len(a)
-        if n == 0:
-            return np.zeros((0, 2, 2)), np.zeros(0)
-        length = np.linalg.norm(b - a, axis=1)
-        reach = rule + float(length.max())
-        a, b, piece, shift = self._tiled(a, b, reach)
-        length = np.linalg.norm(b - a, axis=1)
-        u = (b - a) / length[:, None]
-        normal = np.stack([-u[:, 1], u[:, 0]], axis=1)  # towards the solid
-        side = 1.0 if kind == "width" else -1.0
-        candidates = KDTree(0.5 * (a + b)).query_pairs(reach, output_type="ndarray")
-        markers, distances, found = [], [], []
+        complete = True
+        if n:
+            reach = rule + float(np.linalg.norm(b - a, axis=1).max())
+            mid, piece, shift = self._tiled(0.5 * (a + b), reach)
+            candidates = KDTree(mid).query_pairs(reach, output_type="ndarray")
+            complete = not any(self.periodic) and len(candidates) == n * (n - 1) // 2
+            for start in range(0, len(candidates), _PAIR_BLOCK):
+                block = candidates[start : start + _PAIR_BLOCK]
+                i, j, si, sj = self._facing(block, n, edge[piece], shift)
+                found = _project(kinds, self.floor, *self._ends(i, j, si, sj))
+                for kind in kinds:
+                    d = found[kind][0]
+                    if len(d):
+                        least[kind] = min(least[kind], float(d.min()))
+                    hit = d < rule
+                    close[kind] += [i[hit], j[hit]]
+        involved = {k: np.unique(np.concatenate(close[k])) for k in kinds}
+        return least, involved, complete
+
+    def markers(
+        self, kind: str, rule: float, involved: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """The markers of the edge pairs closer than ``rule``, among ``involved``.
+
+        The edges are cut into pieces of at most half the rule, and each pair
+        of pieces closer than the rule, of an edge pair closer than the rule,
+        gives a marker: markers run along a too-narrow stretch. Returns the
+        markers ``(n, 2, 2)``, their edge pair's distance and their own.
+        """
+        from scipy.spatial import KDTree  # only needed here
+
+        a, b, edge = cut_edges(self.a[involved], self.b[involved], rule / 2)
+        edge = involved[edge]
+        n = len(a)
+        reach = rule + float(np.linalg.norm(b - a, axis=1).max())
+        mid, piece, shift = self._tiled(0.5 * (a + b), reach)
+        candidates = KDTree(mid).query_pairs(reach, output_type="ndarray")
+        found: list[tuple[np.ndarray, ...]] = [
+            (np.zeros((0, 2, 2)), np.zeros(0), np.zeros(0))
+            + (np.zeros(0, dtype=np.int64),) * 2
+            + (np.zeros((0, 2), dtype=np.int64),) * 2
+        ]
         for start in range(0, len(candidates), _PAIR_BLOCK):
-            i, j = candidates[start : start + _PAIR_BLOCK].T
-            # Keep pairs with an edge of this period; then the edges must run
-            # opposite ways (corners of 90 degrees or more never pair).
-            keep = (i < n) | (j < n)
-            i, j = i[keep], j[keep]
-            keep = np.einsum("ij,ij->i", u[i], u[j]) < 0
-            i, j = i[keep], j[keep]
-            best = np.full(len(i), np.inf)
-            marker = np.zeros((len(i), 2, 2))
-            for e, f in ((i, j), (j, i)):  # the endpoints of f onto e
-                for q in (a[f], b[f]):
-                    t = np.einsum("ij,ij->i", q - a[e], u[e])
-                    s = side * np.einsum("ij,ij->i", q - a[e], normal[e])
-                    on = (t >= -floor) & (t <= length[e] + floor)
-                    ok = on & (s > floor) & (s < best)
-                    best = np.where(ok, s, best)
-                    marker[ok, 0] = a[e][ok] + t[ok, None] * u[e][ok]
-                    marker[ok, 1] = q[ok]
-            hit = best < rule
-            markers.append(marker[hit])
-            distances.append(best[hit])
-            found.append(np.stack([i[hit], j[hit]], axis=1))
-        markers_ = np.concatenate(markers) if markers else np.zeros((0, 2, 2))
-        distance = np.concatenate(distances) if distances else np.zeros(0)
-        if any(self.periodic) and len(distance):
-            pair = np.concatenate(found)
-            once = _once(piece[pair[:, 0]], piece[pair[:, 1]], shift[pair[:, 0]],
-                         shift[pair[:, 1]])  # fmt: skip
-            markers_, distance = markers_[once], distance[once]
-        return markers_, distance
+            p, q = candidates[start : start + _PAIR_BLOCK].T
+            keep = (p < n) | (q < n)
+            p, q = p[keep], q[keep]
+            e, f = edge[piece[p]], edge[piece[q]]
+            keep = np.einsum("ij,ij->i", self.u[e], self.u[f]) < 0
+            p, q, e, f = p[keep], q[keep], e[keep], f[keep]
+            op, oq = shift[p] * self.period, shift[q] * self.period
+            ends = (a[piece[p]] + op, b[piece[p]] + op, a[piece[q]] + oq,
+                    b[piece[q]] + oq)  # fmt: skip
+            local, which = _project((kind,), self.floor, *ends)[kind]
+            ends_ = self._ends(e, f, shift[p], shift[q])
+            whole = _project((kind,), self.floor, *ends_)[kind][0]
+            hit = (local < rule) & (whole < rule)
+            found.append(
+                (
+                    _markers(which[hit], *(x[hit] for x in ends)),
+                    whole[hit],
+                    local[hit],
+                    piece[p[hit]],
+                    piece[q[hit]],
+                    shift[p[hit]],
+                    shift[q[hit]],
+                )
+            )
+        markers, distance, local, pi, pj, si, sj = (
+            np.concatenate([f[k] for f in found]) for k in range(7)
+        )
+        if any(self.periodic):
+            once = _once(pi, pj, si, sj)
+            markers, distance, local = markers[once], distance[once], local[once]
+        return markers, distance, local
 
     def sites(
-        self, kind: str, markers: np.ndarray, distance: np.ndarray, rule: float
+        self,
+        kind: str,
+        markers: np.ndarray,
+        distance: np.ndarray,
+        local: np.ndarray,
+        rule: float,
     ) -> list[Violation]:
         """Markers grouped into places: midpoints within the rule are one place.
 
         On a periodic axis the midpoints are compared modulo the period, so a
         place across the seam is one place whichever side its markers lie on.
+        A place's location is the shortest marker of its narrowest edge pair.
         """
         if not len(distance):
             return []
@@ -287,11 +363,10 @@ class _Edges:
         wrapped, box = mid.copy(), np.zeros(2)
         if self.bounds is not None:
             low = np.array(self.bounds[:2])
-            period = np.array(self.bounds[2:]) - low
             for axis in np.flatnonzero(self.periodic):
-                box[axis] = period[axis]
-                w = np.mod(mid[:, axis] - low[axis], period[axis])
-                wrapped[:, axis] = np.where(w < period[axis], w, 0.0)
+                box[axis] = self.period[axis]
+                w = np.mod(mid[:, axis] - low[axis], self.period[axis])
+                wrapped[:, axis] = np.where(w < self.period[axis], w, 0.0)
         near = KDTree(wrapped, boxsize=box).query_pairs(rule, output_type="ndarray")
         graph = coo_matrix(
             (np.ones(len(near)), (near[:, 0], near[:, 1])), shape=(len(mid),) * 2
@@ -300,61 +375,116 @@ class _Edges:
         out = []
         for site in range(label.max() + 1):
             members = np.flatnonzero(label == site)
-            best = members[np.argmin(distance[members])]
+            best = members[np.lexsort((local[members], distance[members]))[0]]
             out.append(
                 Violation(kind, float(distance[best]), mid[best], markers[members])
             )
         return out
 
-    def _tiled(
-        self, a: np.ndarray, b: np.ndarray, reach: float
+    def _ends(
+        self, i: np.ndarray, j: np.ndarray, si: np.ndarray, sj: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """The pieces and, on periodic axes, their copies within reach.
+        """The endpoints of edges ``i`` and ``j``, each moved by its period shift."""
+        if not any(self.periodic):
+            return self.a[i], self.b[i], self.a[j], self.b[j]
+        oi, oj = si * self.period, sj * self.period
+        return self.a[i] + oi, self.b[i] + oi, self.a[j] + oj, self.b[j] + oj
 
-        Returns the endpoints with the period's own pieces first, each piece's
-        index and the period shift ``(n, 2)`` of its copy.
+    def _facing(
+        self, candidates: np.ndarray, n: int, edge: np.ndarray, shift: np.ndarray
+    ) -> _Pairs:
+        """Candidate piece pairs as pairs of edges running opposite ways.
+
+        Pairs keep a piece of this period; corners of 90 degrees or more never
+        pair. ``edge`` and ``shift`` are each tiled piece's edge and shift. An
+        edge pair found by several piece pairs measures the same each time.
         """
-        n = len(a)
+        p, q = candidates.T
+        keep = (p < n) | (q < n)
+        p, q = p[keep], q[keep]
+        i, j = edge[p], edge[q]
+        keep = np.einsum("ij,ij->i", self.u[i], self.u[j]) < 0
+        return i[keep], j[keep], shift[p[keep]], shift[q[keep]]
+
+    def _tiled(
+        self, mid: np.ndarray, reach: float
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Pieces' midpoints and, on periodic axes, their copies within reach.
+
+        Returns the midpoints with the period's own pieces first, each one's
+        piece index and the period shift ``(n, 2)`` of its copy.
+        """
+        n = len(mid)
         piece = np.arange(n)
         if not any(self.periodic) or self.bounds is None:
-            return a, b, piece, np.zeros((n, 2), dtype=np.int64)
+            return mid, piece, np.zeros((n, 2), dtype=np.int64)
         xmin, ymin, xmax, ymax = self.bounds
-        period = np.array([xmax - xmin, ymax - ymin])
         ranges = [
             range(-k, k + 1) if p else range(1)
             for p, k in zip(
-                self.periodic, np.ceil(reach / period).astype(int), strict=True
+                self.periodic, np.ceil(reach / self.period).astype(int), strict=True
             )
         ]
         shifts = sorted(itertools.product(*ranges), key=lambda s: s != (0, 0))
         low, high = np.array([xmin, ymin]) - reach, np.array([xmax, ymax]) + reach
         tiles = []
         for s in shifts:
-            offset = np.asarray(s) * period
-            mid = 0.5 * (a + b) + offset
+            copy = mid + np.asarray(s) * self.period
             # Only copies within reach of the footprint can pair with its edges.
-            near = np.all((mid >= low) & (mid <= high), axis=1) | (s == (0, 0))
-            tiles.append((a[near] + offset, b[near] + offset, piece[near], s))
+            near = np.all((copy >= low) & (copy <= high), axis=1) | (s == (0, 0))
+            tiles.append((copy[near], piece[near], s))
         return (
             np.concatenate([t[0] for t in tiles]),
             np.concatenate([t[1] for t in tiles]),
-            np.concatenate([t[2] for t in tiles]),
-            np.concatenate([np.tile(t[3], (len(t[2]), 1)) for t in tiles]),
+            np.concatenate([np.tile(t[2], (len(t[1]), 1)) for t in tiles]),
         )
 
 
-def _cut_edges(
-    a: np.ndarray, b: np.ndarray, longest: float
-) -> tuple[np.ndarray, np.ndarray]:
-    """Edges cut into equal collinear pieces of at most ``longest``."""
-    count = np.maximum(1, np.ceil(np.linalg.norm(b - a, axis=1) / longest)).astype(
-        np.int64
-    )
-    edge = np.repeat(np.arange(len(a)), count)
-    k = np.arange(len(edge)) - np.repeat(np.cumsum(count) - count, count)
-    step = (b - a)[edge] / count[edge, None]
-    start = a[edge] + k[:, None] * step
-    return start, start + step
+def _orientations(
+    e0: np.ndarray, e1: np.ndarray, f0: np.ndarray, f1: np.ndarray
+) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray], ...]:
+    """The four endpoint projections: (edge start, edge end, endpoint)."""
+    return (e0, e1, f0), (e0, e1, f1), (f0, f1, e0), (f0, f1, e1)
+
+
+def _project(
+    kinds: tuple[str, ...], floor: float, *ends: np.ndarray
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """The projection distance of segment pairs ``(e0, e1, f0, f1)``, per kind.
+
+    The least of the four endpoint projections whose foot falls on the other
+    segment and that lie on its solid side (a width) or void side (a
+    spacing), ``inf`` if none; and which projection it is (0 to 3).
+    """
+    out = {k: (np.full(len(ends[0]), np.inf), np.zeros(len(ends[0]), np.int64))
+           for k in kinds}  # fmt: skip
+    for n, (p0, p1, q) in enumerate(_orientations(*ends)):
+        d = p1 - p0
+        length = np.hypot(d[:, 0], d[:, 1])
+        ux, uy = d[:, 0] / length, d[:, 1] / length
+        w = q - p0
+        t = w[:, 0] * ux + w[:, 1] * uy
+        s = w[:, 1] * ux - w[:, 0] * uy  # along the normal towards the solid
+        on = (t >= -floor) & (t <= length + floor)
+        for kind in kinds:
+            best, which = out[kind]
+            side = s if kind == "width" else -s
+            ok = on & (side > floor) & (side < best)
+            out[kind] = np.where(ok, side, best), np.where(ok, n, which)
+    return out
+
+
+def _markers(which: np.ndarray, *ends: np.ndarray) -> np.ndarray:
+    """Each pair's marker, foot to endpoint, for the projection ``which``."""
+    out = np.zeros((len(which), 2, 2))
+    for k, (p0, p1, q) in enumerate(_orientations(*ends)):
+        m = which == k
+        d = p1[m] - p0[m]
+        u = d / np.hypot(d[:, 0], d[:, 1])[:, None]
+        t = np.einsum("ij,ij->i", q[m] - p0[m], u)
+        out[m, 0] = p0[m] + t[:, None] * u
+        out[m, 1] = q[m]
+    return out
 
 
 def _once(pi: np.ndarray, pj: np.ndarray, si: np.ndarray, sj: np.ndarray) -> np.ndarray:

@@ -703,6 +703,26 @@ def twice_area(ring: np.ndarray) -> Any:
     return np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y)
 
 
+def cut_edges(
+    a: np.ndarray, b: np.ndarray, longest: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Edges ``a -> b`` cut into equal collinear pieces of at most ``longest``.
+
+    Returns the pieces' starts and ends and each piece's edge index. Two
+    pieces that touch have midpoints within ``longest`` of each other, so a
+    k-d tree of the midpoints finds every contact among them, however long
+    the edges.
+    """
+    count = np.maximum(1, np.ceil(np.linalg.norm(b - a, axis=1) / longest)).astype(
+        np.int64
+    )
+    edge = np.repeat(np.arange(len(a)), count)
+    k = np.arange(len(edge)) - np.repeat(np.cumsum(count) - count, count)
+    step = (b - a)[edge] / count[edge, None]
+    start = a[edge] + k[:, None] * step
+    return start, start + step, edge
+
+
 def drop_repeats(ring: np.ndarray) -> np.ndarray:
     """An open ring without consecutive repeats (the last against the first too).
 

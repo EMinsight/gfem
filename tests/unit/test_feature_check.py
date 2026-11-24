@@ -158,6 +158,49 @@ def test_all_solid_and_empty_have_nothing_to_measure(grid):
         assert check.narrowest_spacing == np.inf
 
 
+def _random(grid):
+    """A filtered noise design: curves, cusps and narrow places everywhere."""
+    noise = np.random.default_rng(3).random(grid.shape)
+    return grid.pattern(design.helmholtz_filter(grid, radius=5 * PITCH)(noise))
+
+
+#: Shapes whose facing edges are long and not parallel, as user polygons (um).
+SLANTED = {
+    # a 30 degree corner, its edges 2 um long
+    "acute wedge": [[(0, 0), (2, 0), (2, 2 * np.tan(np.pi / 6))]],
+    # a slot narrowing from 0.4 to 0.1 um between a bar and a slanted block
+    "tapered slot": [
+        [(0, 0), (1, 0), (1, 2), (0, 2)],
+        [(1.1, 0), (2, 0), (2, 2), (1.4, 2)],
+    ],
+}
+
+
+@pytest.mark.parametrize("name", [*NARROW, *WIDE, "random", *SLANTED])
+def test_a_rule_just_above_the_narrowest_distance_fails_and_just_below_passes(
+    grid, name
+):
+    if name in SLANTED:
+        pattern = design.LayerPattern.from_polygons(
+            [UM * np.array(ring, dtype=float) for ring in SLANTED[name]]
+        )
+    elif name == "random":
+        pattern = _random(grid)
+    else:
+        pattern = _pattern(grid, {**NARROW, **WIDE}[name][0])
+    report = pattern.check(min_width=RULE, min_spacing=RULE)
+    for kind in ("width", "spacing"):
+        narrowest = getattr(report, f"narrowest_{kind}")
+        if not np.isfinite(narrowest):
+            continue
+        above = pattern.check(**{f"min_{kind}": narrowest * (1 + 1e-9)})
+        assert not above.passed, (kind, narrowest)
+        assert above.violations[0].distance == narrowest
+        below = pattern.check(**{f"min_{kind}": narrowest * (1 - 1e-9)})
+        assert below.passed, (kind, narrowest, below.violations[:1])
+        assert getattr(below, f"narrowest_{kind}") == narrowest
+
+
 @pytest.fixture(scope="module")
 def periodic_grid(plate):
     return design.LayerGrid(plate, "design", pitch=PITCH, periodic=(True, False))
