@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any
 import jax.numpy as jnp
 import numpy as np
 
+from gfem._background import lossless
 from gfem._boundaries import (
     PEC,
     PMC,
@@ -58,8 +59,8 @@ from gfem._boundaries import (
 )
 from gfem._engine import power_flow as pf
 from gfem._engine import probe
-from gfem._engine.incident import _Faces, _same_material, layer_regions
-from gfem._materials import Material, MaterialField
+from gfem._engine.incident import Faces, layer_regions, one_medium, region_of
+from gfem._materials import MaterialField
 from gfem._truncation import truncation
 from gfem.mesh import Mesh
 
@@ -71,14 +72,19 @@ if TYPE_CHECKING:
 __all__ = [
     "Ground",
     "Layer",
+    "LayerWalls",
     "amplitudes",
+    "check_enclosed",
     "directions",
     "exterior_layer",
+    "jacobians",
+    "layer_walls",
     "rule",
 ]
 
-#: The sheets a far-field layer may not hold.
-_SHEETS = (Conductor, Impedance)
+#: The boundaries and ports the side must hold, clear of the far-field layer
+#: (an `Absorbing` face is the truncation itself).
+_ENCLOSED = (Conductor, Impedance, PEC, PMC, LumpedPort, WavePort, FloquetPort)
 #: Directions per chunk of the dense phase product (bounds its memory).
 _CHUNK = 64
 #: A ground plane's vertices lie on one plane to this share of the mesh extent.
@@ -161,7 +167,7 @@ def directions(theta: np.ndarray, phi: np.ndarray) -> tuple[np.ndarray, ...]:
 # --- the amplitude ----------------------------------------------------------------
 
 
-def _jacobians(corners: Any) -> Any:
+def jacobians(corners: Any) -> Any:
     """``J[t][:, i] = X_i - X_3``: the map from the first three barycentrics."""
     return jnp.stack([corners[:, i] - corners[:, 3] for i in range(3)], axis=-1)
 
@@ -173,7 +179,7 @@ def reference_values(corners: Any, e: Any, curl: Any) -> tuple[Any, Any]:
     \nabla\times E`, ``(n_tets, n_points, 3)`` from ``(n_tets * n_points,
     3)``: what stays fixed when the nodes move at fixed coefficients.
     """
-    jac = _jacobians(corners)
+    jac = jacobians(corners)
     det = jnp.linalg.det(jac)
     e = e.reshape(len(corners), -1, 3)
     curl = curl.reshape(len(corners), -1, 3)
@@ -201,7 +207,7 @@ def amplitudes(
     the layer's corner coordinates ``(n_tets, 4, 3)`` (m) and the field's
     reference values (`reference_values`).
     """
-    jac = _jacobians(corners)
+    jac = jacobians(corners)
     det = jnp.linalg.det(jac)
     inv_t = jnp.linalg.inv(jac).transpose(0, 2, 1)  # J^{-T}
     e = jnp.einsum("tij,tpj->tpi", inv_t, e_ref)
@@ -294,7 +300,7 @@ def exterior_layer(
             "has Periodic pairs: a periodic structure radiates diffraction "
             "orders, read them at a FloquetPort."
         )
-    support = pf._check_support(field, model)  # noqa: SLF001
+    support = pf.check_support(field, model)
     pml = np.zeros(len(tets), bool)
     for region in layer_regions(model):
         pml[mesh.elements(region)] = True
@@ -304,7 +310,7 @@ def exterior_layer(
         used[np.unique(tets[support])] = True
         chi[~used] = 0.0
     else:
-        selected = pf._selection(mesh, side) & support  # noqa: SLF001
+        selected = pf.selection(mesh, side) & support
         if not selected.any():
             raise ValueError(
                 "far_field's side selects no element of the field's support: "
@@ -325,17 +331,17 @@ def exterior_layer(
             "far_field's side has no element layer just outside it: every "
             "element of the solve domain is inside it, or none is."
         )
-    region_of = _regions(model)
+    regions = region_of(mesh)
     if (varies & pml).any():
-        region = region_of[np.flatnonzero(varies & pml)[0]]
+        region = regions[np.flatnonzero(varies & pml)[0]]
         raise ValueError(
             f"The far-field layer just outside this side holds the PML region "
             f"{region!r}, where the field is the stretched one: put the side's "
             "surface at least one element inside the PML's inner face, or leave "
             "side=None for the layer touching the truncation."
         )
-    eps_r, mu_r = _medium(model, background, region_of, varies)
-    _check_sources(field, model, background, chi, varies, incident=incident)
+    eps_r, mu_r = _medium(model, background, regions, varies)
+    check_enclosed(field, model, background, chi, varies, incident=incident)
     ground = _ground(model, chi, varies, pml, nodes)
     return Layer(
         chi=chi,
@@ -347,21 +353,10 @@ def exterior_layer(
     )
 
 
-def _regions(model: Model) -> np.ndarray:
-    """The volume region name of each tetrahedron."""
-    mesh = model.mesh
-    names = mesh._region_names()  # noqa: SLF001
-    tags = np.asarray(mesh._topology.volume_tags)  # noqa: SLF001
-    out = np.empty(len(tags), object)
-    for tag, name in names.items():
-        out[tags == tag] = name
-    return out
-
-
 def _medium(
     model: Model,
     background: Background,
-    region_of: np.ndarray,
+    regions: np.ndarray,
     varies: np.ndarray,
 ) -> tuple[float, float]:
     """The exterior medium's ``(eps_r, mu_r)``, after checking the layer is it."""
@@ -372,35 +367,35 @@ def _medium(
             "homogeneous background, with a PEC or PMC ground plane if needed."
         )
     medium = background.layers[0]
-    if np.any(medium.tan_delta) or np.any(medium.conductivity):
+    if not lossless(medium):
         raise NotImplementedError(
             f"far_field in a lossy exterior medium ({medium!r}) is not computed "
             "in this gfem version: a lossy medium has no far field. Give a "
             "lossless background."
         )
-    for region in sorted(set(region_of[varies])):
+    _, region = one_medium(model, regions[varies], medium)
+    if region is not None:
         material = model.materials.get(region)
         if isinstance(material, MaterialField):
             # a value error: the region's material is valid, the side is not
-            raise ValueError(  # noqa: TRY004
+            raise ValueError(
                 f"The far-field layer just outside this side holds the design "
                 f"region {region!r} (a MaterialField): the layer must be the "
                 "exterior medium. Move the side's surface one element away from "
                 "the design region."
             )
-        if not (isinstance(material, Material) and _same_material(material, medium)):
-            raise ValueError(
-                f"The far-field layer just outside this side holds region "
-                f"{region!r}, whose material {material!r} is not the exterior "
-                f"medium (the background, {medium!r}): the layer must be one "
-                "constant, isotropic, lossless medium. Put the side's surface in "
-                "the background medium, around every scatterer."
-            )
+        raise ValueError(
+            f"The far-field layer just outside this side holds region "
+            f"{region!r}, whose material {material!r} is not the exterior "
+            f"medium (the background, {medium!r}): the layer must be one "
+            "constant, isotropic, lossless medium. Put the side's surface in "
+            "the background medium, around every scatterer."
+        )
     eps_r = complex(np.asarray(medium.eps_r)).real
     return eps_r, complex(np.asarray(medium.mu_r)).real
 
 
-def _check_sources(
+def check_enclosed(
     field: Field,
     model: Model,
     background: Background,
@@ -445,10 +440,8 @@ def _check_sources(
     layer_nodes[np.unique(tets[varies])] = True
     for item in (*model.boundaries, *model.ports):
         wall = isinstance(item, (PEC, PMC))
-        if not isinstance(
-            item, (*_SHEETS, PEC, PMC, LumpedPort, WavePort, FloquetPort)
-        ):
-            continue  # Absorbing faces: the truncation itself
+        if not isinstance(item, _ENCLOSED):
+            continue
         port = isinstance(item, (LumpedPort, WavePort, FloquetPort))
         what = (
             f"{type(item).__name__} {item.name!r}"
@@ -478,6 +471,49 @@ def _check_sources(
                 )
 
 
+@dataclasses.dataclass(frozen=True, eq=False)
+class LayerWalls:
+    """The solve domain's boundary faces a layer meets.
+
+    The faces of the domain's boundary owned by a layer element outside
+    the perfectly matched layer, with a vertex where ``chi > 0``: there a
+    reciprocity identity over the layer gets a surface term, unless the
+    test field meets the face's condition.
+
+    Attributes:
+        faces: The solve domain's faces.
+        rows: The faces' rows in ``faces``, in order.
+        kinds: Per row, the type name of the boundary or port on it
+            (``"PEC"``, ``"Absorbing"``, ...); ``"PMC"`` for a face no
+            boundary names, the natural condition.
+    """
+
+    faces: Faces
+    rows: np.ndarray
+    kinds: tuple[str, ...]
+
+
+def layer_walls(
+    model: Model, chi: np.ndarray, varies: np.ndarray, pml: np.ndarray
+) -> LayerWalls:
+    """The boundary faces of the layer ``varies`` (see `LayerWalls`)."""
+    faces = Faces.of(model)
+    a, b = faces.tets[:, 0], faces.tets[:, 1]
+    owner = np.maximum(a, 0)
+    rows = (b < 0) & (a >= 0) & varies[owner] & ~pml[owner]
+    rows &= chi[faces.nodes].max(axis=1) > 0
+    named: dict[str, str] = {}
+    for item in (*model.boundaries, *model.ports):
+        for name in surfaces_of(item):
+            named.setdefault(name, type(item).__name__)
+    picked = np.flatnonzero(rows)
+    kinds = []
+    for row in picked:
+        on = [named[s] for s in faces.surfaces[row] if s in named]
+        kinds.append(on[0] if on else "PMC")
+    return LayerWalls(faces=faces, rows=picked, kinds=tuple(kinds))
+
+
 def _ground(
     model: Model,
     chi: np.ndarray,
@@ -485,31 +521,14 @@ def _ground(
     pml: np.ndarray,
     nodes: np.ndarray,
 ) -> Ground | None:
-    """The PEC or PMC ground plane the layer meets, or ``None``.
-
-    The faces that matter are the solve domain's boundary faces of a layer
-    element with a vertex where ``chi = 1``: the reciprocity identity gets a
-    surface term there unless the test field meets the wall's condition.
-    """
+    """The PEC or PMC ground plane the layer meets (`layer_walls`), or ``None``."""
     mesh = model.mesh
-    faces = _Faces.of(model)
-    a, b = faces.tets[:, 0], faces.tets[:, 1]
-    boundary = (b < 0) & (a >= 0)
-    rows = boundary & varies[np.maximum(a, 0)] & ~pml[np.maximum(a, 0)]
-    rows &= chi[faces.nodes].max(axis=1) > 0
-    if not rows.any():
+    walls = layer_walls(model, chi, varies, pml)
+    faces, rows = walls.faces, walls.rows
+    if not len(rows):
         return None
-    kinds: dict[str, str] = {}
-    for item in model.boundaries:
-        for name in surfaces_of(item):
-            kinds.setdefault(name, type(item).__name__)
-    for item in model.ports:
-        for name in surfaces_of(item):
-            kinds.setdefault(name, type(item).__name__)
     found: set[str] = set()
-    for row in np.flatnonzero(rows):
-        named = [kinds[s] for s in faces.surfaces[row] if s in kinds]
-        kind = named[0] if named else "PMC"
+    for row, kind in zip(rows, walls.kinds, strict=True):
         if kind not in ("PEC", "PMC"):
             raise ValueError(
                 f"The far-field layer meets the {kind} face {faces.surfaces[row]!r} "
@@ -536,7 +555,7 @@ def _ground(
             "boundary that are not on one plane: a ground plane is one flat wall."
         )
     tets = np.asarray(mesh.tetrahedra)
-    inward = nodes[tets[a[rows][0]]].mean(axis=0) - point
+    inward = nodes[tets[faces.tets[rows[0], 0]]].mean(axis=0) - point
     if inward @ normal < 0:
         normal = -normal
     (kind,) = found

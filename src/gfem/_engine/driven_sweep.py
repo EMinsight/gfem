@@ -34,7 +34,7 @@ from gfem._engine.solve_request import SolveRequest
 from gfem._engine.sweep_outputs import SweepOutputs
 from gfem._engine.wave_ports import SweptSurface, port_mode_sweeps
 from gfem._linalg import report
-from gfem._sources import IncidentField, _qualified
+from gfem._sources import IncidentField, qualified
 from gfem._sweep.port_mode import rows_of
 from gfem.errors import LinearSolverConvergenceError
 from gfem.problems import Driven
@@ -768,7 +768,7 @@ def check_loadable(sources: Sequence[Any]) -> None:
         if why is not None:
             raise ValueError(
                 f"The IncidentField {source.name!r} (function "
-                f"{_qualified(function)}) cannot be sent to a frequency worker: "
+                f"{qualified(function)}) cannot be sent to a frequency worker: "
                 f"{why}. "
                 "Define the function at module level in a script or an "
                 "importable module, or use frequency_workers=1."

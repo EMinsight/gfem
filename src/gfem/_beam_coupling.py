@@ -32,8 +32,8 @@ from gfem._adjoint.measure import measure
 from gfem._adjoint.solve_vjp import input_kind
 from gfem._checks import is_traced
 from gfem._dim2 import refuse_entry
-from gfem._far_field import _field_role
-from gfem._power_flow import _Role, concrete_field
+from gfem._far_field import field_role
+from gfem._power_flow import _Role, concrete_field, side_names
 from gfem._sources import INCIDENT, GaussianBeam, IncidentField
 from gfem.errors import NonDifferentiableError
 from gfem.mesh import Mesh
@@ -184,7 +184,9 @@ def beam_coupling(
             "beam_coupling's beam is the incoming beam, a gfem.GaussianBeam or a "
             f"gfem.IncidentField, got {type(beam).__name__}."
         )
-    names = _side(side)
+    names = side_names(
+        side, "beam_coupling", default="the layer at the beam's entrance"
+    )
     source = result.sources.get(name)
     if source is None and name not in result.s.excited:
         columns = ", ".join(map(repr, result._excitations)) or "none"  # noqa: SLF001
@@ -229,21 +231,6 @@ def beam_coupling(
         _check_power(kernel, layer, nodes, frequency, beam)
         out.append(_measure(kernel, field, model))
     return jnp.stack(out)
-
-
-def _side(side: Any) -> Any:
-    """``None``, the names as a tuple, or the predicate."""
-    if side is None or callable(side):
-        return side
-    if isinstance(side, str):
-        return (side,)
-    if isinstance(side, Sequence) and all(isinstance(s, str) for s in side):
-        return tuple(side)
-    raise TypeError(
-        "beam_coupling's side must be None (the layer at the beam's entrance), "
-        "volume region names, or a predicate on element centroids, got "
-        f"{type(side).__name__}."
-    )
 
 
 def _check_power(
@@ -311,7 +298,7 @@ def _kernel(
     names: list[str] = []
     for path, _ in f_paths:
         key = _FIELD_INPUTS[path[0].name]
-        roles[key] = _field_role(key, field)
+        roles[key] = field_role(key, field)
     for path, _ in m_paths:
         key = "model" + jax.tree_util.keystr(tuple(path))
         names.append(key)

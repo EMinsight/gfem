@@ -424,7 +424,10 @@ How gfem itself checks the estimates against known answers:
 - `refine_mesh` raises {py:obj}`gfem.MeshRefinementUnsupportedError`, before
   any solve, on an adaptive sweep, a port mode problem, a periodic model, a
   Bloch wave vector, a thermal or DC conduction problem (`feature`
-  `"thermal"` or `"dc_conduction"`), a driven or eigenmode model with a
+  `"thermal"` or `"dc_conduction"`), a driven problem with sources
+  (`feature` `"incident field"` or `"point dipole"`: the estimators know
+  nothing of a source's load; `error_estimate` refuses its result too), a
+  driven or eigenmode model with a
   {term}`perfectly matched layer` (the estimators weigh the layer with its
   background material; electrostatic refinement of such a model runs) and
   `SolverOptions(order=1)` (the `"fast"` preset); both
