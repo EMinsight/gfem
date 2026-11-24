@@ -32,6 +32,10 @@ transmon-mesh:
 metagrating-mesh:
     uv run --with gmsh==4.15.2 --with numpy --no-project python tools/metagrating_mesh.py docs/tutorials/data
 
+# Rebuild the photonic-crystal tutorial's meshes, docs/tutorials/data/rods{,_fine}.msh (tools/rods_mesh.py, gmsh pinned; a new mesh means re-measuring the tutorial's values).
+rods-mesh:
+    uv run --with gmsh==4.15.2 --with numpy --no-project python tools/rods_mesh.py docs/tutorials/data
+
 # Rebuild the grating-coupler tutorial's mesh, docs/tutorials/data/grating.msh (tools/grating_mesh.py, gmsh pinned; a new mesh means re-measuring the tutorial's values).
 grating-mesh:
     uv run --with gmsh==4.15.2 --no-project python tools/grating_mesh.py docs/tutorials/data

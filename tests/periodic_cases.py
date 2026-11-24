@@ -32,6 +32,10 @@ read without NGSolve. Meshes are in mm, wave vectors in rad/m.
 - F1, `f1`: a Fresnel slab between Floquet ports (meshes in um), its S the
   tangential-E Airy form `f1_airy`; with an air substrate, the Brewster
   cell. F2, `f2`: a lamellar grating between Floquet ports.
+- Rods, `rods_tutorial_mesh`: the photonic-crystal tutorial's square lattice
+  of alumina rods, a committed 2D section read as a slab; its converged
+  bands at Γ, X and M are `ROD_BANDS`, its band group velocities at the
+  path's segment midpoints `ROD_V_G`.
 
 C1 loaded by its two 50 ohm ports is also a damped Bloch eigen case: its
 complex resonances are the roots of det(Z(f, k) + R) = 0,
@@ -47,6 +51,7 @@ import math
 from pathlib import Path
 
 import numpy as np
+import rods_mesh
 import scipy.constants as const
 import scipy.optimize
 import structured_meshes as sm
@@ -680,6 +685,58 @@ def coordinate_classes(
     scale = 1e-6 * float(np.ptp(nodes, axis=0).max())
     _, labels = np.unique(np.round(keys / scale), axis=0, return_inverse=True)
     return labels.reshape(-1)
+
+
+# --- Rods: the photonic-crystal tutorial's square lattice of alumina rods -----------
+
+ROD_A = rods_mesh.CELL  # lattice constant, mm
+ROD_R = rods_mesh.RADIUS  # rod radius (0.2 ROD_A), mm
+ROD_EPS = 8.9  # alumina
+#: Converged bands of the rod crystal as $\nu = \omega a / 2\pi c$: polarization
+#: ("Ez", E along the rods, PEC front and back faces; "Hz", H along the rods,
+#: natural faces) -> point -> the four lowest bands, a degenerate pair written
+#: twice. Band 1 at Γ is the static field, 0 here and dropped by gfem's static
+#: filter. From a curved order-6 2D FEM on the round rod, cross-checked by a
+#: plane-wave expansion to 1e-5; the Ez gap, from band 1 at M to band 2 at X,
+#: is 31.4 % of its midgap, as published.
+ROD_BANDS = {
+    "Ez": {
+        "Γ": (0.0, 0.582310, 0.627802, 0.627802),
+        "X": (0.274706, 0.442519, 0.635953, 0.772234),
+        "M": (0.322395, 0.548831, 0.548831, 0.693589),
+    },
+    "Hz": {
+        "Γ": (0.0, 0.627812, 0.823528, 0.823528),
+        "X": (0.417567, 0.461676, 0.701194, 0.854966),
+        "M": (0.548843, 0.601899, 0.601899, 0.681160),
+    },
+}
+#: Band group velocities of the rod crystal at the segment midpoints of
+#: Γ-X-M-Γ, $v_g \cdot \hat t / c$ along each segment's direction $\hat t$
+#: (Γ-X at $(1/4, 0)$ along +x, X-M at $(1/2, 1/4)$ along +y, M-Γ at
+#: $(1/4, 1/4)$ along $-(1, 1)/\sqrt 2$, reduced coordinates), bands 1-4 as
+#: in `ROD_BANDS`; central differences of the same 2D FEM with
+#: $\delta\kappa = 10^{-4}$.
+ROD_V_G = {
+    "Ez": {
+        "Γ-X": (0.63165, -0.37635, 0.02559, 0.31346),
+        "X-M": (0.14764, 0.31101, -0.25977, -0.22334),
+        "M-Γ": (-0.53545, 0.08654, 0.17520, -0.21752),
+    },
+    "Hz": {
+        "Γ-X": (0.88428, -0.34209, -0.35509, 0.09746),
+    },
+}
+
+
+def rods_tutorial_mesh(name: str = "rods.msh") -> gfem.Mesh:
+    """The committed rod cell ``name`` of `rods_mesh.MESHES`, read as a slab (mm).
+
+    Areas "rod" and "air"; the pairs "x_min" / "x_max" and "y_min" /
+    "y_max"; the slab's end faces "front" and "back".
+    """
+    path = Path(__file__).parents[1] / "docs" / "tutorials" / "data" / name
+    return gfem.Mesh.from_gmsh_cross_section(path, length_unit="mm")
 
 
 # --- F1: Fresnel slab between Floquet ports -----------------------------------------

@@ -11,7 +11,8 @@ heater_straight.msh) are gmsh-built by tools/heater_section_mesh.py
 (`just heater-section-mesh`); sphere.msh is netgen-built by tools/sphere_mesh.py
 (`just sphere-mesh`) and nanosphere.msh by tools/nanosphere_mesh.py
 (`just nanosphere-mesh`); grating.msh is gmsh-built by tools/grating_mesh.py
-(`just grating-mesh`) and pinned by test_grating_mesh.py.
+(`just grating-mesh`) and pinned by test_grating_mesh.py; the photonic-crystal
+meshes are gmsh-built by tools/rods_mesh.py (`just rods-mesh`).
 """
 
 from pathlib import Path
@@ -22,8 +23,12 @@ import make_tutorial_meshes
 import meshio
 import metagrating_mesh
 import numpy as np
+import periodic_cases as pc
 import pytest
+import rods_mesh
 import transmon_mesh
+
+import gfem
 
 DATA = Path(__file__).parents[2] / "docs" / "tutorials" / "data"
 GMSH_BUILT = (
@@ -32,6 +37,7 @@ GMSH_BUILT = (
     | heater_section_mesh.MESHES
     | heater_section_mesh.STRAIGHT
     | grating_mesh.MESHES
+    | rods_mesh.MESHES
     | {"sphere.msh": None, "nanosphere.msh": None}
 )
 COMMITTED = sorted(
@@ -173,3 +179,26 @@ def test_the_line_names():
         "port2": 1,
         "side": 1,
     }
+
+
+@pytest.mark.parametrize("name", sorted(rods_mesh.MESHES))
+def test_the_rods_tutorial_mesh_has_the_disk_area(name):
+    """The polygon rod has the disk's area, and the cell pairs on x and y."""
+    mesh = pc.rods_tutorial_mesh(name)
+    nodes = np.asarray(mesh.imported_nodes)
+    p = nodes[mesh.volume_elements[mesh.elements("rod")]]
+    volume = np.abs(np.linalg.det(p[:, 1:] - p[:, :1])).sum() / 6
+    r = pc.ROD_R * pc.MM
+    assert volume == pytest.approx(np.pi * r**2 * mesh.section_thickness, rel=1e-12)
+    model = gfem.Model(
+        mesh,
+        materials={"rod": gfem.Material(eps_r=pc.ROD_EPS), "air": gfem.Material()},
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+        ],
+    )
+    a = pc.ROD_A * pc.MM
+    np.testing.assert_allclose(
+        model.periodic_translations, [(a, 0.0, 0.0), (0.0, a, 0.0)], atol=1e-15
+    )
