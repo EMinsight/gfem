@@ -717,21 +717,24 @@ def _mesh_from_args(args: dict[str, Any], context: _codec.Context) -> Mesh:
 class _Excluded:
     """A model's ``excluded=`` mapping as written (tag ``Excluded``).
 
-    Only a model that excludes volumes from thermal or DC conduction problems
-    writes it; an electromagnetic-only model writes its list, as before. Being
-    a tagged object, it stops an older gfem at the unknown type by name.
+    Only a model that excludes volumes from thermal, DC conduction or
+    mechanical problems writes it; an electromagnetic-only model writes its
+    list, as before. Being a tagged object, it stops an older gfem at the
+    unknown type by name. An empty mechanical entry is left out, so a file
+    without one is written as before; reading one, it defaults to empty.
     """
 
     em: tuple
     thermal: tuple
     dc_conduction: tuple
+    mechanical: tuple = ()
 
 
 def _excluded_args(model: Model) -> tuple | _Excluded:
-    em, thermal, dc = (model.excluded_from(k) for k in _Excluded.__dataclass_fields__)
-    if not thermal and not dc:
+    em, *others = (model.excluded_from(k) for k in _Excluded.__dataclass_fields__)
+    if not any(others):
         return em
-    return _Excluded(em, thermal, dc)
+    return _Excluded(em, *others)
 
 
 def _model_args(model: Model, _: _codec.Context) -> dict[str, Any]:
@@ -920,8 +923,9 @@ _codec.register(
 _codec.register(
     _Excluded,
     tag="Excluded",
+    to_args=_unset_omitted(_Excluded, mechanical=()),
     from_args=lambda a, _: dict(a),
-    names=("em", "thermal", "dc_conduction"),
+    names=("em", "thermal", "dc_conduction", "mechanical"),
 )
 _codec.register(
     EnclosedBy,
@@ -945,9 +949,15 @@ def _renamed_density_from_args(cls: type) -> _codec.FromArgs:
 for _cls in (Material, MaterialField):
     _codec.register(
         _cls,
-        # no electro-optic tensor: written as an older gfem wrote it, so the
-        # file and its solve key are unchanged
-        to_args=_unset_omitted(_cls, electro_optic_tensor=None),
+        # no electro-optic tensor and no solid: written as an older gfem
+        # wrote it, so the file and its solve key are unchanged
+        to_args=_unset_omitted(
+            _cls,
+            electro_optic_tensor=None,
+            stiffness=None,
+            piezoelectric_tensor=None,
+            mechanical_quality_factor=None,
+        ),
         from_args=_renamed_density_from_args(_cls),
         # "density": the mass density as gfem 0.1 wrote it (a read alias)
         names=[f.name for f in dataclasses.fields(_cls) if f.init] + ["density"],

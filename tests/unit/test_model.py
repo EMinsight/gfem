@@ -91,7 +91,7 @@ def test_excluding_a_region_by_name_removes_all_its_entities(mesh):
     assert model.excluded_entities == tuple(("sub", e) for e in ents)
 
 
-EVERYWHERE = ("em", "thermal", "dc_conduction")
+EVERYWHERE = ("em", "thermal", "dc_conduction", "mechanical")
 
 
 def test_a_region_excluded_from_every_physics_cannot_also_have_a_material(mesh):

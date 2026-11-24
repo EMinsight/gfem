@@ -136,6 +136,7 @@ _PHYSICS_NAMES = {
     "em": "electromagnetic",
     "thermal": "thermal",
     "dc_conduction": "DC conduction",
+    "mechanical": "mechanical",
 }
 _PHYSICS = tuple(_PHYSICS_NAMES)
 _KEYS = ", ".join(repr(k) for k in _PHYSICS)
@@ -239,7 +240,7 @@ def _excluded_by_physics(excluded: Any) -> tuple[tuple, ...]:
     A list or tuple excludes for electromagnetic problems only.
     """
     if not isinstance(excluded, Mapping):
-        return (_as_tuple(excluded, "excluded"), (), ())
+        return (_as_tuple(excluded, "excluded"), *(() for _ in _PHYSICS[1:]))
     for key in excluded:
         if key not in _PHYSICS_NAMES:
             raise ValueError(
@@ -313,9 +314,13 @@ class Model:
             problems, typically meshed conductors whose shell carries a
             `Conductor` or `PEC`: volume region names, or
             ``enclosed_by(*surfaces)`` (see `enclosed_by`). A mapping with
-            the keys ``"em"``, ``"thermal"`` and ``"dc_conduction"`` sets the
-            volumes removed for each physics (a missing key removes
-            nothing); a list or tuple is the ``"em"`` entry. A meshed
+            the keys ``"em"``, ``"thermal"``, ``"dc_conduction"`` and
+            ``"mechanical"`` sets the volumes removed for each physics (a
+            missing key removes nothing); a list or tuple is the ``"em"``
+            entry. The mechanical domain is the solid a piezoelectric
+            problem solves the displacement on: every volume not excluded
+            from it gives a `Material.stiffness` and a ``mass_density``, so
+            exclude the air and the vacuum by name. A meshed
             conductor excluded from electromagnetic problems stays in the
             thermal domain (it is often the heater) and may carry a
             material; a region excluded from every physics has none.
@@ -671,7 +676,8 @@ class Model:
         """The ``excluded=`` entries of one physics.
 
         Args:
-            physics: ``"em"``, ``"thermal"`` or ``"dc_conduction"``.
+            physics: ``"em"``, ``"thermal"``, ``"dc_conduction"`` or
+                ``"mechanical"``.
 
         Raises:
             ValueError: An unknown physics.
@@ -1093,8 +1099,8 @@ def _materials(
         if region in everywhere:
             raise ValueError(
                 f"Region {region!r} is excluded from every physics "
-                "(electromagnetic, thermal and DC conduction), so it cannot also "
-                "have a material. Remove one of the two."
+                "(electromagnetic, thermal, DC conduction and mechanical), so it "
+                "cannot also have a material. Remove one of the two."
             )
         if isinstance(value, MaterialField):
             _check_field(mesh, region, value)

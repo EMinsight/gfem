@@ -603,3 +603,45 @@ def test_refinement_copies_per_element_solid_tensors_to_the_children(tmp_path):
         np.asarray(refined.mechanical_quality_factor), 1000 * ratio
     )
     assert set(np.round(ratio, 12)) == set(np.round(np.asarray(scale), 12))
+
+
+# --- the mechanical domain's missing properties ------------------------------------
+
+
+def test_missing_mechanical_properties_list_every_pair_and_both_remedies():
+    err = gfem.MissingMaterialPropertyError(
+        [
+            ("clad", "stiffness"),
+            ("clad", "mass_density"),
+            ("finger", "mass_density"),
+            ("clad", "stiffness"),
+        ],
+        physics="mechanical",
+    )
+    assert err.missing == (
+        ("clad", "stiffness"),
+        ("clad", "mass_density"),
+        ("finger", "mass_density"),
+    )
+    text = str(err)
+    assert text.startswith("A piezoelectric problem needs material properties")
+    assert "region 'clad': stiffness (Pa, 6x6" in text
+    assert "mass_density (kg/m^3" in text
+    assert "region 'finger': mass_density" in text
+    assert "gfem.isotropic_stiffness" in text
+    assert "excluded={'mechanical': ('clad', 'finger')}" in text
+    # any property name, unit or not
+    assert "region 'x': whatever" in str(
+        gfem.MissingMaterialPropertyError([("x", "whatever")], physics="mechanical")
+    )
+
+
+def test_missing_thermal_properties_read_as_before():
+    text = str(gfem.MissingMaterialPropertyError([("si", "thermal_conductivity")]))
+    assert text == (
+        "A thermal problem needs material properties that are not given: region "
+        "'si': thermal_conductivity (W/(m K), e.g. 1.4). Give each on the region's "
+        "material (for example gfem.Material(thermal_conductivity=1.4, "
+        "mass_density=2200, specific_heat=700) for silica), or leave the region "
+        "out of thermal problems with Model(excluded={'thermal': ('si',)})."
+    )
