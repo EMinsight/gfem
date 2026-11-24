@@ -71,3 +71,47 @@ def test_g1_the_cell_outputs_match_finite_differences(tmp_path):
     assert_gradient_matches(objective, eps, directions, step=STEP, rel=1e-6, grad=grad)
     jitted = jax.jit(jax.grad(objective))(eps)
     assert float(jnp.linalg.norm(jitted - grad) / jnp.linalg.norm(grad)) <= JIT_TOL
+
+
+# --- G2: emissivity ------------------------------------------------------------
+
+#: The weights of the two directional emissivities in G2's objective.
+G2_WEIGHTS = jnp.asarray([[0.3], [0.7]])
+#: The gradient with ``retain_memory=0`` against the default one, relative in the 2-norm.
+G2_RETAIN_TOL = 1e-9
+
+
+def _g2_objective(mesh, options):
+    f0 = pc.F1_FREQUENCY
+    frequencies = (f0, 0.9 * f0)
+    rule = dif.hemisphere(1, 1)
+
+    def objective(eps):
+        model = pc.f1(mesh).with_material("slab", gfem.MaterialField(eps_r=eps))
+        hemispherical = dif.angle_sweep(
+            model, frequencies, surface=TOP, theta=rule.theta, phi=rule.phi,
+            options=options,
+        )
+        e_h = dif.hemispherical_emissivity(hemispherical, rule, model=model)
+        directional = dif.angle_sweep(
+            model, frequencies, surface=TOP, theta=[0.0, 0.0],
+            phi=[0.0, np.pi / 2], options=options,
+        )
+        e = dif.emissivity(directional, model=model).values
+        return jnp.sum(e_h) + jnp.sum(G2_WEIGHTS * e)
+
+    return objective
+
+
+def test_g2_emissivity_matches_finite_differences(tmp_path):
+    mesh = pc.f1_mesh(tmp_path)
+    n = len(mesh.elements("slab"))
+    scale = np.random.default_rng(30).uniform(0.9, 1.1, n)
+    eps = jnp.asarray(4.0 * (1 - 0.1j) * scale)
+    objective = _g2_objective(mesh, tight("direct"))
+    grad = jax.grad(objective)(eps)
+    directions = unit_directions(np.random.default_rng(0), eps.shape, 3)
+    directions[2] = 1j * directions[2]
+    assert_gradient_matches(objective, eps, directions, step=STEP, rel=1e-6, grad=grad)
+    frugal = jax.grad(_g2_objective(mesh, tight("direct", retain_memory=0)))(eps)
+    assert float(jnp.linalg.norm(frugal - grad) / jnp.linalg.norm(grad)) <= G2_RETAIN_TOL
