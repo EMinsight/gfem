@@ -12,6 +12,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+import scipy.optimize
 
 import gfem
 
@@ -53,8 +54,15 @@ def _sigma_max(f, poles, residues, d):
     return np.linalg.svd(s, compute_uv=False)[:, 0].max()
 
 
-def _three_port():
-    """2 real poles and 6 lightly damped pairs, symmetric residues, sigma 0.95."""
+def _three_port(sigma=0.95, symmetric=True):
+    """2 real poles and 6 lightly damped pairs, largest singular value ``sigma``.
+
+    The residues and ``d`` are symmetric, or the same draws unsymmetrized.
+    """
+
+    def sym(m):
+        return m + m.T if symmetric else 2 * m
+
     rng = np.random.default_rng(0)
     real = np.array([-0.05, -0.7])
     wr = np.array([0.15, 0.3, 0.45, 0.6, 0.8, 0.95])
@@ -62,17 +70,16 @@ def _three_port():
     poles = _pairs(real, cplx) * W_MAX
     residues = np.zeros((len(poles), 3, 3), complex)
     for k in range(len(real)):
-        m = rng.standard_normal((3, 3))
-        residues[k] = m + m.T
+        residues[k] = sym(rng.standard_normal((3, 3)))
     for k in range(len(cplx)):
         m = rng.standard_normal((3, 3)) + 1j * rng.standard_normal((3, 3))
         i = len(real) + 2 * k
-        residues[i] = m + m.T
-        residues[i + 1] = np.conj(m + m.T)
+        residues[i] = sym(m)
+        residues[i + 1] = np.conj(sym(m))
     residues *= W_MAX / 10
     d = rng.standard_normal((3, 3))
-    d = 0.05 * (d + d.T)
-    scale = 0.95 / _sigma_max(np.linspace(0, 3, 20001) * F_MAX, poles, residues, d)
+    d = 0.05 * sym(d)
+    scale = sigma / _sigma_max(np.linspace(0, 3, 20001) * F_MAX, poles, residues, d)
     return poles, residues * scale, d * scale
 
 
@@ -131,6 +138,109 @@ def test_twenty_points_give_the_exact_order_and_no_far_pole():
     assert model.n_poles == 5
     assert np.abs(model.poles).max() <= 10 * W_MAX
     assert _relative_pole_error(model.poles, poles) <= 1e-8
+
+
+def _sigma(f, poles, residues, d):
+    """Largest singular value of the exact S at each of ``f`` (Hz)."""
+    s = _rational_s(np.atleast_1d(f), poles, residues, d)
+    return np.linalg.svd(s, compute_uv=False)[:, 0]
+
+
+def _swept_violations(poles, residues, d, f_top=3 * F_MAX, n=60001):
+    """Intervals (Hz) where the largest singular value exceeds 1.
+
+    A dense sweep brackets each edge, which is then refined by root finding
+    on the largest singular value; the sweep must end below 1.
+    """
+    f = np.linspace(0.0, f_top, n)
+    over = _sigma(f, poles, residues, d) > 1
+    assert not over[-1]
+
+    def edge(i):
+        return scipy.optimize.brentq(
+            lambda x: _sigma(x, poles, residues, d)[0] - 1, f[i], f[i + 1], xtol=1e-3
+        )
+
+    changes = np.flatnonzero(over[1:] != over[:-1])
+    edges = ([0.0] if over[0] else []) + [edge(i) for i in changes]
+    return list(zip(edges[0::2], edges[1::2], strict=True))
+
+
+#: 200 data points on 0.1-1 of the highest frequency, no DC.
+F200 = np.linspace(0.1, 1.0, 200) * F_MAX
+
+
+@pytest.mark.parametrize("symmetric", [True, False])
+def test_the_violations_of_a_fit_are_where_a_dense_sweep_finds_them(symmetric):
+    poles, residues, d = _three_port(sigma=1.02, symmetric=symmetric)
+    net = _net(F200, _rational_s(F200, poles, residues, d))
+
+    model = _fit(net, tolerance=1e-10)
+
+    expected = _swept_violations(model.poles, model.residues, model.d)
+    assert expected
+    assert len(model.passivity_violations) == len(expected)
+    for got, want in zip(model.passivity_violations, expected, strict=True):
+        assert np.allclose(got, want, rtol=1e-6, atol=0)
+    assert model.passive is False
+
+
+def _noisy(s, level, seed=2):
+    """``s`` plus symmetric complex noise of RMS ``level`` per element."""
+    rng = np.random.default_rng(seed)
+    noise = rng.standard_normal(s.shape) + 1j * rng.standard_normal(s.shape)
+    noise = (noise + noise.transpose(0, 2, 1)) / 2
+    return s + level * noise / np.sqrt(np.mean(np.abs(noise) ** 2))
+
+
+@pytest.mark.filterwarnings("ignore::gfem.NonPassiveDataWarning")
+def test_enforcement_makes_a_slightly_active_noisy_fit_passive_and_keeps_it_close():
+    poles, residues, d = _three_port(sigma=1.02)
+    truth = _rational_s(F200, poles, residues, d)
+    net = _net(F200, _noisy(truth, 1e-4))
+
+    model = net.fit_rational()
+
+    assert model.passivity_violations
+    assert model.passive
+    dense = np.linspace(0.0, 3.0, 60001) * F_MAX
+    s_dense = _rational_s(dense, model.poles, model.residues, model.d)
+    assert np.linalg.svd(s_dense, compute_uv=False)[:, 0].max() <= 1
+    # RMS over every element and frequency: the 2 % excess sits on a sharp
+    # resonance, so the element it is largest on moves more
+    fitted = np.asarray(model.network(F200).values)
+    assert np.sqrt(np.mean(np.abs(fitted - truth) ** 2)) <= 1e-3
+    assert np.abs(s_dense - s_dense.transpose(0, 2, 1)).max() <= 1e-12
+    assert np.linalg.svd(model.d, compute_uv=False).max() <= 1 - 1e-4 + 1e-12
+
+
+def test_enforcement_that_moves_s_beyond_the_tolerance_warns_non_passive_data():
+    poles, residues, d = _three_port(sigma=1.15)
+    net = _net(F200, _rational_s(F200, poles, residues, d))
+
+    with pytest.warns(gfem.NonPassiveDataWarning) as record:
+        model = net.fit_rational()
+
+    message = str(record[0].message)
+    assert "largest singular value of 1.15 at 4.5" in message
+    assert record[0].filename == __file__
+    assert "with_offsets" in message
+    assert model.fit_error <= 1e-3 < model.error
+    assert model.passive
+
+
+@pytest.mark.filterwarnings("ignore::gfem.NonPassiveDataWarning")
+def test_a_constant_term_above_one_is_clipped_below_one_minus_the_margin():
+    poles, residues, d = _two_port()
+    rotation = np.array([[0.6, 0.8], [-0.8, 0.6]])
+    d = 1.01 * rotation
+    net = _net(F20, _rational_s(F20, poles, residues / 100, d))
+
+    model = net.fit_rational(tolerance=1e-10)
+
+    assert model.passivity_violations[-1][1] == math.inf
+    assert np.linalg.svd(model.d, compute_uv=False).max() <= 1 - 1e-4 + 1e-12
+    assert model.passive
 
 
 def _line(f, delay, z_line, z_port=50.0):
@@ -314,9 +424,20 @@ def test_a_network_with_some_ports_without_reference_is_refused():
         _fit(_small(z_ref=np.array([50.0, np.nan])), z0=50.0)
 
 
-def test_enforce_passivity_is_not_available_yet():
-    with pytest.raises(NotImplementedError, match="enforce_passivity=False"):
-        _small().fit_rational()
+def test_enforcement_that_cannot_finish_names_the_intervals_left(monkeypatch):
+    import gfem._broadband._passivity as passivity
+
+    monkeypatch.setattr(passivity, "_ITERATIONS", 0)
+    poles, residues, d = _three_port(sigma=1.02)
+    net = _net(F200, _rational_s(F200, poles, residues, d))
+
+    with pytest.raises(gfem.PassivityEnforcementError) as info:
+        net.fit_rational()
+
+    message = str(info.value)
+    assert "4.4911-4.50921 GHz" in message
+    assert "enforce_passivity=False" in message
+    assert issubclass(gfem.PassivityEnforcementError, RuntimeError)
 
 
 def _traced_fit(which, x):
@@ -443,9 +564,23 @@ def test_unpaired_residues_are_refused():
         _model(residues=residues)
 
 
-def test_the_repr_names_ports_poles_range_and_error():
+def test_the_repr_names_ports_poles_range_error_and_passivity():
     model = _fit(_small(), tolerance=1e-10)
     text = repr(model)
     assert text.startswith("RationalModel(ports=['p1', 'p2'], n_poles=5, ")
     assert "1-10 GHz" in text
     assert f"error={model.error:.3g}" in text
+    # the 2-port's singular values reach 11.8: fitted as it is, it is active
+    assert text.endswith(", passive=False)")
+
+
+def test_a_hand_built_model_reports_whether_it_is_passive():
+    # sigma_max peaks at 4.98 near 2 GHz
+    assert not _model().passive
+    quiet = _model().residues / 20
+    assert _model(residues=quiet).passive
+    assert not _model(residues=quiet, d=np.array([[1.2, 0.0], [0.0, -0.3]])).passive
+    # a short circuit, S = -I: singular values exactly 1 are passive
+    short = _model(residues=np.zeros((3, 2, 2)), d=-np.eye(2))
+    assert short.passive
+    assert _model(poles=[], residues=np.zeros((0, 2, 2)), d=-np.eye(2)).passive

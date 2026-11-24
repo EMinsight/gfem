@@ -1190,6 +1190,15 @@ class NetworkParameters:
         about one pole pair per phase wrap in the band (two when reflections
         bounce on it).
 
+        By default the model is then made passive (no singular value of S
+        above 1 at any frequency, the bounded-real condition on a real
+        reference): the poles are kept and the residues changed by the least
+        weighted change of S on the data, until the Hamiltonian test finds no
+        passivity violation; the singular values of :math:`D` are clipped to
+        :math:`1 - 10^{-4}`. The model's ``fit_error`` is the error before
+        this, ``error`` after. The test's cost grows as :math:`(2NP)^3` for
+        :math:`N` poles and :math:`P` ports.
+
         The model has one constant real reference impedance per port, fixed
         here, with the rules of `to_touchstone`: a real `z_ref` constant over
         frequency is kept; otherwise ``z0`` is needed and S is renormalized to
@@ -1205,8 +1214,9 @@ class NetworkParameters:
             weights: Positive per-frequency weights ``(n_freq,)``, in the
                 network's frequency order; None for uniform. The reported
                 errors are unweighted.
-            enforce_passivity: Make the model passive. Not available yet:
-                pass False.
+            enforce_passivity: Make the model passive. False fits only: the
+                model still reports its ``passivity_violations`` and
+                `gfem.RationalModel.passive`.
             z0: Reference impedance to fit on, ohm: one real value > 0 or one
                 per port in `ports` order; the nominal label of a network
                 without reference impedances.
@@ -1222,11 +1232,15 @@ class NetworkParameters:
                 ``z0``, or some ports without one).
             NonDifferentiableError: S, `z_ref`, ``z0`` or ``weights`` is
                 traced by JAX.
-            NotImplementedError: ``enforce_passivity=True``.
+            PassivityEnforcementError: Passivity violations remain after
+                the enforcement's 30 iterations; the message names them.
 
         Warns:
             RationalFitNotConvergedWarning: No order up to ``max_poles``
                 reached ``tolerance``; the most accurate model is returned.
+            NonPassiveDataWarning: Making the model passive changed S by
+                more than ``tolerance``: the data are not passive on this
+                reference.
         """
         from gfem._broadband._vector_fit import fit_rational
 

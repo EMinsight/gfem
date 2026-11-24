@@ -37,9 +37,13 @@ import scipy.linalg
 
 from gfem._checks import is_traced, static_float
 from gfem._linalg.gmres import _ONE_BLAS_THREAD, scipy_openblas
-from gfem._text import hertz_band
+from gfem._text import hertz, hertz_band
 from gfem.broadband import RationalModel
-from gfem.errors import NonDifferentiableError, RationalFitNotConvergedWarning
+from gfem.errors import (
+    NonDifferentiableError,
+    NonPassiveDataWarning,
+    RationalFitNotConvergedWarning,
+)
 
 if TYPE_CHECKING:
     from gfem.results import NetworkParameters
@@ -95,22 +99,15 @@ def fit_rational(
         raise ValueError(
             "fit_rational needs finite S; the network has NaN or infinite values."
         )
-    if enforce_passivity:
-        raise NotImplementedError(
-            "fit_rational(enforce_passivity=True) is not available yet; pass "
-            "enforce_passivity=False."
-        )
+    from gfem._broadband import _passivity
+
     order = np.argsort(f)
+    omega, s = 2 * math.pi * f[order], s[order]
     # the factorizations are small: a threaded BLAS made them tens of times
     # slower on a loaded host, so SciPy's OpenBLAS runs them on one thread
     with _ONE_BLAS_THREAD.held(scipy_openblas()):
-        fit = vector_fit(
-            2 * math.pi * f[order],
-            s[order],
-            tolerance=tol,
-            max_poles=n_max,
-            weights=w[order],
-        )
+        fit = vector_fit(omega, s, tolerance=tol, max_poles=n_max, weights=w[order])
+        bands = _passivity.violations(fit.poles, fit.residues, fit.d)
     band = (float(f.min()), float(f.max()))
     if not fit.converged:
         warnings.warn(
@@ -123,16 +120,68 @@ def fit_rational(
             RationalFitNotConvergedWarning,
             stacklevel=3,
         )
+    residues, d, error = fit.residues, fit.d, fit.error
+    if enforce_passivity:
+        residues, d = _passivity.enforce(fit.poles, residues, d, omega, w[order])
+        enforced = _evaluate(omega, fit.poles, residues, d)
+        error = _rms(enforced - s)
+        moved = _rms(enforced - _evaluate(omega, fit.poles, fit.residues, fit.d))
+        if moved > tol:
+            sigma, where = _passivity.worst_violation(
+                fit.poles, fit.residues, fit.d, bands
+            )
+            if not bands:  # moved by the clip of d alone: name the data's
+                sv = np.linalg.svd(s, compute_uv=False)[:, 0]
+                sigma, where = float(sv.max()), float(omega[np.argmax(sv)])
+            _warn_non_passive(sigma, where / (2 * math.pi), moved, tol, error)
     return RationalModel(
         poles=fit.poles,
-        residues=fit.residues,
-        d=fit.d,
+        residues=residues,
+        d=d,
         z_ref=z_ref,
         ports=net.ports,
         frequency_range=band,
-        error=fit.error,
+        error=error,
         fit_error=fit.error,
+        passivity_violations=tuple(
+            (lo / (2 * math.pi), hi / (2 * math.pi)) for lo, hi in bands
+        ),
         nominal_reference=nominal,
+    )
+
+
+def _evaluate(
+    omega: np.ndarray, poles: np.ndarray, residues: np.ndarray, d: np.ndarray
+) -> np.ndarray:
+    """S ``(K, P, P)`` of a pole-residue model at angular frequencies."""
+    terms = 1 / (1j * omega[:, None] - poles[None, :])
+    return d[None] + np.einsum("kn,nij->kij", terms, residues)
+
+
+def _rms(diff: np.ndarray) -> float:
+    """Largest per-element RMS over frequency of ``diff`` ``(K, P, P)``."""
+    return float(np.sqrt(np.mean(np.abs(diff) ** 2, axis=0)).max())
+
+
+def _warn_non_passive(
+    sigma: float, where: float, moved: float, tol: float, error: float
+) -> None:
+    """`NonPassiveDataWarning`: enforcement moved S beyond the tolerance.
+
+    ``sigma`` is the fit's largest singular value, at ``where`` Hz.
+    """
+    place = "at high frequency" if math.isinf(where) else f"at {hertz(where)}"
+    warnings.warn(
+        f"fit_rational: making the model passive changed S by {moved:.3g}, "
+        f"more than the tolerance {tol:.3g}: the data are not passive on this "
+        f"reference, and their fit reaches a largest singular value of "
+        f"{sigma:.4g} {place}. The model returned is passive, with an error of "
+        f"{error:.3g} against the data. Usual causes: a reference plane moved "
+        "past a lossy line by DrivenResult.with_offsets, a nominal reference "
+        "(z0= on wave ports without voltage_path) on a lossy mode, or a mesh "
+        "too coarse for S.",
+        NonPassiveDataWarning,
+        stacklevel=4,
     )
 
 

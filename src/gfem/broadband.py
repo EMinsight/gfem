@@ -235,7 +235,8 @@ class RationalModel:
             S_\mathrm{data}|` over the data frequencies.
         fit_error: The same before passivity enforcement.
         passivity_violations: Frequency intervals (Hz) where the largest
-            singular value of the fitted S exceeded 1 before enforcement.
+            singular value of the fitted S exceeded 1 before enforcement;
+            the last one ends at ``inf`` when :math:`D` itself exceeded 1.
         nominal_reference: Whether `z_ref` is only a label: the data had no
             reference impedance (wave ports without ``voltage_path``, S on
             unit modal power), so S was not renormalized.
@@ -332,8 +333,13 @@ class RationalModel:
 
     @property
     def passive(self) -> bool:
-        """Whether S has no singular value above 1 at any frequency."""
-        raise NotImplementedError("RationalModel.passive is not available yet.")
+        """Whether S has no singular value above 1 at any frequency.
+
+        Computed from the model as it is (Hamiltonian test), not stored.
+        """
+        from gfem._broadband._passivity import violations
+
+        return not violations(self.poles, self.residues, self.d)
 
     def network(self, frequency: ArrayLike) -> NetworkParameters:
         r"""The model's S on the given frequencies, as `gfem.NetworkParameters`.
@@ -451,7 +457,7 @@ class RationalModel:
         )
         return (
             f"RationalModel(ports={list(self.ports)}, n_poles={self.n_poles}, "
-            f"{band}, error={self.error:.3g})"
+            f"{band}, error={self.error:.3g}, passive={self.passive})"
         )
 
 
