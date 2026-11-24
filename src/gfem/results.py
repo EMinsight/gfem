@@ -1334,7 +1334,7 @@ class NetworkParameters:
         The low-pass impulse response (`impulse_response`, before its
         normalization) summed over the whole two-sided record, so it starts
         near 0 and settles at :math:`S(0)`. The reflected step at a port is
-        its TDR trace, and `gfem.TimeResponse.impedance` the impedance
+        what a TDR shows, and `gfem.TimeResponse.impedance` its impedance
         profile; ``step["p2", "p1"]`` is the transmitted step (TDT), a wave
         ratio (the voltage ratio is
         :math:`S_{21} \sqrt{Z_{0,2}/Z_{0,1}}`). The 10-90 % rise of an edge

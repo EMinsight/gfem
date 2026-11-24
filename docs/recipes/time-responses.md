@@ -61,7 +61,7 @@ by hand 19.86 ohm and 62.79 ohm
 - `step.values[m, i, j]` is the wave leaving port `ports[i]` at time
   `step.time[m]` for a unit step of incident wave at port `excited[j]`, every
   other port ending on its reference impedance. `step["p1", "p1"]` is the
-  TDR trace $\rho(t)$.
+  reflected step $\rho(t)$ (TDR).
 - The {term}`impedance profile` is
   $Z(t) = Z_0 \frac{1 + \rho(t)}{1 - \rho(t)}$, with $Z_0$ the port's real
   reference impedance, `s.z_ref`: 62.79 Ω here. The ceramic reads

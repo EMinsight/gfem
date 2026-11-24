@@ -69,8 +69,8 @@ _IMAGINARY = 1e-4
 _ACTIVE = 10
 #: Samples of the largest singular value in a violation, then around its peak.
 _PEAK_SAMPLES = (64, 33)
-#: Uniform samples of the passivity test's guard over twice the largest pole.
-_UNIFORM = 4001
+#: Evenly spaced samples of the passivity test's guard to twice the largest pole.
+_EVEN_SAMPLES = 4001
 #: The guard's samples around each pair's resonance, in damping widths.
 _AROUND = np.linspace(-4.0, 4.0, 17)
 
@@ -325,14 +325,14 @@ class _Model:
     def _samples(self) -> np.ndarray:
         """Scaled frequencies that resolve every pole's peak.
 
-        A uniform grid to twice the largest pole (the scale), and around
+        Evenly spaced samples to twice the largest pole (the scale), and around
         each pair's resonance a few points per damping width.
         """
         if not self.poles.size:
             return np.zeros(0)
         pairs = self.poles.pairs
         around = pairs.imag[:, None] + np.abs(pairs.real)[:, None] * _AROUND
-        return np.union1d(np.linspace(0.0, 2.0, _UNIFORM), around.reshape(-1))
+        return np.union1d(np.linspace(0.0, 2.0, _EVEN_SAMPLES), around.reshape(-1))
 
     def _crossings(self, gamma: float) -> np.ndarray:
         """Candidate frequencies where a singular value of S equals ``gamma``."""
