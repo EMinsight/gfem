@@ -17,9 +17,6 @@ read without NGSolve. Meshes are in mm, wave vectors in rad/m.
   transfer-matrix roots, `tmm_frequency`.
 - C4, `c4`: an empty vacuum cube periodic along x, y and z (no other
   boundary); its lowest band is a doublet at `empty_lattice`.
-- Rods, `rods`: a square lattice of dielectric rods in air, one element
-  thick between PEC (TM) or PMC (TE) plates, the rod staircased on the
-  structured grid; with loss in the rod only, the loss varies in space.
 - `sheared_cell`: a vacuum cell whose two pairs make any angle, the
   hexagonal (60 or 120 degrees) and oblique lattices, for geometry only.
 - G, `g`: the gradient cell, periodic along x and y, with two lumped
@@ -35,7 +32,10 @@ read without NGSolve. Meshes are in mm, wave vectors in rad/m.
 - Rods, `rods_tutorial_mesh`: the photonic-crystal tutorial's square lattice
   of alumina rods, a committed 2D section read as a slab; its converged
   bands at Γ, X and M are `ROD_BANDS`, its band group velocities at the
-  path's segment midpoints `ROD_V_G`.
+  path's segment midpoints `ROD_V_G`. `rods_mesh` staircases the same
+  cell on the structured grid, one element thick, and `rods` makes it a
+  model, PEC (TM) or PMC (TE) plates, with loss in the rod only: the loss
+  varies in space.
 
 C1 loaded by its two 50 ohm ports is also a damped Bloch eigen case: its
 complex resonances are the roots of det(Z(f, k) + R) = 0,
@@ -51,7 +51,7 @@ import math
 from pathlib import Path
 
 import numpy as np
-import rods_mesh
+import rods_mesh as rods_gmsh
 import scipy.constants as const
 import scipy.optimize
 import structured_meshes as sm
@@ -377,52 +377,6 @@ def c4(mesh: gfem.Mesh) -> gfem.Model:
     )
 
 
-# --- Rods: a square lattice of dielectric rods ----------------------------------------
-
-ROD_A = 10.0  # the lattice constant, mm
-ROD_EPS = 8.9
-ROD_R = 0.2  # the rod radius over ROD_A
-
-
-def rods_mesh(directory: Path, cells: int = 8) -> gfem.Mesh:
-    """The rods cell's mesh: ``cells`` x ``cells`` x 1, one element thick.
-
-    The rod ("rod", radius ``ROD_R * ROD_A`` at the cell's centre) is
-    staircased: a tetrahedron is "rod" when its centroid is inside the
-    circle, "air" otherwise. The thickness is ``ROD_A / cells``.
-    """
-    edges = _edges((ROD_A, ROD_A, ROD_A / cells), (cells, cells, 1))
-
-    def volume(c):
-        inside = math.hypot(c[0] - ROD_A / 2, c[1] - ROD_A / 2) < ROD_R * ROD_A
-        return "rod" if inside else "air"
-
-    cell = sm.periodic_cell(edges, volume, paired="xy")
-    return _mesh(directory, f"rods{cells}", cell)
-
-
-def rods(mesh: gfem.Mesh, *, tan_delta: float = 0.0, tm: bool = True) -> gfem.Model:
-    """The rods cell: periodic in x and y, loss tangent ``tan_delta`` in the rod only.
-
-    PEC z faces leave the z-uniform modes with $E$ along z, the 2D TM
-    problem; PMC z faces (``tm=False``) leave the TE one.
-    """
-    wall = gfem.PEC if tm else gfem.PMC
-    return gfem.Model(
-        mesh,
-        materials={
-            "rod": gfem.Material(eps_r=ROD_EPS, tan_delta=tan_delta),
-            "air": gfem.Material(eps_r=1.0),
-        },
-        boundaries=[
-            gfem.Periodic(("x_min", "x_max")),
-            gfem.Periodic(("y_min", "y_max")),
-            wall("z_min"),
-            wall("z_max"),
-        ],
-    )
-
-
 # --- the sheared cell: two pairs at any angle ----------------------------------------
 
 SHEAR_A, SHEAR_H = 10.0, 1.0  # mm
@@ -458,10 +412,6 @@ def sheared_cell(mesh: gfem.Mesh) -> gfem.Model:
         ],
     )
 
-
-def rods_frequency(u: float) -> float:
-    r"""The frequency, Hz, of the normalized frequency $u = \omega a / 2\pi c$."""
-    return u * C0 / (ROD_A * MM)
 
 # --- G: the gradient cell ---------------------------------------------------------
 
@@ -689,8 +639,8 @@ def coordinate_classes(
 
 # --- Rods: the photonic-crystal tutorial's square lattice of alumina rods -----------
 
-ROD_A = rods_mesh.CELL  # lattice constant, mm
-ROD_R = rods_mesh.RADIUS  # rod radius (0.2 ROD_A), mm
+ROD_A = rods_gmsh.CELL  # lattice constant, mm
+ROD_R = rods_gmsh.RADIUS  # rod radius (0.2 ROD_A), mm
 ROD_EPS = 8.9  # alumina
 #: Converged bands of the rod crystal as $\nu = \omega a / 2\pi c$: polarization
 #: ("Ez", E along the rods, PEC front and back faces; "Hz", H along the rods,
@@ -730,13 +680,56 @@ ROD_V_G = {
 
 
 def rods_tutorial_mesh(name: str = "rods.msh") -> gfem.Mesh:
-    """The committed rod cell ``name`` of `rods_mesh.MESHES`, read as a slab (mm).
+    """The committed rod cell ``name`` of ``rods_gmsh.MESHES``, read as a slab (mm).
 
     Areas "rod" and "air"; the pairs "x_min" / "x_max" and "y_min" /
     "y_max"; the slab's end faces "front" and "back".
     """
     path = Path(__file__).parents[1] / "docs" / "tutorials" / "data" / name
     return gfem.Mesh.from_gmsh_cross_section(path, length_unit="mm")
+
+
+def rods_mesh(directory: Path, cells: int = 8) -> gfem.Mesh:
+    """The rod cell staircased on a ``cells`` x ``cells`` x 1 grid, one element thick.
+
+    A tetrahedron is "rod" when its centroid is within ``ROD_R`` of the
+    cell's centre, "air" otherwise. The thickness is ``ROD_A / cells``.
+    """
+    edges = _edges((ROD_A, ROD_A, ROD_A / cells), (cells, cells, 1))
+
+    def volume(c):
+        inside = math.hypot(c[0] - ROD_A / 2, c[1] - ROD_A / 2) < ROD_R
+        return "rod" if inside else "air"
+
+    cell = sm.periodic_cell(edges, volume, paired="xy")
+    return _mesh(directory, f"rods{cells}", cell)
+
+
+def rods(mesh: gfem.Mesh, *, tan_delta: float = 0.0, tm: bool = True) -> gfem.Model:
+    """`rods_mesh`'s cell: periodic in x and y, loss tangent ``tan_delta`` in the rod.
+
+    PEC z faces leave the z-uniform modes with $E$ along z, the 2D TM
+    problem; PMC z faces (``tm=False``) leave the TE one.
+    """
+    wall = gfem.PEC if tm else gfem.PMC
+    return gfem.Model(
+        mesh,
+        materials={
+            "rod": gfem.Material(eps_r=ROD_EPS, tan_delta=tan_delta),
+            "air": gfem.Material(eps_r=1.0),
+        },
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+            wall("z_min"),
+            wall("z_max"),
+        ],
+    )
+
+
+def rods_frequency(nu: float) -> float:
+    r"""The frequency, Hz, of the normalized frequency $\nu = \omega a / 2\pi c$."""
+    return nu * C0 / (ROD_A * MM)
 
 
 # --- F1: Fresnel slab between Floquet ports -----------------------------------------
