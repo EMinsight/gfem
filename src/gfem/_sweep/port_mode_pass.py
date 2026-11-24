@@ -25,6 +25,13 @@ from typing import Any
 
 import numpy as np
 
+from gfem._engine.line_mode import LineModeSpace
+from gfem._engine.line_mode_sensitivity import (
+    LineCotangents,
+    LineKernel,
+    full_line_reduction,
+    line_normalize_vjp,
+)
 from gfem._engine.port_mode import FullReduction, PortModeSpace
 from gfem._engine.port_mode_adjoint import (
     POLISH_RTOL,
@@ -56,12 +63,12 @@ class ModePass:
         laws: The gradient by each permittivity-law parameter, by input kind.
     """
 
-    section: SectionCotangents
+    section: SectionCotangents | LineCotangents
     laws: dict[tuple, float]
 
 
 def mode_pass(  # noqa: PLR0915
-    space: PortModeSpace,
+    space: PortModeSpace | LineModeSpace,
     *,
     frequency: np.ndarray,
     lam: np.ndarray,
@@ -140,7 +147,8 @@ def mode_pass(  # noqa: PLR0915
             )
         # the normalization on the whole free-DOF vector: a cotangent on the
         # field points anywhere in the space, not only along the reduced basis
-        fields = FullReduction(space)
+        line = isinstance(space, LineModeSpace)
+        fields: Any = full_line_reduction(space) if line else FullReduction(space)
         mass = space.mass
         gamma = 1j * np.sqrt(-lam_r + 0j)
         norm_rows = normalize_rows(fields, mass, x, gamma, omega, volts=volts)
@@ -156,26 +164,31 @@ def mode_pass(  # noqa: PLR0915
             z_bar_v = ct * np.conj(volt) / (2 * np.conj(phase))
             v_bar = z_bar_v + np.conj(ct * volt / (2 * np.conj(phase)))
             p_bar = -np.conj(ct * np.abs(volt) ** 2 / (2 * np.conj(phase) ** 2))
-        pulled = normalize_vjp(
-            fields,
-            mass,
-            norm_rows,
-            x,
-            gamma,
-            omega,
-            z_bar=z_bar,
-            voltage_bar=v_bar,
-            phase_bar=p_bar,
-            volts=volts,
-        )
+        pulled: Any
+        if line:
+            pulled = line_normalize_vjp(
+                fields, mass, norm_rows, x, gamma, omega, z_bar=z_bar
+            )
+        else:
+            pulled = normalize_vjp(
+                fields,
+                mass,
+                norm_rows,
+                x,
+                gamma,
+                omega,
+                z_bar=z_bar,
+                voltage_bar=v_bar,
+                phase_bar=p_bar,
+                volts=volts,
+            )
         pairs_forms = pulled.pairs
         x_bar = pulled.y
         cg = cg + pulled.gamma
     gamma = 1j * np.sqrt(-lam_r + 0j)
     lam_bar = cg / (2 * gamma)
 
-    kernel = SectionKernel(space, float(k0[0]))
-    total = SectionCotangents.zeros(space.section)
+    kernel, total = _kernel_and_total(space, float(k0[0]))
     laws: dict[tuple, float] = {}
     for i in range(n):
         if lam_bar[i] == 0 and not np.any(x_bar[i]):
@@ -192,9 +205,19 @@ def mode_pass(  # noqa: PLR0915
             who=who,
         )
         row = kernel.at(k0[i]).cotangents([(q, x[i], lam_r[i])])
-        for key, value in law_cotangents(space.section, row, omega[i]).items():
-            laws[key] = laws.get(key, 0.0) + value
+        if isinstance(space, PortModeSpace):
+            for key, value in law_cotangents(space.section, row, omega[i]).items():
+                laws[key] = laws.get(key, 0.0) + value
         total.add(row)
     if pairs_forms:
         total.add(kernel.explicit(pairs_forms))
     return ModePass(total, laws)
+
+
+def _kernel_and_total(
+    space: PortModeSpace | LineModeSpace, k0: float
+) -> tuple[Any, Any]:
+    """The material kernel of the space, and its empty cotangents."""
+    if isinstance(space, LineModeSpace):
+        return LineKernel(space, k0), LineCotangents.zeros(space)
+    return SectionKernel(space, k0), SectionCotangents.zeros(space.section)

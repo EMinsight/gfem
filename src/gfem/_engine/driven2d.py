@@ -276,17 +276,14 @@ class Driven2DRule(DrivenRule):
     def unsupported_input(self, kind: tuple) -> str | None:
         """Why a read input cannot be differentiated here, or ``None``.
 
-        A `MaterialField`'s values are differentiated, as on a 3D model (a
-        region beside a wave port raises); in Hz but a law blend's density,
-        which the forward refuses (a layer grid's pixels between two
-        constant ends are differentiated). An Hz field's conductivity is
-        differentiated at its only admitted value, zero.
+        A `MaterialField`'s values are differentiated, as on a 3D model, those
+        of a region beside a line port included (through the port's mode); in
+        Hz but a law blend's density, which the forward refuses (a layer
+        grid's pixels between two constant ends are differentiated). An Hz
+        field's conductivity is differentiated at its only admitted value,
+        zero.
         Every other input (node coordinates, law parameters, boundary and
         port values) is not.
-
-        Raises:
-            PortGeometryError: ``kind`` is the material of a region beside
-                a wave port line.
         """
         if kind[0] != "material":
             return _NO_GRADIENTS
@@ -296,8 +293,6 @@ class Driven2DRule(DrivenRule):
             and kind[1] not in self._constant_grids
         ):
             return _HZ_FREQUENCY_DEPENDENT
-        # a line port's mode is a constant of the solve here
-        self.port_design.check(kind, line=True)
         return super().unsupported_input(kind)
 
     def result(self, outputs: dict) -> DrivenResult:
@@ -520,7 +515,7 @@ def hz_signs(model: Model, polarization: Polarization) -> np.ndarray:
         return out
     for i, port in enumerate(model.ports):
         if isinstance(port, WavePort):
-            n = line_section(model, port).frame[1]
+            n = line_section(model, port, geometry=True).frame[1]
             out[i] = -1.0 if n[1] > n[0] else 1.0
     return out
 

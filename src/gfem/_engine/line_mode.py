@@ -384,6 +384,40 @@ class LineModeSpace:
         out[self.free] = x
         return out
 
+    def point_columns(self, local: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """The field at line points as a linear map of the full DOF vector.
+
+        Args:
+            local: Coordinates along ``t`` ``(n,)``, local units.
+
+        Returns:
+            ``dofs (n, k)`` the DOF numbers of the element holding each point
+            (padded with 0) and ``weights (n, k)`` such that ``u`` at point
+            ``p`` is ``weights[p] @ x[dofs[p]]``; zero off the line.
+        """
+        points = np.asarray(local, float)
+        mips = [self.mesh(float(t)) for t in points]
+        owners = [
+            list(self.space.GetDofNrs(ngs.ElementId(ngs.VOL, mip.nr)))
+            if mip.nr >= 0
+            else []
+            for mip in mips
+        ]
+        width = max((len(d) for d in owners), default=0)
+        dofs = np.zeros((len(mips), width), np.int64)
+        weights = np.zeros((len(mips), width), complex)
+        gf = ngs.GridFunction(self.space)
+        values = gf.vec.FV().NumPy()
+        for i, (mip, element) in enumerate(zip(mips, owners, strict=True)):
+            for j, dof in enumerate(element):
+                if dof < 0:  # an unnumbered DOF of the element
+                    continue
+                dofs[i, j] = dof
+                values[:] = 0.0
+                values[dof] = 1.0
+                weights[i, j] = gf(mip)
+        return dofs, weights
+
     def evaluate(self, coeffs: np.ndarray, local: np.ndarray) -> np.ndarray:
         """``u`` at coordinates ``t`` along the line; zero off it.
 

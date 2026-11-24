@@ -762,6 +762,16 @@ class PortModeField:
         p = np.asarray(points, float)
         single = p.ndim == 1
         p = np.atleast_2d(p)
+        if len(section.normal) == 2:
+            if p.shape[-1] != 2:
+                raise ValueError(
+                    f"points on line port {self._port!r} must be (x, y) pairs in m, "
+                    f"got shape {p.shape}."
+                )
+            dofs, weights = space.point_columns(_local_points(section, p))
+            picked = jnp.asarray(self._vector)[:, dofs]
+            u = jnp.einsum("pl,fpl->fp", jnp.asarray(weights), picked)
+            return u[:, 0] if single else u
         if p.shape[-1] != 3:
             raise ValueError(f"points must be 3-vectors in m, got shape {p.shape}.")
         local = _local_points(section, p)

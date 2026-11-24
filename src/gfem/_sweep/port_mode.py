@@ -69,7 +69,8 @@ from gfem._dim2 import refuse_anisotropic
 from gfem._engine import dispersion
 from gfem._engine import terms as driven_terms
 from gfem._engine.cache import Entry, discretization
-from gfem._engine.line_mode import ModeSpace, mode_space
+from gfem._engine.line_mode import LineModeSpace, ModeSpace, mode_space
+from gfem._engine.line_mode_sensitivity import line_integrated
 from gfem._engine.port_mode import PortModeSpace
 from gfem._engine.port_mode_normalization import normalize_rows
 from gfem._engine.port_mode_sensitivity import (
@@ -82,7 +83,7 @@ from gfem._engine.sensitivity import Term, is_thermal_value
 from gfem._engine.solve_request import SolveRequest
 from gfem._linalg import report
 from gfem._linalg.superlu import backward_error, shift_invert_eigs
-from gfem._line_section import LineSection
+from gfem._line_section import LineSection, line_elements, line_section
 from gfem._port_section import (
     PLANE_RTOL,
     PortSection,
@@ -330,9 +331,7 @@ class PortModeRule:
         """Shape and dtype of each forward output (one value per frequency).
 
         ``field`` is the mode's full DOF vector on the port's section, of a
-        static width: that of the discrete space built from the mesh alone
-        (empty for a line port of a 2D mesh, whose field stays unavailable
-        under JAX).
+        static width: that of the discrete space built from the mesh alone.
         """
         n = (len(self.problem.frequency),)
         return {
@@ -347,11 +346,20 @@ class PortModeRule:
 
     def _field_width(self, model: Model) -> int:
         if model.mesh.dim == 2:
-            return 0
+            # an H1 line of n_seg segments: n_seg * order + 1 DOFs
+            n_seg = len(line_elements(model, self.port)[0])
+            return n_seg * self.options.order + 1
         return self._geometry(model).space.ndof
 
-    def _geometry(self, model: Model) -> PortModeSpace:
+    def _geometry(self, model: Model) -> PortModeSpace | LineModeSpace:
         """The port's discrete space from the mesh alone (`port_geometry`)."""
+        if model.mesh.dim == 2:
+            section = line_section(model, self.port, geometry=True)
+            return LineModeSpace(
+                section,
+                self.options.order,
+                self.problem.polarization,  # ty: ignore[invalid-argument-type]
+            )
         section = port_geometry(model, lead_port(self._ports))
         return PortModeSpace(section, self.options.order, geometry=True)
 
@@ -369,19 +377,15 @@ class PortModeRule:
     def unsupported_input(self, kind: tuple) -> str | None:
         """Why a read input cannot be differentiated here, or ``None``.
 
-        The node coordinates (a wave port's face) are not yet, and a line
-        port's mode has no derivative in this version.
+        The node coordinates (a wave port's face, or a line's) are not.
         """
-        if self._model.mesh.dim == 2:
-            return (
-                "the port mode problem of a line port is not differentiable in "
-                "this version"
-            )
         if kind[0] == "nodes":
             return (
                 "the port mode problem does not differentiate the node "
                 "coordinates in this version"
             )
+        if self._model.mesh.dim == 2:
+            return None
         return anisotropic_absorbing(self._model, lead_port(self._ports))
 
     def nondifferentiable_output(self, name: str, kinds: Any = ()) -> str | None:
@@ -442,10 +446,7 @@ class PortModeRule:
                 pairs=keep,
             )
         sweep = sweeps[self._index]
-        if isinstance(space, PortModeSpace):
-            field = sweep.coords @ sweep.basis.T
-        else:
-            field = np.zeros((len(sweep.gamma), 0), complex)
+        field = sweep.coords @ sweep.basis.T
         outputs = {
             "gamma": sweep.gamma,
             "Z_PV": sweep.z_pv,
@@ -513,7 +514,12 @@ class PortModeRule:
             ct_field=cotangents.get("field"),
             who=f"WavePort {self.port.name!r}",
         )
-        cot = done.section
+        if isinstance(space, LineModeSpace):
+            self._explicit = {}
+            return [
+                line_integrated(section, done.section, len(model.mesh.volume_elements))  # ty: ignore[invalid-argument-type]
+            ]
+        cot: Any = done.section
         # a law's triangles take eps_inf through the law, not through the mass
         if section.law_index is not None:
             on_law = np.asarray(section.law_index) >= 0
@@ -537,8 +543,19 @@ class PortModeRule:
         """The driven operator's material terms, for the owner-tetrahedron integrals."""
         del nodes
         built = discretization(model.mesh, model._periodic, self.comm).built  # noqa: SLF001
-        pieces, latent = driven_terms.pieces(model, built, self.options.order, ())
-        keep = {"mass", "conductivity", "curl_curl", "absorbing"}
+        if model.mesh.dim == 2:
+            from gfem._engine.driven2d import scalar_pieces
+
+            pieces, latent = scalar_pieces(
+                model,
+                built,
+                self.options.order,
+                self.problem.polarization,  # ty: ignore[invalid-argument-type]
+            )
+            keep = {"stiffness", "mass", "conductivity", "absorbing"}
+        else:
+            pieces, latent = driven_terms.pieces(model, built, self.options.order, ())
+            keep = {"mass", "conductivity", "curl_curl", "absorbing"}
         return [
             Term(
                 p.name,
@@ -563,17 +580,13 @@ class PortModeRule:
 
         Without ``"sweep"`` (a solve traced by JAX) the field is the traced
         DOF vector of ``"field"``, located from the mesh alone when a point is
-        read (a line port's is built on first use, from concrete values).
+        read.
         """
         sweep: PortModeSweep | None = outputs.get("sweep")
         polarization = self.problem.polarization
         quantity, unit = _FIELD_NAMES[polarization]
         if sweep is not None:
             field = PortModeField(sweep.space, sweep.basis, sweep.coords)
-        elif self._model.mesh.dim == 2:
-            field = PortModeField._deferred(  # noqa: SLF001
-                self.port.name, self._field, quantity=quantity, unit=unit
-            )
         else:
             field = PortModeField._on_vector(  # noqa: SLF001
                 self.port.name,
@@ -595,7 +608,7 @@ class PortModeRule:
             pml=self._model.pml,
         )
 
-    def _locate(self) -> PortModeSpace:
+    def _locate(self) -> PortModeSpace | LineModeSpace:
         """The port's space from the mesh, for a point read on a traced field.
 
         Raises:
@@ -611,18 +624,6 @@ class PortModeRule:
                 raise TypeError(_AT_STAGED)
             raise NonDifferentiableError(_AT_NODES)
         return self._geometry(self._model)
-
-    def _field(self) -> tuple[ModeSpace, np.ndarray, np.ndarray]:
-        if is_traced(self._model):
-            name = "h_field" if self.problem.polarization == "Hz" else "e_field"
-            raise TypeError(
-                f"PortModeResult.{name} is not available from a port mode solve "
-                "computed inside jax.grad, jax.jit or jax.vmap: the mode field "
-                "needs concrete model values. Solve PortMode outside the transformed "
-                f"function to read {name}."
-            )
-        sweep = self.forward(self._model, keep=False)[0]["sweep"]
-        return sweep.space, sweep.basis, sweep.coords
 
 
 _AT_NODES = (

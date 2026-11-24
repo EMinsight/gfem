@@ -705,7 +705,9 @@ class PortMode:
     ``residual`` raises `gfem.NonDifferentiableError`, and a thermal property
     gets an exact zero. ``gamma`` alone adds no solve to the backward pass; a
     field or ``Z_PV`` objective adds one 2D solve per mode and frequency. A
-    line port's mode (a 2D mesh) is not differentiable in this version.
+    line port's mode (a 2D mesh) differentiates with respect to the material
+    values of the regions on its line, in Ez and Hz (``Z_PV`` is NaN there:
+    a line port has no voltage path).
     """
 
     port: str

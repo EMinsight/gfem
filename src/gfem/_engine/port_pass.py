@@ -55,6 +55,9 @@ import scipy.sparse as sp
 
 from gfem import _mpi
 from gfem._boundaries import sheet_of, surfaces_of
+from gfem._engine.line_mode import LineModeSpace
+from gfem._engine.line_mode_sensitivity import line_integrated
+from gfem._engine.line_port_pass import LineFaceForms, line_face
 from gfem._engine.port_mode import FullReduction, PortModeSpace
 from gfem._engine.port_mode_adjoint import (
     pencil_cotangent,
@@ -435,6 +438,23 @@ class _Row:
     weights: np.ndarray
     gamma: np.ndarray
     impedance: np.ndarray
+    #: The traces of the line ports' adjoint columns and solutions, per line.
+    line_traces: list[tuple[np.ndarray, np.ndarray]] = dataclasses.field(
+        default_factory=list
+    )
+
+
+@dataclasses.dataclass(eq=False)
+class _Line:
+    """One active line port surface (a 2D model's wave port)."""
+
+    coupling: PortSurfaceCoupling
+    space: LineModeSpace
+    #: Per mode of the surface, its position among the model's wave ports.
+    wave: list[int]
+    #: Per mode, the model's port index.
+    index: list[int]
+    forms: LineFaceForms
 
 
 class PortPass:
@@ -463,20 +483,32 @@ class PortPass:
         self.columns = list(network.columns)
         self.waves = {c.index: pos for pos, c in enumerate(network.waves)}
         self.faces: list[_Face] = []
+        self.lines: list[_Line] = []
         for surface in system.surfaces:
             if not isinstance(surface, PortSurfaceCoupling):
                 continue
             space = surface.ports[0].sweep.space
             names = [c.port.name for c in surface.ports]
-            if not isinstance(space, PortModeSpace) or not rule.port_design.reads(
-                wanted, names
-            ):
+            if not rule.port_design.reads(wanted, names):
                 continue
             lead = [c.port for c in surface.ports].index(surface.lead.port)
             index = [c.index for c in surface.ports]
             excited = [
                 self.columns.index(i) if i in self.columns else -1 for i in index
             ]
+            if isinstance(space, LineModeSpace):
+                self.lines.append(
+                    _Line(
+                        surface,
+                        space,
+                        [self.waves[i] for i in index],
+                        index,
+                        LineFaceForms.of(space, lead=lead, excited=excited),
+                    )
+                )
+                continue
+            if not isinstance(space, PortModeSpace):  # pragma: no cover
+                continue
             self.faces.append(
                 _Face(
                     surface,
@@ -494,7 +526,7 @@ class PortPass:
     @property
     def active(self) -> bool:
         """Whether any surface needs the pass."""
-        return bool(self.faces)
+        return bool(self.faces or self.lines)
 
     # --- collecting ---
 
@@ -624,8 +656,18 @@ class PortPass:
             stored.append(
                 (_mpi.reduce_bcast(self.comm, a), _mpi.reduce_bcast(self.comm, u))
             )
+        line_traces = []
+        for line in self.lines:
+            trace = line.coupling.trace
+            if trace is None:  # pragma: no cover - built with its maps
+                raise ValueError("The port surface keeps no face trace maps.")
+            n_dof = line.space.space.ndof
+            a, u = traces(trace, n_dof)
+            line_traces.append(
+                (_mpi.reduce_bcast(self.comm, a), _mpi.reduce_bcast(self.comm, u))
+            )
         weights = ct * d[:, None] * s[None, :]
-        self.rows[n] = _Row(omega, stored, weights, row_gamma, ct_z)
+        self.rows[n] = _Row(omega, stored, weights, row_gamma, ct_z, line_traces)
 
     def _cotangents(
         self, n: int, n_columns: int, cotangents: Mapping[str, np.ndarray]
@@ -722,6 +764,17 @@ class PortPass:
                 item = section.impedance_terms[g][0]
                 kind = ("boundary", _boundary_index(self.model, item), name)
                 explicit[kind] = explicit.get(kind, 0.0) + value
+        for position, line in enumerate(self.lines):
+            cot = line_face(
+                line.coupling,
+                line.space,
+                line.forms,
+                index=line.index,
+                rows=self.rows,
+                position=position,
+                who=lambda k, line=line: _who(line, k),
+            )
+            integrated_all.append(line_integrated(line.space.section, cot, n_tets))
         return _pack(integrated_all, explicit)
 
     def _face(
@@ -905,7 +958,7 @@ class _Mode:
     reference: np.ndarray
 
 
-def _who(face: _Face, k: int) -> str:
+def _who(face: _Face | _Line, k: int) -> str:
     """The label of surface ``face``'s ``k``-th wave port, for messages."""
     return f"WavePort {face.coupling.ports[k].port.name!r}"
 
