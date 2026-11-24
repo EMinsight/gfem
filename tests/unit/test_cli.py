@@ -272,6 +272,21 @@ def test_a_job_with_an_unknown_entry_exits_1_asking_for_an_upgrade(
     assert "upgrade gfem" in err
 
 
+def test_a_job_with_a_refused_value_exits_1_naming_both_versions(
+    model, tmp_path, capsys
+):
+    job = _job(model, tmp_path)
+    doc = json.loads(job.read_text())
+    doc["gfem_version"] = "99.0"
+    doc["job"]["options"]["linear_solver"] = "amg_cg"
+    job.write_text(json.dumps(doc))
+    assert main(["run", str(job), "--out", str(tmp_path / "r")]) == 1
+    err = capsys.readouterr().err
+    assert "linear_solver must be one of" in err
+    assert "gfem: note: " in err
+    assert "install that version or newer" in err
+
+
 @pytest.mark.parametrize(
     "argv",
     [[], ["solve", "job.json"], ["run"], ["run", "job.json"], ["run", "--out", "r"]],

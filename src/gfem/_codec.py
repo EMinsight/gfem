@@ -19,7 +19,9 @@ class: for a dataclass whose constructor takes its fields, the default
 (every init field, read back by calling the class) is all it needs; other
 classes pass ``to_args`` / ``from_args``, and a ``from_args`` comes with
 ``names``, the arguments it takes. Reading refuses any other key of a
-``$type`` object by name: an entry of a newer gfem is never dropped.
+``$type`` object by name: an entry of a newer gfem is never dropped. A value
+that a class's reader refuses, in a file written by another gfem version, is
+noted with both versions.
 Argument names should be the pytree attribute names, so that the sidecar
 keys are the leaf paths.
 
@@ -281,7 +283,12 @@ class Decoder:
             if unknown:
                 raise ValueError(self._unknown(tag, unknown))
             args = {k: self.decode(v) for k, v in value.items() if k != "$type"}
-            return codec.from_args(args, self.context)
+            try:
+                return codec.from_args(args, self.context)
+            except ValueError as err:
+                if self.written_by not in (None, version("gfem")):
+                    err.add_note(self._other_version_note())
+                raise
         if "$array" in value:
             key = value["$array"]
             if key not in self.arrays:
@@ -296,6 +303,16 @@ class Decoder:
         if "$map" in value:
             value = value["$map"]
         return {k: self.decode(v) for k, v in value.items()}
+
+    def _other_version_note(self) -> str:
+        """The hint added to a value refused in a file of another gfem version."""
+        this = version("gfem")
+        what = "The file" if self.path is None else str(self.path)
+        return (
+            f"{what} was written by gfem {self.written_by}; this is gfem {this}. "
+            f"If the refused value is one gfem {self.written_by} takes, install "
+            "that version or newer (pip install -U gfem)."
+        )
 
     def _unknown(self, tag: str, keys: list[str]) -> str:
         """The refusal of entries the class of ``tag`` does not take."""

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+Jobs and results:
+
+- **A refused value names both versions.** A job or result bundle written by
+  another gfem version, whose value this version refuses, now says which
+  versions are involved and suggests upgrading.
+
 Thermal:
 
 - **Electromagnetic heating.** `gfem.electromagnetic_heating(result,

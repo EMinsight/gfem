@@ -687,6 +687,64 @@ def test_an_unknown_key_in_a_result_bundle_is_refused_by_name(model, tmp_path):
         gfem.load_result(out)
 
 
+def _with_a_value(source, tag, field, value, target, **head):
+    """``source`` rewritten at ``target``, ``field`` of one ``tag`` object set."""
+    doc = json.loads(source.read_text()) | head
+    _tagged(doc)[tag][field] = value
+    target.write_text(json.dumps(doc))
+    return target
+
+
+def _newer_note(path):
+    return (
+        f"{path} was written by gfem 99.0; this is gfem {gfem.__version__}. "
+        "If the refused value is one gfem 99.0 takes, install that version or "
+        "newer (pip install -U gfem)."
+    )
+
+
+def test_a_refused_value_names_both_gfem_versions(model, tmp_path):
+    source = gfem.Job(model, PROBLEM).to_json(tmp_path / "job.json")
+    path = tmp_path / "changed.json"
+    _with_a_value(
+        source, "SolverOptions", "linear_solver", "amg_cg", path, gfem_version="99.0"
+    )
+    with pytest.raises(ValueError, match="linear_solver must be one of") as err:
+        gfem.Job.from_json(path)
+    assert str(err.value).startswith("SolverOptions.linear_solver must be one of")
+    assert err.value.__notes__ == [_newer_note(path)]
+    _with_a_value(
+        source,
+        "SolverOptions",
+        "linear_solver",
+        "amg_cg",
+        path,
+        gfem_version=gfem.__version__,
+    )
+    with pytest.raises(ValueError, match="linear_solver must be one of") as err:
+        gfem.Job.from_json(path)
+    assert not getattr(err.value, "__notes__", [])
+
+
+def test_a_refused_problem_value_is_noted_too(model, tmp_path):
+    source = gfem.Job(model, gfem.Driven(frequency=1e9)).to_json(tmp_path / "job.json")
+    path = tmp_path / "changed.json"
+    _with_a_value(source, "Driven", "sweep", "newer", path, gfem_version="99.0")
+    with pytest.raises(ValueError) as err:
+        gfem.Job.from_json(path)
+    assert err.value.__notes__ == [_newer_note(path)]
+
+
+def test_a_refused_value_in_a_result_bundle_is_noted(model, tmp_path):
+    out = tmp_path / "results"
+    gfem.Job(model, PROBLEM, gfem.SolverOptions(order=1)).run(out)
+    path = out / "result.json"
+    _with_a_value(path, "Mesh", "length_unit", "furlong", path, gfem_version="99.0")
+    with pytest.raises(ValueError, match="Unknown length_unit") as err:
+        gfem.load_result(out)
+    assert err.value.__notes__ == [_newer_note(path)]
+
+
 # --- running and results -------------------------------------------------------------
 
 
