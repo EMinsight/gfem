@@ -122,6 +122,43 @@ def test_the_sources_table_lists_every_entry():
             assert text in rows[entry]
 
 
+def _printed(x):
+    """A parameter as a docstring prints it: the literal, without a bare ``.0``."""
+    return repr(float(x)).removesuffix(".0")
+
+
+def test_the_docstrings_print_the_table_s_parameters():
+    # the docstrings are typed by hand: every parameter they print is the
+    # private table's, so neither can change alone
+    for entry, source in (
+        ("silicon", materials._LI),
+        ("silica", materials._MALITSON),
+        ("silicon_nitride", materials._LUKE),
+    ):
+        doc = " ".join(getattr(materials, entry).__doc__.split())
+        for strength, wavelength_um in source.sellmeier:
+            assert _printed(strength) in doc
+            assert _printed(wavelength_um) in doc
+        assert source.law().eps_inf == 1.0
+        assert r"\varepsilon_\infty = 1`" in doc
+    counts = {4: "four", 5: "five"}
+    for entry, source in (
+        ("gold", materials._RAKIC_GOLD),
+        ("copper", materials._RAKIC_COPPER),
+        ("aluminium", materials._RAKIC_ALUMINIUM),
+    ):
+        # the metals print no parameter, only their term counts
+        doc = " ".join(getattr(materials, entry).__doc__.split())
+        assert f"one `Drude` term and {counts[len(source.rakic[3])]} `Lorentz`" in doc
+        assert source.law().eps_inf == 1.0
+        assert r"\varepsilon_\infty = 1`" in doc
+    doc = " ".join(materials.lithium_niobate.__doc__.split())
+    for name, value in materials._TURNER.items():
+        assert f"r_{{{name[1:]}}} = {_printed(round(value * 1e12, 9))}`" in doc
+    doc = " ".join(materials.lithium_niobate_static.__doc__.split())
+    assert f"({', '.join(map(_printed, materials._SMITH_WELSH))})" in doc
+
+
 def test_the_docstrings_state_the_out_of_range_values():
     for entry, stated in (
         ("silicon", "11.66"),
