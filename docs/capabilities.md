@@ -64,7 +64,10 @@ v0.1.
   ({doc}`recipes/sheet-design`). A `Material`'s permittivity may follow a
   {py:obj}`gfem.PermittivityLaw` of Drude, Lorentz, Debye and
   Djordjevic-Sarkar terms, metals included
-  ({doc}`recipes/dispersive-materials`).
+  ({doc}`recipes/dispersive-materials`). {py:mod}`gfem.materials` builds
+  silicon, silica, silicon nitride, gold, copper, aluminium and lithium
+  niobate from cited sources, and {py:obj}`gfem.fit_permittivity` fits a
+  law to a measured table ({doc}`recipes/fit-measured-data`).
 - **Measurements**: {py:obj}`gfem.characteristic_impedance`,
   {py:obj}`gfem.interface_participation`, {py:obj}`gfem.power_flow`,
   {py:obj}`gfem.dissipated_power` (a driven field's loss per region and
@@ -302,7 +305,8 @@ returning a wrong value:
   the port faces or use lumped ports. A blend with a law end solves on the
   driven uniform sweep only. An eigenmode target or mode in a law region's
   {term}`unresolved band` raises; move the target or refine that region.
-  Details: {doc}`recipes/dispersive-materials`.
+  A library or fitted law is accurate within its {term}`fitted range`; a
+  solve outside it warns. Details: {doc}`recipes/dispersive-materials`.
 - **Mode-field gradients**: participations, port Q and the mode field
   differentiate for isolated modes of non-periodic models, on the direct
   solver, on the CPU, in one process ({doc}`recipes/eigenmode-gradient`).

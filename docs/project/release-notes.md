@@ -158,6 +158,35 @@ Free space:
   (incident fields, cross sections, point dipoles, far fields); four
   sections of the conventions and a "Free space" section of the glossary.
 
+Material data:
+
+- **Library materials.** `gfem.materials` builds eight materials from one
+  cited published source each: `silicon`, `silica`, `silicon_nitride`,
+  `gold`, `copper`, `aluminium`, `lithium_niobate` (at one frequency, on
+  your axes, with its clamped electro-optic tensor) and
+  `lithium_niobate_static`. Each returns a plain `gfem.Material` whose
+  `name` carries its source, such as `"silica (Malitson 1965)"`; the
+  dielectrics also give a constant at one frequency with `frequency=`.
+
+- **Fit a measured table.** `gfem.fit_permittivity` fits a passive law of a
+  Drude term and Lorentz terms to tabulated $n$ and $k$, or to a complex
+  permittivity, and returns a `gfem.PermittivityFit`: the law and its
+  largest relative errors in $\varepsilon$, $n$ and $k$. It warns
+  `gfem.PermittivityFitWarning` when it stops above its tolerance, and
+  refuses gain, repeated frequencies and NaN with the remedy.
+
+- **Fitted range.** `PermittivityLaw.frequency_range` holds the frequencies
+  a library or fitted law was matched over. A driven, eigenmode, port mode
+  or electrostatic solve that reads the law outside it warns
+  `gfem.FittedRangeWarning` once and runs on. A law without a range writes
+  the same job file as before; a file with one needs this version of gfem
+  to read it.
+
+- **Documentation.** A recipe, "Fit a measured n, k table to a permittivity
+  law"; a "Take a law from cited data" section of the dispersive materials
+  recipe; the extinction coefficient in the conventions; four glossary
+  entries; and a "Material data" section of the licence page.
+
 ## 0.2.0 (2026-11-23)
 
 - **Native 2D models.** A gmsh file of triangles at one height reads as a

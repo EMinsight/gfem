@@ -108,6 +108,51 @@ def test_the_check_section_compares_with_a_constant_material(page):
     assert "conductivity=" in block
 
 
+def test_the_library_section_builds_cited_materials(page):
+    section = dp.section(page, "Take a law from cited data")
+    (block,) = dp.blocks(section, "python")
+    namespace: dict = {}
+    exec(compile(block, str(PAGE), "exec"), namespace)  # noqa: S102
+    tags = {
+        "core": "(Luke 2015)",
+        "cladding": "(Malitson 1965)",
+        "electrode": "(Rakic 1998)",
+    }
+    for name, tag in tags.items():
+        material = namespace[name]
+        assert isinstance(material, gfem.Material), name
+        assert isinstance(material.eps_r, gfem.PermittivityLaw), name
+        assert material.name.endswith(tag), name
+    (constant,) = (
+        v
+        for k, v in namespace.items()
+        if isinstance(v, gfem.Material) and k not in tags
+    )
+    assert isinstance(constant.eps_r, float)
+    prose = dp._prose(section)
+    assert "{term}`library material`" in prose
+    assert "{term}`fitted range`" in prose
+    assert "{py:mod}`gfem.materials`" in prose
+    assert "{doc}`fit-measured-data`" in prose
+    assert "{doc}`electro-optic-phase`" in prose
+
+
+def test_the_limits_point_to_the_fit(page):
+    limits = dp._prose(dp.section(page, "Limits"))
+    assert "No tabulated n and k" not in limits
+    assert "{py:obj}`gfem.fit_permittivity`" in limits
+    assert "{doc}`fit-measured-data`" in limits
+    assert "{term}`fitted range`" in limits
+    after = dp._prose(dp.section(page, "Next"))
+    assert "{doc}`fit-measured-data`" in after
+    assert "{py:mod}`gfem.materials`" in after
+
+
+def test_a_metal_law_costs_samples(page):
+    section = dp._prose(dp.section(page, "A board over a wide band"))
+    assert "a library or fitted metal law" in section
+
+
 # -- The pages that send readers here ------------------------------------------
 
 
@@ -166,3 +211,45 @@ def test_the_release_notes_announce_laws_and_the_restart_bound():
     )
     assert "gfem.PermittivityLaw" in notes
     assert "100 restarts" in notes
+
+
+def test_the_capabilities_list_the_library_and_the_fit():
+    page = _read("capabilities.md")
+    solve = dp._prose(dp.section(page, "What you can solve"))
+    assert "{py:mod}`gfem.materials`" in solve
+    assert "{py:obj}`gfem.fit_permittivity`" in solve
+    assert "{doc}`recipes/fit-measured-data`" in solve
+    limits = dp._prose(dp.section(page, "Limits"))
+    assert "{term}`fitted range`" in limits
+
+
+def test_the_verification_page_has_a_material_data_bullet():
+    page = _read("verification.md")
+    section = dp.section(page, "Dispersive materials")
+    assert "**Material data.**" in section
+    for name in (
+        "test_library_materials.py",
+        "test_library_sources.py",
+        "test_fit_permittivity.py",
+        "test_fit_permittivity_data.py",
+        "test_fitted_range.py",
+    ):
+        assert name in section, name
+
+
+def test_the_licence_page_has_a_material_data_section():
+    section = dp._prose(dp.section(_read("project/licence.md"), "Material data"))
+    assert "CC0" in section
+    assert "Polyanskiy" in section
+
+
+def test_the_release_notes_announce_the_library_and_the_fit():
+    (unreleased,) = (
+        s
+        for s in _read("project/release-notes.md").split("\n## ")
+        if s.startswith("Unreleased")
+    )
+    for name in ("gfem.materials", "gfem.fit_permittivity", "gfem.FittedRangeWarning"):
+        assert name in unreleased, name
+    # a law without a range writes the same job file as before
+    assert "same job file" in unreleased
