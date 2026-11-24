@@ -651,7 +651,9 @@ class PortMode:
     frequency's mode, so it stays the same physical mode through crossings.
     On a shared port surface it runs the surface's sweep, with the other
     wave ports of its surface, so it gives the same mode a driven problem
-    uses; an explicit ``mode`` sweeps that rank alone.
+    uses; an explicit ``mode`` sweeps that rank alone. The port's
+    ``polarity`` fixes the phase of its own mode as in a driven problem; an
+    explicit other ``mode`` takes the default phase.
 
     Example:
         The mode of wave port ``"p1"`` from 1 to 100 GHz::

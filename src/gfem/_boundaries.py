@@ -651,6 +651,15 @@ class WavePort:
     differ. Elsewhere in the model the principal axes may point in any
     direction.
 
+    Example:
+        Arrows that fix the sign of each port's mode, so S keeps its
+        relative port signs when the device is rotated, mirrored or
+        remeshed. On a straight guide the same arrow at both ends; round a
+        bend the arrow follows the field::
+
+            gfem.WavePort("p1", "in", polarity=((0.0, 0.2e-6, 0.0), "+y"))
+            gfem.WavePort("p2", "out", polarity=((5e-6, 40e-6, 0.0), "-x"))
+
     Attributes:
         name: The port's name; ports index S-parameters by name, in the
             order of the model's ``ports``.
@@ -665,6 +674,28 @@ class WavePort:
         pec_edges: Surfaces whose edges on the port are perfect conductors
             in the port mode problem only (where the 3D problem models them
             otherwise, e.g. as a `Conductor`).
+        polarity: ``(point, direction)``: the mode's field at the point
+            along the direction is real and positive at every frequency,
+            which fixes the sign and phase of the port's row and column of
+            S without defining a voltage. The point is in m on the port
+            ((x, y, z), or (x, y) on a line port of a 2D mesh), the
+            direction an axis ('+y'; no sign means +) or a 3-vector, stored
+            as a unit 3-vector. In 3D the arrow reads the in-plane E field;
+            on a line port it is '+z' or '-z' and reads the solved field
+            normal to the plane (:math:`E_z` or :math:`H_z`). Put the point
+            where the mode is strong and the direction along its field: the
+            solve raises `gfem.PortModeError` where the field read there is
+            below :math:`10^{-2}` of the port's peak, at any frequency. ``None``: the
+            default sign (see `gfem.conventions`).
+
+    Raises:
+        ValueError: ``mode`` is not an integer >= 1, ``offset`` is negative,
+            ``voltage_path`` is not two or more 3-vectors, ``polarity`` is
+            not a point of 2 or 3 finite coordinates and a direction, or both
+            ``polarity`` and ``voltage_path`` are given.
+        NonDifferentiableError: ``offset``, ``voltage_path`` or
+            ``polarity`` is computed inside `jax.grad`, `jax.jit` or
+            `jax.vmap`.
     """
 
     name: str
@@ -673,6 +704,7 @@ class WavePort:
     offset: float = 0.0
     voltage_path: tuple[tuple[float, float, float], ...] | None = None
     pec_edges: tuple[str, ...] = ()
+    polarity: tuple[tuple[float, ...], tuple[float, float, float]] | None = None
     _physics: ClassVar[str] = "em"
 
     def __post_init__(self) -> None:
@@ -698,6 +730,46 @@ class WavePort:
         object.__setattr__(
             self, "pec_edges", tuple(_surface_name(s, owner) for s in edges)
         )
+        if self.polarity is not None:
+            if self.voltage_path is not None:
+                raise ValueError(
+                    f"{owner}: give a polarity or a voltage_path, not both: each "
+                    "fixes the sign of the port's mode (a voltage_path also "
+                    "defines a voltage)."
+                )
+            object.__setattr__(self, "polarity", _polarity(self.polarity, owner))
+
+
+def _polarity(
+    value: Any, owner: str
+) -> tuple[tuple[float, ...], tuple[float, float, float]]:
+    owner = f"{owner} polarity"
+    check_fixed(value, f"{owner}: the point and direction must be fixed numbers")
+    if not isinstance(value, (tuple, list)) or len(value) != 2:
+        raise ValueError(
+            f"{owner}: give (point, direction), e.g. ((0.0, 1e-6, 0.0), '+y'), "
+            f"got {value!r}."
+        )
+    point, direction = value
+    check_fixed(point, f"{owner}: the point must be fixed numbers")
+    try:
+        p = np.asarray(point, dtype=float)
+    except (TypeError, ValueError):
+        p = np.empty((0, 0))
+    if p.ndim != 1 or len(p) not in (2, 3):
+        raise ValueError(
+            f"{owner}: the point must be 2 or 3 coordinates (m): (x, y, z) on a "
+            f"3D mesh, (x, y) on a 2D one, got {point!r}."
+        )
+    if not np.isfinite(p).all():
+        raise ValueError(f"{owner}: the point must be finite, got {point!r}.")
+    d = _direction(direction, owner)
+    if not isinstance(direction, str):
+        given = np.asarray(direction, dtype=float)
+        if abs(float(np.linalg.norm(given)) - 1.0) <= 4 * np.finfo(float).eps:
+            # already unit: kept as given, so a decoded job equals the model
+            d = (float(given[0]), float(given[1]), float(given[2]))
+    return tuple(float(x) for x in p), d
 
 
 def _path(value: Any, owner: str) -> tuple[tuple[float, float, float], ...]:
