@@ -28,6 +28,7 @@ from circuit_cases import (
     slab_mesh,
 )
 from finite_differences import assert_gradient_matches, unit_directions
+from periodic_cases import f1, f1_mesh
 
 import gfem
 
@@ -217,8 +218,6 @@ def test_the_circuit_kind_is_required_and_checked(mesh):
             _template(),
             circuit="photonic",  # ty: ignore[invalid-argument-type]
         )
-    with pytest.raises(ValueError, match=r"circuit='rf' yet.*to_sdict"):
-        gfem.SaxComponent(function, _template(), circuit="rf")
 
 
 @pytest.mark.parametrize(
@@ -327,6 +326,88 @@ def test_lumped_and_voltage_path_ports_need_no_polarity_reference():
             ("p2", "p1"),
             ("p2", "p2"),
         }
+
+
+# --- RF ---------------------------------------------------------------------------
+
+
+def _rf(model, **kwargs):
+    return gfem.SaxComponent(model, gfem.Driven(5e9), circuit="rf", **kwargs)
+
+
+@pytest.mark.usefixtures("canned")
+def test_an_rf_component_has_a_frequency_and_a_reference_setting():
+    component = _rf(_lumped_line())
+    assert list(inspect.signature(component).parameters) == ["f", "z0"]
+    assert component.settings == {"f": 5e9, "z0": 50.0}
+    assert set(component()) == {
+        ("p1", "p1"),
+        ("p1", "p2"),
+        ("p2", "p1"),
+        ("p2", "p2"),
+    }
+    with pytest.raises(ValueError, match=r"f = 9 GHz is outside.*5 GHz"):
+        component(f=9e9)
+    with pytest.raises(TypeError, match="no setting 'wl'"):
+        component(wl=1.5)
+
+
+@pytest.mark.usefixtures("canned")
+@pytest.mark.parametrize(
+    ("ports", "message"),
+    [
+        (
+            {"p2": gfem.LumpedPort("p2", "port2", "+z", capacitance=1e-12)},
+            r"LumpedPort 'p2' has no resistance.*resistance=50.*leave it out of ports=",
+        ),
+        (
+            {"p2": gfem.WavePort("p2", "port2", polarity=((0.04, 0.003, 0.0), "+z"))},
+            r"WavePort 'p2' has no voltage_path.*voltage_path=.*leave it out",
+        ),
+    ],
+)
+def test_an_rf_port_without_a_reference_impedance_raises_naming_the_remedy(
+    ports, message
+):
+    with pytest.raises(ValueError, match=message):
+        _rf(_lumped_line(**ports))
+    # left out of ports=, it is a load inside the device
+    component = _rf(_lumped_line(**ports), ports={"p1": "o1"})
+    assert set(component()) == {("o1", "o1")}
+
+
+def test_an_rf_component_refuses_an_exposed_floquet_port(tmp_path):
+    cell = f1(f1_mesh(tmp_path))
+    with pytest.raises(ValueError, match=r"FloquetPort 'R_TE' cannot be an RF"):
+        gfem.SaxComponent(cell, gfem.Driven(5e14), circuit="rf")
+
+
+def test_an_rf_component_refuses_a_2d_mesh(mesh):
+    with pytest.raises(ValueError, match=r"needs a 3D model.*circuit='optical'"):
+        gfem.SaxComponent(slab_function(mesh), _template(), circuit="rf")
+
+
+@pytest.mark.usefixtures("canned")
+@pytest.mark.parametrize("z0", [50j, 50 + 1j, [50.0, 75.0], -50.0, 0.0, np.nan, "50"])
+def test_a_z0_that_is_not_one_positive_real_raises_before_any_solve(z0, solves):
+    component = _rf(_lumped_line())
+    n = len(solves)
+    with pytest.raises(ValueError, match="one real reference impedance"):
+        component(z0=z0)
+    assert len(solves) == n
+
+
+def test_z0_is_no_solve_input_but_renormalizes_s(monkeypatch):
+    count = count_solves(monkeypatch)
+    component = _rf(_lumped_line())
+    assert len(count) == 1
+    at_50 = component()
+    at_75 = component(z0=75.0)
+    jax.jit(lambda z0: component(z0=z0))(100.0)
+    jax.grad(lambda z0: jnp.abs(component(z0=z0)["p1", "p1"]))(60.0)
+    assert len(count) == 1
+    assert not np.allclose(at_50["p1", "p1"], at_75["p1", "p1"])
+    assert np.allclose(component(z0=75.0)["p1", "p1"], at_75["p1", "p1"], atol=0)
 
 
 def test_an_unknown_setting_raises_listing_the_settings(component):

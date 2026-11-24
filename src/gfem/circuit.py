@@ -31,10 +31,10 @@ import scipy.constants
 
 from gfem._checks import is_traced
 from gfem._text import hertz_band
-from gfem.model import Model, WavePort
+from gfem.model import FloquetPort, LumpedPort, Model, WavePort
 from gfem.options import SolverOptions
 from gfem.problems import Driven
-from gfem.results import NetworkParameters, _circuit_ports
+from gfem.results import NetworkParameters, _circuit_ports, _circuit_z0
 from gfem.solve import solve
 
 __all__ = ["SaxComponent"]
@@ -98,6 +98,24 @@ class SaxComponent:
     as in a solve: a wave port absorbs its mode, a lumped port is its own
     R, L and C.
 
+    **RF.** With ``circuit="rf"`` the settings are ``f``, the frequency in
+    Hz, and ``z0``, the reference impedance in ohm (one real scalar, 50 by
+    default), instead of ``wl``. S keeps gfem's :math:`e^{+i\omega t}`,
+    like SAX's RF models, and is renormalized from the exposed ports' own
+    reference impedances to ``z0`` on the band, before the interpolation in
+    ``f``; it is no solve input, so a new ``z0`` costs no solve. Every
+    exposed port needs a reference: a `gfem.LumpedPort` with a resistance
+    (its inductance and capacitance stay a load at the port) or a
+    `gfem.WavePort` with a ``voltage_path``, whose impedance is
+    :math:`Z_{PV}`. A lumped port with only an inductance or a capacitance
+    stays out of ``ports`` as an internal lumped load, its value a design
+    setting. The mesh is 3D. Pass ``z0`` once to the whole circuit, e.g.
+    ``circ(f=f, z0=50.0)``, never to one instance: SAX's lumped RF models
+    then share it, and a model with another reference does not match.
+    Models that are matched to their own impedance (SAX's coplanar and
+    microstrip lines, which take no ``z0``) are right beside the block only
+    where that impedance equals ``z0``.
+
     **Solves.** The constructor solves once at the defaults. A component
     keeps the S of its last 64 distinct design settings (exact values; the
     wavelength is not part of it), so SAX's no-argument call when the
@@ -134,9 +152,10 @@ class SaxComponent:
             ``excite`` is ``None`` or the exposed ports, ``keep_fields``
             ``False``, with no sources.
         circuit: ``"optical"``: a ``wl`` setting in µm and SAX's photonic
-            :math:`e^{-i\omega t}`. ``"rf"`` is not available yet. Never
-            inferred, because the wrong kind still composes, with wrong
-            interference.
+            :math:`e^{-i\omega t}`. ``"rf"``: settings ``f`` in Hz and
+            ``z0`` in ohm, :math:`e^{+i\omega t}` as gfem, and S
+            renormalized to ``z0`` (see **RF** above). Never inferred,
+            because the wrong kind still composes, with wrong interference.
         ports: gfem port name -> circuit port name, e.g. ``{"p1": "o1"}``. A
             circuit port name is an identifier, or ``name@mode`` (SAX
             multimode) for every port or none. ``None`` exposes every port
@@ -152,7 +171,8 @@ class SaxComponent:
         ports: The exposed ports, gfem name -> circuit name.
         options: The solver options.
         cache: The solve cache directory, or ``None``.
-        settings: The default of every setting, ``wl`` included.
+        settings: The default of every setting, ``wl`` (optical) or ``f``
+            and ``z0`` (RF) included.
 
     Raises:
         TypeError: ``model`` is neither a `gfem.Model` nor a function
@@ -161,11 +181,14 @@ class SaxComponent:
             only) or has a dictionary default; ``problem`` is not a
             `gfem.Driven`, ``options`` not a `gfem.SolverOptions` or
             ``ports`` not a mapping.
-        ValueError: ``circuit`` is unknown or ``"rf"``; a parameter is named
-            ``wl``, ``f`` or ``z0``; ``ports`` names an unknown port or
-            repeats or misspells a circuit port name; an exposed
-            `gfem.WavePort` has neither ``polarity`` nor ``voltage_path``; or
-            the template's ``excite``, ``keep_fields`` or ``sources`` is set.
+        ValueError: ``circuit`` is unknown; a parameter is named ``wl``,
+            ``f`` or ``z0``; ``ports`` names an unknown port or repeats or
+            misspells a circuit port name; optical: an exposed
+            `gfem.WavePort` has neither ``polarity`` nor ``voltage_path``; RF:
+            the mesh is 2D, or an exposed port is a `gfem.FloquetPort`, a
+            `gfem.LumpedPort` without a resistance or a `gfem.WavePort`
+            without a ``voltage_path``; or the template's ``excite``,
+            ``keep_fields`` or ``sources`` is set.
             The solve at the defaults raises what `gfem.solve` raises.
     """
 
@@ -199,11 +222,6 @@ class SaxComponent:
                 "circuit's frequency setting, the time convention and the "
                 "normalization of S, so it is never inferred."
             )
-        if circuit == "rf":
-            raise ValueError(
-                "SaxComponent does not take circuit='rf' yet. For an RF circuit, "
-                "solve once and convert with result.s.to_sdict(circuit='rf')."
-            )
         if options is not None and not isinstance(options, SolverOptions):
             raise TypeError(
                 "SaxComponent options must be a gfem.SolverOptions, got "
@@ -213,11 +231,14 @@ class SaxComponent:
         defaults = _defaults(function)
         built = _build(function, defaults)
         exposed = _circuit_ports(ports, built.port_names)
-        _check_references(built, exposed)
+        _check_references(built, exposed, circuit)
         band, solved = _template(problem, exposed)
         middle = 0.5 * (band[0] + band[-1])
         default_f = float(band[np.argmin(np.abs(band - middle))])
-        settings = {**defaults, "wl": _wavelength(default_f)}
+        if circuit == "rf":
+            settings = {**defaults, "f": default_f, "z0": 50.0}
+        else:
+            settings = {**defaults, "wl": _wavelength(default_f)}
         fields = {
             "model": model,
             "problem": problem,
@@ -265,8 +286,14 @@ class SaxComponent:
                 f"settings are {', '.join(map(repr, self.settings))}."
             )
         values = {**self.settings, **settings}
+        # z0 is no solve input: checked first, so a bad one costs no solve
+        z0 = _circuit_z0(values["z0"]) if self.circuit == "rf" else None
         network = self._network({k: values[k] for k in self._design})
-        grid = network.to_sdict(circuit=self.circuit, ports=self.ports)
+        if self.circuit == "rf":
+            # renormalized on the band grid, before the interpolation
+            grid = network.to_sdict(circuit="rf", ports=self.ports, z0=z0)
+            return self._at(grid, jnp.asarray(values["f"], dtype=float))
+        grid = network.to_sdict(circuit="optical", ports=self.ports)
         # the circuit's wavelength in um, as a frequency in Hz
         frequency = scipy.constants.c / (jnp.asarray(values["wl"], dtype=float) * 1e-6)
         return self._at(grid, frequency)
@@ -345,6 +372,13 @@ class SaxComponent:
         lo, hi = self._band[0], self._band[-1]
         outside = (frequency < lo * (1 - _SLACK)) | (frequency > hi * (1 + _SLACK))
         if outside.any():
+            if self.circuit == "rf":
+                bad = ", ".join(hertz_band(f, f) for f in frequency[outside][:3])
+                raise ValueError(
+                    f"f = {bad} is outside the component's band, "
+                    f"{hertz_band(lo, hi)}; widen the frequencies of its Driven "
+                    "template to cover it."
+                )
             bad = ", ".join(f"{_wavelength(f):.6g}" for f in frequency[outside][:3])
             raise ValueError(
                 f"wl = {bad} um is outside the component's band, "
@@ -430,13 +464,18 @@ def _build(function: Callable[..., Any], design: dict[str, Any]) -> Model:
     return model
 
 
-def _check_references(model: Model, exposed: dict[str, str]) -> None:
-    """Raise if an exposed wave port has no polarity reference.
+def _check_references(model: Model, exposed: dict[str, str], circuit: Circuit) -> None:
+    """Raise if an exposed port has no reference a circuit of this kind can use.
 
     Raises:
-        ValueError: An exposed `gfem.WavePort` has neither ``polarity`` nor
-            ``voltage_path``.
+        ValueError: Optical: an exposed `gfem.WavePort` has neither
+            ``polarity`` nor ``voltage_path``. RF: the mesh is 2D, or an
+            exposed port is a `gfem.FloquetPort`, a `gfem.LumpedPort` with
+            no resistance or a `gfem.WavePort` with no ``voltage_path``.
     """
+    if circuit == "rf":
+        _check_rf_references(model, exposed)
+        return
     for port in model.ports:
         if (
             port.name in exposed
@@ -453,6 +492,42 @@ def _check_references(model: Model, exposed: dict[str, str]) -> None:
                 f"(e.g. WavePort({port.name!r}, ..., polarity=((x, y), '+z')) on a "
                 "2D line port), or a voltage_path; or leave it out of ports= to "
                 "terminate it."
+            )
+
+
+def _check_rf_references(model: Model, exposed: dict[str, str]) -> None:
+    """Raise if an RF circuit cannot take ``model`` and its exposed ports."""
+    if model.mesh.dim == 2:
+        raise ValueError(
+            "An RF component needs a 3D model: a 2D model has no lumped port or "
+            "voltage_path to give a port its reference impedance. Use "
+            "circuit='optical' for a 2D model, or a 3D mesh for RF."
+        )
+    for port in model.ports:
+        if port.name not in exposed:
+            continue
+        if isinstance(port, FloquetPort):
+            raise ValueError(  # noqa: TRY004
+                f"FloquetPort {port.name!r} cannot be an RF circuit port: its "
+                "orders have no reference impedance. Leave it out of ports=, or "
+                "use circuit='optical'."
+            )
+        if isinstance(port, LumpedPort) and port.rlc[0] is None:
+            raise ValueError(
+                f"LumpedPort {port.name!r} has no resistance, so no reference "
+                "impedance (its inductance and capacitance are a load, not a "
+                "port): give it a resistance (e.g. LumpedPort("
+                f"{port.name!r}, ..., resistance=50.0, capacitance=c)) to make it "
+                "a circuit port, or leave it out of ports= to keep it as a lumped "
+                "load inside the device."
+            )
+        if isinstance(port, WavePort) and port.voltage_path is None:
+            raise ValueError(
+                f"WavePort {port.name!r} has no voltage_path, so its mode has no "
+                "reference impedance for an RF circuit: give it "
+                f"WavePort({port.name!r}, ..., voltage_path=(start, end)), from "
+                "the ground to the signal conductor, or leave it out of ports= "
+                "to terminate it."
             )
 
 
