@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import math
+import re
 from collections.abc import Callable, Mapping, Sequence
 from importlib.metadata import version
 from pathlib import Path
@@ -1045,6 +1046,124 @@ class NetworkParameters:
             excited=self.ports,
         )
 
+    def to_sdict(
+        self,
+        *,
+        circuit: Literal["optical", "rf"],
+        ports: Mapping[str, str] | None = None,
+        z0: Any = None,
+    ) -> dict[tuple[str, str], jax.Array]:
+        r"""S between circuit ports as a SAX dictionary (an ``SDict``).
+
+        A plain ``dict`` keyed ``(input, output)`` by circuit port name:
+        ``sd["o1", "o2"]`` is :math:`S_{21}`, the wave out of the port named
+        ``"o2"`` when the port named ``"o1"`` is fed, over `frequency` in its
+        order, shape ``(n_freq,)``. It holds every pair of exposed ports,
+        zeros included, because SAX reads a missing key as zero; gfem does not
+        import SAX. Written in `jax.numpy`, so it differentiates like S.
+
+        The exposed ports' sub-network comes first: their rows and columns
+        of S, with their ``z_ref``. The other ports terminate the device as
+        in the solve (a wave port absorbs its mode, a lumped port is its own
+        R, L and C). Then ``circuit`` sets the conventions:
+
+        - ``"optical"``: SAX's photonic models are :math:`e^{-i\omega t}`,
+          so the dictionary holds :math:`\overline{S}`, the same fields in
+          that convention. S keeps its normalization (unit modal power on a
+          wave port).
+        - ``"rf"``: SAX's RF models are :math:`e^{+i\omega t}`, as gfem, and
+          share one real reference impedance, which an ``SDict`` does not
+          carry. S is renormalized (`renormalize`) from the ports' own
+          ``z_ref`` to ``z0``, 50 ohm unless given, SAX's RF default.
+
+        Only names reach this method, not the ports: the sign of a wave
+        port's row and column of S is physical only when the port has a
+        polarity reference (``WavePort(polarity=)``) or a ``voltage_path``.
+        Otherwise the mode's default sign depends on the mesh, and so does
+        the interference a circuit computes from it.
+
+        Args:
+            circuit: ``"optical"`` or ``"rf"``, the kind of SAX circuit
+                that uses the dictionary; never inferred, because the wrong
+                one still composes, with wrong interference.
+            ports: gfem port name -> circuit port name, e.g.
+                ``{"p1": "o1", "p2": "o2"}``, in the order the keys are
+                listed. A circuit port name is a Python identifier, or
+                ``name@mode`` (SAX multimode) for every port or none. Ports
+                left out are terminated, not exposed. ``None`` exposes every
+                port under its own name.
+            z0: For ``"rf"``, the real reference impedance S is
+                renormalized to, ohm (> 0, scalar); ``None`` means 50 ohm.
+                It may be traced. Refused for ``"optical"``.
+
+        Returns:
+            ``{(input, output): S over frequency}`` for every pair of
+            exposed ports.
+
+        Raises:
+            ValueError: ``circuit`` is neither kind; a name in ``ports`` is
+                not a port, a circuit port name is invalid or repeated;
+                an exposed port was not excited (its column of S is
+                unknown); ``z0`` is given for ``"optical"`` or is not one
+                real value > 0; or, for ``"rf"``, an exposed port has no
+                reference impedance (checked on concrete values).
+        """
+        if circuit not in ("optical", "rf"):
+            raise ValueError(
+                f"circuit must be 'optical' or 'rf', got {circuit!r}: it sets the "
+                "time convention and the normalization of S, so it is never "
+                "inferred."
+            )
+        exposed = _circuit_ports(ports, self.ports)
+        sub = self._subnetwork(tuple(exposed), "to_sdict()")
+        if circuit == "rf":
+            z0 = _circuit_z0(z0)
+            if not is_traced(sub.z_ref):
+                _require_reference(sub, "An RF circuit renormalizes S to z0")
+            sub = sub.renormalize(z0)
+        elif z0 is not None:
+            raise ValueError(
+                "z0 is the reference impedance of an RF circuit; an optical "
+                "circuit keeps S as solved (unit modal power), so drop z0= or "
+                "use circuit='rf'."
+            )
+        values = jnp.asarray(sub.values)
+        if circuit == "optical":
+            # gfem's e^{+i w t} phasors -> SAX's photonic e^{-i w t}
+            values = jnp.conj(values)
+        names = list(exposed.values())
+        return {
+            (c_in, c_out): values[:, i_out, i_in]
+            for i_in, c_in in enumerate(names)
+            for i_out, c_out in enumerate(names)
+        }
+
+    def _subnetwork(self, ports: tuple[str, ...], what: str) -> NetworkParameters:
+        """The network of ``ports`` with the other ports terminated as solved.
+
+        Rows and columns of S in ``ports`` order, with their ``z_ref``.
+
+        Raises:
+            ValueError: A port in ``ports`` was not excited.
+        """
+        missing = [p for p in ports if p not in self.excited]
+        if missing:
+            raise ValueError(
+                f"{what} needs the column of S of every exposed port, but "
+                f"{', '.join(map(repr, missing))} was not excited (the excited "
+                f"ports are {', '.join(map(repr, self.excited))}). Solve with "
+                "Driven(excite=None), or leave the port out of ports=."
+            )
+        rows = np.array([self.ports.index(p) for p in ports])
+        cols = np.array([self.excited.index(p) for p in ports])
+        return NetworkParameters(
+            values=jnp.asarray(self.values)[:, rows][:, :, cols],
+            z_ref=jnp.asarray(self.z_ref)[:, rows],
+            frequency=self.frequency,
+            ports=ports,
+            excited=ports,
+        )
+
     def to_xarray(self) -> xarray.Dataset:
         """S and the reference impedances as an `xarray.Dataset`.
 
@@ -1400,6 +1519,116 @@ def _pseudo(z: jax.Array) -> jax.Array:
 def _diag(v: jax.Array) -> jax.Array:
     """``(n_freq, n)`` -> stacked diagonal matrices ``(n_freq, n, n)``."""
     return v[:, :, None] * jnp.eye(v.shape[-1])
+
+
+_MODE_SUFFIX = re.compile(r"@\w+")
+
+
+def _circuit_ports(
+    ports: Mapping[str, str] | None, names: Sequence[str]
+) -> dict[str, str]:
+    """``ports`` checked: gfem port name -> circuit port name, in the given order.
+
+    ``None`` keeps every port under its own name. A circuit port name is an
+    identifier, or ``identifier@mode`` (SAX multimode) for every port or none.
+
+    Raises:
+        TypeError: ``ports`` is not a mapping.
+        ValueError: ``ports`` is empty, names a port that does not exist, or
+            gives an invalid or repeated circuit port name.
+    """
+    listed = ", ".join(map(repr, names))
+    if ports is None:
+        bad = [p for p in names if not _is_circuit_name(p)]
+        if bad:
+            raise ValueError(
+                f"Port {bad[0]!r} cannot be a circuit port name (an identifier, "
+                "or name@mode); rename it in the circuit with ports=, e.g. "
+                f"ports={{{bad[0]!r}: 'o1'}}."
+            )
+        exposed = {p: p for p in names}
+    else:
+        if not isinstance(ports, Mapping):
+            raise TypeError(
+                "ports= maps gfem port names to circuit port names, e.g. "
+                f"{{{names[0]!r}: 'o1'}}; got {type(ports).__name__}."
+            )
+        exposed = dict(ports)
+        if not exposed:
+            raise ValueError(f"ports= exposes no port; the ports are {listed}.")
+        unknown = [p for p in exposed if p not in names]
+        if unknown:
+            raise ValueError(
+                f"No port {', '.join(map(repr, unknown))}; the ports are {listed}."
+            )
+        bad = [c for c in exposed.values() if not _is_circuit_name(c)]
+        if bad:
+            raise ValueError(
+                f"Circuit port name {bad[0]!r} is not an identifier or name@mode "
+                "(SAX needs one, e.g. 'o1' or 'o1@TE0')."
+            )
+        names_given = list(exposed.values())
+        repeated = sorted({c for c in names_given if names_given.count(c) > 1})
+        if repeated:
+            raise ValueError(
+                f"Circuit port name {', '.join(map(repr, repeated))} is given to "
+                "more than one port; each exposed port needs its own."
+            )
+    moded = [_MODE_SUFFIX.search(c) is not None for c in exposed.values()]
+    if any(moded) and not all(moded):
+        raise ValueError(
+            "Either every circuit port name is name@mode or none is (SAX cannot "
+            f"join single-mode and multimode ports); got {list(exposed.values())}."
+        )
+    return exposed
+
+
+def _is_circuit_name(name: object) -> bool:
+    """``name`` is an identifier, or ``identifier@mode``."""
+    if not isinstance(name, str):
+        return False
+    base, at, mode = name.partition("@")
+    return base.isidentifier() and (not at or re.fullmatch(r"\w+", mode) is not None)
+
+
+def _circuit_z0(z0: Any) -> Any:
+    """An RF circuit's ``z0`` checked: one real value > 0, 50 ohm if ``None``.
+
+    A traced value is checked for its dtype and shape only.
+
+    Raises:
+        ValueError: ``z0`` is complex, not a number, not a scalar, or a
+            concrete value that is not finite and > 0.
+    """
+    if z0 is None:
+        return 50.0
+    try:
+        real = jnp.result_type(z0).kind in "iuf" and jnp.ndim(z0) == 0
+    except TypeError:
+        real = False
+    if real and not is_traced(z0):
+        value = float(z0)
+        real = math.isfinite(value) and value > 0
+    if not real or isinstance(z0, bool):
+        raise ValueError(
+            "z0 must be one real reference impedance > 0 ohm, the one every "
+            f"port of the RF circuit shares, got {z0!r}."
+        )
+    return z0
+
+
+def _require_reference(net: NetworkParameters, why: str) -> None:
+    """Raise if a port of ``net`` has no reference impedance (a NaN ``z_ref``)."""
+    nan = np.isnan(np.asarray(net.z_ref)).any(axis=0)
+    missing = [p for p, bad in zip(net.ports, nan, strict=True) if bad]
+    if missing:
+        raise ValueError(
+            f"Port {', '.join(map(repr, missing))} has no reference impedance "
+            "(z_ref is NaN): a LumpedPort without a resistance, a WavePort "
+            "without a voltage_path, or a FloquetPort whose order is evanescent. "
+            f"{why} and needs one: give the port a resistance or a voltage_path, "
+            "or leave it out of ports= to keep it inside the device."
+        )
 
 
 def _touchstone_z0(z0: object) -> float:
