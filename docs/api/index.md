@@ -13,6 +13,7 @@ gfem/model/index
 gfem/materials/index
 gfem/problems/index
 gfem/solve/index
+gfem/bands/index
 gfem/results/index
 gfem/broadband/index
 gfem/circuit/index

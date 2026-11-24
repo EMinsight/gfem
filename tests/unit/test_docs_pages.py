@@ -329,6 +329,17 @@ USER_TERMS = (
     "Radiation conductance",
     "Synchronous frequency",
     "Node map",
+    "Reciprocal lattice",
+    "High-symmetry point",
+    "Wave vector path",
+    "Band",
+    "Static band",
+    "Band connection",
+    "Band diagram",
+    "Band gap",
+    "Band group velocity",
+    "Anchored band window",
+    "Lost band",
 )
 
 

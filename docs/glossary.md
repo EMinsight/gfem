@@ -216,7 +216,8 @@ Clearance
 Slab model
   A {term}`model` one element thick between PEC plates, whose field is normal to
   the plates and uniform through the thickness, so it solves the
-  {term}`Ez polarization` of a {term}`2D model`'s problem on a 3D mesh; the
+  {term}`Ez polarization` of a {term}`2D model`'s problem on a 3D mesh (between
+  natural faces (PMC) it solves the Hz polarization instead); the
   cross-check of 2D models, and the way to pose what they refuse (oblique
   incidence, periodic cells, lumped ports, sheets).
 
@@ -419,6 +420,62 @@ Bloch phase
   The factor $e^{-i \mathbf{k} \cdot \mathbf{a}}$ between the fields of a {term}`periodic pair`,
   $\mathbf{E}(\mathbf{r} + \mathbf{a}) = e^{-i \mathbf{k} \cdot \mathbf{a}} \mathbf{E}(\mathbf{r})$ under $e^{+i\omega t}$, with $\mathbf{a}$ the translation from the
   pair's first surface to its second.
+
+Reciprocal lattice
+  The vectors $\mathbf{b}_i$ with $\mathbf{b}_i \cdot \mathbf{a}_j = 2\pi\delta_{ij}$,
+  inside the span of the cell's translations $\mathbf{a}_j$ (`Model.reciprocal_lattice`).
+
+High-symmetry point
+  A named {term}`Bloch wave vector` of the first Brillouin zone (Γ, X, M, K,
+  R…), given in reduced coordinates of the {term}`reciprocal lattice`.
+
+Wave vector path
+  The Bloch wave vectors a {term}`band diagram` samples: straight segments
+  between {term}`high-symmetry points <high-symmetry point>`, evenly spaced by
+  path length, with every high-symmetry point among them
+  (`gfem.wave_vector_path`).
+
+Band
+  The $n$-th lowest resonant frequency (by $\mathrm{Re}\,\omega$) of a periodic cell as
+  a function of the {term}`Bloch wave vector`, counting the bands that reach
+  zero frequency at Γ. It is continuous in $\mathbf{k}$, with a kink where two bands
+  cross. Bands are numbered from 0.
+
+Static band
+  A {term}`band` whose frequency goes to zero at Γ, where the cell's static
+  fields stand in for it. A band diagram reports it at zero frequency there.
+
+Band connection
+  The link from a {term}`band` at one wave vector of a {term}`wave vector path`
+  to the band at the previous wave vector that holds the same mode, found by
+  field overlap. Through a crossing it joins band $n$ to band $n+1$; inside a
+  degenerate or near-degenerate group it falls back to frequency order.
+
+Band diagram
+  The {term}`bands <band>` of a periodic cell along a {term}`wave vector path`
+  (`gfem.band_diagram`).
+
+Band gap
+  A frequency range in which a periodic cell has no {term}`band`, in the
+  polarization considered, at any Bloch wave vector; complete when no
+  polarization has one. Its width over its centre frequency,
+  $\Delta\omega/\omega_m$, does not depend on the lattice's scale.
+
+Band group velocity
+  The gradient $\partial\omega/\partial\mathbf{k}$ of a {term}`band`, within the
+  span of the periodic translations: the exact derivative of the discrete
+  band, complex on lossy cells, and undefined (NaN) where bands touch with
+  different slopes. It is not a port mode's group index.
+
+Anchored band window
+  The modes found at a wave vector when the target lies below half the highest
+  of them: they are then the lowest {term}`bands <band>`, and their frequency
+  order is the band number.
+
+Lost band
+  A {term}`band` found at one wave vector of a {term}`band diagram` that no mode
+  continues at a neighbouring wave vector: the path is too coarse there, or the
+  solve missed a mode.
 
 Job
   A self-contained run, {term}`model` plus problem type plus

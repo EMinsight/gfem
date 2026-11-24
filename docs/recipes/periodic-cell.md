@@ -1,14 +1,16 @@
 # Solve a periodic cell
 
-Get the band diagram of a structure that repeats along one, two or three
-directions, or the S-parameters of one phased unit cell, by solving a single
+Get the {term}`band diagram <band diagram>` of a structure that repeats along one,
+two or three directions with {py:func}`gfem.band_diagram` (the
+{doc}`photonic crystal tutorial <../tutorials/photonic-crystal>` works one
+through), or the S-parameters of one phased unit cell, by solving a single
 cell. You mesh one cell and pair its opposite faces with {py:obj}`gfem.Periodic`.
 With no wave vector the fields repeat unchanged from cell to cell
 ({term}`plain periodicity`). With `wave_vector=k` they pick up a
 {term}`Bloch phase` from cell to cell. To light the cell with a plane wave and
 read its diffraction orders, see {doc}`floquet-ports`.
 
-## Band frequencies of a layered cell
+## Band diagram of a layered cell
 
 The cell below is a line of $\varepsilon = 2$ and $\varepsilon = 9$ layers that repeats every 10 mm
 along x. Its mesh needs two outer faces that match node for node under a
@@ -29,37 +31,94 @@ cell = gfem.Model(
         gfem.PEC("z_max"),
     ],
 )
-(a,) = cell.periodic_translations  # m, from x_min to x_max: (0.01, 0.0, 0.0)
-a = np.asarray(a)
 options = gfem.SolverOptions(order=3)
 
-bands = []
-for phase in np.linspace(0.1 * np.pi, np.pi, 10):  # phase per cell, rad
-    k = tuple(phase * a / (a @ a))  # rad/m
-    # aim below every band: the light line of the densest layer, n = 3
-    target = 0.9 * 299_792_458 * np.linalg.norm(k) / (2 * np.pi * 3)
-    problem = gfem.Eigenmode(target=target, n_modes=2, wave_vector=k)
-    modes = gfem.solve(cell, problem, options=options)
-    bands.append(modes.frequency)  # Hz, the two lowest bands at this k
+path = gfem.wave_vector_path(cell, ["Γ", "X"], n_points=11)  # 0 to π/a along x
+bands = gfem.band_diagram(cell, path, target=2e9, n_bands=2, options=options)
+bands.frequency  # (11, 2) Hz: band 0, the lowest, then band 1, at each wave vector
 ```
 
-- `bands` holds the two lowest band frequencies, in Hz, at 10 wave vectors
-  from $0.1\pi/a$ to the zone edge $\pi/a$. `modes.frequency` is $\operatorname{Re} \omega / 2\pi$ and
-  `modes.q` is the Q. For a lossless cell `modes.omega` is exactly real.
+- `bands.frequency` is $\operatorname{Re} \omega / 2\pi$ in Hz, one row per wave vector and one
+  column per {term}`band`. `bands.q` is the Q. For a lossless cell `bands.omega` is exactly real.
+- The target is fixed. It should lie below half the lowest frequency of the highest
+  band you ask for: the modes found are then the lowest ones, and band $n$ is the
+  $n$-th lowest ({term}`anchored band window`). Otherwise `gfem.band_diagram`
+  warns with `gfem.UnanchoredBandWindowWarning` and `bands.anchored` is False at those
+  wave vectors.
+- At Γ the cell also has a field at zero frequency. The {term}`static band` it
+  stands for is reported at 0 Hz, and the other bands keep their numbers.
+- The bands are in frequency order at each wave vector. `bands.connection` links
+  each band to the one it continues at the previous wave vector, so a crossing
+  can be followed ({term}`band connection`). A band with no partner at a
+  neighbouring wave vector is a {term}`lost band`: it warns with
+  `gfem.LostBandWarning` and is marked in `bands.lost`. Add wave vectors there.
 - The wave vector is Cartesian, in rad/m. For a phase $\varphi$ per cell along a
-  translation $\mathbf{a}$, $\mathbf{k} = \varphi \mathbf{a} / |\mathbf{a}|^2$, as in the loop. Under $e^{+i\omega t}$ the fields
+  translation $\mathbf{a}$, $\mathbf{k} = \varphi \mathbf{a} / |\mathbf{a}|^2$. Under $e^{+i\omega t}$ the fields
   obey `E(r + a) = exp(-i k·a) E(r)` ({py:obj}`gfem.conventions`, Bloch
-  periodicity).
+  periodicity). Only the phase per cell enters the solve, so gfem folds any
+  $\mathbf{k}$ outside the first Brillouin zone into it; `gfem.wave_vector_path` builds its
+  wave vectors inside the zone.
 - Give $\mathbf{k}$ only along the translations. Any other component raises `ValueError`
   at the solve, and the message gives the projection to use instead.
-- Only the phase per cell enters the solve, so a $\mathbf{k}$ outside the first Brillouin
-  zone gives the folded band. Keep your $\mathbf{k}$ path inside the first zone.
-- At $\mathbf{k} = 0$ the cell also has a field at zero frequency: aim the target above
-  it.
-- Each mode field covers the whole cell, so `Field.at` reads it at any point.
+- Each wave vector is an independent solve. One wave vector is still
+  `gfem.solve(cell, gfem.Eigenmode(target, n_modes=2, wave_vector=k))`.
+- `gfem.band_diagram(..., keep_fields=[i])` keeps the fields at wave vector `i`.
+  `bands.e_field(i, band)` is a `Field`, and `Field.at` reads it at any point.
   Under a Bloch wave vector, gfem sets a mode's overall phase from its largest
   coefficient, not from the physics: compare fields through ratios, not raw
   phases.
+- `bands.to_xarray()` gives a dataset with the dimensions `wave_vector` and `band`.
+
+## Other lattices, points and grids
+
+`gfem.wave_vector_path` recognises the lattice from the cell's translations and names
+its {term}`high-symmetry points <high-symmetry point>`, in reduced coordinates of
+the {term}`reciprocal lattice` (`cell.reciprocal_lattice`):
+
+| Lattice | Translations | Points besides Γ |
+|---|---|---|
+| line | one pair | X (1/2) |
+| square | two pairs, equal and orthogonal | X (1/2, 0), M (1/2, 1/2) |
+| rectangular | two pairs, orthogonal and unequal | X (1/2, 0), Y (0, 1/2), S (1/2, 1/2) |
+| hexagonal | two pairs, equal, at 60° or 120° | M (1/2, 0), K at the corner of the zone |
+| simple cubic | three pairs, equal and orthogonal | X (1/2, 0, 0), M (1/2, 1/2, 0), R (1/2, 1/2, 1/2) |
+
+X lies along the first `gfem.Periodic` in `boundaries` order. Any other lattice takes
+`named_points`. A face-centred cubic cell with the primitive translations
+$\mathbf{a}_1 = (0, a/2, a/2)$, $\mathbf{a}_2 = (a/2, 0, a/2)$, $\mathbf{a}_3 = (a/2, a/2, 0)$,
+in `boundaries` order, has these points in the reduced coordinates of
+Setyawan and Curtarolo (Comput. Mater. Sci. 49, 299 (2010)):
+
+```python
+fcc_points = {
+    "X": (1 / 2, 0, 1 / 2),
+    "L": (1 / 2, 1 / 2, 1 / 2),
+    "W": (1 / 2, 1 / 4, 3 / 4),
+    "K": (3 / 8, 3 / 8, 3 / 4),
+}
+path = gfem.wave_vector_path(
+    fcc, ["Γ", "X", "W", "K", "Γ", "L"], n_points=61, named_points=fcc_points
+)
+```
+
+For a grid of wave vectors, such as an equal-frequency map, build each row from
+`cell.reciprocal_lattice` and sweep the grid row by row, each row as one
+`band_diagram` call with its rows' wave vectors as a straight path: bands are
+connected and lost bands detected between neighbouring wave vectors, which a raw
+grid does not provide at the end of a row. A path with a break in it is two calls.
+
+## Group velocity
+
+- `bands.v_g` is the {term}`band group velocity` $\partial\omega/\partial\mathbf{k}$ in m/s, shape
+  `(n_k, n_bands, 3)`, within the span of the translations. `gfem.solve` gives it at
+  one wave vector as `EigenmodeResult.v_g`.
+- The component along the path is
+  `np.einsum("kbd,kd->kb", bands.v_g.real, tangent)`, with `tangent` the unit vector
+  along each wave vector's segment: it is the slope of the plotted band.
+- Light slows by the factor $n_g = c/|\mathbf{v}_g|$, written here as a ratio. gfem
+  names no such quantity for a band.
+- `v_g` is NaN on the static band and where bands touch with different slopes, and
+  complex on a lossy cell. It is not differentiable.
 
 ## Pair the faces
 
@@ -138,13 +197,20 @@ grad = jax.grad(lowest_band)(jnp.full(n, 9.0))  # Hz per unit eps_r
   face of a pair together. A paired face cannot be the moving surface
   (`ValueError`): move an interior surface instead.
 - `wave_vector` is not differentiable: a value inside `jax.grad` raises
-  `gfem.NonDifferentiableError`. For a group velocity, difference two band
-  solves at nearby k.
+  `gfem.NonDifferentiableError`. The band group velocity is `v_g` (above); it is
+  not differentiable, and nor is the wave vector.
 - A pixel design on a cell takes {py:obj}`gfem.design.LayerGrid` with
   `periodic=(True, False)`, one bool per grid axis (x, y): along a periodic
   axis the pitch must divide the period, the filter smooths across the seam
   and the element map wraps around it.
 - {doc}`../capabilities` lists which periodic gradients each solver supports.
+
+A function of `gfem.band_diagram(...).omega`, such as a gap, differentiates the
+same way: eagerly, not inside `jax.jit` or `jax.vmap`. The
+{doc}`photonic crystal tutorial <../tutorials/photonic-crystal>` differentiates a
+band gap with respect to the permittivity of every element. A gap edge on one member of
+a degenerate pair raises `gfem.DegenerateModeError`
+({doc}`eigenmode-gradient`).
 
 ## Choose a solver
 
@@ -160,7 +226,7 @@ grad = jax.grad(lowest_band)(jnp.full(n, 9.0))  # Hz per unit eps_r
 
 ## Check your results
 
-Four checks you can run on your own cell:
+Six checks you can run on your own cell:
 
 - **Transpose.** Solve the driven cell at $\mathbf{k}$ and at $-\mathbf{k}$. With lumped and wave
   ports, `S(k).T` should equal `S(−k)` to the solver tolerance. With Floquet
@@ -170,8 +236,15 @@ Four checks you can run on your own cell:
   no wave vector: a cheap check of the pairing and the ports. It is a check
   only: the zero wave vector still takes the general Bloch solve, so run plain
   periodicity with `wave_vector=None`, which is cheaper.
-- **Folding.** With the same target, $\mathbf{k}$ and $\mathbf{k} + 2\pi \mathbf{a} / |\mathbf{a}|^2$ should give the
-  same band frequencies.
+- **Folding.** With the same target, $\mathbf{k}$ and $\mathbf{k} + \mathbf{b}_1$, with
+  $\mathbf{b}_1$ a vector of `cell.reciprocal_lattice`, should give the same band
+  frequencies.
+- **Degenerate bands.** At a high-symmetry point, bands that symmetry makes equal come
+  back split by your mesh's asymmetry. A mesh with the cell's symmetry shrinks the
+  split.
+- **Band gap.** A {term}`band gap` is a range with no band at any wave vector of your path.
+  Read it from the top of one band and the bottom of the next, and check that both edges
+  sit on a path point; a path that misses an edge reads a gap that is too wide.
 - **Lossless cell.** With no loss in the cell, `modes.omega` should be real,
   and the driven cell's S with resistive lumped ports should give `SᴴS ≈ I`:
   form the product and look at its largest departure from the identity.
@@ -213,12 +286,15 @@ How gfem itself is checked on periodic cells: {doc}`../verification`.
   a node and its partner on the other surface of a pair. A move that breaks a
   pair raises `ValueError`; move nodes through
   {py:obj}`gfem.shape.boundary_morph`, which keeps the pairs.
-- No k-path argument: loop over k, as in the first example.
+- `gfem.band_diagram` runs on one process; under `jax.grad`, not inside `jax.jit` or
+  `jax.vmap`. Port-loaded and open (PML) cells run with no claim beyond each wave
+  vector's solve.
 - A gradient through an eigenmode's field raises, as on every model. Build the
   objective from `frequency` and `q`.
 
 ## Next
 
+{doc}`../tutorials/photonic-crystal`, {py:func}`gfem.band_diagram`,
 {doc}`floquet-ports`, {py:obj}`gfem.Periodic`, {py:obj}`gfem.conventions`,
 {doc}`eigenmode-gradient`,
 {doc}`shape-gradient`, {doc}`measurements`, {doc}`../capabilities`.

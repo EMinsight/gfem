@@ -151,6 +151,9 @@ program, because every gfem solve needs it.
   tutorial places gold in the same bend, over a band of wavelengths, and the
   {doc}`metagrating <tutorials/metagrating>` tutorial designs a silicon
   grating on glass that sends a plane wave into the air at 50°. The
+  {doc}`photonic crystal <tutorials/photonic-crystal>` tutorial computes the
+  band diagram of a square lattice of alumina rods: its band gap, how fast
+  light crosses it, and where more permittivity would widen the gap. The
   {doc}`nanosphere <tutorials/nanosphere>` tutorial puts a point dipole
   beside a silicon and a gold sphere: its Purcell factor, the share of its
   power the gold quenches, and where its light goes. The

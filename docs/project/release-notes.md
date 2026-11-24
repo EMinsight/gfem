@@ -8,6 +8,23 @@ Jobs and files:
   another gfem version, whose value this version refuses, now says which
   versions are involved and suggests upgrading.
 
+Periodic cells:
+
+- **Band diagrams.** `gfem.wave_vector_path` gives the Bloch wave vectors along
+  straight segments between high-symmetry points: named points for the line,
+  square, rectangular, hexagonal and simple cubic lattices, and
+  `named_points` for any other. `gfem.band_diagram` solves them and returns a
+  `gfem.BandDiagram`: bands in frequency order, the static band at Γ, band
+  connections, `v_g`, `lost` and `anchored` (with `gfem.LostBandWarning` and
+  `gfem.UnanchoredBandWindowWarning`), fields at chosen wave vectors and
+  `to_xarray`. The band frequencies differentiate under `jax.grad`; a band
+  diagram refuses `jax.jit` and `jax.vmap`. `Model.reciprocal_lattice` gives
+  the reciprocal vectors ({doc}`../tutorials/photonic-crystal`,
+  {doc}`../recipes/periodic-cell`).
+- **Band group velocity.** `EigenmodeResult.v_g` gives
+  $\partial\omega/\partial\mathbf{k}$ of a mode under a Bloch wave vector, in
+  m/s. It is not differentiable, and `to_xarray` carries it.
+
 Thermal:
 
 - **Thermal boundary values differentiate.** A fixed temperature, a

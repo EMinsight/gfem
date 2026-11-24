@@ -269,6 +269,13 @@ Across a periodic pair of translation $\mathbf{a}$, a Bloch wave vector $\mathbf
 travels along $+\mathbf{k}$. {doc}`recipes/periodic-cell` shows it on a cell, and
 "Floquet ports" below gives the conventions of a cell lit by a plane wave.
 
+Wave vectors are Cartesian, in rad/m. The named points of a
+{py:func}`gfem.wave_vector_path` are in reduced coordinates of
+`Model.reciprocal_lattice`, $\mathbf{b}_i \cdot \mathbf{a}_j = 2\pi\delta_{ij}$.
+Under `BLOCH_PHASE` the band group velocity $\mathbf{v}_g =
+\nabla_{\mathbf{k}}\omega$ points the way energy travels, with no sign flip.
+Bands are numbered from 0, the lowest.
+
 ## Floquet ports
 
 A {py:obj}`gfem.FloquetPort` is one diffraction order in one polarization of

@@ -16,6 +16,9 @@ v0.1.
   $\mathrm{Re}\,\varepsilon > 0$). Eigenmode and uniform driven problems take a
   Bloch wave vector (`wave_vector=`, rad/m) on a periodic model; a uniform
   driven sweep may keep the incidence angle fixed (`wave_vector_frequency`).
+  {py:func}`gfem.band_diagram` solves an eigenmode problem along a
+  {term}`wave vector path` and returns the bands, their connections and their
+  {term}`band group velocity` ({doc}`recipes/periodic-cell`).
 - **2D models**: a plane of triangles read with {py:meth}`gfem.Mesh.from_gmsh`,
   where neither the structure nor the field varies along z. A uniform driven
   sweep solves one polarization, `Driven(polarization="Ez")` or `"Hz"`, with
@@ -271,7 +274,9 @@ returning a wrong value:
   touch one. An absorbing boundary reflects waves that meet it obliquely,
   and a driven solve warns ({py:obj}`gfem.ObliqueAbsorberWarning`); a
   Floquet port absorbs them, or a perfectly matched layer below the cell.
-  Details: {doc}`recipes/periodic-cell`.
+  A band diagram runs on one process, under `jax.grad` but not inside
+  `jax.jit` or `jax.vmap`; design gradients reach its band frequencies, not
+  `v_g` or the wave vectors. Details: {doc}`recipes/periodic-cell`.
 - **Floquet ports**: the half-space behind the face is homogeneous,
   isotropic and lossless, and the face needs two periodic pairs. Only the
   uniform driven sweep on the direct or BDDC + GMRES solver; every other
