@@ -47,15 +47,15 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable, Iterable, Sequence
+from typing import TYPE_CHECKING, Any, TypeGuard
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from gfem import _beam, _incident
-from gfem._background import Background
+from gfem import _incident
+from gfem._background import Background, lossless
 from gfem._boundaries import (
     PEC,
     Absorbing,
@@ -70,8 +70,7 @@ from gfem._engine.moments import moment_interpolant
 from gfem._incident import Incident, IncidentPart, layered
 from gfem._linalg.base import free_mask
 from gfem._linalg.layout import ONE_PROCESS
-from gfem._materials import Material, MaterialField
-from gfem._sources import GaussianBeam
+from gfem._materials import Material, MaterialField, _is_law
 from gfem._transfer_matrix import layer_index, number
 from gfem.mesh import _TET_FACES, Mesh
 from gfem.model import Model
@@ -83,12 +82,17 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CONTACT",
+    "Faces",
     "IncidentColumns",
     "background_model",
     "check_incident_model",
     "check_stack",
+    "constant_isotropic",
     "incident_coefficients",
     "layer_regions",
+    "one_medium",
+    "region_of",
+    "same_material",
     "scatterer_elements",
     "scatterer_regions",
     "stack_layers",
@@ -114,7 +118,7 @@ def _elements_of(mesh: Mesh, regions: Sequence[str]) -> np.ndarray:
     return out
 
 
-def _same_material(material: Any, layer: Material) -> bool:
+def same_material(material: Any, layer: Material) -> bool:
     """Whether ``material`` is the background ``layer`` for the electric field.
 
     A constant isotropic `Material` with the layer's electromagnetic values;
@@ -133,10 +137,51 @@ def _same_material(material: Any, layer: Material) -> bool:
         return False
 
 
-def _region_of(mesh: Mesh, regions: Sequence[str]) -> np.ndarray:
-    """Per tetrahedron, the name of its region among ``regions``, or ``""``."""
+def constant_isotropic(material: Any) -> TypeGuard[Material]:
+    """Whether ``material`` is a `Material` of one constant isotropic pair.
+
+    Its ``eps_r`` and ``mu_r`` are numbers: no permittivity law, no tensor,
+    no `gfem.MaterialField`.
+    """
+    if not isinstance(material, Material):
+        return False
+    values = (material.eps_r, material.mu_r)
+    return not any(_is_law(v) or np.ndim(v) for v in values)
+
+
+def one_medium(
+    model: Model, regions: Iterable[str], medium: Material | None = None
+) -> tuple[Material | None, str | None]:
+    """The one constant, isotropic, lossless medium ``regions`` hold.
+
+    The regions are walked in sorted order; each must hold a
+    `constant_isotropic` lossless material, the same (`same_material`)
+    as ``medium``, or as the first region's when ``medium`` is ``None``.
+
+    Returns:
+        ``(medium, None)`` when every region holds it, else the medium met
+        so far and the first region that does not hold it.
+    """
+    for region in sorted(set(regions)):
+        material = model.materials.get(region)
+        if not (
+            constant_isotropic(material)
+            and lossless(material)
+            and (medium is None or same_material(material, medium))
+        ):
+            return medium, region
+        medium = material
+    return medium, None
+
+
+def region_of(mesh: Mesh, regions: Sequence[str] | None = None) -> np.ndarray:
+    """Per tetrahedron, the name of its volume region, or ``""``.
+
+    Only the regions among ``regions`` are named; ``None`` names every
+    volume region of the mesh.
+    """
     out = np.full(len(mesh.tetrahedra), "", object)
-    for region in regions:
+    for region in mesh.volumes if regions is None else regions:
         if region in mesh.volumes:
             out[mesh.elements(region)] = region
     return out
@@ -167,11 +212,11 @@ def stack_layers(model: Model, background: Background) -> np.ndarray:
     zt = z[tets]
     tol = 1e-9 * float(np.ptp(z))
     active = model._domain.active  # noqa: SLF001
-    region_of = _region_of(mesh, mesh.volumes)
+    names = region_of(mesh)
     for plane in background.interfaces:
         cut = active & (zt.min(axis=1) < plane - tol) & (zt.max(axis=1) > plane + tol)
         if cut.any():
-            regions = ", ".join(repr(r) for r in sorted(set(region_of[cut])))
+            regions = ", ".join(repr(r) for r in sorted(set(names[cut])))
             raise ValueError(
                 f"The background stack plane z = {plane:g} m cuts {int(cut.sum())} "
                 f"tetrahedra of regions {regions}: every element must lie on one "
@@ -185,7 +230,7 @@ def scatterer_elements(model: Model, background: Background) -> np.ndarray:
     """One boolean per tetrahedron of the solve domain: in the scatterer.
 
     An element is background when its region's material is the stack's
-    layer at its height (`stack_layers`, `_same_material`).
+    layer at its height (`stack_layers`, `same_material`).
     """
     mesh = model.mesh
     layers = stack_layers(model, background)
@@ -194,9 +239,7 @@ def scatterer_elements(model: Model, background: Background) -> np.ndarray:
         if region not in mesh.volumes:
             continue
         rows = mesh.elements(region)
-        same = np.array(
-            [_same_material(material, layer) for layer in background.layers]
-        )
+        same = np.array([same_material(material, layer) for layer in background.layers])
         out[rows] = ~same[layers[rows]]
     return out & model._domain.active  # noqa: SLF001
 
@@ -283,7 +326,7 @@ def check_stack(model: Model, background: Background) -> None:
             "the stack has no field: end the mesh on the ground plane, a PEC "
             "wall there, or exclude what lies below."
         )
-    faces = _Faces.of(model)
+    faces = Faces.of(model)
     layer = _elements_of(mesh, layer_regions(model))
     a, b = faces.tets[:, 0], faces.tets[:, 1]
     on_plane = (np.abs(z[faces.nodes] - z_g) <= tol).all(axis=1)
@@ -356,7 +399,7 @@ def check_incident_model(model: Model, sources: Sequence[Incident]) -> None:
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
-class _Faces:
+class Faces:
     """Every face of the solve domain's tetrahedra, once.
 
     Attributes:
@@ -373,7 +416,7 @@ class _Faces:
     surfaces: list[tuple[str, ...]]
 
     @classmethod
-    def of(cls, model: Model) -> _Faces:
+    def of(cls, model: Model) -> Faces:
         mesh = model.mesh
         active = model._domain.active  # noqa: SLF001
         n_nodes = len(mesh.imported_nodes)
@@ -415,7 +458,7 @@ def truncation_designs(model: Model) -> dict[str, str]:
     the face, so the load would depend on a design there.
     """
     mesh = model.mesh
-    faces = _Faces.of(model)
+    faces = Faces.of(model)
     layer = _elements_of(mesh, layer_regions(model))
     a, b = faces.tets[:, 0], faces.tets[:, 1]
     two = b >= 0
@@ -505,11 +548,11 @@ def _checks(model: Model, background: Background) -> list[_Check]:  # noqa: PLR0
     """Every place the incident field must be negligible (see the module docstring)."""
     mesh = model.mesh
     nodes = np.asarray(mesh.nodes, float)
-    faces = _Faces.of(model)
+    faces = Faces.of(model)
     layer = _elements_of(mesh, layer_regions(model))
     scatterers = scatterer_regions(model, background)
-    region_of = _region_of(mesh, scatterers)
-    region_of[~scatterer_elements(model, background)] = ""
+    scatterer_of = region_of(mesh, scatterers)
+    scatterer_of[~scatterer_elements(model, background)] = ""
     stack = stack_layers(model, background) if layered(background) else None
     pml = set(layer_regions(model))
     kinds: dict[str, str] = {}
@@ -523,8 +566,8 @@ def _checks(model: Model, background: Background) -> list[_Check]:  # noqa: PLR0
     two = b >= 0
     in_layer_a = layer[a]
     in_layer_b = np.where(two, layer[np.maximum(b, 0)], False)
-    scat_a = region_of[a] != ""
-    scat_b = np.where(two, region_of[np.maximum(b, 0)] != "", False)
+    scat_a = scatterer_of[a] != ""
+    scat_b = np.where(two, scatterer_of[np.maximum(b, 0)] != "", False)
     out: list[_Check] = []
 
     def add(what: str, remedy: str, rows: np.ndarray, **kw: Any) -> None:
@@ -537,14 +580,14 @@ def _checks(model: Model, background: Background) -> list[_Check]:  # noqa: PLR0
     crossing = two & (in_layer_a != in_layer_b) & (scat_a | scat_b)
     for region in scatterers:
         rows = crossing & (
-            (region_of[a] == region) | (region_of[np.maximum(b, 0)] == region)
+            (scatterer_of[a] == region) | (scatterer_of[np.maximum(b, 0)] == region)
         )
         if rows.any():
             pts = _face_points(nodes, faces.nodes[rows])
             what = f"region {region!r}, layer face {_near(pts)}"
             if stack is not None and region in pml:
                 # a layer region whose material is not the stack's there
-                tets = np.where(region_of[a[rows]] == region, a[rows], b[rows])
+                tets = np.where(scatterer_of[a[rows]] == region, a[rows], b[rows])
                 j = int(stack[tets[0]])
                 what += (
                     f"; its material {model.materials[region]!r} differs from "
@@ -646,9 +689,8 @@ def check_contact(
     if not sources or background is None:
         return
     for source in sources:
-        if isinstance(source, GaussianBeam):
-            for f in frequencies:
-                _beam.check_waist(source, background, f)
+        for f in frequencies:
+            _incident.check_frequency(source, background, f)
     checks = _checks(model, background)
     if not checks:
         return

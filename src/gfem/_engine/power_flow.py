@@ -52,22 +52,26 @@ if TYPE_CHECKING:
     from gfem.model import Model
 
 __all__ = [
+    "TRI_EDGES",
     "Flux",
     "Surface",
     "build",
     "check_field",
     "check_nodes",
     "check_size",
+    "check_support",
     "dofs",
+    "edge_keys",
     "local_coefficients",
     "node_pullback",
     "power_flow",
+    "selection",
     "surface",
     "surface_of",
 ]
 
 #: The three edges of a triangle, by vertex.
-_TRI_EDGES = np.array([[0, 1], [0, 2], [1, 2]])
+TRI_EDGES = np.array([[0, 1], [0, 2], [1, 2]])
 
 
 @dataclasses.dataclass(frozen=True)
@@ -194,7 +198,7 @@ def surface(
         ValueError: The side or the field does not fit, or the surface is
             within one element of a port (see `gfem.power_flow`).
     """
-    return surface_of(field, _selection(model.mesh, side), model)
+    return surface_of(field, selection(model.mesh, side), model)
 
 
 def surface_of(field: Field, selected: np.ndarray, model: Model) -> Surface:
@@ -205,7 +209,7 @@ def surface_of(field: Field, selected: np.ndarray, model: Model) -> Surface:
             is within one element of a port (see `gfem.power_flow`).
     """
     mesh = model.mesh
-    support = _check_support(field, model)
+    support = check_support(field, model)
     inside = selected & support
     outside = support & ~inside
     if not inside.any():
@@ -219,7 +223,7 @@ def surface_of(field: Field, selected: np.ndarray, model: Model) -> Surface:
             "no surface: the side holds the whole solve domain."
         )
     tie = tie_classes(len(mesh.nodes), model._periodic)  # noqa: SLF001
-    tet_edges = _edge_keys(tie, mesh.tetrahedra, np.array(_TET_EDGES))
+    tet_edges = edge_keys(tie, mesh.tetrahedra, np.array(_TET_EDGES))
     closure = np.unique(tet_edges[inside])
     layer = outside & np.isin(tet_edges, closure).any(axis=1)
     rim = inside & np.isin(tet_edges, np.unique(tet_edges[outside])).any(axis=1)
@@ -387,10 +391,10 @@ def check_field(field: Field, model: Model) -> np.ndarray:
         ValueError: The mesh, its nodes or the support differ.
     """
     check_nodes(field, model)
-    return _check_support(field, model)
+    return check_support(field, model)
 
 
-def _check_support(field: Field, model: Model) -> np.ndarray:
+def check_support(field: Field, model: Model) -> np.ndarray:
     """The field's support mask, after checking its topology is the model's.
 
     Raises:
@@ -410,7 +414,7 @@ def _check_support(field: Field, model: Model) -> np.ndarray:
     return support
 
 
-def _selection(
+def selection(
     mesh: Mesh, side: tuple[str, ...] | Callable[[np.ndarray], np.ndarray]
 ) -> np.ndarray:
     """The selected tetrahedra: named volume regions or a centroid predicate.
@@ -442,7 +446,7 @@ def _selection(
     return out
 
 
-def _edge_keys(tie: np.ndarray, cells: np.ndarray, pairs: np.ndarray) -> np.ndarray:
+def edge_keys(tie: np.ndarray, cells: np.ndarray, pairs: np.ndarray) -> np.ndarray:
     """One integer per edge of each cell, the same for the same edge.
 
     Nodes are read as their tie class representatives (`tie_classes`), so
@@ -469,7 +473,7 @@ def _outside_faces(
     tet = np.maximum(nb, 0)
     beside = (nb >= 0) & support[tet]
     owned = beside.any(axis=1) & ~(~beside | inside[tet]).all(axis=1)
-    touching = np.isin(_edge_keys(tie, mesh.triangles, _TRI_EDGES), closure)
+    touching = np.isin(edge_keys(tie, mesh.triangles, TRI_EDGES), closure)
     return owned & touching.any(axis=1)
 
 

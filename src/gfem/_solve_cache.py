@@ -661,11 +661,11 @@ REPLAYED = (
 
 def _incident_function(problem: Any) -> str | None:
     """The first user incident function among the problem's sources, named; or None."""
-    from gfem._sources import IncidentField, _qualified
+    from gfem._sources import IncidentField, qualified
 
     for source in getattr(problem, "sources", ()):
         if isinstance(source, IncidentField):
-            return f"{source.name!r} (function {_qualified(source.function)})"
+            return f"{source.name!r} (function {qualified(source.function)})"
     return None
 
 

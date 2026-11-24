@@ -563,8 +563,10 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
             permittivity law is zero at a driven frequency.
         MeshRefinementUnsupportedError: The estimator or the result has no
             estimate in this version of gfem (``feature`` names what): an
-            adaptive sweep, a periodic model, a driven or eigenmode result on
-            a model with a `gfem.PML`, another result type, a result
+            adaptive sweep, a periodic model, a driven result with sources
+            (``feature`` ``"incident field"`` or ``"point dipole"``), a driven
+            or eigenmode result on a model with a `gfem.PML`, another result
+            type, a result
             solved at order 1, a quantity entry with no verified estimate (an S
             entry read at a lumped port with no resistance, whose row is
             undefined; an S entry or a driven objective beside an impedance or
@@ -724,8 +726,10 @@ def refine_mesh(
             frequency.
         MeshRefinementUnsupportedError: The problem or the estimator has no
             mesh refinement (``feature`` names what): an adaptive sweep, a port
-            mode problem, a periodic model or a Bloch wave vector, a driven or
-            eigenmode problem on a model with a `gfem.PML` (before any solve),
+            mode problem, a periodic model or a Bloch wave vector, a driven
+            problem with sources (``feature`` ``"incident field"`` or
+            ``"point dipole"``), a driven or eigenmode problem on a model with
+            a `gfem.PML` (before any solve),
             ``options.order=1`` (the ``"fast"`` preset), a quantity entry with
             no verified estimate (an S entry read at a lumped port with no
             resistance, whose row is undefined; an S entry or a driven

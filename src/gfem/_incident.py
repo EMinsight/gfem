@@ -27,13 +27,14 @@ from __future__ import annotations
 
 import dataclasses
 import math
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
 import scipy.constants as const
 
 from gfem import _beam
-from gfem._background import Background
+from gfem._background import Background, lossless
 from gfem._materials import Material
 from gfem._sources import (
     GaussianBeam,
@@ -45,13 +46,20 @@ from gfem._sources import (
 from gfem._transfer_matrix import StackWave, incidence_layer, layer_index, number
 
 __all__ = [
+    "INCIDENT_KINDS",
+    "IncidentKind",
     "IncidentPart",
+    "amplitude",
     "background_material",
+    "check_frequency",
     "check_solvable",
+    "field_and_curl",
     "impedance",
     "impedance_at",
     "impedance_of",
     "incidence_material",
+    "intensity",
+    "kind_of",
     "layered",
     "magnetic",
     "values",
@@ -113,41 +121,9 @@ def background_material(background: Background) -> Any:
     return background.layers[0]
 
 
-def _lossless(material: Any) -> bool:
-    return not np.any(material.tan_delta) and not np.any(material.conductivity)
-
-
 def incidence_material(source: PlaneWave, background: Background) -> Material:
     """The layer ``source`` comes from (the incidence layer)."""
     return background.layers[incidence_layer(background, source.theta)]
-
-
-def _check_layered(source: Incident, background: Background) -> None:
-    if isinstance(source, GaussianBeam):
-        _beam.check_background(source, background)  # raises on a stack
-    if not isinstance(source, PlaneWave):
-        return
-    if abs(math.cos(source.theta)) < 1e-12:
-        raise ValueError(
-            f"The PlaneWave {source.name!r} is at grazing incidence (theta = "
-            "pi/2) on a layered background, where it has no incidence layer; "
-            "tilt it off the stack's planes."
-        )
-    if background.ground is not None and math.cos(source.theta) > 0:
-        raise ValueError(
-            f"The PlaneWave {source.name!r} travels up (theta < pi/2), from "
-            f"below the ground plane at z = {background.ground} m, where there "
-            "is no field; give it from above (theta > pi/2)."
-        )
-    j = incidence_layer(background, source.theta)
-    material = background.layers[j]
-    if not _lossless(material):
-        raise NotImplementedError(
-            f"The PlaneWave {source.name!r} comes from layer {j} of the "
-            f"background stack ({material!r}), which is lossy: its wave would be "
-            "inhomogeneous and its intensity undefined. Make the incidence "
-            "layer lossless; the other layers may be lossy."
-        )
 
 
 def check_solvable(source: Incident, background: Background) -> None:
@@ -159,19 +135,37 @@ def check_solvable(source: Incident, background: Background) -> None:
         ValueError: A `gfem.PlaneWave` at grazing incidence on a layered
             background, or from below its ground plane.
     """
-    if layered(background):
-        _check_layered(source, background)
-        return
-    if isinstance(source, GaussianBeam):
-        _beam.check_background(source, background)
-        return
-    material = background_material(background)
-    if isinstance(source, PlaneWave) and not _lossless(material):
-        raise NotImplementedError(
-            f"The PlaneWave {source.name!r} comes from a lossy background "
-            f"({material!r}); a plane wave is solved in a lossless one. Give "
-            "the background without tan_delta or conductivity."
-        )
+    kind_of(source).check(source, background)
+
+
+def check_frequency(source: Incident, background: Background, frequency: float) -> None:
+    """Raise if ``source`` cannot be normalized at ``frequency``.
+
+    Raises:
+        ValueError: A `gfem.GaussianBeam` whose waist is too small there
+            (`gfem._beam.check_waist`).
+    """
+    kind_of(source).check_frequency(source, background, frequency)
+
+
+def intensity(
+    source: Incident, background: Background, frequencies: Sequence[float]
+) -> np.ndarray | None:
+    r"""The intensity of ``source`` per frequency, W/m², or ``None``.
+
+    A plane wave's :math:`|E_0|^2 / 2\eta` in its incidence layer, a
+    beam's at its focus; ``None`` for a field gfem only evaluates (a
+    `gfem.IncidentField`), whose intensity the caller gives.
+    """
+    return kind_of(source).intensity(source, background, frequencies)
+
+
+def amplitude(source: Incident) -> float | None:
+    """The peak field :math:`|E_0|` of a uniform incident wave, V/m, or ``None``.
+
+    ``None`` for a field with no one amplitude (a beam, a function).
+    """
+    return kind_of(source).amplitude(source)
 
 
 def wavenumber(background: Background, frequency: float) -> float:
@@ -207,10 +201,6 @@ def impedance_at(background: Background, points: np.ndarray) -> np.ndarray:
     return per_layer[layer_index(background, np.asarray(points)[:, 2])]
 
 
-def _stack_wave(source: PlaneWave, background: Background, frequency: float) -> Any:
-    return StackWave(background, source, frequency)
-
-
 def values(
     source: Incident,
     background: Background,
@@ -236,21 +226,7 @@ def values(
             computed its value from a JAX tracer.
     """
     points = np.asarray(points, float).reshape(-1, 3)
-    if isinstance(source, PlaneWave) and layered(background):
-        return _stack_wave(source, background, frequency).electric(points)
-    if isinstance(source, PlaneWave):
-        k_hat, _, _ = propagation_basis(source.theta, source.phi)
-        e = source.amplitude * polarization_vector(
-            source.theta, source.phi, source.polarization
-        )
-        k = wavenumber(background, frequency)
-        return np.exp(-1j * k * (points @ k_hat))[:, None] * e[None, :]
-    if isinstance(source, IncidentField):
-        return _function_values(source, points, frequency)
-    if isinstance(source, GaussianBeam):
-        return _beam.values(source, background, points, frequency)
-    check_solvable(source, background)  # raises for what is not solved here
-    raise AssertionError(source)  # pragma: no cover
+    return kind_of(source).electric(source, background, points, frequency)
 
 
 def _function_values(
@@ -278,18 +254,36 @@ def magnetic(
     points: np.ndarray,
     frequency: float,
 ) -> np.ndarray:
-    r"""The incident magnetic field at ``points``, A/m, from the electric one.
+    r"""The incident magnetic field at ``points``, A/m.
 
-    :math:`H = \nabla\times E / (-i\omega\mu)` under :math:`e^{+i\omega t}`,
-    the curl taken by central differences of `values` with step
-    :math:`10^{-4}/k`.
+    In closed form where the kind has one (a plane wave in a stack), else
+    from the electric field: :math:`H = \nabla\times E / (-i\omega\mu)`
+    under :math:`e^{+i\omega t}`, the curl taken by central differences of
+    `values` with step :math:`10^{-4}/k`.
 
     Returns:
         ``(n, 3)`` complex peak phasors.
     """
     points = np.asarray(points, float).reshape(-1, 3)
-    if isinstance(source, PlaneWave) and layered(background):
-        return _stack_wave(source, background, frequency).magnetic(points)
+    return kind_of(source).magnetic(source, background, points, frequency)
+
+
+def field_and_curl(
+    source: Incident, material: Material, points: np.ndarray, frequency: float
+) -> tuple[np.ndarray, np.ndarray]:
+    r"""``source``'s :math:`E` and :math:`\nabla\times E` in ``material``, NumPy.
+
+    A `gfem.GaussianBeam` in closed form; another field's curl from its
+    magnetic field (`magnetic`).
+    """
+    points = np.asarray(points, float).reshape(-1, 3)
+    return kind_of(source).field_and_curl(source, material, points, frequency)
+
+
+def _differenced(
+    source: Incident, background: Background, points: np.ndarray, frequency: float
+) -> np.ndarray:
+    """`magnetic` by central differences of `values`."""
     n_max = max(math.sqrt(number(m.eps_r) * number(m.mu_r)) for m in background.layers)
     k = 2 * math.pi * frequency / const.c * n_max
     step = _STEP / k
@@ -307,3 +301,198 @@ def magnetic(
     mu_r = mu_r[layer_index(background, points[:, 2])]
     omega = 2 * math.pi * frequency
     return curl / (-1j * omega * const.mu_0 * mu_r[:, None])
+
+
+# --- the kinds of incident field ----------------------------------------------------
+
+
+class IncidentKind:
+    """What gfem reads of one kind of incident field (`INCIDENT_KINDS`).
+
+    The defaults are a field gfem only evaluates: solvable in any
+    background, with no closed-form magnetic field, intensity or amplitude.
+    """
+
+    def check(self, source: Any, background: Background) -> None:
+        """Raise if this version cannot solve ``source`` in ``background``."""
+
+    def check_frequency(
+        self, source: Any, background: Background, frequency: float
+    ) -> None:
+        """Raise if ``source`` cannot be normalized at ``frequency``."""
+
+    def electric(
+        self, source: Any, background: Background, points: np.ndarray, frequency: float
+    ) -> np.ndarray:
+        """The electric field at ``(n, 3)`` points, V/m."""
+        raise NotImplementedError
+
+    def magnetic(
+        self, source: Any, background: Background, points: np.ndarray, frequency: float
+    ) -> np.ndarray:
+        """The magnetic field at ``(n, 3)`` points, A/m."""
+        return _differenced(source, background, points, frequency)
+
+    def field_and_curl(
+        self, source: Any, material: Material, points: np.ndarray, frequency: float
+    ) -> tuple[np.ndarray, np.ndarray]:
+        r""":math:`E` and :math:`\nabla\times E` in ``material``."""
+        background = Background(material)
+        e = self.electric(source, background, points, frequency)
+        h = self.magnetic(source, background, points, frequency)
+        mu = const.mu_0 * float(np.real(complex(np.asarray(material.mu_r))))
+        return e, -1j * 2 * math.pi * frequency * mu * h
+
+    def intensity(
+        self, source: Any, background: Background, frequencies: Sequence[float]
+    ) -> np.ndarray | None:
+        """The intensity per frequency, W/m², or ``None`` if gfem cannot tell."""
+
+    def amplitude(self, source: Any) -> float | None:
+        """The peak field of a uniform wave, V/m, or ``None``."""
+
+
+class _PlaneWaveKind(IncidentKind):
+    def check(self, source: PlaneWave, background: Background) -> None:
+        if not layered(background):
+            material = background.layers[0]
+            if not lossless(material):
+                raise NotImplementedError(
+                    f"The PlaneWave {source.name!r} comes from a lossy background "
+                    f"({material!r}); a plane wave is solved in a lossless one. "
+                    "Give the background without tan_delta or conductivity."
+                )
+            return
+        if abs(math.cos(source.theta)) < 1e-12:
+            raise ValueError(
+                f"The PlaneWave {source.name!r} is at grazing incidence (theta = "
+                "pi/2) on a layered background, where it has no incidence layer; "
+                "tilt it off the stack's planes."
+            )
+        if background.ground is not None and math.cos(source.theta) > 0:
+            raise ValueError(
+                f"The PlaneWave {source.name!r} travels up (theta < pi/2), from "
+                f"below the ground plane at z = {background.ground} m, where there "
+                "is no field; give it from above (theta > pi/2)."
+            )
+        j = incidence_layer(background, source.theta)
+        material = background.layers[j]
+        if not lossless(material):
+            raise NotImplementedError(
+                f"The PlaneWave {source.name!r} comes from layer {j} of the "
+                f"background stack ({material!r}), which is lossy: its wave would "
+                "be inhomogeneous and its intensity undefined. Make the incidence "
+                "layer lossless; the other layers may be lossy."
+            )
+
+    def electric(
+        self,
+        source: PlaneWave,
+        background: Background,
+        points: np.ndarray,
+        frequency: float,
+    ) -> np.ndarray:
+        if layered(background):
+            return StackWave(background, source, frequency).electric(points)
+        k_hat, _, _ = propagation_basis(source.theta, source.phi)
+        e = source.amplitude * polarization_vector(
+            source.theta, source.phi, source.polarization
+        )
+        k = wavenumber(background, frequency)
+        return np.exp(-1j * k * (points @ k_hat))[:, None] * e[None, :]
+
+    def magnetic(
+        self,
+        source: PlaneWave,
+        background: Background,
+        points: np.ndarray,
+        frequency: float,
+    ) -> np.ndarray:
+        if layered(background):
+            return StackWave(background, source, frequency).magnetic(points)
+        return super().magnetic(source, background, points, frequency)
+
+    def intensity(
+        self,
+        source: PlaneWave,
+        background: Background,
+        frequencies: Sequence[float],
+    ) -> np.ndarray:
+        eta = impedance_of(incidence_material(source, background))
+        return np.full(len(frequencies), abs(source.amplitude) ** 2 / (2 * eta))
+
+    def amplitude(self, source: PlaneWave) -> float:
+        return abs(source.amplitude)
+
+
+class _BeamKind(IncidentKind):
+    def check(self, source: GaussianBeam, background: Background) -> None:
+        _beam.check_background(source, background)
+
+    def check_frequency(
+        self, source: GaussianBeam, background: Background, frequency: float
+    ) -> None:
+        _beam.check_waist(source, background, frequency)
+
+    def electric(
+        self,
+        source: GaussianBeam,
+        background: Background,
+        points: np.ndarray,
+        frequency: float,
+    ) -> np.ndarray:
+        return _beam.values(source, background, points, frequency)
+
+    def field_and_curl(
+        self,
+        source: GaussianBeam,
+        material: Material,
+        points: np.ndarray,
+        frequency: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return _beam.field_and_curl(source, Background(material), points, frequency)
+
+    def intensity(
+        self,
+        source: GaussianBeam,
+        background: Background,
+        frequencies: Sequence[float],
+    ) -> np.ndarray:
+        eta = _beam.impedance(source, background)
+        return np.array(
+            [
+                _beam.focal_field(source, background, f) ** 2 / (2 * eta)
+                for f in frequencies
+            ]
+        )
+
+
+class _FunctionKind(IncidentKind):
+    def electric(
+        self,
+        source: IncidentField,
+        background: Background,  # noqa: ARG002 - the function holds its medium
+        points: np.ndarray,
+        frequency: float,
+    ) -> np.ndarray:
+        return _function_values(source, points, frequency)
+
+
+#: Per kind of incident field (its class), what gfem reads of it.
+INCIDENT_KINDS: tuple[tuple[type, IncidentKind], ...] = (
+    (PlaneWave, _PlaneWaveKind()),
+    (GaussianBeam, _BeamKind()),
+    (IncidentField, _FunctionKind()),
+)
+
+
+def kind_of(source: Incident) -> IncidentKind:
+    """The reads of ``source``'s kind.
+
+    Raises:
+        TypeError: ``source`` is no incident field.
+    """
+    for cls, kind in INCIDENT_KINDS:
+        if isinstance(source, cls):
+            return kind
+    raise TypeError(f"{type(source).__name__} is not an incident field.")
