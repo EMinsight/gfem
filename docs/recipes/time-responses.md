@@ -96,10 +96,12 @@ by hand 19.86 ohm and 62.79 ohm
 
   `n_time=` only interpolates between samples; the default already gives
   $\Delta t \le 1/(20 f_\mathrm{max})$.
-- **First frequency.** Lumped ports with the default direct solver can start
-  at $\Delta f$, however low. Wave ports, and solves without the tree-cotree
-  gauge, lose digits below the mesh's low-frequency floor: choose $\Delta f$
-  at or above the floor {py:obj}`gfem.LowFrequencyWarning` names.
+- **First frequency.** Lumped ports solved through the tree-cotree gauge
+  (`SolverOptions.gauge`, on by default for a direct solve on one CPU
+  process) can start at $\Delta f$, however low. Wave ports, and solves
+  without the gauge, lose digits below the mesh's low-frequency floor:
+  choose $\Delta f$ at or above the floor {py:obj}`gfem.LowFrequencyWarning`
+  names.
 - **Long lines.** An adaptive sweep of a line $W$ phase wraps long at
   $f_\mathrm{max}$ needs about $W + 10$ samples. Above 10 wraps, raise
   `gfem.SolverOptions(adaptive_max_samples=...)` from its default of 20, or
