@@ -25,7 +25,9 @@ the user's own process.
 
 Change a returned material with `dataclasses.replace` (a region name, a
 conductivity, thermal properties, another electro-optic tensor); every check
-of `gfem.Material` still runs.
+of `gfem.Material` still runs. For a material or a specimen not here, fit
+its measured table with `gfem.fit_permittivity`. Cite the source paper of
+each material you publish results with.
 
 Example:
     A nitride guide in oxide with a gold heater, and an x-cut lithium
