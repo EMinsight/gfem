@@ -215,9 +215,9 @@ def gmres_on(factor: Preconditioner, rtol: float) -> Solve:
     (a homogeneously filled guide, :math:`x' = 0`) it is rounding, and that
     component would keep the singular system from converging. When GMRES does
     not converge, or the residual (`residual`) exceeds 100 times ``rtol``, a
-    direct LU of
-    :math:`A_0 - \lambda B_0` replaces it (the matrix is singular in
-    exact arithmetic only along :math:`x`, which the projection removes).
+    direct LU of :math:`A_0 - \lambda B_0` replaces it (the matrix is
+    singular in exact arithmetic only along :math:`x`, which the projection
+    removes).
     Never raises: a factorization that fails keeps the GMRES result.
 
     Args:
