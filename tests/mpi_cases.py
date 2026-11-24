@@ -103,6 +103,9 @@ def refused(key: str, directory: Path):  # noqa: PLR0911, PLR0912
         case "bloch":  # a Bloch driven solve runs distributed
             problem = gfem.Eigenmode(target=FREQUENCY, n_modes=1, wave_vector=pc.C1_K)
             return _cell(directory), problem, direct
+        case "eigenmode_wave_port":
+            model = _line(directory).replace(ports=[gfem.WavePort("w", "port1")])
+            return model, gfem.Eigenmode(target=FREQUENCY, n_modes=1), direct
         case "floquet_port":
             model = pc.f1(pc.f1_mesh(directory))
             return model, gfem.Driven(pc.F1_FREQUENCY), direct
@@ -138,6 +141,7 @@ KEYS = (
     "dc_conduction",
     "periodic",
     "bloch",
+    "eigenmode_wave_port",
     "floquet_port",
     "frequency_workers",
     "device",

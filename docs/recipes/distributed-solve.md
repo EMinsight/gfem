@@ -64,7 +64,8 @@ A {term}`distributed solve` runs these, with their gradients:
 - a `gfem.Driven` uniform sweep, with lumped ports with a resistance, and wave
   ports, several on one surface included;
 - a `gfem.Electrostatic` solve: capacitance, potentials and region energies;
-- a `gfem.Eigenmode` solve, nonlinear and dispersive ones included:
+- a `gfem.Eigenmode` solve without wave ports, nonlinear and dispersive
+  ones included:
   frequencies, Q, mode fields, participations and
   `gfem.interface_participation`. Frequency and Q differentiate; a gradient
   through a mode's field raises;
@@ -211,6 +212,8 @@ How gfem itself is checked across ranks: {doc}`../verification`.
 - Periodic pairs on one axis only: two or three pairs, and a Bloch eigenmode
   solve, raise `gfem.DistributedUnsupportedError`. Solve them on one process
   or as rank copies.
+- An eigenmode solve with a wave port raises
+  `gfem.DistributedUnsupportedError` across ranks: solve it on one process.
 - A lumped port terminated by an inductance or a capacitance,
   `gfem.characteristic_impedance`, `linear_solver="petsc"` on an
   electrostatic, eigenmode or periodic solve, and a periodic eigenmode solve

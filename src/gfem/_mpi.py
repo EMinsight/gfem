@@ -147,6 +147,12 @@ _REFUSALS = {
     ),
     "floquet_port": f"A Floquet port has no distributed path: {_RUN_COPIES}.",
     "bloch": f"A Bloch eigenmode solve has no distributed path: {_RUN_COPIES}.",
+    "eigenmode_wave_port": (
+        "An eigenmode solve with a wave port has no distributed path: each step "
+        "of its nonlinear iteration evaluates the port at a complex frequency. "
+        "Find the resonances from a gfem.Driven sweep, which runs wave ports "
+        f"across ranks, {_COPIES}."
+    ),
     "frequency_workers": (
         "Frequency workers have no distributed path: use frequency_workers=1, "
         f"one solve per communicator from comm.Split, {_COPIES}."
@@ -376,10 +382,18 @@ def _refuse_eigenmode(model: Any, problem: Any, options: Any) -> None:
 
     Bloch before periodic, since a wave vector needs a pair.
     """
+    from gfem._boundaries import first_wave_port
+
     if problem.wave_vector is not None:
         refuse_feature("bloch")
     if len(model._periodic) > 1:  # noqa: SLF001
         refuse_feature("periodic")
+    wave = first_wave_port(model.ports)
+    if wave is not None:
+        message = _REFUSALS["eigenmode_wave_port"]
+        raise DistributedUnsupportedError(
+            "eigenmode_wave_port", f"WavePort {wave.name!r}: {message}"
+        )
     if options.eigen_solver == "arpack":
         refuse_feature("arpack")
 

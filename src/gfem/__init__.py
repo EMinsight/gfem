@@ -23,6 +23,7 @@ from gfem._materials import (  # noqa: E402
 )
 from gfem.electro_optic import ElectroOpticShift, electro_optic_shift  # noqa: E402
 from gfem.errors import (  # noqa: E402
+    AntiBoundRootWarning,
     DegenerateModeError,
     DeviceMemoryWarning,
     DeviceUnavailableError,
@@ -145,6 +146,7 @@ __all__ = [
     "PMC",
     "PML",
     "Absorbing",
+    "AntiBoundRootWarning",
     "Conductor",
     "Convection",
     "DCConduction",

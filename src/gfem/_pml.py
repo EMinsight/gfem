@@ -506,6 +506,22 @@ def _faces_layer(mesh: Mesh, surface: str, elements: np.ndarray) -> bool:
     return bool(np.isin(n, elements).any())
 
 
+def wave_ports_in_layer(model: Any) -> list[WavePort]:
+    """The wave ports with a face on a layer tetrahedron, in model order.
+
+    Their port section is stretched by the layer.
+    """
+    layers = model._layers  # noqa: SLF001
+    if layers is None:
+        return []
+    return [
+        p
+        for p in model.ports
+        if isinstance(p, WavePort)
+        and _faces_layer(model.mesh, p.surface, layers.elements)
+    ]
+
+
 def _normal(mesh: Mesh, surface: str) -> np.ndarray:
     """The unit normal of a planar surface (its least-variance direction)."""
     x = mesh.imported_nodes[np.unique(mesh.triangles[mesh.elements(surface)])]

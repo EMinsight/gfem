@@ -8,6 +8,14 @@ form at ``ω = k c / scale``. `projector` builds the divergence-free
 projection (`DivFreeProjector`) and `element_energy` the electric energy of
 a mode per element.
 
+A wave port surface (`EigenPort`) adds its Robin term as a nonpolynomial
+piece, ``θ = γ₀(k)``, and its modal correction as a low-rank term
+(`gfem._eigen.operator.LowRank`), both from its port mode sweep's reduced
+model at the complex wavenumber (`gfem._engine.port_term`). Near a requested
+port mode's cutoff the seed freezes both at their value alone: there the
+slope of ``γ₀`` is large, and a first-order freeze puts a cluster of rough
+seeds in front of the modes.
+
 Under a Bloch wave vector the operator is ``"general"`` (the driven
 operator's `DrivenOperator.symmetry`): every map is assembled, because a
 matrix-free form's transpose silently applies the form itself on a
@@ -17,8 +25,9 @@ phases.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any
+import dataclasses
+from collections.abc import Callable, Sequence
+from typing import Any, Literal
 
 import ngsolve as ngs
 import numpy as np
@@ -26,7 +35,13 @@ import scipy.constants as const
 import scipy.sparse as sp
 
 from gfem import _linalg, _timing
-from gfem._eigen.operator import EigenOperator, LinearMap, NonPolynomial, split
+from gfem._eigen.operator import (
+    EigenOperator,
+    LinearMap,
+    LowRank,
+    NonPolynomial,
+    split,
+)
 from gfem._eigen.seed import MIN_SUBSPACE
 from gfem._engine import dispersion, quadrature, terms
 from gfem._engine.cache import discretization
@@ -43,6 +58,7 @@ from gfem._engine.domain import (
     space_key,
 )
 from gfem._engine.driven import DrivenOperator, real_space
+from gfem._engine.port_term import PortTerm, port_terms
 from gfem._engine.stretch import pml_tensor
 from gfem._linalg import Handle, Operator, ResolvedLinearSolver, Symmetry
 from gfem._linalg.base import free_mask, host_bytes
@@ -55,8 +71,10 @@ from gfem.model import Model
 
 __all__ = [
     "DivFreeProjector",
+    "EigenPort",
     "assemble",
     "eigen_operator",
+    "eigen_ports",
     "element_energy",
     "energy_parts",
     "law_scale",
@@ -70,6 +88,82 @@ __all__ = [
 
 #: Relative weight of the mass term that makes the H1 form definite.
 _REGULARIZATION = 1e-10
+#: The seed freezes a wave port surface's terms at their value alone when
+#: ``εμ sigma^2 < _NEAR_CUTOFF k_c^2`` for one of its requested modes. Near
+#: cutoff the first-order freeze's slope ``γ₀' = i εμ k / sqrt(εμ k^2 -
+#: k_c^2)`` is large and puts a cluster of spurious seeds above the target.
+#: Refinement steps, value alone against first order, at order 3 with the
+#: ratio ``εμ sigma^2 / k_c^2`` (WR-90 TE10 ports; a shared TE10 + TE20
+#: surface for 1.172 and 1.343; two ports for 2.312), an observation:
+#: 1.044: 85 against 489 (a root at 0.977 of cutoff) and 88 against 394;
+#: 1.107: 28 against 47; 1.140: 28 against 17; 1.172: 21 against 12;
+#: 1.206: 32 against 29; 1.239: 35 against 30; 1.343: 15 against 14;
+#: 2.312: 23 against 8; 3.167: 39 against 16. The value alone pays below
+#: 1.11 and first order from 1.14 on; the threshold sits between them.
+_NEAR_CUTOFF = 1.125
+
+
+@dataclasses.dataclass(frozen=True)
+class EigenPort:
+    """A wave port surface in an eigenmode operator.
+
+    Attributes:
+        term: Its Robin scalar and modal correction at complex wavenumbers.
+        piece: Its Robin term, a nonpolynomial driven piece of ``kind``
+            ``"port"`` (`PortTerm.robin_piece`).
+    """
+
+    term: PortTerm
+    piece: terms.Piece
+
+    def seed_order(self, sigma: complex) -> Literal[0, 1]:
+        r"""How the seed freezes this surface's terms at ``sigma``.
+
+        0 near a requested mode's cutoff (`_NEAR_CUTOFF`), else 1. With
+        :math:`\beta^2 = -\gamma^2` and :math:`\beta\beta' = -\gamma\gamma'`
+        at :math:`\sigma`, a homogeneous section has :math:`\varepsilon\mu
+        \sigma^2 = \sigma\beta\beta'` and :math:`k_c^2 = \sigma\beta\beta' -
+        \beta^2`, so the test reads the sweep alone, for any section.
+        """
+        value = self.term.at(sigma)
+        for gamma, slope in zip(value.gamma, value.d_gamma, strict=True):
+            beta2 = (-gamma * gamma).real
+            sloped = (-sigma * gamma * slope).real
+            if sloped < _NEAR_CUTOFF * (sloped - beta2):
+                return 0
+        return 1
+
+
+def eigen_ports(
+    model: Model,
+    op: DrivenOperator,
+    *,
+    target: float,
+    tolerance: float,
+    stretch: Stretch | None = None,
+) -> tuple[EigenPort, ...]:
+    """Each wave port surface of ``model`` for the eigen operator of ``op``.
+
+    Runs each surface's port mode sweep over its band around ``target``
+    (Hz) at ``SolverOptions.port_mode_tolerance`` ``tolerance``
+    (`gfem._engine.port_term.port_terms`). Empty without wave ports.
+
+    Raises:
+        PortModeError: A requested port mode does not propagate at the
+            target.
+    """
+    found = port_terms(
+        model,
+        op.built,
+        op.space,
+        order=op.order,
+        target=target,
+        tolerance=tolerance,
+        stretch=stretch,
+    )
+    return tuple(
+        EigenPort(term, term.robin_piece(model, op.built, op.order)) for term in found
+    )
 
 
 def eigen_operator(
@@ -79,10 +173,13 @@ def eigen_operator(
     linear: ResolvedLinearSolver,
     tolerance: float,
     numbers: np.ndarray | None = None,
+    ports: Sequence[EigenPort] = (),
 ) -> EigenOperator:
     """The eigen operator ``T(k)`` of the driven operator, shifted at ``sigma``.
 
-    Nothing is factorized until the handle is first used. ``linear`` at
+    With the Robin pieces and modal corrections of the wave port surfaces
+    ``ports`` (`eigen_ports`). Nothing is factorized until the handle is
+    first used. ``linear`` at
     ``tolerance`` is the linear solver of every shift (`gfem._linalg`), of
     the driven operator's symmetry. A ``"general"`` operator's damping and
     nonpolynomial maps are assembled, so their transposes are exact.
@@ -93,7 +190,10 @@ def eigen_operator(
     (`gfem._engine.fields.one_process_dofs`).
     """
     space, scale = op.space, op.built.scale
-    classes = split(op.pieces, scale, sigma)
+    robin = [p.piece for p in ports]
+    pieces = [*op.pieces, *robin]
+    seed_orders = {p.piece.name: p.seed_order(sigma) for p in ports}
+    classes = split(pieces, scale, sigma)
     powers = classes.powers
     # the constant θ of polynomial law pieces (lossless Drude), out of the
     # curl energy of the longitudinal-mode test
@@ -114,8 +214,9 @@ def eigen_operator(
         return _Map(matrix, layout)
 
     def operator(k: complex) -> Operator:
+        # the driven operator's form with the Robin pieces of the ports
         return Operator(
-            op.form(k * const.c / scale), space.FreeDofs(), layout=op.layout
+            op.form(k * const.c / scale, robin), space.FreeDofs(), layout=op.layout
         )
 
     def prepare_shift(t: Operator, solves: int = MIN_SUBSPACE) -> Handle:
@@ -160,8 +261,18 @@ def eigen_operator(
                     )
                 ),
                 scale,
+                seed_order=seed_orders.get(piece.name, 1),
             )
             for piece in classes.nonpolynomial
+        ),
+        low_rank=tuple(
+            LowRank(
+                p.piece.name,
+                p.term,
+                free,
+                seed_order=seed_orders[p.piece.name],
+            )
+            for p in ports
         ),
         symmetry=symmetry,
         law_constant=(

@@ -259,6 +259,8 @@ USER_TERMS = (
     "Electrode clearance",
     "Log display",
     "Progress row",
+    "Coupling Q",
+    "Outgoing branch",
 )
 
 

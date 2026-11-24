@@ -229,6 +229,51 @@ its resistor draws out of the mode. The device is symmetric, so both ports
 couple equally. Nothing else is lossy here, so the total Q is the two in
 parallel, half of each, which the last two lines compare.
 
+## A resonator loaded by a guide
+
+Take the same lossless ceramic line, and let a guide carry power away from
+one end instead of a resistor: the air line continues past `port1` without
+reflection, and the far end stays open. Where are the resonances near
+4.4 GHz, and what Q does the guide alone give them?
+
+```python
+guide = [gfem.WavePort("p1", "port1")]
+loaded = gfem.Model(mesh, materials=ceramic, boundaries=plates, ports=guide)
+
+modes = gfem.solve(loaded, gfem.Eigenmode(target=4.4e9, n_modes=2))
+print(modes.frequency / 1e9)  # GHz
+print(modes.q)
+print(modes.q_port["p1"])  # the guide's coupling Q
+```
+
+```text
+[4.4386642  6.40626756]
+[10.05955574 17.40900762]
+[10.04712206 17.40182595]
+```
+
+- The {term}`wave port` absorbs the guide's mode. A decaying resonance has a
+  complex frequency, so the port evaluates its mode there, on the
+  {term}`outgoing branch`: the wave that leaves the line. A resonance of a
+  structure open to a guide is a {term}`quasi-normal mode`.
+- `modes.q_port["p1"]` is the guide's {term}`coupling Q`,
+  $\mathrm{Re}\,\omega\, E / P$, with $E$ the mode's electric energy and $P$
+  the power the port's mode carries out. It sits in the same dict as a
+  resistive lumped port's.
+- Nothing else is lossy, so `q` and `q_port` agree to terms of order $1/Q$:
+  `q` divides $|\omega|$ by $2\,\mathrm{Im}\,\omega$, while the coupling Q is
+  a ratio of energy to power.
+- The port's mode must propagate at `target`. Below its cutoff (a hollow
+  guide has one; this line's plane wave does not) the solve raises
+  `gfem.PortModeError`.
+- By hand: with the air line's impedance $Z_0$, the resonances are the
+  complex roots of $Z_\mathrm{in}(f) + Z_0 = 0$ at the port, where
+  $Z_\mathrm{in}$ looks into 10 mm of air, 20 mm of ceramic and 10 mm of air
+  ending open. The roots, $4.43867 + 0.22089i$ and $6.40627 + 0.18407i$ GHz,
+  are within 10 kHz of the printed frequencies, and their Q and the
+  transmission line's energy-to-power ratio match `q` and `q_port` to the
+  third decimal.
+
 ## Capacitance
 
 What is the capacitance between the plates? An electrostatic problem takes
@@ -359,6 +404,11 @@ True
 - For a resonance, solve again with another `target` nearby and a larger
   `n_modes`: a mode that belongs to the device comes back at the same
   frequency.
+- For a resonance through a wave port, compare with a
+  {term}`driven problem` sweep through the same port: the eigenfrequency is
+  a pole of the reflection. On this lossless line $|S_{11}| = 1$, and the
+  phase of $S_{11}$ turns by $2\pi$ across a band of about $\mathrm{Re}\,f/Q$
+  around $\mathrm{Re}\,f$.
 
 ## Limits
 
@@ -375,8 +425,17 @@ True
   it refuses.
 - An eigenmode solve returns the `n_modes` modes nearest `target`, not every
   mode of a band: ask for more modes than you expect and check that the
-  farthest one lies outside the band. A model with a wave port has no
-  eigenmode solve; it raises.
+  farthest one lies outside the band.
+- A wave port in an eigenmode solve needs a `target` above the cutoff of
+  every requested port mode, else `gfem.PortModeError`. A root of the
+  outgoing branch below a cutoff that does not decay is not a resonance: it
+  is dropped with `gfem.AntiBoundRootWarning`. Such a solve runs in one
+  process only (`gfem.DistributedUnsupportedError` across ranks), and
+  refuses a `wave_vector`, a port face crossing a perfectly matched layer
+  and quantity estimates. A port mode that no wave port requests is partly
+  reflected, and can come back as a spurious mode with a finite Q: request
+  it on the port surface. For a strongly radiating structure (Q below about
+  5), find the resonance from a driven sweep.
 - Where a lossy region holds about 10 or more modes within one linewidth of
   the target, "nearest" is ill-defined. The eigen solver's first pass then
   stops after 100 restarts and raises `gfem.EigenmodeConvergenceError`
@@ -386,6 +445,8 @@ True
 ## Next
 
 - {doc}`frequency-sweep`: hundreds of frequencies from a few solves.
+- {doc}`../modes-and-ports`: a port mode against a resonant mode, and what a
+  port does in each problem.
 - {doc}`measurements`: field values at points, the power through a surface,
   surface-loss Q.
 - {doc}`prepare-a-mesh`: build the mesh of your own device in gmsh.

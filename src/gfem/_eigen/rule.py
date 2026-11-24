@@ -13,8 +13,11 @@ subspace, after refinement reshifted, first refactorizes at the target)
 `SolverOptions.eigen_solver`, on the shared `gfem._eigen.seed` operator,
 with the divergence-free projection), the Rayleigh functional and the
 residual inverse iteration that refines every seed on the true ``T(k)``
-(`gfem._eigen.refine`). A `WavePort` raises: its propagation constant would
-have to be solved at the complex eigenfrequency. Everything that touches
+(`gfem._eigen.refine`). A `WavePort` adds its surface's Robin term and
+modal correction, evaluated at the complex wavenumber from its port mode
+sweep around the target (`gfem._engine.eigen.eigen_ports`); a root below a
+requested port mode's cutoff that does not decay is dropped with
+`AntiBoundRootWarning`. Everything that touches
 NGSolve (the assembly of ``T(k)``, the divergence-free projection, the
 energy per element) is in `gfem._engine.eigen`.
 
@@ -90,7 +93,6 @@ from gfem._boundaries import (
     Impedance,
     LumpedPort,
     WavePort,
-    wave_port_surfaces,
 )
 from gfem._eigen import arpack, slepc
 from gfem._eigen.adjoint import deflated_solve, reshift_offset
@@ -114,6 +116,7 @@ from gfem._engine.driven import (
     LOW_FREQUENCY_FLOOR,
     DrivenOperator,
     LowFrequencyFloor,
+    PortDesign,
     driven_operator,
     lumped_terms,
     operator_terms,
@@ -121,7 +124,9 @@ from gfem._engine.driven import (
 )
 from gfem._engine.eigen import (
     DivFreeProjector,
+    EigenPort,
     eigen_operator,
+    eigen_ports,
     element_energy,
     law_scale,
     layer_energy,
@@ -137,13 +142,14 @@ from gfem._linalg import Kind, ResolvedLinearSolver
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
 from gfem._materials import Material, PermittivityLaw
 from gfem._periodic import check_bloch, check_wave_vector, pair_names
-from gfem._pml import Stretch, physical_regions
+from gfem._pml import Stretch, physical_regions, wave_ports_in_layer
 from gfem._pml import reference_frequency as layer_reference_frequency
 from gfem._pml import stretch as layer_stretch
 from gfem._sign import largest_entry, largest_value
 from gfem._text import hertz
 from gfem.conventions import MODE_ENERGY
 from gfem.errors import (
+    AntiBoundRootWarning,
     DegenerateModeError,
     EigenmodeConvergenceError,
     LayerClearanceWarning,
@@ -327,10 +333,18 @@ class EigenmodeRule:
         elif options.eigen_solver == "slepc":
             _petsc.require_slepc("eigen_solver")
         _check_supported(model)
+        _check_wave_ports(model, problem)
         lumped = [p for p in model.ports if isinstance(p, LumpedPort)]
         #: Ports with a resistance (coupling Q) and with an inductance
         #: (participation), in model order.
         self.resistive = tuple(p.name for p in lumped if p.rlc[0] is not None)
+        #: The ports with a coupling Q (``q_port``), in model order: the
+        #: resistive lumped ports and the wave ports.
+        self.coupled = tuple(
+            p.name
+            for p in model.ports
+            if isinstance(p, WavePort) or p.name in self.resistive
+        )
         self.inductive = tuple(p.name for p in lumped if p.rlc[1] is not None)
         #: The surfaces of the `Impedance` sheets with an inductance (sheet
         #: participation), in model order.
@@ -361,6 +375,8 @@ class EigenmodeRule:
         self._excluded = model._domain.excluded  # noqa: SLF001
         #: Why the node coordinates cannot be differentiated, or None.
         self.nodes_unsupported = terms.absorbing_shape_unsupported(model)
+        #: What the wave ports' modes read, which the design must stay off.
+        self.port_design = PortDesign.of(model)
         #: The last backward's explicit terms in the lumped ports' values.
         self._explicit: dict[tuple, float] = {}
         #: Whether a region holds a permittivity law: only then can a
@@ -388,7 +404,7 @@ class EigenmodeRule:
 
         Returns:
             ``{"omega": (n,) complex rad/s, "error": (n,), "q_port":
-            (n_resistive, n), "participation": (n_inductive, n), "bulk":
+            (n_coupled, n), "participation": (n_inductive, n), "bulk":
             (n_regions, n), "principal": (n_anisotropic, n, 3), "sheet":
             (n_kinetic, n), "e_field": (ndof, n) complex, "cluster": (n,)
             int}``, modes nearest the
@@ -422,7 +438,7 @@ class EigenmodeRule:
                 )
                 built = op.built
                 sigma = terms.wavenumber(2 * math.pi * self.problem.target, built.scale)
-                eop = self.operator(op, sigma)
+                eop, ports = self._shifted(model, op, sigma, stretch)
                 span.set(ndof=owned_dofs(op))
             divfree = None
             entry = None
@@ -434,7 +450,7 @@ class EigenmodeRule:
                     _timing.phase("solve", iterations=()),
                     _mpi.raised_together(EigenmodeConvergenceError),
                 ):
-                    found = self._search_on(model, op).find(
+                    found = self._search_on(model, op, ports).find(
                         eop,
                         divfree,
                         sigma,
@@ -449,9 +465,9 @@ class EigenmodeRule:
                         dispersion.check_band(model, f, f"mode {j} at")
                         # the mode energy's weight
                         dispersion.check_energy(model, f, f"mode {j} at")
-                outputs, x = self._postprocess(model, op, divfree, modes)
+                outputs, x = self._outputs(model, op, divfree, modes, ports)
                 ks = [m.k for m in modes]
-                self._warn_gain(ks, built.scale)
+                self._warn_modes(found, built.scale)
                 lowest = min(k.real for k in ks) * const.c / built.scale
                 _check_low_frequency(
                     model,
@@ -483,7 +499,7 @@ class EigenmodeRule:
                     # left: the entry's holder owns it from here
                     store = None if op.fixed is None else op.fixed.store
                     entry = self._entry(
-                        KeptOperator(eop, store),
+                        KeptOperator(eop, store, ports),
                         ks,
                         x,
                         y,
@@ -623,14 +639,20 @@ class EigenmodeRule:
             stretch.warn_thin()
         return stretch
 
-    def _search_on(self, model: Model, op: DrivenOperator) -> ModeSearch:
+    def _search_on(
+        self, model: Model, op: DrivenOperator, ports: Sequence[EigenPort] = ()
+    ) -> ModeSearch:
         """`search` on ``op``: it drops the modes of a perfectly matched layer.
 
         By their layer and total energies (`layer_energy` of ``op``, summed
-        across the ranks: `ModeSearch.layer_energy`). Without a layer,
-        `search` as it is.
+        across the ranks: `ModeSearch.layer_energy`). With wave port
+        surfaces ``ports`` it drops the roots below a requested port mode's
+        cutoff that do not decay (`ModeSearch.below_cutoff`). Without a
+        layer or ports, `search` as it is.
         """
         search = self.search()
+        if ports:
+            search = dataclasses.replace(search, below_cutoff=_below_cutoff(ports))
         energy = layer_energy(model, op)
         if energy is None:
             return search
@@ -667,6 +689,45 @@ class EigenmodeRule:
                     LayerClearanceWarning,
                     stacklevel=4,
                 )
+
+    def _shifted(
+        self, model: Model, op: DrivenOperator, sigma: float, stretch: Stretch | None
+    ) -> tuple[EigenOperator, tuple[EigenPort, ...]]:
+        """`operator` at ``sigma`` with the model's wave port surfaces, and those.
+
+        Each surface's port mode sweep runs here, over its band around the
+        target (`gfem._engine.eigen.eigen_ports`).
+        """
+        ports = eigen_ports(
+            model,
+            op,
+            target=self.problem.target,
+            tolerance=self.options.port_mode_tolerance,
+            stretch=stretch,
+        )
+        return self.operator(op, sigma, ports=ports), ports
+
+    def _warn_modes(self, found: FoundModes, scale: float) -> None:
+        """`_warn_gain` for the modes found, and `_warn_anti_bound`."""
+        self._warn_gain(found.ks, scale)
+        self._warn_anti_bound(found.anti_bound, scale)
+
+    def _warn_anti_bound(self, roots: Sequence[complex], scale: float) -> None:
+        """Warn `AntiBoundRootWarning` once for the roots dropped below cutoff."""
+        if not roots:
+            return
+        per_hz = const.c / scale / (2 * math.pi)
+        listed = ", ".join(hertz(k.real * per_hz) for k in roots)
+        _mpi.warn(
+            self.comm,
+            f"Eigenmode: dropped {len(roots)} root(s) at {listed}, below the "
+            "cutoff of a wave port's mode: there the port's outgoing wave grows "
+            "into its guide (a real, anti-bound root) or the root "
+            "grows in time, so it is not a resonance. The modes returned are "
+            "the next nearest the target.",
+            AntiBoundRootWarning,
+            stacklevel=4,
+        )
 
     @property
     def polishable(self) -> bool:
@@ -736,11 +797,14 @@ class EigenmodeRule:
                 )
         return None
 
-    def operator(self, op: DrivenOperator, sigma: float) -> EigenOperator:
+    def operator(
+        self, op: DrivenOperator, sigma: float, *, ports: Sequence[EigenPort] = ()
+    ) -> EigenOperator:
         """The eigen operator ``T(k)`` of the driven operator, shifted at ``sigma``.
 
-        Nothing is factorized until the handle is first used
-        (`gfem._engine.eigen.eigen_operator`).
+        With the terms of the wave port surfaces ``ports``
+        (`gfem._engine.eigen.eigen_ports`). Nothing is factorized until the
+        handle is first used (`gfem._engine.eigen.eigen_operator`).
         """
         return eigen_operator(
             op,
@@ -748,6 +812,7 @@ class EigenmodeRule:
             linear=self.linear,
             tolerance=self._inner_tolerance(),
             numbers=self._start_numbers(op),
+            ports=ports,
         )
 
     def _numbers(self) -> np.ndarray | None:
@@ -917,6 +982,54 @@ class EigenmodeRule:
         }
         return outputs, solve
 
+    def _outputs(
+        self,
+        model: Model,
+        op: DrivenOperator,
+        divfree: DivFreeProjector,
+        modes: list[Refined],
+        ports: Sequence[EigenPort],
+    ) -> tuple[dict[str, object], np.ndarray]:
+        """`_postprocess`, with every coupled port's ``q_port`` (`_coupling_q`)."""
+        outputs, x = self._postprocess(model, op, divfree, modes)
+        outputs["q_port"] = self._coupling_q(
+            outputs, x, [m.k for m in modes], ports, op
+        )
+        return outputs, x
+
+    def _coupling_q(
+        self,
+        outputs: dict[str, object],
+        x: np.ndarray,
+        ks: list[complex],
+        ports: Sequence[EigenPort],
+        op: DrivenOperator,
+    ) -> np.ndarray:
+        r"""``(n_coupled, n)`` the coupling Q of `coupled`, in model order.
+
+        A resistive lumped port's row is ``outputs["q_port"]``'s. A wave
+        port's is :math:`\mathrm{Re}\,\omega\,E / P_p` with :math:`P_p`
+        the power its mode carries out (`PortTerm.outgoing_power`) for the
+        modes ``x`` normalized to :math:`E` = `MODE_ENERGY`, ``ks`` their
+        wavenumbers.
+        """
+        lumped = cast("np.ndarray", outputs["q_port"])
+        out = np.zeros((len(self.coupled), len(ks)))
+        rows = {name: lumped[p] for p, name in enumerate(self.resistive)}
+        per_k = const.c / op.built.scale
+        pair = _layout(op).pair
+        for port in ports:
+            term = port.term
+            for j, k in enumerate(ks):
+                power = term.outgoing_power(k, x[:, j], pair)
+                w = (k * per_k).real
+                for p, wave in enumerate(term.ports):
+                    row = rows.setdefault(wave.name, np.zeros(len(ks)))
+                    row[j] = w * MODE_ENERGY / power[p] if power[p] > 0 else math.inf
+        for i, name in enumerate(self.coupled):
+            out[i] = rows[name]
+        return out
+
     def _phase(
         self,
         x: np.ndarray,
@@ -1058,7 +1171,7 @@ class EigenmodeRule:
         return {
             "omega": jax.ShapeDtypeStruct((n,), jnp.complex128),
             "error": jax.ShapeDtypeStruct((n,), jnp.float64),
-            "q_port": jax.ShapeDtypeStruct((len(self.resistive), n), jnp.float64),
+            "q_port": jax.ShapeDtypeStruct((len(self.coupled), n), jnp.float64),
             "participation": jax.ShapeDtypeStruct(
                 (len(self.inductive), n), jnp.float64
             ),
@@ -1083,7 +1196,13 @@ class EigenmodeRule:
         The node coordinates, next to a tensor absorbing admittance
         (`terms.absorbing_shape_unsupported`); a permittivity law's
         parameter on a periodic model (no verification cell).
+
+        Raises:
+            PortGeometryError: ``kind`` is an input a wave port's mode reads,
+                as in the driven rule (`PortDesign.check`): the port mode is
+                a constant of the solve.
         """
+        self.port_design.check(kind)
         if kind == ("nodes",):
             return self.nodes_unsupported
         if kind[0] == "law" and (
@@ -1381,11 +1500,19 @@ class EigenmodeRule:
         self._check_reach(entry, wanted, per_k)
         holder = entry.handle
         eop = getattr(holder, "operator", None)
+        # the forward's port terms: the backward never sweeps a port again
+        terms_kept = [p.term for p in getattr(holder, "ports", ())]
         own = eop is None
         gap = fields["gap"]
         if own:
             first = wanted[0]
-            eop = self.operator(op, k[first] * (1 + reshift_offset(float(gap[first]))))
+            ports = tuple(
+                EigenPort(term, term.robin_piece(model, op.built, op.order))
+                for term in terms_kept
+            )
+            eop = self.operator(
+                op, k[first] * (1 + reshift_offset(float(gap[first]))), ports=ports
+            )
         pairs = []
         try:
             # every mode's guard before any form is built
@@ -1409,6 +1536,14 @@ class EigenmodeRule:
                 resistive=self.resistive,
                 inductive=self.inductive,
                 kinetic=self.kinetic,
+                coupled=self.coupled,
+                waves={
+                    wave.name: (term, p)
+                    for term in terms_kept
+                    for p, wave in enumerate(term.ports)
+                },
+                pair=_layout(op).pair,
+                cluster_rtol=self.options.cluster_rtol,
             )
             index = {port.name: i for i, port in enumerate(model.ports)}
             for j in wanted:
@@ -1685,7 +1820,7 @@ class EigenmodeRule:
             error=jnp.asarray(outputs["error"]),
             q_port={
                 name: jnp.asarray(outputs["q_port"][p])
-                for p, name in enumerate(self.resistive)
+                for p, name in enumerate(self.coupled)
             },
             participation={
                 name: jnp.asarray(outputs["participation"][p])
@@ -1835,12 +1970,52 @@ def _sheet_energy(op: DrivenOperator) -> Callable[[np.ndarray], float] | None:
     return energy
 
 
+def _below_cutoff(ports: Sequence[EigenPort]) -> Callable[[float], bool]:
+    """Whether a requested port mode of ``ports`` is below cutoff at a real k.
+
+    From the modes' cutoffs (`gfem._engine.port_term.PortTerm.below_cutoff`):
+    the port term's basis stays the forward's.
+    """
+
+    def below(k: float) -> bool:
+        return any(p.term.below_cutoff(k) for p in ports)
+
+    return below
+
+
+def _check_wave_ports(model: Model, problem: Eigenmode) -> None:
+    """Raise for a wave port this version cannot solve as an eigenmode.
+
+    The first wave port in model order is named: under a Bloch wave vector
+    (two-sided refinement with the port's term is unverified), or with a face
+    in a perfectly matched layer (its section's layer modes are not
+    filtered at a complex port wavenumber).
+    """
+    ports = [p for p in model.ports if isinstance(p, WavePort)]
+    if not ports:
+        return
+    if problem.wave_vector is not None:
+        raise NotImplementedError(
+            f"Eigenmode does not support WavePort {ports[0].name!r} with a "
+            "wave_vector in this version of gfem: the Bloch modes refine on the "
+            "transposed system too, which is not verified with the port's term. "
+            "Find the resonances and Q from a gfem.Driven sweep at the same "
+            "wave_vector."
+        )
+    if cut := wave_ports_in_layer(model):
+        raise NotImplementedError(
+            f"Eigenmode does not support WavePort {cut[0].name!r} on "
+            f"{cut[0].surface!r}, whose face crosses the perfectly matched layer, "
+            "in this version of gfem: the layer's own modes of the port section "
+            "are not told apart at a complex frequency. Keep the port face in "
+            "the air box, or find the resonances and Q from a gfem.Driven sweep."
+        )
+
+
 def _check_supported(model: Model) -> None:
     """Raise for model terms this version cannot solve as eigenmodes.
 
-    The first Floquet or wave port in model order is reported; when a
-    wave port's surface is shared, the message names the surface and all
-    its wave ports.
+    The first Floquet port in model order is reported.
     """
     for port in model.ports:
         if isinstance(port, FloquetPort):
@@ -1850,23 +2025,5 @@ def _check_supported(model: Model) -> None:
                 "evaluated at the complex eigenfrequency. Find the resonances and "
                 "Q from a gfem.Driven sweep, or end the cell with gfem.Absorbing "
                 f"on {port.surface!r} (first order: it reflects oblique waves)."
-            )
-        if isinstance(port, WavePort):
-            shared = [p.name for p in wave_port_surfaces(model.ports)[port.surface]]
-            if len(shared) > 1:
-                raise NotImplementedError(
-                    f"Eigenmode does not support the shared port surface "
-                    f"{port.surface!r} (wave ports "
-                    f"{', '.join(repr(n) for n in shared)}) in this version of "
-                    "gfem: the propagation constants of its modes must be solved "
-                    "at the complex eigenfrequency. Find the resonances and Q "
-                    "from a gfem.Driven sweep."
-                )
-            raise NotImplementedError(
-                f"Eigenmode does not support wave port {port.name!r} in this "
-                "version of gfem: its propagation constant must be solved at the "
-                "complex eigenfrequency. Replace it with gfem.LumpedPort("
-                f"{port.name!r}, ..., impedance=<line impedance>), or find the "
-                "resonance and Q from a gfem.Driven sweep."
             )
     terms.check_absorbing(model)

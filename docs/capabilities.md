@@ -7,8 +7,9 @@ v0.1.
 
 - **Problems**: {py:obj}`gfem.Driven` (the response of a model to its ports over a
   frequency grid, uniform or adaptive sweep), {py:obj}`gfem.Eigenmode` (resonant
-  modes nearest a target frequency, with their Q; lumped ports only: a wave
-  port raises; with a permittivity law, outside the law's
+  modes nearest a target frequency, with their Q; lumped and wave ports, a
+  wave port on one process with a target above its mode's cutoff; with a
+  permittivity law, outside the law's
   {term}`unresolved band`), {py:obj}`gfem.Electrostatic` (the
   Maxwell capacitance matrix between named terminals) and {py:obj}`gfem.PortMode`
   (the mode of a wave port's cross-section; a permittivity law in it where
@@ -26,6 +27,8 @@ v0.1.
   and {py:obj}`gfem.WavePort` on an exterior surface, fed by its port mode;
   several wave ports on one surface each request a different mode of it,
   each its own row and column of S ({doc}`recipes/shared-port-surface`);
+  wave ports also load an eigenmode solve and report each one's
+  {term}`coupling Q` (`q_port`);
   {py:obj}`gfem.FloquetPort` on the open face of a periodic cell: one
   diffraction order in one polarization (TE or TM) of a plane wave, each its
   own row and column of S, $|S|^2$ the diffraction efficiency
@@ -226,7 +229,8 @@ returning a wrong value:
   background is a constant `Material`, isotropic or on axis-aligned
   principal axes. No `Absorbing` face, `Impedance` or `Conductor` sheet in or
   on the layer. Lumped ports and Floquet surfaces keep clear of it, and a
-  wave port may cut a side layer but not one stretched along its normal. No
+  wave port may cut a side layer but not one stretched along its normal
+  (driven solves only). No
   stretch along a periodic axis. No `"bddc_gmres"`; `"pmg_gmres"` solves the layer exactly
   inside its iterations. The fields inside the
   layer are not physical; energies, participations and port power count the
@@ -234,7 +238,18 @@ returning a wrong value:
 - **Unrequested port modes**: a propagating mode that no wave port on its
   surface requests is partly reflected at the port, not converted; request
   it to see where its power goes ({py:obj}`gfem.SkippedPortModeWarning`
-  flags a mode left out below a requested one).
+  flags a mode left out below a requested one). In an eigenmode solve such a
+  mode can come back as a spurious mode of finite Q.
+- **Eigenmodes with wave ports**: one process, no Bloch wave vector, no port
+  face cutting a perfectly matched layer, no quantity estimates
+  (field-estimator refinement runs), and no absorbing edge beside a
+  permittivity law in a port's cross-section. A target below a requested
+  port mode's cutoff raises {py:obj}`gfem.PortModeError`, and a root below
+  a cutoff that does not decay in time is dropped with
+  {py:obj}`gfem.AntiBoundRootWarning`. Under `jax.grad`, a design touching
+  a wave port face raises {py:obj}`gfem.PortGeometryError`, as in a driven
+  solve. The wave ports' $\sum_p 1/q_p$ matches $1/Q$ of an otherwise
+  lossless model to $O(1/Q^2)$. Details: {doc}`modes-and-ports`.
 - **Lossy port lines**: wave-port S reads each mode by the biorthogonal
   projection, so a lossy port line is matched to its own mode and the modes
   of a lossy shared port surface separate. With a `voltage_path` its

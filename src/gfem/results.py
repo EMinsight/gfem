@@ -1705,7 +1705,9 @@ class EigenmodeResult:
     raise with respect to node coordinates, and `principal_participation`
     with respect to a lumped value. Outside that reach a gradient through
     them raises `gfem.NonDifferentiableError` (or `gfem.DegenerateModeError`
-    for a mode that is not isolated); ``error`` is not differentiable.
+    for a mode that is not isolated); ``error`` is not differentiable. With
+    wave ports, a design region touching a wave port face raises
+    `gfem.PortGeometryError`, as in a driven problem.
 
     Attributes:
         omega: Complex angular frequencies, rad/s, ``(n_modes,)``. Under
@@ -1714,10 +1716,14 @@ class EigenmodeResult:
         error: Backward error of each mode,
             :math:`|T(\omega) x| / ((|K| + |\omega| |C| + |\omega|^2 |M|) |x|)`
             for the discrete operator
-            :math:`T(\omega) = K + i \omega C - \omega^2 M`; at most
+            :math:`T(\omega) = K + i \omega C - \omega^2 M`, plus the
+            frequency-dependent terms of conductors, second-order absorbing
+            boundaries and wave ports; at most
             ``SolverOptions.eigen_tolerance``.
-        q_port: Coupling Q of each lumped port with a resistance R, by port
-            name: :math:`\mathrm{Re}\,\omega / \kappa` with the port's coupling
+        q_port: Coupling Q of each port that takes power out of the mode, by
+            port name, in model order: each lumped port with a resistance R
+            and each wave port. A lumped port's is
+            :math:`\mathrm{Re}\,\omega / \kappa` with the port's coupling
             rate :math:`\kappa = R |I|^2 / (2 E)`, :math:`I = V / R` the
             current through R for the port voltage V of the mode and
             :math:`E` the mode's electric
@@ -1725,9 +1731,20 @@ class EigenmodeResult:
             over its elements, as in a driven problem; when the elements of
             a multi-element port see different voltages, R dissipates more
             than :math:`|V|^2 / (2 R)`, and :math:`1 / Q` exceeds the sum of the
-            ``1 / q_port`` and the dielectric losses. Differentiable as the
-            ratios above, but an infinite value takes no gradient:
-            differentiate ``1 / q_port``.
+            ``1 / q_port`` and the dielectric losses. A wave port's is
+            :math:`q_p = \mathrm{Re}\,\omega\, E / P_p`, with
+            :math:`P_p = \tfrac12 \mathrm{Re}\int_{S_p} (\mathbf{E} \times
+            \mathbf{H}^*) \cdot \mathbf{n}\, dS` the power the port's requested
+            mode carries out of the model at the complex frequency, from that
+            mode's own amplitude only: on a shared port surface the cross
+            terms between modes, zero on a lossless section, are dropped. With
+            no other loss, :math:`\sum_p 1 / q_p` matches :math:`1 / Q` to
+            :math:`O(1/Q^2)`, since `q` divides :math:`|\omega|` and the
+            coupling Q is a power ratio. Differentiable as the ratios above,
+            but an infinite value (a mode with no amplitude on the port)
+            takes no gradient: differentiate ``1 / q_port``. A wave port's
+            value also raises `gfem.NonDifferentiableError` when the port
+            modes of its surface are degenerate.
         participation: Inductive energy participation ratio of each lumped
             port with an inductance L, by port name: :math:`L |I|^2 / (2 E)`
             with :math:`I = V / (i\, \mathrm{Re}(\omega) L)`, the junction

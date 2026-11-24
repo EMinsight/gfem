@@ -641,6 +641,10 @@ class WavePort:
     shared port surface). A propagating mode no port on the surface requests
     is partly reflected, not converted.
 
+    In a `gfem.Eigenmode` problem the port absorbs its requested mode at the
+    complex eigenfrequency and reports a coupling Q in
+    ``EigenmodeResult.q_port``.
+
     The cross-section may contain anisotropic materials when every tensor
     has a principal axis along the port normal (any orientation in the port
     plane); off-axis tensors would make forward and backward port modes
@@ -819,6 +823,11 @@ def wave_port_surfaces(ports: Iterable[Port]) -> dict[str, tuple[WavePort, ...]]
         if isinstance(port, WavePort):
             surfaces.setdefault(port.surface, []).append(port)
     return {surface: tuple(group) for surface, group in surfaces.items()}
+
+
+def first_wave_port(ports: Iterable[Port]) -> WavePort | None:
+    """The first wave port among ``ports`` in model order, ``None`` without one."""
+    return next((p for p in ports if isinstance(p, WavePort)), None)
 
 
 def lead_port(group: Sequence[WavePort]) -> WavePort:

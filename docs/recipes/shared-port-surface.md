@@ -159,8 +159,9 @@ How gfem itself is checked on wave ports and shared port surfaces:
   mode counts as below cutoff where its attenuation is at least its phase
   constant, $\operatorname{Re} \beta \le |\operatorname{Im} \beta|$. A clean crossing is followed and warns with
   {py:obj}`gfem.PortModeTrackingWarning`.
-- **Eigenmodes.** {py:obj}`gfem.Eigenmode` raises `NotImplementedError` for
-  any wave port, lone or shared: find resonances from a `gfem.Driven` sweep.
+- **Eigenmodes.** {py:obj}`gfem.Eigenmode` takes a shared port surface. Each
+  wave port's coupling Q comes from its own mode's amplitude; the cross terms
+  between the modes, zero on a lossless section, are dropped.
 - **Designs on a port face.** The port modes are constants of the solve: a
   design region with elements on a port face raises
   {py:obj}`gfem.PortGeometryError` under `jax.grad`, naming the surface and

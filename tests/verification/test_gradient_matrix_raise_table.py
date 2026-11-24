@@ -31,10 +31,14 @@ import thermal_cases as tc
 from gradient_cases import (
     HYBRID_PORTS,
     MIRRORED_TARGET,
+    WAVE_A_SPLIT,
+    WAVE_LUMPED,
     hybrid_line,
     hybrid_mesh,
     mirrored_cavity,
     split_cavity,
+    wave_guide,
+    wave_resonator,
 )
 
 import gfem
@@ -473,6 +477,40 @@ EXPECTED |= {
     for out in ALL_PROPERTIES
     for kind in EIGEN_KINDS
 }
+
+# Eigenmode with a wave port (case A of the shorted guide, its eps_r = 4
+# layer split by an inductive lumped port "l1"; the design the first part,
+# off the port face): every result leaf as on the lumped resonator, the wave
+# port's coupling Q a ratio like a resistive port's. The inputs of the port
+# section (its regions' materials and laws, a sheet beside the face, the
+# face's nodes) raise `gfem.PortGeometryError` (`OUT_OF_SCOPE`).
+EIGEN_WAVE_KINDS = [
+    ("nodes",),
+    *(("material", "dielectric", p) for p in ALL_PROPERTIES),
+    ("port", 1, "inductance"),
+    ("port", 1, "capacitance"),
+]
+EXPECTED |= {
+    ("eigenmode_wave", out, kind): _eigen_outcome(out, kind)
+    for out in (
+        "omega",
+        "error",
+        "q_port.p1",
+        "participation.l1",
+        *(f"bulk_participation.{r}" for r in ("dielectric", "spacer", "air")),
+        "cluster",
+        *(f"e_fields.0.{leaf}" for leaf in ("coefficients", "mesh.nodes", "omega")),
+    )
+    for kind in EIGEN_WAVE_KINDS
+}
+EXPECTED |= {
+    ("eigenmode_wave", f"materials.dielectric.{out}", kind): (
+        GRADIENT if kind[0] == "material" and kind[2] == out else ZERO
+    )
+    for out in ALL_PROPERTIES
+    for kind in EIGEN_WAVE_KINDS
+}
+EIGEN_WAVE_TARGET = 11.6e9
 
 # Eigenmode with TABLE_LAW on a second region "core":
 # omega (so frequency and Q) differentiates by every law parameter; the
@@ -1045,6 +1083,29 @@ def eigen_model(tmp_path_factory):
             gfem.LumpedPort("p2", "port2", "+z", impedance=1000.0),
         ],
     )
+
+
+def _eigen_wave_model(mesh, dielectric):
+    ports = [
+        gfem.WavePort("p1", "port"),
+        gfem.LumpedPort(
+            "l1",
+            "lumped",
+            "+y",
+            inductance=WAVE_LUMPED[0],
+            capacitance=WAVE_LUMPED[1],
+        ),
+    ]
+    return wave_resonator(mesh, WAVE_A_SPLIT, {"dielectric": dielectric}, ports)
+
+
+@pytest.fixture(scope="module")
+def eigen_wave_model(tmp_path_factory):
+    # little conduction: the mode stays sharp
+    mesh = wave_guide(
+        tmp_path_factory.mktemp("wave_guide"), WAVE_A_SPLIT, lumped=6.0, nx=4
+    )
+    return _eigen_wave_model(mesh, _field(mesh, "dielectric", conductivity=1e-3))
 
 
 @pytest.fixture(scope="module")
@@ -1783,6 +1844,10 @@ def cases(model, driven_model, eigen_model, wave_cases, request):
         "driven_adaptive": (driven_model, ADAPTIVE),
         **wave_cases,
         "eigenmode": (eigen_model, gfem.Eigenmode(target=17e9)),
+        "eigenmode_wave": (
+            request.getfixturevalue("eigen_wave_model"),
+            gfem.Eigenmode(target=EIGEN_WAVE_TARGET),
+        ),
         "driven_pml": (
             request.getfixturevalue("pml_model"),
             gfem.Driven(frequency=pml_cases.F0),
@@ -2163,6 +2228,67 @@ def _out_eigenmode_field_port_nodes_moved(request):
     objective = _moved_port_objective(
         model, lambda m: gfem.solve(m, problem).q_port["p1"][0]
     )
+    jax.grad(objective)(1e-6)
+
+
+def _out_eigenmode_material_on_a_wave_port_face(request):
+    # the wave port's mode reads the air region: a constant of the solve
+    model = request.getfixturevalue("eigen_wave_model")
+    n = len(model.mesh.elements("air"))
+    problem = gfem.Eigenmode(target=EIGEN_WAVE_TARGET)
+
+    def objective(eps):
+        m = model.with_material("air", gfem.MaterialField(eps_r=eps))
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        return jnp.real(gfem.solve(m, problem).omega[0]) * 1e-9
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.full(n, 1.0))
+
+
+def _out_eigenmode_law_on_a_wave_port_face(request):
+    model = request.getfixturevalue("eigen_wave_model")
+    problem = gfem.Eigenmode(target=EIGEN_WAVE_TARGET)
+
+    def objective(eps_inf):
+        law = dataclasses.replace(TABLE_LAW, eps_inf=eps_inf)
+        m = model.with_material("air", gfem.Material(eps_r=law))
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        return 1 / gfem.solve(m, problem).q_port["p1"][0]
+
+    jax.make_jaxpr(jax.grad(objective))(2.0)
+
+
+def _out_eigenmode_impedance_beside_a_wave_port(request):
+    # a sheet on the walls shares an edge with the port face: its values
+    # are constants of the solve there
+    model = request.getfixturevalue("eigen_wave_model")
+    problem = gfem.Eigenmode(target=EIGEN_WAVE_TARGET)
+
+    def objective(inductance):
+        sheet = gfem.Impedance("walls", resistance=1e-3, inductance=inductance)
+        m = model.replace(boundaries=[sheet])
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        return jnp.real(gfem.solve(m, problem).omega[0]) * 1e-9
+
+    jax.make_jaxpr(jax.grad(objective))(1e-12)
+
+
+def _out_eigenmode_wave_port_nodes_moved(request):
+    # the wave port's face moves: raised on the host, for omega and q_port
+    model = request.getfixturevalue("eigen_wave_model")
+    model = model.replace(
+        materials={**model.materials, "dielectric": gfem.Material(eps_r=4.0)}
+    )
+    problem = gfem.Eigenmode(target=EIGEN_WAVE_TARGET)
+    mesh = model.mesh
+    node = int(mesh.triangles[mesh.triangle_tags == mesh.region("port").tag][0, 0])
+
+    def objective(dx):
+        x = jnp.asarray(mesh.nodes).at[node, 0].add(dx)
+        moved = jax.tree_util.tree_unflatten(jax.tree_util.tree_structure(mesh), [x])
+        result = gfem.solve(model.replace(mesh=moved), problem)
+        return jnp.real(result.omega[0]) * 1e-9 + 1 / result.q_port["p1"][0]
+
     jax.grad(objective)(1e-6)
 
 
@@ -3086,6 +3212,30 @@ OUT_OF_SCOPE = [
         _out_eigenmode_port_nodes_moved,
         HOST,
         r"PortGeometryError.*port1",
+    ),
+    (
+        "eigenmode x material on a wave port face",
+        _out_eigenmode_material_on_a_wave_port_face,
+        gfem.PortGeometryError,
+        r"WavePort 'p1'.*region 'air' has elements on the port face",
+    ),
+    (
+        "eigenmode x law parameter of a region on a wave port face",
+        _out_eigenmode_law_on_a_wave_port_face,
+        gfem.PortGeometryError,
+        r"has elements on the port face.*permittivity law",
+    ),
+    (
+        "eigenmode x Impedance value beside a wave port",
+        _out_eigenmode_impedance_beside_a_wave_port,
+        gfem.PortGeometryError,
+        r"Impedance model\.boundaries\[0\] shares an edge with the port face",
+    ),
+    (
+        "eigenmode x nodes of a wave port surface",
+        _out_eigenmode_wave_port_nodes_moved,
+        HOST,
+        r"PortGeometryError.*port",
     ),
     (
         "greedy adaptive sweep under a transformation",

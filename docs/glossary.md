@@ -83,15 +83,35 @@ Resonant mode
 
 Quasi-normal mode
   A {term}`resonant mode` of an open structure, one that loses power through a
-  {term}`perfectly matched layer`, an absorbing boundary or a resistive
-  {term}`lumped port`: complex $\omega$, and a field that grows away from the
-  structure. Short form QNM. A cavity coupled to a guide has quasi-normal
-  modes; the guide's own {term}`bound mode` is not one.
+  {term}`perfectly matched layer`, an absorbing boundary, a resistive
+  {term}`lumped port` or a {term}`wave port`: complex $\omega$, and a field
+  that grows away from the structure. Short form QNM. A cavity coupled to a
+  guide has quasi-normal modes; the guide's own {term}`bound mode` is not one.
+
+Coupling Q
+  The Q a {term}`resonant mode` would have if one port were its only loss:
+  $\mathrm{Re}\,\omega$ times the mode's stored energy over the
+  time-averaged power the port takes out. For a resistive {term}`lumped port`
+  that power is the one its resistance draws; for a {term}`wave port`, the
+  one its requested mode carries out through the face. With other losses,
+  $1/Q$ is close to the sum of the ports' $1/Q_\mathrm{coupling}$ plus the
+  material and wall losses, closer as Q grows. Reported in
+  `EigenmodeResult.q_port`.
+
+Outgoing branch
+  The propagation constant of a {term}`port mode` continued from real
+  frequencies above cutoff to the complex frequency of a resonant mode: the
+  wave leaving the model through the port. At a decaying mode
+  $\mathrm{Re}\,\gamma < 0$, so the field grows along the guide away from
+  the model, as a {term}`quasi-normal mode`'s does. Below cutoff it also has
+  real roots that are not resonances (anti-bound roots), which an
+  eigenmode solve drops with a warning.
 
 Port mode sweep
   The {term}`port mode problem` solved over a driven problem's output
-  frequencies before the 3D solve, giving each wave port's propagation constant
-  and mode profile at every output frequency. The wave ports of a
+  frequencies, or over a band around an eigenmode problem's target, before
+  the 3D solve, giving each wave port's propagation constant and mode profile
+  at every frequency the solve needs. The wave ports of a
   {term}`shared port surface` share one sweep.
 
 Unresolved band

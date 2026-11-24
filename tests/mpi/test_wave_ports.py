@@ -351,6 +351,28 @@ def test_a_voltage_path_off_the_port_raises_on_every_rank(tmp_path):
     assert ranks == 3
 
 
+def _eigenmode_refused(directory):
+    """An eigenmode solve with wave ports: refused before any mesh, then a job."""
+    try:
+        gfem.solve(
+            _model("lossless", directory),
+            gfem.Eigenmode(target=WAVE_SWEEP[0]),
+            options=gfem.SolverOptions(threads=1),
+        )
+    except gfem.DistributedUnsupportedError as err:
+        return err.feature, str(err), _world().allreduce(1)
+    raise AssertionError("an eigenmode solve with a wave port ran")
+
+
+def test_an_eigenmode_with_a_wave_port_raises_on_every_rank(tmp_path):
+    (feature, message, ranks), _ = on_ranks(
+        _eigenmode_refused, tmp_path, ranks=2, limit=60
+    )
+    assert feature == "eigenmode_wave_port"
+    assert "WavePort 'p1'" in message
+    assert ranks == 2
+
+
 def _root_fails(directory):
     del directory
 

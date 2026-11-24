@@ -160,6 +160,8 @@ g = jax.grad(loss)(jnp.full(n, 11.45))
 - Prefer `1 / q_port` to `q_port`: a port the mode does not reach has an
   infinite `q_port`, and a gradient through it raises
   `gfem.NonDifferentiableError`.
+- A wave port's `q_port` differentiates the same way, with respect to the
+  materials away from its face.
 - The dressed modes of a junction (anharmonicity, dispersive shift) build on
   the junction participation: see {doc}`quantum-metrics`.
 
@@ -213,6 +215,11 @@ How gfem itself is checked: {doc}`../verification`.
   `gfem.NonDifferentiableError` for a mode-field gradient. The frequencies
   still differentiate there, as {doc}`../capabilities` shows; or wrap the
   value in `jax.lax.stop_gradient` to use it without its derivative.
+- With wave ports, a design region touching a wave port face raises
+  `gfem.PortGeometryError`, as in a driven solve. A wave port's `q_port`
+  raises `gfem.NonDifferentiableError` for a mode with no amplitude on the
+  port, and for degenerate port modes on a shared port surface:
+  differentiate `omega` there.
 - Across MPI ranks a gradient through a mode's field raises
   `gfem.DistributedUnsupportedError` (feature `mode_field_gradient`) when
   `jax.grad` traces it; frequencies and Q differentiate there

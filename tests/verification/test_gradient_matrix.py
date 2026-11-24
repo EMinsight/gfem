@@ -124,6 +124,16 @@ from gradient_cases import (
     SHEETS,
     STACK_PROBLEM,
     STATIC_LAW,
+    WAVE_A4,
+    WAVE_A4_ROOT,
+    WAVE_A_ROOT,
+    WAVE_A_SPLIT,
+    WAVE_C,
+    WAVE_C_HEIGHT,
+    WAVE_C_ROOT,
+    WAVE_L,
+    WAVE_L_ROOT,
+    WAVE_LUMPED,
     absorbing_guide,
     capacitor,
     cavity_fill,
@@ -163,8 +173,10 @@ from gradient_cases import (
     stack_fields,
     terminated,
     tight,
+    wave_guide,
     wave_line,
     wave_mesh,
+    wave_resonator,
     with_fields,
 )
 from periodic_cases import (
@@ -443,6 +455,34 @@ def _field_cells() -> list[Cell]:
     ]
 
 
+# --- eigenmode with wave ports -------------------------------------------------------
+
+
+def _eigen_wave_cells() -> list[Cell]:
+    """An eigenmode with wave ports, on ``direct`` (`_eigen_wave`).
+
+    ``eigenmode_wave``: case A of the shorted WR-90 guide (Q 5.8 with the
+    lumped port), in the permittivity of a layer off the port face, the
+    nodes of an interface off it, and an inductive lumped port's L and C;
+    the objective reads omega, the wave port's coupling Q, the lumped port's
+    participation and the layer's share. The ``"a4"`` variant: the windowed
+    guide A4 (Q 869), omega and the coupling Q in the windows' permittivity.
+    ``eigenmode_wave_shared``: case C's TE20 root, one port surface carrying
+    TE10 and TE20 (its modal correction live), omega and both ports'
+    coupling Q. ``eigenmode_wave_lossy``: case L, a lossy anisotropic port
+    section, omega and the coupling Q.
+    """
+    return [
+        *(
+            Cell("eigenmode_wave", name, "direct")
+            for name in ("eps_r", "nodes", "lumped")
+        ),
+        Cell("eigenmode_wave", "eps_r", "direct", variant="a4"),
+        Cell("eigenmode_wave_shared", "eps_r", "direct"),
+        Cell("eigenmode_wave_lossy", "eps_r", "direct"),
+    ]
+
+
 # --- dispersive materials ------------------------------------------------------------
 
 
@@ -610,6 +650,7 @@ CELLS = [
     *_eigen_periodic_cells(),
     *_participation_cells(),
     *_field_cells(),
+    *_eigen_wave_cells(),
     *_law_cells(),
     *_blend_cells(),
     *_electrostatic_law_cells(),
@@ -773,6 +814,22 @@ class Designs:
     @functools.cached_property
     def eigen_cell(self):
         return eigen_cell_mesh(self._dir("eigen_cell"))
+
+    @functools.cached_property
+    def wave_a(self):
+        return wave_guide(self._dir("wave_a"), WAVE_A_SPLIT, lumped=6.0, moving=10.0)
+
+    @functools.cached_property
+    def wave_a4(self):
+        return wave_guide(self._dir("wave_a4"), WAVE_A4)
+
+    @functools.cached_property
+    def wave_c(self):
+        return wave_guide(self._dir("wave_c"), WAVE_C, height=WAVE_C_HEIGHT)
+
+    @functools.cached_property
+    def wave_l(self):
+        return wave_guide(self._dir("wave_l"), WAVE_L)
 
     @functools.cached_property
     def dispersive(self):
@@ -1290,6 +1347,103 @@ def _eigen_nodes(d: Designs, _cell: Cell, options, seed: int) -> Case:
         objective,
         jnp.zeros(morph.n_params),
         np.random.default_rng(seed),
+        step=STEPS["nodes"],
+        taylor=4e-5,
+        taylor_at=jnp.full(morph.n_params, 1e-5),
+    )
+
+
+# --- eigenmode with wave ports ------------------------------------------------------
+
+#: Weights of the coupling Q's inverse in the wave cells' objectives.
+WAVE_Q_WEIGHT = 3.0
+
+
+def _wave_mode(model, problem, options, root) -> int:
+    """The index of the mode nearest ``root`` (GHz) at the cell's design."""
+    omega = np.asarray(gfem.solve(model, problem, options=options).omega)
+    return int(np.argmin(np.abs(omega / (2 * np.pi * 1e9) - root)))
+
+
+def _eigen_wave(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """An eigenmode cell with wave ports (`_eigen_wave_cells`)."""
+    rng = np.random.default_rng(seed)
+    wave = [gfem.WavePort("p1", "port")]
+    if cell.problem == "eigenmode_wave_shared":
+        mesh, layers, root = d.wave_c, WAVE_C, WAVE_C_ROOT
+        wave = [gfem.WavePort("te10", "port"), gfem.WavePort("te20", "port", mode=2)]
+        problem = gfem.Eigenmode(target=15.2e9, n_modes=3)
+    elif cell.problem == "eigenmode_wave_lossy":
+        mesh, layers, root = d.wave_l, WAVE_L, WAVE_L_ROOT
+        problem = gfem.Eigenmode(target=11.67e9, n_modes=3)
+    elif cell.variant == "a4":
+        mesh, layers, root = d.wave_a4, WAVE_A4, WAVE_A4_ROOT
+        problem = gfem.Eigenmode(target=9.97e9)
+    else:
+        return _eigen_wave_a(d, cell, options, seed)
+    region = "window" if cell.variant == "a4" else "dielectric"
+    eps = ramp(mesh, region, 3.8, 4.2) * (2.5 if cell.variant == "a4" else 1.0)
+
+    def model(eps):
+        design = {region: gfem.MaterialField(eps_r=eps)}
+        return wave_resonator(mesh, layers, design, wave)
+
+    j = _wave_mode(model(eps), problem, options, root)
+
+    def objective(p):
+        result = gfem.solve(model(p), problem, options=options)
+        out = jnp.real(result.omega[j] * OMEGA_WEIGHT)
+        for q in result.q_port.values():
+            out = out + WAVE_Q_WEIGHT / q[j]
+        return out
+
+    return Case(objective, eps, rng, step=STEPS["eps_r"], taylor=1e-1)
+
+
+def _eigen_wave_a(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """Case A with an inductive lumped port, in its permittivity, nodes or L, C."""
+    mesh = d.wave_a
+    rng = np.random.default_rng(seed)
+    problem = gfem.Eigenmode(target=11.6e9, n_modes=4)
+    eps0 = ramp(mesh, "dielectric", 3.8, 4.2)
+
+    def model(eps, t=0.0, mesh=mesh):
+        inductance, capacitance = jnp.asarray(WAVE_LUMPED) * (1 + t)
+        ports = [
+            gfem.WavePort("p1", "port"),
+            gfem.LumpedPort(
+                "l1", "lumped", "+y", inductance=inductance, capacitance=capacitance
+            ),
+        ]
+        design = {"dielectric": gfem.MaterialField(eps_r=eps)}
+        return wave_resonator(mesh, WAVE_A_SPLIT, design, ports)
+
+    j = _wave_mode(model(eps0), problem, options, WAVE_A_ROOT)
+
+    def read(model):
+        result = gfem.solve(model, problem, options=options)
+        return (
+            jnp.real(result.omega[j] * OMEGA_WEIGHT)
+            + WAVE_Q_WEIGHT / result.q_port["p1"][j]
+            + result.participation["l1"][j]
+            + 0.7 * result.bulk_participation["dielectric"][j]
+        )
+
+    if cell.input == "eps_r":
+        return Case(
+            lambda p: read(model(p)), eps0, rng, step=STEPS["eps_r"], taylor=1e-1
+        )
+    if cell.input == "lumped":
+        # a 10 % step reorders the modes nearest the target (the remainder
+        # jumps to 30); from 3 % on the order holds
+        return Case(
+            lambda t: read(model(eps0, t)), jnp.zeros(2), rng, step=1e-3, taylor=3e-2
+        )
+    morph = boundary_morph(model(eps0), "moving", grows="spacer")
+    return Case(
+        lambda t: read(model(eps0, mesh=morph(t))),
+        jnp.zeros(morph.n_params),
+        rng,
         step=STEPS["nodes"],
         taylor=4e-5,
         taylor_at=jnp.full(morph.n_params, 1e-5),
@@ -2870,6 +3024,15 @@ BUILDERS = {
     ("eigenmode", "fill"): _eigen_fill,
     ("eigenmode", "lumped"): _eigen_lumped,
     ("eigenmode", "nodes"): _eigen_nodes,
+    **{
+        (problem, name): _eigen_wave
+        for problem in (
+            "eigenmode_wave",
+            "eigenmode_wave_shared",
+            "eigenmode_wave_lossy",
+        )
+        for name in ("eps_r", "nodes", "lumped")
+    },
     **{
         (problem, name): builder
         for problem in ("driven_periodic_plain", "driven_periodic_bloch")

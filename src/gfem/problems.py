@@ -1064,20 +1064,21 @@ class Eigenmode:
     angular frequencies ``omega`` (:math:`\mathrm{Im}\,\omega > 0` for a
     decaying mode) and their
     electric fields. Losses (``tan_delta``, ``conductivity``), resistive
-    lumped ports and `Impedance` boundaries, and first-order `Absorbing`
-    boundaries make the modes decay; each mode's Q is
+    lumped ports, wave ports and `Impedance` boundaries, and first-order
+    `Absorbing` boundaries make the modes decay; each mode's Q is
     :math:`|\omega| / (2\, \mathrm{Im}\,\omega)`. The `n_modes` modes whose
     frequency :math:`\mathrm{Re}\,\omega / 2\pi` is nearest ``target`` are
     returned, nearest first.
 
     A `Conductor` (its surface impedance grows as the square root of the
-    frequency) or a second-order `Absorbing` boundary (a term in 1 /
+    frequency), a second-order `Absorbing` boundary (a term in 1 /
+    frequency) or a `WavePort` (its propagation constant is a square root in
     frequency) makes the eigenproblem nonlinear. The eigen solver's first pass
     then freezes those factors at ``target``. Each mode is refined on the
     exact frequency dependence, reusing that pass's factorization, so
-    frequency and Q do not depend on ``target``. Conductor and radiation
-    losses must be perturbations (Q above about 5); for a strongly radiating
-    structure, find the resonance from a `gfem.Driven` sweep.
+    frequency and Q do not depend on ``target``. Conductor, port and
+    radiation losses must be perturbations (Q above about 5); for a strongly
+    radiating structure, find the resonance from a `gfem.Driven` sweep.
 
     With a perfectly matched layer (`gfem.PML`) the radiation it absorbs
     need not be a perturbation, unlike an `Absorbing` boundary's: Q is the
@@ -1086,9 +1087,27 @@ class Eigenmode:
     and the 1 J normalization and the participations count the regions
     outside the layer.
 
-    Lumped ports are terminations here: nothing is excited. A port with a
-    resistance gets a coupling Q, a port with an inductance a participation
-    ratio (see `gfem.EigenmodeResult`).
+    A `WavePort`, on its own surface or one shared with other wave ports,
+    lets its requested mode leave without reflection, so a mode's Q includes
+    its radiation through the port. The port's mode is evaluated at the
+    complex eigenfrequency on the outgoing branch,
+    :math:`\gamma = i\sqrt{\varepsilon_r\mu_r k_0^2 - k_c^2}` continued from
+    real frequencies above the cutoff :math:`k_c`, so at a decaying mode
+    :math:`\mathrm{Re}\,\gamma < 0`: the field grows along the guide away
+    from the model, as a quasi-normal mode's does. ``target`` must lie above
+    the cutoff of every requested port mode. Below a cutoff the outgoing
+    branch also has roots that are not resonances: a real one (an anti-bound
+    root) or one that grows in time is dropped with
+    `gfem.AntiBoundRootWarning`, and the next mode is returned; a root that
+    decays in time is a resonance and is kept. Each port's mode sweep covers
+    a band around ``target``, solved to ``SolverOptions.port_mode_tolerance``.
+    A port mode family no wave port requests is partly reflected, as in a
+    driven problem, and can show up as a spurious mode of finite Q: request
+    it, or check a mode by moving ``target``.
+
+    Ports are terminations here: nothing is excited. A lumped port with a
+    resistance and every wave port get a coupling Q, a lumped port with an
+    inductance a participation ratio (see `gfem.EigenmodeResult`).
 
     Example:
         The two modes nearest 5 GHz::
@@ -1125,18 +1144,20 @@ class Eigenmode:
     of a `gfem.PermittivityLaw` the modes crowd too, and a mode one step farther
     can come back in place of a nearer one: ask for more modes and compare two
     targets. A target or a mode in a law region's unresolved band, where its
-    wavelength is shorter than two of its longest edges, raises ValueError. It
-    raises NotImplementedError for a `WavePort` or a shared port surface (its
-    propagation constants would have to be solved at the complex
-    eigenfrequency): replace a lone wave port with a `LumpedPort` of the line
-    impedance, or use a `gfem.Driven` sweep. With ``wave_vector``, it raises
+    wavelength is shorter than two of its longest edges, raises ValueError. A
+    ``target`` below the cutoff of a requested port mode raises
+    `gfem.PortModeError` naming the port, the mode and the cutoff. A wave
+    port with ``wave_vector``, a wave port face crossing a `gfem.PML`, an
+    absorbing edge beside a `gfem.PermittivityLaw` in a port's
+    cross-section, and a `gfem.FloquetPort` raise NotImplementedError: use a
+    `gfem.Driven` sweep. With ``wave_vector``, it raises
     ValueError on a model without a `gfem.Periodic` pair, for a k with a
     component outside the span of the pairs' translations, and with any
     ``linear_solver`` but ``"direct"``; and NotImplementedError on a GPU
     ``device``. Across MPI ranks (the "Run a distributed solve" recipe) the
     eigen solver is SLEPc, and a ``wave_vector``, ``eigen_solver="arpack"``,
-    two or three `gfem.Periodic` pairs and a gradient through a mode's field
-    raise `gfem.DistributedUnsupportedError`.
+    two or three `gfem.Periodic` pairs, a `gfem.WavePort` and a gradient
+    through a mode's field raise `gfem.DistributedUnsupportedError`.
 
     Notes:
         When ``target`` or the lowest mode found is below the mesh's

@@ -48,7 +48,7 @@ from gfem._eigen.operator import RESHIFT_SOLVES, EigenOperator
 from gfem._eigen.refine import refine
 from gfem._eigen.seed import MIN_SUBSPACE, seed_operator
 from gfem._engine import terms
-from gfem._engine.driven import driven_operator
+from gfem._engine.driven import DrivenRule, driven_operator
 from gfem._engine.eigen import projector
 from gfem._engine.runtime import task_manager
 from gfem._linalg import prepare
@@ -899,37 +899,37 @@ def test_a_mode_above_the_low_frequency_floor_does_not_warn(mesh):
 # --- unsupported terms and failures ----------------------------------------------
 
 
-def test_wave_port_raises_from_solve_with_a_remedy(mesh):
-    # the model itself stays valid (a driven problem can use the wave port);
-    # only the eigenmode solve refuses it
+def test_port_geometry_error_beside_a_wave_port_face_matches_the_driven_rule(
+    mesh, monkeypatch
+):
+    # the eigenmode gradient check names the same inputs, with the same
+    # messages, as the driven rule's (past any refusal of the solve itself)
+    monkeypatch.setattr(eigen_rule, "_check_supported", lambda _model: None)
     model = gfem.Model(
         mesh,
         materials={"dielectric": gfem.Material(eps_r=EPS)},
-        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        boundaries=[
+            gfem.PEC("bottom"),
+            gfem.Impedance("top", resistance=377.0, inductance=1e-9),
+        ],
         ports=[gfem.WavePort("o1", "port1")],
     )
-    with pytest.raises(
-        NotImplementedError, match=r"(?s)wave port 'o1'.*LumpedPort.*gfem\.Driven"
-    ):
-        gfem.solve(model, gfem.Eigenmode(target=8e9))
-
-
-def test_shared_port_surface_raises_naming_the_surface_and_its_ports(mesh):
-    # a lumped port stands in for one mode only and cannot share a surface, so
-    # the message drops that advice and points to a driven sweep
-    model = gfem.Model(
-        mesh,
-        materials={"dielectric": gfem.Material(eps_r=EPS)},
-        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
-        ports=[gfem.WavePort("o1", "port1"), gfem.WavePort("o2", "port1", mode=2)],
+    eigen = eigen_rule.EigenmodeRule(
+        model, gfem.Eigenmode(target=8e9), gfem.SolverOptions()
     )
-    with pytest.raises(NotImplementedError) as raised:
-        gfem.solve(model, gfem.Eigenmode(target=8e9))
-    message = str(raised.value)
-    assert "shared port surface 'port1'" in message
-    assert "'o1', 'o2'" in message
-    assert "gfem.Driven" in message
-    assert "LumpedPort" not in message
+    driven = DrivenRule(model, gfem.Driven(frequency=[8e9]), gfem.SolverOptions())
+    for kind in [
+        ("material", "dielectric", "eps_r"),
+        ("law", "dielectric", "eps_inf"),
+        ("boundary", 1, "fill", "fill"),
+        ("boundary", 1, "inductance"),
+    ]:
+        with pytest.raises(gfem.PortGeometryError) as driven_raised:
+            driven.unsupported_input(kind)
+        with pytest.raises(gfem.PortGeometryError) as eigen_raised:
+            eigen.unsupported_input(kind)
+        assert str(eigen_raised.value) == str(driven_raised.value)
+        assert "WavePort 'o1'" in str(eigen_raised.value)
 
 
 def test_conductivity_damps_the_line_exactly(mesh):

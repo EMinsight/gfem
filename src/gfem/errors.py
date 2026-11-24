@@ -157,7 +157,8 @@ class PortModeError(RuntimeError):
     """The port mode problem has no usable mode.
 
     For example the requested mode is below cutoff (evanescent) at some
-    frequency of the band. The message names the port, the frequency and the
+    frequency of the band, or an eigenmode target lies below a requested
+    port mode's cutoff. The message names the port, the frequency and the
     remedy.
     """
 
@@ -180,7 +181,8 @@ class SkippedPortModeWarning(UserWarning):
     highest ``mode`` requested there, for example a lone ``mode=2`` (mode 1
     is skipped) or modes 1 and 3 (mode 2 is skipped). That mode propagates
     wherever the higher one does, and the port partly reflects it instead of
-    absorbing it, so S misses the power the device sends into it. Add a
+    absorbing it, so S misses the power the device sends into it, and an
+    eigenmode's Q and coupling Q miss the power it carries. Add a
     `gfem.WavePort` on the surface for each skipped mode. A lone ``mode=1``
     never warns. Filter it with Python's `warnings` module.
     """
@@ -224,6 +226,20 @@ class ThinLayerWarning(UserWarning):
     operator is badly conditioned and the mesh cannot follow the field's
     decay across the layer. Make the layer about half a wavelength thick, or
     filter the warning with Python's `warnings` module.
+    """
+
+
+class AntiBoundRootWarning(UserWarning):
+    """An eigenmode root below a wave port mode's cutoff was dropped.
+
+    An eigenmode solve with wave ports continues each port's outgoing wave
+    to complex frequencies. Below the cutoff of a requested port mode that
+    continuation has roots that are not resonances: real ones (anti-bound
+    roots, whose field grows into the guide) and their mirrors that grow in
+    time. The search drops such a root, names it in this warning, and
+    returns the next mode instead. A complex root below cutoff that decays
+    in time is a resonance and is kept. Filter the warning with Python's
+    `warnings` module.
     """
 
 
