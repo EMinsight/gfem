@@ -9,10 +9,9 @@ with the other cell outputs: they read only the static labels of a result and
 from __future__ import annotations
 
 import dataclasses
-import importlib
 import math
 from collections.abc import Sequence
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import jax
 import jax.numpy as jnp
@@ -22,6 +21,13 @@ from gfem._checks import check_fixed, is_traced
 from gfem._pytree import register_fields
 from gfem._text import hertz, hertz_band
 from gfem.errors import NonDifferentiableError
+
+if TYPE_CHECKING:
+    from numpy.typing import ArrayLike
+
+    from gfem._boundaries import FloquetPort
+    from gfem.model import Model
+    from gfem.results import DrivenResult
 
 __all__ = [
     "Efficiencies",
@@ -39,14 +45,14 @@ _SQRT_HALF = math.sqrt(0.5)
 
 
 def floquet_ports(
-    model: Any,
+    model: Model,
     surface: str,
-    frequency: Any,
+    frequency: ArrayLike,
     *,
-    wave_vector: Any = None,
+    wave_vector: ArrayLike | None = None,
     wave_vector_frequency: float | None = None,
     offset: float = 0.0,
-) -> list[Any]:
+) -> list[FloquetPort]:
     r"""A `gfem.FloquetPort` for every order that propagates behind a face.
 
     One port per diffraction order that propagates in the medium behind
@@ -79,9 +85,9 @@ def floquet_ports(
         The ports, for ``model.replace(ports=[...])``.
 
     Raises:
-        ValueError: ``wave_vector_frequency`` without ``wave_vector``; a wave
-            vector of another shape; and what `gfem.Model.propagating_orders`
-            raises.
+        ValueError: ``wave_vector_frequency`` without ``wave_vector``, or not
+            a positive frequency; a wave vector of another shape; and what
+            `gfem.Model.propagating_orders` raises.
         NonDifferentiableError: An argument is traced by JAX.
     """
     from gfem._boundaries import FloquetPort
@@ -103,24 +109,20 @@ def floquet_ports(
     if wave_vector is None:
         found |= set(model.propagating_orders(surface, f))
     else:
-        k = np.asarray(wave_vector, float)
-        if k.shape == (3,):
-            k = k[None]
-        if k.ndim != 2 or k.shape[1] != 3 or not len(k):
-            raise ValueError(
-                "floquet_ports: wave_vector must be one 3-vector or a sequence of "
-                f"them, shape (n, 3), in rad/m, got shape "
-                f"{np.asarray(wave_vector).shape}."
-            )
+        k = _wave_vectors(wave_vector)
         if wave_vector_frequency is None:
             for w in k:
                 found |= set(model.propagating_orders(surface, f, wave_vector=w))
         else:
-            f0 = float(wave_vector_frequency)
-            if not (math.isfinite(f0) and f0 > 0):
+            f0 = wave_vector_frequency
+            ok = isinstance(f0, (int, float, np.integer, np.floating)) and not (
+                isinstance(f0, (bool, np.bool_))
+            )
+            if not ok or not math.isfinite(f0) or f0 <= 0:
                 raise ValueError(
-                    f"{who}: wave_vector_frequency must be > 0 Hz, got "
-                    f"{wave_vector_frequency!r}."
+                    f"{who}: wave_vector_frequency must be a positive finite "
+                    "frequency in Hz, or None for the same wave vector at every "
+                    f"frequency; got {f0!r}."
                 )
             for w in k:
                 for fi in f:
@@ -140,6 +142,23 @@ def floquet_ports(
         for m, n in sort_orders(found)
         for pol in ("TE", "TM")
     ]
+
+
+def _wave_vectors(wave_vector: ArrayLike) -> np.ndarray:
+    """``wave_vector`` as an ``(n, 3)`` float array of wave vectors."""
+    try:
+        k = np.asarray(wave_vector, float)
+    except (TypeError, ValueError):  # ragged: no float array, report its outer shape
+        k = np.empty(np.shape(np.asarray(wave_vector, dtype=object)), dtype=object)
+    shape = k.shape
+    if shape == (3,):
+        k = k[None]
+    if k.dtype == object or k.ndim != 2 or k.shape[1] != 3 or not len(k):
+        raise ValueError(
+            "floquet_ports: wave_vector must be one 3-vector or a sequence of "
+            f"them, shape (n, 3), in rad/m, got shape {shape}."
+        )
+    return k
 
 
 # --- result types ----------------------------------------------------------------
@@ -340,6 +359,7 @@ def cell_of(result: Any, model: Any, who: str) -> Cell:
         ValueError: The result has no Floquet port, the sequence is empty or
             its members differ, or ``model`` is not the solved model.
     """
+    from gfem._boundaries import FloquetPort
     from gfem.model import Model
     from gfem.results import DrivenResult
 
@@ -373,7 +393,7 @@ def cell_of(result: Any, model: Any, who: str) -> Cell:
                     f"sweep); result {i} differs from result 0 in its {what}."
                 )
     info = dict(first.diffraction_orders)
-    in_model = {p.name: p for p in model.ports if hasattr(p, "polarization")}
+    in_model = {p.name: p for p in model.ports if isinstance(p, FloquetPort)}
     for name in first.s.ports:
         if name not in info:
             continue
@@ -457,9 +477,7 @@ def _pair(polarization: Any, who: str) -> tuple[complex, complex]:
         f"{who}: polarization must be 'TE', 'TM', 'RCP', 'LCP', 'unpolarized' or "
         f"a Jones pair (a_TM, a_TE), got {polarization!r}."
     )
-    if isinstance(polarization, str) or not isinstance(
-        polarization, (list, tuple, np.ndarray)
-    ):
+    if isinstance(polarization, str):
         raise bad
     try:
         arr = np.asarray(polarization, dtype=complex)
@@ -678,11 +696,11 @@ def check_complete(cell: Cell) -> None:
 
 
 def efficiencies(
-    result: Any,
+    result: DrivenResult | Sequence[DrivenResult],
     surface: str,
     *,
-    polarization: Any,
-    model: Any,
+    polarization: str | tuple[complex, complex],
+    model: Model,
     order: tuple[int, int] = (0, 0),
     basis: Literal["linear", "circular"] = "linear",
 ) -> Efficiencies:
@@ -785,11 +803,11 @@ def efficiencies(
 
 
 def power_balance(
-    result: Any,
+    result: DrivenResult | Sequence[DrivenResult],
     surface: str,
     *,
-    polarization: Any,
-    model: Any,
+    polarization: str | tuple[complex, complex],
+    model: Model,
     order: tuple[int, int] = (0, 0),
 ) -> PowerBalance:
     r"""The reflectance, transmittance, coupled power and absorptance of a cell.
@@ -835,8 +853,12 @@ def power_balance(
     order = check_order(order, who)
     inc = incidence_of(cell, surface, polarization, order)
     check_complete(cell)
-    resistance = importlib.import_module("gfem._engine.port_network").resistance
-    in_model = {p.name: p for p in model.ports}
+    from gfem._boundaries import LumpedPort
+
+    # a lumped port without resistance has an undefined (NaN) S row: no power
+    no_power = {
+        p.name for p in model.ports if isinstance(p, LumpedPort) and p.rlc[0] is None
+    }
     ports = cell.s.ports
     on = [
         i
@@ -849,12 +871,7 @@ def power_balance(
         if n in cell.info and cell.info[n].surface != surface
     ]
     coupled_idx = [
-        i
-        for i, n in enumerate(ports)
-        if n not in cell.info
-        and not (
-            hasattr(in_model.get(n), "rlc") and math.isnan(resistance(in_model[n]))
-        )
+        i for i, n in enumerate(ports) if n not in cell.info and n not in no_power
     ]
     per = []
     for r in cell.results:

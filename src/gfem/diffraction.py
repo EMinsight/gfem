@@ -7,13 +7,8 @@ Floquet surface.
 
 from __future__ import annotations
 
-__all__: list[str] = []
-
 from gfem._diffraction.aperture import ApertureField, propagate
-
-__all__ += ["ApertureField", "propagate"]
-
-from gfem._diffraction.outputs import (  # noqa: E402
+from gfem._diffraction.outputs import (
     Efficiencies,
     PowerBalance,
     efficiencies,
@@ -21,10 +16,12 @@ from gfem._diffraction.outputs import (  # noqa: E402
     power_balance,
 )
 
-__all__ += [
+__all__ = [
+    "ApertureField",
     "Efficiencies",
     "PowerBalance",
     "efficiencies",
     "floquet_ports",
     "power_balance",
+    "propagate",
 ]

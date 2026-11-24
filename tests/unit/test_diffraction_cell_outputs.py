@@ -3,7 +3,8 @@
 Identities on coarse F1 cells (an eps 4 slab on an eps 2.25 substrate under air,
 Floquet ports on both faces) at p = 2, and on the bare interface closed by PEC
 at p = 3, all with the direct solver. The checks are exact identities of the
-solved S (no comparison with a closed form), so they hold on a coarse mesh.
+solved S (no comparison with a closed form), so they hold on a coarse mesh; the
+absorptance bounds of the lossless cell measure the mesh's power defect.
 """
 
 import math
@@ -23,6 +24,13 @@ TOP, BOT = "z_max", "z_min"
 F0 = pc.F1_FREQUENCY
 #: Identities of exact arithmetic on S: round-off only (measured about 2e-16).
 EXACT = 1e-14
+#: |A| of the lossless F1 at oblique incidence on this coarse mesh at p = 2: the
+#: discretization's power defect, not round-off (1.2e-3 measured at 40°/30°,
+#: 8.1e-4 at 30° and 1.6 f0; 6.0e-7 on `F1_FINE_CELLS` at p = 3). At normal
+#: incidence the coarse defect is within `F1_POWER_TOL` (3.7e-5 measured). A
+#: dropped row or a wrong weight moves A by F1's smallest reflectance (3.5e-2)
+#: or more.
+OBLIQUE_POWER_TOL = 5e-3
 POLARIZATIONS = ("TE", "TM", "RCP", "LCP", "unpolarized", (0.6, 0.8j))
 
 
@@ -58,24 +66,24 @@ def pec(tmp_path_factory):
     return model, gfem.solve(model, gfem.Driven([F0]), options=options)
 
 
+@pytest.fixture(scope="module")
+def partial(model):
+    """F1 without the port ``T_TM``: order (0, 0) propagates on z_min in TM unread."""
+    partial = model.replace(ports=[p for p in model.ports if p.name != "T_TM"])
+    with pytest.warns(gfem.UnrequestedOrderWarning):
+        result = gfem.solve(partial, gfem.Driven([F0]), options=OPTS)
+    return partial, result
+
+
 @pytest.fixture(params=["normal", "oblique"])
 def cell(request, model):
     return request.getfixturevalue(request.param), model
 
 
-def _col(result, surface, pol):
-    """The incident column of a polarization on the face ``surface`` (hand-built)."""
+def _te_column(result, surface):
+    """S's column of the TE port of the face ``surface``."""
     s = result.s
-    tm = s.values[:, :, s.excited.index(("R" if surface == TOP else "T") + "_TM")]
-    te = s.values[:, :, s.excited.index(("R" if surface == TOP else "T") + "_TE")]
-    h_in = -1 if surface == TOP else 1
-    return {
-        "TE": te,
-        "TM": tm,
-        "RCP": (tm - 1j * h_in * te) / math.sqrt(2),
-        "LCP": (tm + 1j * h_in * te) / math.sqrt(2),
-        (0.6, 0.8j): 0.6 * tm + 0.8j * te,
-    }[pol]
+    return s.values[:, :, s.excited.index(("R" if surface == TOP else "T") + "_TE")]
 
 
 # --- C1: efficiency rows ---------------------------------------------------------
@@ -89,7 +97,7 @@ def test_c1_circular_rows_are_the_circular_combinations_of_the_outgoing_waves(
     eff = dif.efficiencies(
         result, surface, polarization="TE", model=model, basis="circular"
     )
-    col = _col(result, surface, "TE")
+    col = _te_column(result, surface)
     ports = result.s.ports
     for (s, order, pol), row in zip(eff.rows, eff.values.T, strict=True):
         h = 1 if s == TOP else -1
@@ -141,19 +149,35 @@ def test_c2_the_power_balance_closes_from_both_faces(cell, surface, polarization
     total = bal.reflectance + bal.transmittance + bal.absorptance + bal.coupled
     np.testing.assert_allclose(total, 1.0, rtol=0, atol=EXACT)
     np.testing.assert_array_equal(bal.coupled, 0.0)
-    assert float(jnp.abs(bal.absorptance).max()) <= pc.F1_POWER_TOL * 100
     eff = dif.efficiencies(result, surface, polarization=polarization, model=model)
     on = [i for i, r in enumerate(eff.rows) if r[0] == surface]
+    off = [i for i, r in enumerate(eff.rows) if r[0] != surface]
     np.testing.assert_allclose(
         bal.reflectance, eff.values[:, on].sum(axis=1), rtol=0, atol=EXACT
     )
+    np.testing.assert_allclose(
+        bal.transmittance, eff.values[:, off].sum(axis=1), rtol=0, atol=EXACT
+    )
+    assert float(jnp.abs(bal.absorptance).max()) <= OBLIQUE_POWER_TOL
 
 
-def test_c2_a_lossless_cell_at_normal_incidence_absorbs_nothing(normal, model):
-    # coarse p = 2: the power defect is the mesh's, not round-off
+@pytest.mark.parametrize("surface", [TOP, BOT])
+def test_c2_a_lossless_cell_at_normal_incidence_absorbs_nothing(normal, model, surface):
     for pol in POLARIZATIONS:
-        bal = dif.power_balance(normal, TOP, polarization=pol, model=model)
-        assert float(jnp.abs(bal.absorptance).max()) <= 6e-3
+        bal = dif.power_balance(normal, surface, polarization=pol, model=model)
+        assert float(jnp.abs(bal.absorptance).max()) <= pc.F1_POWER_TOL
+
+
+def test_c2_a_jones_pair_is_normalized(normal, model):
+    for fn in (dif.efficiencies, dif.power_balance):
+        a, b = (
+            fn(normal, BOT, polarization=pair, model=model)
+            for pair in ((0.6, 0.8j), (3, 4j))
+        )
+        for x, y in zip(jax.tree.leaves(a), jax.tree.leaves(b), strict=True):
+            np.testing.assert_allclose(x, y, rtol=0, atol=EXACT)
+        assert a.incidence[:2] == b.incidence[:2] == (BOT, (0, 0))
+        np.testing.assert_allclose(b.incidence[2], (0.6, 0.8j), rtol=0, atol=EXACT)
 
 
 @pytest.mark.parametrize("surface", [TOP, BOT])
@@ -182,11 +206,9 @@ def test_c2_a_pec_backed_cell_reflects_everything(pec):
 
 
 def test_c7_a_missing_polarization_refuses_the_balance_but_not_the_efficiencies(
-    model,
+    partial,
 ):
-    partial = model.replace(ports=[p for p in model.ports if p.name != "T_TM"])
-    with pytest.warns(gfem.UnrequestedOrderWarning):
-        result = gfem.solve(partial, gfem.Driven([F0]), options=OPTS)
+    partial, result = partial
     with pytest.raises(
         ValueError,
         match=re.escape(
@@ -222,22 +244,23 @@ def test_c7_an_undeclared_order_that_opens_in_the_band_is_listed(model):
 
 
 def _slab(model, eps):
-    slab = gfem.MaterialField.uniform("slab", gfem.Material(eps_r=4.0))
-    slab = type(slab)(eps_r=eps * jnp.ones_like(slab.eps_r))
-    return model.with_material("slab", slab)
+    """``model`` with the slab's eps_r ``eps`` on every element, traceable."""
+    n = len(model.mesh.elements("slab"))
+    return model.with_material("slab", gfem.MaterialField(eps_r=jnp.full(n, eps)))
 
 
 def test_c8_power_balance_under_jit_equals_eager(model):
-    problem = gfem.Driven([F0])
+    problem = gfem.Driven([F0, 1.1 * F0])
 
-    def absorptance(eps):
+    def balance(eps):
         result = gfem.solve(_slab(model, eps), problem, options=OPTS)
-        bal = dif.power_balance(result, TOP, polarization="RCP", model=model)
-        return bal.absorptance[0] + bal.reflectance[0]
+        return dif.power_balance(result, BOT, polarization="RCP", model=model)
 
-    np.testing.assert_allclose(
-        jax.jit(absorptance)(4.0), absorptance(4.0), rtol=0, atol=EXACT
-    )
+    jitted, eager = jax.jit(balance)(pc.F1_EPS_SLAB), balance(pc.F1_EPS_SLAB)
+    for x, y in zip(jax.tree.leaves(jitted), jax.tree.leaves(eager), strict=True):
+        np.testing.assert_allclose(x, y, rtol=0, atol=EXACT)
+    assert jitted.incidence == eager.incidence
+    np.testing.assert_array_equal(jitted.frequency, eager.frequency)
 
 
 def test_c8_a_result_entering_jit_serves_efficiencies_but_not_power_balance(
@@ -273,8 +296,9 @@ def test_c8_the_outputs_differentiate_through_s(model):
         ).reflectance[0]
 
     h = 1e-4
-    fd = (loss(4.0 + h) - loss(4.0 - h)) / (2 * h)
-    assert abs(float(jax.grad(loss)(4.0)) - float(fd)) <= 1e-6 * abs(float(fd))
+    eps = pc.F1_EPS_SLAB
+    fd = (loss(eps + h) - loss(eps - h)) / (2 * h)
+    assert abs(float(jax.grad(loss)(eps)) - float(fd)) <= 1e-6 * abs(float(fd))
 
 
 # --- C9: sequences and messages ----------------------------------------------------
@@ -366,6 +390,15 @@ def test_c9_the_messages_of_the_inputs(
     )
     raises(
         ValueError,
+        f"{name}: no Floquet port reads order (1, 0) in TM on 'z_max' "
+        "(polarization='RCP' combines the order's TM and TE columns). Add "
+        "gfem.FloquetPort(name, 'z_max', order=(1, 0), polarization='TM') to "
+        "the model.",
+        order=(1, 0),
+        polarization="RCP",
+    )
+    raises(
+        ValueError,
         f"{name}: Floquet port 'R_TM' (order (0, 0), TM on 'z_max') was not "
         "excited, so S has no column for it. Solve with Driven(..., "
         "excite=None) or add 'R_TM' to Driven.excite.",
@@ -405,7 +438,20 @@ def test_c9_the_messages_of_the_inputs(
         "differs from result 0 in its frequencies.",
         result=[normal, other_frequency],
     )
+    raises(
+        ValueError,
+        f"{name}: the results of a sequence must share their ports, excited "
+        "ports, frequencies and Floquet ports (one angle sweep); result 1 "
+        "differs from result 0 in its Floquet ports.",
+        result=[normal, normal.with_offsets({"R_TM": 1e-7})],
+    )
     raises(ValueError, f"{name}: the sequence of results is empty.", result=[])
+    raises(
+        TypeError,
+        f"{name} needs a gfem.DrivenResult or a sequence of them (an angle sweep), "
+        "got str.",
+        result=[normal, "z_max"],
+    )
 
 
 def test_c9_a_basis_other_than_linear_or_circular_is_refused(normal, model):
@@ -416,10 +462,8 @@ def test_c9_a_basis_other_than_linear_or_circular_is_refused(normal, model):
         dif.efficiencies(normal, TOP, polarization="TE", model=model, basis="x")
 
 
-def test_c9_a_circular_basis_needs_both_polarizations_of_every_order(model):
-    partial = model.replace(ports=[p for p in model.ports if p.name != "T_TM"])
-    with pytest.warns(gfem.UnrequestedOrderWarning):
-        result = gfem.solve(partial, gfem.Driven([F0]), options=OPTS)
+def test_c9_a_circular_basis_needs_both_polarizations_of_every_order(partial):
+    partial, result = partial
     with pytest.raises(
         ValueError,
         match=re.escape(
@@ -434,15 +478,10 @@ def test_c9_a_circular_basis_needs_both_polarizations_of_every_order(model):
         )
 
 
-def test_c9_the_two_polarizations_of_a_coherent_combination_share_an_offset(model):
-    ports = [
-        gfem.FloquetPort("R_TE", TOP, polarization="TE"),
-        gfem.FloquetPort("R_TM", TOP, polarization="TM", offset=1e-7),
-        gfem.FloquetPort("T_TE", BOT, polarization="TE"),
-        gfem.FloquetPort("T_TM", BOT, polarization="TM"),
-    ]
-    cell = model.replace(ports=ports)
-    result = gfem.solve(cell, gfem.Driven([F0]), options=OPTS)
+def test_c9_the_two_polarizations_of_a_coherent_combination_share_an_offset(
+    normal, model
+):
+    result, cell = normal.with_offsets({"R_TM": 1e-7}), model
     message = (
         "Floquet ports 'R_TM' and 'R_TE' read order (0, 0) on 'z_max' at "
         "different offsets (1e-07 m and 0 m), so their relative phase mixes two "
@@ -490,7 +529,7 @@ def test_c9_a_traced_jones_pair_raises(normal, model):
             transform(f)(1.0)
 
 
-def test_c9_efficiency_keys_raise_named_errors(normal, model):
+def test_c9_efficiency_keys_raise_named_errors(normal, model, partial):
     eff = dif.efficiencies(normal, TOP, polarization="TE", model=model)
     rows = ", ".join(map(repr, eff.rows))
     with pytest.raises(
@@ -502,9 +541,7 @@ def test_c9_efficiency_keys_raise_named_errors(normal, model):
         eff[TOP, (1, 0), "TE"]
     with pytest.raises(KeyError, match="No efficiency row"):
         eff["z_max"]
-    partial = model.replace(ports=[p for p in model.ports if p.name != "T_TM"])
-    with pytest.warns(gfem.UnrequestedOrderWarning):
-        result = gfem.solve(partial, gfem.Driven([F0]), options=OPTS)
+    partial, result = partial
     eff = dif.efficiencies(result, TOP, polarization="TE", model=partial)
     with pytest.raises(
         KeyError,
@@ -573,12 +610,13 @@ def test_floquet_ports_scale_a_wave_vector_with_the_frequency(model):
 
 def test_floquet_ports_make_a_complete_declaration(model):
     k = model.bloch_wave_vector(TOP, F0, theta=math.radians(30.0), phi=0.4)
-    f = [F0, 2.5 * F0]
+    f = [F0, 1.6 * F0]
     ports = [
         p
         for s in (TOP, BOT)
         for p in dif.floquet_ports(model, s, f, wave_vector=k, wave_vector_frequency=F0)
     ]
+    assert len(ports) > 4  # orders beyond the specular one open at 1.6 f0
     cell = model.replace(ports=ports)
     problem = gfem.Driven(
         f,
@@ -591,7 +629,7 @@ def test_floquet_ports_make_a_complete_declaration(model):
     np.testing.assert_allclose(
         bal.reflectance + bal.transmittance + bal.absorptance, 1.0, rtol=0, atol=EXACT
     )
-    assert float(jnp.abs(bal.absorptance).max()) <= 2e-2
+    assert float(jnp.abs(bal.absorptance).max()) <= OBLIQUE_POWER_TOL
 
 
 def test_floquet_ports_messages(model):
@@ -612,6 +650,18 @@ def test_floquet_ports_messages(model):
             ),
         ):
             dif.floquet_ports(model, TOP, F0, wave_vector=bad)
+    for f0 in (0.0, -F0, "f0", math.inf):
+        with pytest.raises(
+            ValueError,
+            match=re.escape(
+                "floquet_ports: wave_vector_frequency must be a positive finite "
+                "frequency in Hz, or None for the same wave vector at every "
+                f"frequency; got {f0!r}."
+            ),
+        ):
+            dif.floquet_ports(
+                model, TOP, F0, wave_vector=(0, 0, 0), wave_vector_frequency=f0
+            )
     with pytest.raises(gfem.errors.RegionNotFoundError, match="nowhere"):
         dif.floquet_ports(model, "nowhere", F0)
     with pytest.raises(gfem.NonDifferentiableError, match="fixed"):
