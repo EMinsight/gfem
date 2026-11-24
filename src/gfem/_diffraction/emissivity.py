@@ -34,7 +34,6 @@ __all__ = [
     "hemispherical_emissivity",
 ]
 
-EmissionPolarization = Literal["TE", "TM", "RCP", "LCP", "unpolarized"]
 _POLARIZATIONS = ("TE", "TM", "RCP", "LCP", "unpolarized")
 #: Absolute tolerance, rad, between a sweep's incidences and a rule's nodes.
 _NODE_TOL = 1e-12
@@ -238,7 +237,7 @@ def emissivity(
     sweep: AngleSweepResult,
     *,
     model: Model,
-    polarization: EmissionPolarization = "unpolarized",
+    polarization: Literal["TE", "TM", "RCP", "LCP", "unpolarized"] = "unpolarized",
 ) -> Emissivity:
     r"""Spectral emissivity of a periodic emitter by Kirchhoff's law.
 
@@ -287,7 +286,7 @@ def hemispherical_emissivity(
     rule: HemisphereRule,
     *,
     model: Model,
-    polarization: EmissionPolarization = "unpolarized",
+    polarization: Literal["TE", "TM", "RCP", "LCP", "unpolarized"] = "unpolarized",
 ) -> jax.Array:
     r"""The hemispherical emissivity :math:`e_h(f)` over a `HemisphereRule`.
 
