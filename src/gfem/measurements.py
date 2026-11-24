@@ -1647,8 +1647,10 @@ def strain(displacement: Any, points: Any) -> jax.Array:
     It is read in the lab frame, in the mechanical domain. The gradient of
     each component is exact for the solved field, and linear in its
     coefficients: under `jax.grad` it flows back into the solve that made the
-    displacement, and it works under `jax.jit` and `jax.vmap`. The points and
-    the mesh node coordinates are fixed.
+    displacement, and it works under `jax.jit` and `jax.vmap`. The points are
+    fixed. The mesh node coordinates are differentiable: the point stays where
+    it is while the elements move under it (a node map of `gfem.Mesh.with_nodes`
+    reaches the strain at a fixed point).
 
     Args:
         displacement: The displacement map ``res.displacement(f)``, with the
