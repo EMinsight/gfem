@@ -355,6 +355,10 @@ MATERIAL_PROPERTIES = {
     "mass_density": None,
     "specific_heat": None,
     "thermo_optic_coefficient": None,
+    # a solid's constants: exact zeros of every problem in the raise table
+    "stiffness": None,
+    "piezoelectric_tensor": None,
+    "mechanical_quality_factor": None,
 }
 SOLVERS = {"direct": "direct solver", "bddc_gmres": "BDDC + GMRES"}
 # OUT_OF_SCOPE rows the grid needs (by their label): the row's cell raises.
