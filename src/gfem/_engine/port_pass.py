@@ -347,28 +347,29 @@ class PortResult:
 
 
 @dataclasses.dataclass(eq=False)
-class _Face:
-    """One active wave port surface."""
+class _Surface:
+    """One active wave port surface (a line, on a 2D model)."""
 
     coupling: PortSurfaceCoupling
-    space: PortModeSpace
     #: Per mode of the surface, its position among the model's wave ports.
     wave: list[int]
     #: Per mode, the model's port index.
     index: list[int]
+
+
+@dataclasses.dataclass(eq=False)
+class _Face(_Surface):
+    """One active planar wave port surface."""
+
+    space: PortModeSpace
     forms: FaceForms
 
 
 @dataclasses.dataclass(eq=False)
-class _Line:
-    """One active line port surface (a 2D model's wave port)."""
+class _Line(_Surface):
+    """One active line port surface."""
 
-    coupling: PortSurfaceCoupling
     space: LineModeSpace
-    #: Per mode of the surface, its position among the model's wave ports.
-    wave: list[int]
-    #: Per mode, the model's port index.
-    index: list[int]
     forms: LineFaceForms
 
 
@@ -423,9 +424,9 @@ class PortPass:
                 self.lines.append(
                     _Line(
                         surface,
-                        space,
                         [self.waves[i] for i in index],
                         index,
+                        space,
                         LineFaceForms.of(space, lead=lead, excited=excited),
                     )
                 )
@@ -435,9 +436,9 @@ class PortPass:
             self.faces.append(
                 _Face(
                     surface,
-                    space,
                     [self.waves[i] for i in index],
                     index,
+                    space,
                     FaceForms.of(space, lead=lead, excited=excited),
                 )
             )
@@ -570,27 +571,22 @@ class PortPass:
             outside = ct_gamma[self.waves[c.index]]
             outside += bar_d[c.index] * d[c.index] * c.port.offset
             row_gamma[c.index] = outside / c.scale
-        stored = []
-        for face in self.faces:
-            trace = face.coupling.trace
-            if trace is None:  # pragma: no cover - built with its maps
-                raise ValueError("The port surface keeps no face trace maps.")
-            a, u = traces(trace, face.space.n_t)
-            stored.append(
-                (_mpi.reduce_bcast(self.comm, a), _mpi.reduce_bcast(self.comm, u))
-            )
-        line_traces = []
-        for line in self.lines:
-            trace = line.coupling.trace
-            if trace is None:  # pragma: no cover - built with its maps
-                raise ValueError("The port surface keeps no face trace maps.")
-            n_dof = line.space.space.ndof
-            a, u = traces(trace, n_dof)
-            line_traces.append(
-                (_mpi.reduce_bcast(self.comm, a), _mpi.reduce_bcast(self.comm, u))
-            )
+        stored = [self._trace(face, traces, face.space.n_t) for face in self.faces]
+        line_traces = [
+            self._trace(line, traces, line.space.space.ndof) for line in self.lines
+        ]
         weights = ct * d[:, None] * s[None, :]
         self.rows[n] = Row(omega, stored, weights, row_gamma, ct_z, line_traces)
+
+    def _trace(
+        self, surface: _Surface, traces: Any, n_dof: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """The adjoint and solution traces of ``surface``, on every rank."""
+        trace = surface.coupling.trace
+        if trace is None:  # pragma: no cover - built with its maps
+            raise ValueError("The port surface keeps no face trace maps.")
+        a, u = traces(trace, n_dof)
+        return _mpi.reduce_bcast(self.comm, a), _mpi.reduce_bcast(self.comm, u)
 
     def _cotangents(
         self, n: int, n_columns: int, cotangents: Mapping[str, np.ndarray]
@@ -884,7 +880,7 @@ class _Context:
     rules: list[tuple[np.ndarray, np.ndarray] | None]
 
 
-def _who(face: _Face | _Line, k: int) -> str:
+def _who(face: _Surface, k: int) -> str:
     """The label of surface ``face``'s ``k``-th wave port, for messages."""
     return f"WavePort {face.coupling.ports[k].port.name!r}"
 
