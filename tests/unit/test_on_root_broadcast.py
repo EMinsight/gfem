@@ -16,7 +16,7 @@ class _Comm:
         self.sent.append(("bcast", value))
         return value if self.rank == root else (None, [])
 
-    def Bcast(self, array, root=0):  # noqa: N802 - mpi4py's name
+    def Bcast(self, array, root=0):  # noqa: ARG002, N802
         self.sent.append(("Bcast", array))
 
 
