@@ -777,6 +777,8 @@ def _piezoelectric_cells() -> list[Cell]:
         Cell("piezoelectric", "eps_r_axes", "direct"),
         Cell("piezoelectric", "nodes", "direct"),
     ]
+
+
 # --- port mode cells -----------------------------------------------------------------
 # `gfem.PortMode` differentiated by its 2D adjoint: the design sits on the port
 # face (the wave line's layer "lo" touches both ends), the objective reads gamma,
