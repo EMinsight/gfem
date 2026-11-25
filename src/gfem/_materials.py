@@ -190,9 +190,29 @@ _PIEZOELECTRIC = _SolidTensor(
     "contract a full e_kij to columns ij = xx, yy, zz, yz, xz, xy",
 )
 _SOLID_TENSORS = (_STIFFNESS, _PIEZOELECTRIC)
-_SOLID_BY_NAME = {t.name: t for t in _SOLID_TENSORS}
+# the photoelastic tensor is checked and carried like the solid's, but belongs to
+# the optical material, so it is not one of the acoustic `_SOLID_TENSORS`
+_PHOTOELASTIC = _SolidTensor(
+    "photoelastic_tensor",
+    (6, 6),
+    (3, 3, 3, 3),
+    "the contracted 6x6 matrix p_IJ at constant electric field, dimensionless "
+    "(rows xx, yy, zz, yz, xz, xy of the inverse permittivity change, columns "
+    "xx, yy, zz, yz, xz, xy of the engineering strain)",
+    "contract a full p_ijkl to rows and columns ij = xx, yy, zz, yz, xz, xy, with "
+    "no factors of 2",
+)
+_SOLID_BY_NAME = {t.name: t for t in (*_SOLID_TENSORS, _PHOTOELASTIC)}
 #: A material field's tensors outside the property table, as its leaves.
-_FIELD_TENSORS = ("electro_optic_tensor", "stiffness", "piezoelectric_tensor")
+_FIELD_TENSORS = (
+    "electro_optic_tensor",
+    "photoelastic_tensor",
+    "stiffness",
+    "piezoelectric_tensor",
+)
+# dimensionless: above every tabulated photoelastic constant (below 1 in every
+# solid), far below a value typed in percent
+_PHOTOELASTIC_MAX = 10.0
 # Pa: below the largest constant of every solid (even a rubber-like c11 is
 # near 1e9 Pa), far above a value typed in GPa
 _STIFFNESS_MIN = 1e5
@@ -236,6 +256,15 @@ def _check_solid_values(tensor: _SolidTensor, arr: np.ndarray, owner: str) -> No
     if not np.isfinite(arr).all():
         raise ValueError(f"{owner}: {tensor.name} must be finite.")
     big = np.abs(arr).max(axis=(-2, -1))
+    if tensor is _PHOTOELASTIC:
+        if big.max(initial=0.0) > _PHOTOELASTIC_MAX:
+            raise ValueError(
+                f"{owner}: photoelastic_tensor has an entry of "
+                f"{_short(big.max())}, above {_PHOTOELASTIC_MAX:g}: p is "
+                "dimensionless and below 1 in every solid, so 0.12 is not 12 "
+                "(percent)."
+            )
+        return
     if tensor is _PIEZOELECTRIC:
         small = (big > 0) & (big < _PIEZOELECTRIC_MIN)
         if small.any():
@@ -301,6 +330,7 @@ def _check_solid(
     piezoelectric: Any,
     quality_factor: Any,
     electro_optic: Any,
+    photoelastic: Any = None,
 ) -> None:
     """Raise for a solid's values that do not go together.
 
@@ -320,6 +350,19 @@ def _check_solid(
             "electro-optic one. Give the crystal two Materials, an acoustic one "
             "(eps_r, stiffness, piezoelectric_tensor, mass_density) and an "
             "optical one (eps_r, electro_optic_tensor), one for each model."
+        )
+    if photoelastic is not None and (
+        stiffness is not None or piezoelectric is not None
+    ):
+        given = "stiffness" if stiffness is not None else "piezoelectric_tensor"
+        raise ValueError(
+            f"{owner}: a {given} sits beside a photoelastic_tensor, but the two "
+            "read different eps_r: the clamped static permittivity of an "
+            "acoustic problem, the optical permittivity at the wavelength of a "
+            "photoelastic one. Give the crystal two Materials, an acoustic one "
+            "(eps_r, stiffness, piezoelectric_tensor, mass_density) and an "
+            "optical one (eps_r, photoelastic_tensor, electro_optic_tensor), one "
+            "for each model."
         )
     if piezoelectric is not None and stiffness is None:
         raise ValueError(
@@ -398,6 +441,16 @@ def isotropic_stiffness(young_modulus: Any, poisson_ratio: Any) -> Any:
     lame = e * nu / ((1 + nu) * (1 - 2 * nu))
     shear = e / (2 * (1 + nu))
     return lame * _LAMBDA_PATTERN + shear * _MU_PATTERN
+
+
+def _photoelastic_law_message(owner: str) -> str:
+    """Why a photoelastic tensor cannot sit beside a permittivity law."""
+    return (
+        f"{owner}: a photoelastic_tensor needs a constant eps_r, but eps_r is a "
+        "PermittivityLaw, which takes no axes, so the frame of the tensor would "
+        "be lost. Give the optical permittivity at the wavelength as a constant "
+        "eps_r, with axes."
+    )
 
 
 def _solid_law_message(owner: str, tensor: str) -> str:
@@ -1351,6 +1404,22 @@ class Material:
             :math:`Q_m`, > 0, beside a `stiffness`: the solid's loss, which
             makes the stiffness :math:`c (1 + i / Q_m)` under
             :math:`e^{+i\omega t}`. ``None``: lossless.
+        photoelastic_tensor: The photoelastic tensor :math:`p^E_{IJ}`,
+            dimensionless, contracted to a real 6x6 matrix: rows :math:`I` in
+            the Voigt order xx, yy, zz, yz, xz, xy of the inverse relative
+            permittivity (tensor components), columns :math:`J` in the same
+            order of the engineering strain, so that
+            :math:`\Delta(\varepsilon_r^{-1})_I = \sum_J p_{IJ} S_J` and
+            :math:`p_{IJ} = p_{ijkl}` with no factors of 2, as Nye and the
+            compiled tables print it. It is not symmetric in general
+            (:math:`p_{14} \neq p_{41}` in a 3m crystal). Given in the frame of
+            `axes` like the `stiffness`, rotated as one, on the optical
+            `Material` of a crystal (`eps_r` the optical permittivity) beside
+            its `electro_optic_tensor`; the acoustic `Material` of the same
+            crystal holds the `stiffness`. Enter the constant-field
+            coefficients :math:`p^E`: the electro-optic part of an acoustic
+            field is counted through the clamped `electro_optic_tensor`.
+            ``None``: no photoelastic effect.
         name: A free-form label (for example ``"silicon"``), shown in reprs.
 
     Raises:
@@ -1373,7 +1442,11 @@ class Material:
             that is not a real, finite 3x6 matrix, or whose nonzero largest
             entry is below 1e-6 C/m^2 (strain constants d); a
             `piezoelectric_tensor` or a `mechanical_quality_factor` without
-            a `stiffness`, or a `mechanical_quality_factor` <= 0; either
+            a `stiffness`, or a `mechanical_quality_factor` <= 0; a
+            `photoelastic_tensor` that is not a real, finite 6x6 matrix or
+            has an entry above 10 in magnitude, or sits beside a `stiffness`
+            or `piezoelectric_tensor`, a matrix property, left-handed `axes`
+            or a `PermittivityLaw`; either
             tensor beside a matrix property, left-handed `axes`, a
             `PermittivityLaw` or an `electro_optic_tensor` (give the crystal
             an acoustic and an optical `Material`); a `piezoelectric_tensor`
@@ -1400,6 +1473,7 @@ class Material:
     stiffness: tuple[tuple[float, ...], ...] | None = None
     piezoelectric_tensor: tuple[tuple[float, ...], ...] | None = None
     mechanical_quality_factor: float | None = None
+    photoelastic_tensor: tuple[tuple[float, ...], ...] | None = None
     name: str | None = None
 
     density = property(_no_density_attribute)
@@ -1414,18 +1488,25 @@ class Material:
             _PIEZOELECTRIC, self.piezoelectric_tensor, owner
         )
         object.__setattr__(self, "piezoelectric_tensor", piezoelectric)
+        photoelastic = _material_solid_tensor(
+            _PHOTOELASTIC, self.photoelastic_tensor, owner
+        )
+        object.__setattr__(self, "photoelastic_tensor", photoelastic)
         _check_solid(
             owner,
             stiffness=stiffness,
             piezoelectric=piezoelectric,
             quality_factor=self.mechanical_quality_factor,
             electro_optic=tensor,
+            photoelastic=photoelastic,
         )
         # a piezoelectric tensor comes with a stiffness, which names the frame
         solid = None if stiffness is None else "stiffness"
         if isinstance(self.eps_r, PermittivityLaw):
             if tensor is not None:
                 raise ValueError(_eo_law_message(owner))
+            if photoelastic is not None:
+                raise ValueError(_photoelastic_law_message(owner))
             if solid is not None:
                 raise ValueError(_solid_law_message(owner, solid))
             for name, value in _law_material_values(self, owner).items():
@@ -1434,7 +1515,13 @@ class Material:
         values = {
             p.name: _material_value(p, getattr(self, p.name), owner) for p in PROPERTIES
         }
-        crystal = "electro_optic_tensor" if tensor is not None else solid
+        crystal = (
+            "electro_optic_tensor"
+            if tensor is not None
+            else "photoelastic_tensor"
+            if photoelastic is not None
+            else solid
+        )
         if crystal is not None:
             _check_crystal_frame(values, self.axes, owner, crystal)
         vacuum = np.all(np.asarray(values["eps_r"]) == 1.0)
@@ -1987,9 +2074,17 @@ def _has_eo(*materials: Material) -> bool:
     return any(m.electro_optic_tensor is not None for m in materials)
 
 
+def _has_photoelastic(*materials: Material) -> bool:
+    return any(m.photoelastic_tensor is not None for m in materials)
+
+
 def _has_crystal(*materials: Material) -> bool:
     """Whether a material has a tensor given in the frame of its axes."""
-    return _has_eo(*materials) or any(m.stiffness is not None for m in materials)
+    return (
+        _has_eo(*materials)
+        or _has_photoelastic(*materials)
+        or any(m.stiffness is not None for m in materials)
+    )
 
 
 def _blend_solid(void: Material, solid: Material, axes: Any, w: Any) -> dict:
@@ -2065,6 +2160,22 @@ def _blend_eo(void: Material, solid: Material, axes: Any, w: Any) -> Any:
     return a + jnp.asarray(w)[..., None, None] * (b - a)
 
 
+def _blend_photoelastic(void: Material, solid: Material, axes: Any, w: Any) -> Any:
+    """The photoelastic tensor blended by weight ``w`` in the frame of ``axes``.
+
+    An end without a tensor counts as zero; ``None`` when neither has one.
+    """
+    if not _has_photoelastic(void, solid):
+        return None
+    a, b = (
+        np.zeros((6, 6))
+        if m.photoelastic_tensor is None
+        else stiffness_in_frame(np.asarray(m.photoelastic_tensor), m.axes, axes)
+        for m in (void, solid)
+    )
+    return a + jnp.asarray(w)[..., None, None] * (b - a)
+
+
 @_renamed_density
 @dataclasses.dataclass(frozen=True, kw_only=True, eq=False)
 class MaterialField:
@@ -2105,6 +2216,11 @@ class MaterialField:
     real value per element or for the region. `jax.grad` reaches their
     entries.
 
+    `photoelastic_tensor` is the contracted 6x6 matrix :math:`p^E_{IJ}` of
+    `Material` (dimensionless), shape ``(6, 6)`` for the whole region or
+    ``(n_elements, 6, 6)`` per element, in the frame of `axes` as the
+    stiffness is; `jax.grad` reaches its entries.
+
     Build one with `MaterialField.interpolate` (a design density blended
     between two materials) or `MaterialField.uniform` (a whole region whose
     constant material should be differentiable).
@@ -2136,7 +2252,10 @@ class MaterialField:
             `Material` (per element), or comes with left-handed `axes`, in a
             blend or beside an `electro_optic_tensor`; a
             `piezoelectric_tensor` without `stiffness` or `eps_r`; a
-            `mechanical_quality_factor` without `stiffness`.
+            `mechanical_quality_factor` without `stiffness`; a
+            `photoelastic_tensor` that fails the checks of `Material` (per
+            element), or comes with left-handed `axes`, in a blend or beside a
+            `stiffness` or `piezoelectric_tensor`.
         NonDifferentiableError: `axes` is computed inside `jax.grad`,
             `jax.jit` or `jax.vmap` from their arguments; pass a fixed value.
     """
@@ -2153,6 +2272,7 @@ class MaterialField:
     stiffness: jax.Array | None = None
     piezoelectric_tensor: jax.Array | None = None
     mechanical_quality_factor: jax.Array | None = None
+    photoelastic_tensor: jax.Array | None = None
     region: str | None = None
     axes: tuple[tuple[float, float, float], ...] | None = None
     blend: jax.Array | None = None
@@ -2186,6 +2306,7 @@ class MaterialField:
             if self.axes is not None:
                 _check_right_handed(self.axes, "MaterialField")
         sizes |= self._check_solid()
+        sizes |= self._check_photoelastic()
         size = self._check_blend()
         if size is not None:
             sizes.add(size)
@@ -2228,6 +2349,26 @@ class MaterialField:
         if self.axes is not None:
             _check_right_handed(self.axes, "MaterialField", "stiffness")
         return sizes
+
+    def _check_photoelastic(self) -> set[int]:
+        """Check the photoelastic tensor; its per-element size."""
+        value = _field_solid_tensor(_PHOTOELASTIC, self.photoelastic_tensor)
+        object.__setattr__(self, "photoelastic_tensor", value)
+        if value is None:
+            return set()
+        _check_solid(
+            "MaterialField",
+            stiffness=self.stiffness,
+            piezoelectric=self.piezoelectric_tensor,
+            quality_factor=None,
+            electro_optic=None,
+            photoelastic=value,
+        )
+        if self.blend is not None:
+            raise ValueError(_photoelastic_law_message("MaterialField"))
+        if self.axes is not None:
+            _check_right_handed(self.axes, "MaterialField", "photoelastic_tensor")
+        return {value.shape[0]} if value.ndim == 3 else set()
 
     def _check_blend(self) -> int | None:
         """Check `blend` and `blend_ends`; the size of a per-element `blend`."""
@@ -2361,7 +2502,8 @@ class MaterialField:
 
         A `stiffness` blends linearly between two solids, and a
         `piezoelectric_tensor` with an end without one counting as zero,
-        both in the field's frame as the electro-optic tensor is. The
+        both in the field's frame as the electro-optic tensor is, and so does
+        the `photoelastic_tensor`, an end without one counting as zero. The
         `mechanical_quality_factor` blends through its loss: :math:`1/Q_m`
         is linear in the weight, between two ends that both give one. A
         layer density refuses them.
@@ -2399,6 +2541,8 @@ class MaterialField:
         law = any(isinstance(m.eps_r, PermittivityLaw) for m in (void, solid))
         if law and _has_eo(void, solid):
             raise ValueError(_eo_law_message("MaterialField.interpolate"))
+        if law and _has_photoelastic(void, solid):
+            raise ValueError(_photoelastic_law_message("MaterialField.interpolate"))
         if law or scheme == "index":
             return cls._interpolate_eps(rho, void, solid, scheme, penalty, law=law)
         w = _SCHEMES[scheme](rho, penalty)
@@ -2422,7 +2566,13 @@ class MaterialField:
             principal = axes is not None and _BY_NAME[name].may_be_tensor
             props[name] = a + (w[..., None] if principal else w) * (b - a)
         tensor = _blend_eo(void, solid, axes, w)
-        return cls(**props, electro_optic_tensor=tensor, axes=axes)
+        photoelastic = _blend_photoelastic(void, solid, axes, w)
+        return cls(
+            **props,
+            electro_optic_tensor=tensor,
+            photoelastic_tensor=photoelastic,
+            axes=axes,
+        )
 
     @classmethod
     def _interpolate_eps(
@@ -2450,6 +2600,7 @@ class MaterialField:
             if a is not None and b is not None:
                 props[name] = a + w * (b - a)
         props["electro_optic_tensor"] = _blend_eo(void, solid, None, w)
+        props["photoelastic_tensor"] = _blend_photoelastic(void, solid, None, w)
         if law:
             blend = Blend(ends[0], ends[1], scheme, float(penalty))
             return cls(**props, blend=rho, blend_ends=blend)

@@ -247,7 +247,12 @@ def _gather_field(field: MaterialField, region: str, gather) -> MaterialField:
             changes[name] = gather(value, region)
     # a crystal tensor per element, (n, 6, 3), (n, 6, 6) or (n, 3, 6),
     # gathered as (n, k)
-    for name in ("electro_optic_tensor", "stiffness", "piezoelectric_tensor"):
+    for name in (
+        "electro_optic_tensor",
+        "photoelastic_tensor",
+        "stiffness",
+        "piezoelectric_tensor",
+    ):
         tensor = getattr(field, name)
         if tensor is not None and tensor.ndim == 3:
             flat = gather(tensor.reshape(tensor.shape[0], -1), region)
