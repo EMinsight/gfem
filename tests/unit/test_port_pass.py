@@ -358,7 +358,7 @@ def test_a_per_axis_material_beside_an_absorbing_edge_is_refused_statically():
 
 
 def test_the_voltage_functional_on_the_free_dofs_reads_the_swept_voltage():
-    from gfem._sweep.port_mode import path_voltage
+    from gfem._sweep.port_mode import _voltage_row, _voltage_rule, path_voltage
 
     mesh = wave_mesh(Path(tempfile.mkdtemp()))
     model = face_line(mesh, "face_path")
@@ -368,7 +368,7 @@ def test_the_voltage_functional_on_the_free_dofs_reads_the_swept_voltage():
     field = mode.e_field
     space, basis, coords = field._space, field._basis, field._coords
     voltage = path_voltage(space, basis, coords, path, "p1")
-    functional = port_pass._voltage_free(space, path, "p1")
+    functional = _voltage_row(space, _voltage_rule(space.section, path, "p1"))
     for row, v in enumerate(voltage):
         stored = basis[space.free] @ coords[row]
         assert functional @ stored == pytest.approx(v, rel=1e-12)

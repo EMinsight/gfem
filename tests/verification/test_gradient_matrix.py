@@ -601,8 +601,8 @@ def _face_cells() -> list[Cell]:
     The two-layer line's lower layer "lo" touches both port faces: its
     per-element permittivity (lossless and lossy leads, with a voltage path,
     behind absorbing side walls, on a lossy shared surface), conductivity, loss
-    tangent, permeability, principal values, a law's parameters, the fill and the `Impedance` values of a sheet beside the ports,
-    a dipole's power through a port cut by a layer, and the permittivity on
+    tangent, permeability, principal values, a law's parameters, the fill and the `Impedance` values of a sheet beside
+    the ports, a dipole's power through a port cut by a layer, and the permittivity on
     BDDC + GMRES.
     """
     cells = [

@@ -48,7 +48,6 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-import ngsolve as ngs
 import numpy as np
 import scipy.constants
 import scipy.sparse as sp
@@ -74,7 +73,7 @@ from gfem._engine.port_mode_sensitivity import (
 from gfem._engine.port_mode_shape import ShapeForm, chain_to_nodes, voltage_eulerian
 from gfem._engine.sensitivity import Integrated
 from gfem._engine.wave_ports import PortSurfaceCoupling
-from gfem._sweep.port_mode import _voltage_rule, _wavenumbers
+from gfem._sweep.port_mode import _voltage_row, _voltage_rule, _wavenumbers
 from gfem.errors import PortModeError
 
 if TYPE_CHECKING:
@@ -371,30 +370,6 @@ def pullback_row(  # noqa: PLR0915
 
 
 # --- the full-space normalization ----------------------------------------------
-
-
-def _voltage_free(space: PortModeSpace, path: np.ndarray, name: str) -> np.ndarray:
-    r"""``V = \int E . dl`` of a free-DOF field vector: a functional on ``n_free``.
-
-    Each path point contributes the values of its element's basis functions.
-    """
-    pts, wts = _voltage_rule(space.section, np.asarray(path, float), name)
-    mesh = space.mesh
-    gf = ngs.GridFunction(space.space)
-    et, en = gf.components
-    values = gf.vec.FV().NumPy()
-    out = np.zeros(space.space.ndof, complex)
-    for (x, y), w in zip(pts, wts, strict=True):
-        mip = mesh(float(x), float(y))
-        if mip.nr < 0:
-            continue
-        for d in space.space.GetDofNrs(ngs.ElementId(ngs.VOL, mip.nr)):
-            if d < 0:
-                continue
-            values[d] = 1.0
-            out[d] += np.dot(w[:2], et(mip)) + w[2] * en(mip)
-            values[d] = 0.0
-    return out[space.free]
 
 
 # --- the pass ---------------------------------------------------------------------
@@ -888,10 +863,8 @@ class PortPass:
 
     def _volts(self, space, c) -> np.ndarray | None:
         """The voltage functional of a mode on the full field coordinates."""
-        path = c.port.voltage_path
-        if path is None:
-            return None
-        return _voltage_free(space, np.asarray(path), c.port.name)
+        rule = self._rule(space, c)
+        return None if rule is None else _voltage_row(space, rule)
 
     def _normalization(self, context, k, state, bars, omega):
         """The pullback of mode ``k``'s normalization: its raw pair's cotangents."""
