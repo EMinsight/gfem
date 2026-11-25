@@ -379,16 +379,15 @@ class PortModeRule:
     def unsupported_input(self, kind: tuple) -> str | None:
         """Why a read input cannot be differentiated here, or ``None``.
 
-        A line port's mode has no node derivative in this version; a wave
-        port's face is differentiated by the section's shape kernel.
+        A line port's mode differentiates the material field values only
+        (as a 2D driven solve does): its nodes, law parameters and boundary
+        values are refused. A wave port's face is differentiated by the
+        section's shape kernel.
         """
         if self._model.mesh.dim == 2:
-            if kind[0] == "nodes":
-                return (
-                    "the port mode problem of a line port does not differentiate "
-                    "the node coordinates in this version"
-                )
-            return None
+            from gfem._engine.driven2d import _NO_GRADIENTS
+
+            return None if kind[0] == "material" else _NO_GRADIENTS
         return anisotropic_absorbing(self._model, lead_port(self._ports))
 
     def nondifferentiable_output(self, name: str, kinds: Any = ()) -> str | None:
