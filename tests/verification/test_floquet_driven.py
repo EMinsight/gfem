@@ -166,14 +166,6 @@ def test_offsets_move_the_reference_planes_as_the_geometry_does(
 #: Every order propagating in some F2 case, declared on both faces in both
 #: polarizations (rows of orders evanescent on a face read 0).
 F2_ORDERS = tuple((m, 0) for m in (-2, -1, 0, 1, 2))
-#: max |eta - eta_ref| over every propagating order and incident
-#: polarization, p = 3 on `pc.F2_FINE_CELLS` (TE 9e-6 - 8e-5, TM 1.3e-4
-#: normal - 5.8e-4 oblique measured: TM is held by the field singularity at
-#: the ridge edges, 4.3e-4 at G20 with 8 x cells and 4 in the ridge).
-F2_EFFICIENCY_TOL = 1e-3
-#: 1 - sum |S|^2 of each column on the lossless cases (2.8e-7 - 1.7e-6
-#: measured).
-F2_POWER_TOL = 1e-4
 #: |(1 - sum |S|^2) - A_ref| on G20L (9e-6 TE, 1.6e-4 TM measured).
 F2_ABSORPTION_TOL = 1e-3
 #: |power_flow + sum_T |S|^2| through the substrate (4e-7 - 1.3e-6
@@ -230,12 +222,12 @@ def test_the_grating_matches_rcwa(grating, pol):
     }
     assert propagating == set(reference)
     error = max(abs(eta[key] - value) for key, value in reference.items())
-    assert error <= F2_EFFICIENCY_TOL
+    assert error <= pc.F2_EFFICIENCY_TOL
     defect = 1 - sum(eta.values())
     if case == "G20L":
         assert abs(defect - pc.F2_ABSORPTION[pol]) <= F2_ABSORPTION_TOL
     else:
-        assert abs(defect) <= F2_POWER_TOL
+        assert abs(defect) <= pc.F2_POWER_TOL
 
 
 @pytest.mark.parametrize("pol", ["TE", "TM"])

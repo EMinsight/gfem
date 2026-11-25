@@ -19,9 +19,6 @@ OPTS = gfem.SolverOptions(order=3, linear_solver="direct")
 TOP = "z_max"
 F0 = pc.F1_FREQUENCY
 DEG = math.pi / 180.0
-#: |efficiency - RCWA| and the power defect, as in the single-incidence F2 gates.
-F2_EFFICIENCY_TOL = 1e-3
-F2_POWER_TOL = 1e-4
 #: Planar specular cross-polarization (1.1e-5 measured); conical at least 1e-2
 #: (0.117 measured).
 PLANAR_CROSS = 1e-4
@@ -109,9 +106,9 @@ def test_s8_efficiencies_match_rcwa_and_the_balance_closes(f2_sweep, pol, index)
         surface = TOP if face == "R" else "z_min"
         got = float(np.asarray(eff[surface, (m, 0)])[index, 0])
         error = max(error, abs(got - value))
-    assert error <= F2_EFFICIENCY_TOL
+    assert error <= pc.F2_EFFICIENCY_TOL
     bal = dif.power_balance(sweep, TOP, polarization=pol, model=model)
-    assert abs(float(np.asarray(bal.absorptance)[index, 0])) <= F2_POWER_TOL
+    assert abs(float(np.asarray(bal.absorptance)[index, 0])) <= pc.F2_POWER_TOL
 
 
 @pytest.mark.parametrize("index", range(len(F2_CASE_NAMES)))

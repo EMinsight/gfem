@@ -1620,3 +1620,13 @@ def ridge_supercell_mesh(directory: Path, widths) -> gfem.Mesh:
         sm.structured((ex, ey, ez), volume, surface),
     )
     return gfem.Mesh.from_gmsh(path, length_unit="um")
+
+
+#: max |eta - eta_ref| over every propagating order and incident
+#: polarization, p = 3 on `F2_FINE_CELLS` (TE 9e-6 - 8e-5, TM 1.3e-4
+#: normal - 5.8e-4 oblique measured: TM is held by the field singularity at
+#: the ridge edges, 4.3e-4 at G20 with 8 x cells and 4 in the ridge).
+F2_EFFICIENCY_TOL = 1e-3
+#: 1 - sum |S|^2 of each column on the lossless cases (2.8e-7 - 1.7e-6
+#: measured).
+F2_POWER_TOL = 1e-4
