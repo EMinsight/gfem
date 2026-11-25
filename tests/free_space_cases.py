@@ -271,18 +271,10 @@ def model(
     )
 
 
-def mie(eps: complex | None, x: float) -> tuple[float, float, float]:
-    r"""Extinction, absorption and scattering efficiencies of a sphere.
-
-    Bohren and Huffman's series (Absorption and Scattering of Light by
-    Small Particles, 1983, ch. 4) for size parameter :math:`x = ka`,
-    :math:`Q = \sigma / (\pi a^2)`. Their :math:`e^{-i\omega t}` index is
-    :math:`m = n + i\kappa`, so gfem's :math:`\varepsilon = \varepsilon' -
-    i\varepsilon''` (:math:`e^{+i\omega t}`) is :math:`m =
-    \sqrt{\varepsilon' + i\varepsilon''}`. ``eps=None`` is the perfectly
-    conducting sphere: :math:`a_n = \psi_n'(x)/\xi_n'(x)`,
-    :math:`b_n = \psi_n(x)/\xi_n(x)`.
-    """
+def _mie_coefficients(
+    eps: complex | None, x: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The orders and the coefficients :math:`a_n, b_n` of `mie`."""
     n = np.arange(1, math.ceil(x + 4 * x ** (1 / 3) + 2) + 6)
 
     def psi(z: complex) -> np.ndarray:
@@ -305,9 +297,52 @@ def mie(eps: complex | None, x: float) -> tuple[float, float, float]:
         b = (psi(mx) * dpsi(x) - m * psi(x) * dpsi(mx)) / (
             psi(mx) * dxi - m * xi * dpsi(mx)
         )
+    return n, a, b
+
+
+def mie(eps: complex | None, x: float) -> tuple[float, float, float]:
+    r"""Extinction, absorption and scattering efficiencies of a sphere.
+
+    Bohren and Huffman's series (Absorption and Scattering of Light by
+    Small Particles, 1983, ch. 4) for size parameter :math:`x = ka`,
+    :math:`Q = \sigma / (\pi a^2)`. Their :math:`e^{-i\omega t}` index is
+    :math:`m = n + i\kappa`, so gfem's :math:`\varepsilon = \varepsilon' -
+    i\varepsilon''` (:math:`e^{+i\omega t}`) is :math:`m =
+    \sqrt{\varepsilon' + i\varepsilon''}`. ``eps=None`` is the perfectly
+    conducting sphere: :math:`a_n = \psi_n'(x)/\xi_n'(x)`,
+    :math:`b_n = \psi_n(x)/\xi_n(x)`.
+    """
+    n, a, b = _mie_coefficients(eps, x)
     ext = 2 / x**2 * float(np.sum((2 * n + 1) * np.real(a + b)))
     sca = 2 / x**2 * float(np.sum((2 * n + 1) * (np.abs(a) ** 2 + np.abs(b) ** 2)))
     return ext, ext - sca, sca
+
+
+def mie_radiation_pressure(eps: complex | None, x: float) -> float:
+    r"""The radiation-pressure efficiency of a sphere.
+
+    :math:`Q_\mathrm{pr} = Q_\mathrm{ext} - g Q_\mathrm{sca}`.
+
+    The force along the incident direction is :math:`Q_\mathrm{pr}\, I \pi a^2
+    / c`. Bohren and Huffman's asymmetry term (ch. 4)
+
+    .. math::
+
+        g Q_\mathrm{sca} = \frac{4}{x^2}\Bigl[\sum_n \frac{n(n+2)}{n+1}
+            \operatorname{Re}(a_n a_{n+1}^* + b_n b_{n+1}^*)
+            + \sum_n \frac{2n+1}{n(n+1)} \operatorname{Re}(a_n b_n^*)\Bigr].
+    """
+    n, a, b = _mie_coefficients(eps, x)
+    ext = 2 / x**2 * float(np.sum((2 * n + 1) * np.real(a + b)))
+    m = n[:-1]
+    cross = np.sum(
+        m
+        * (m + 2)
+        / (m + 1)
+        * np.real(a[:-1] * np.conj(a[1:]) + b[:-1] * np.conj(b[1:]))
+    )
+    same = np.sum((2 * n + 1) / (n * (n + 1)) * np.real(a * np.conj(b)))
+    return ext - 4 / x**2 * float(cross + same)
 
 
 def mie_cross_sections(eps: complex | None, radius_um: float) -> np.ndarray:
