@@ -16,6 +16,8 @@ import ngsolve as ngs
 import numpy as np
 import scipy.sparse as sp
 
+from gfem._engine.runtime import serial_spaces
+
 __all__ = ["Columns", "columns"]
 
 
@@ -62,7 +64,8 @@ def _point_maps(
     planar = len(space.section.normal) == 3
     q = 2 * space.order + raised
     mesh = space.mesh
-    irs = ngs.comp.IntegrationRuleSpace(mesh, order=q, complex=True)
+    with serial_spaces():
+        irs = ngs.comp.IntegrationRuleSpace(mesh, order=q, complex=True)
     cell = ngs.ET.TRIG if planar else ngs.ET.SEGM
     rule = ngs.IntegrationRule(cell, 2 * q)
     n_el, n_q = int(mesh.ne), len(rule.points)
