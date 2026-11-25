@@ -291,6 +291,53 @@ Material data:
   tutorial takes lithium niobate's clamped constants from `gfem.materials`:
   its push-pull $V_\pi L$ moves from 1.61 to 1.62 V·cm.
 
+Periodic surfaces:
+
+- **Cell outputs.** `gfem.diffraction.efficiencies` gives the efficiency of
+  each order and polarization of a Floquet-port solve (linear, circular or
+  unpolarized); `power_balance` splits the incident power into reflectance,
+  transmittance, absorptance and the power coupled to unreported orders; and
+  `jones` returns the Jones matrix between two faces with its circular and
+  Mueller forms.
+- **`floquet_ports`.** `gfem.diffraction.floquet_ports(model, surface,
+  frequency)` declares every propagating order of a face in both
+  polarizations, at a given wave vector if the incidence is oblique.
+- **Angle sweeps.** `gfem.diffraction.angle_sweep` solves a periodic cell at
+  a grid of polar and azimuth angles, conical incidence included, and gives
+  the helpers above for every member; one warning covers the orders that
+  carry power without a port, and a rerun with the same cache resumes where
+  an earlier one stopped.
+- **Emissivity.** `gfem.diffraction.emissivity` reads the directional
+  emissivity of a cell from the absorptance of the wave arriving from the
+  same direction (Kirchhoff's law), with the azimuth label that law needs;
+  `hemisphere` builds the quadrature over directions and
+  `hemispherical_emissivity` averages with it.
+- **Cell responses.** `gfem.diffraction.cell_response` solves a cell over one
+  meta-atom parameter, on one mesh morphed from sample to sample, and stores
+  its S with the derivative in the parameter; the response is evaluated at
+  any parameter by Hermite interpolation, differentiable in the parameter
+  and in the stored arrays, and saved to JSON.
+- **Aperture fields and propagation.** `gfem.diffraction.aperture_field`
+  places a cell of the response at every position of a large metasurface in
+  the locally periodic approximation, and `propagate` carries the field to
+  any distance with the angular spectrum, so a focal spot or a deflected
+  beam is a differentiable function of the parameter map.
+- **Metalens tutorial.** "A two-colour metalens" designs silicon nitride
+  ridges that focus green and red light on one line, from a cell response
+  to a gradient-optimized lens, and checks the locally periodic result
+  against a solved supercell.
+- **Behaviour change: diffraction-order arrays are NumPy constants.** The
+  fields of `DiffractionOrderResult` (the order's wave vectors, angles and
+  whether it propagates) are NumPy arrays, no longer JAX arrays, and stay
+  concrete under `jax.jit`, so a traced function can branch on which orders
+  propagate. Code that called a JAX method on one of them gets the NumPy
+  equivalent.
+- **Behaviour change: the unrequested-order warning is per polarization.**
+  `UnrequestedOrderWarning` now fires for each propagating order and
+  polarization without a Floquet port, not for each order: an order declared
+  in TE alone warns about its TM part, and the message names the missing
+  polarizations. Declare both, or filter the warning.
+
 Design:
 
 - **The electric energy differentiates.** `gfem.electric_energy` may be

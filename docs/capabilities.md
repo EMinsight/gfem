@@ -66,6 +66,15 @@ v0.1.
   exact dipoles and quadrupoles ({py:obj}`gfem.multipoles`); the
   long-wavelength and toroidal dipoles of the induced current
   ({py:obj}`gfem.current_moments`) ({doc}`recipes/multipoles`).
+- **Periodic surfaces** (`gfem.diffraction`): diffraction efficiency per order
+  and polarization, power balance (reflectance, transmittance, absorptance),
+  Jones, circular and Mueller matrices of a cell, angle sweeps (conical
+  incidence included), emissivity by Kirchhoff's law (directional and
+  hemispherical), a cell's response sampled against one meta-atom parameter
+  with its derivative, and aperture fields of large metasurfaces in the
+  {term}`locally periodic approximation` with angular-spectrum propagation,
+  differentiable except in the angle ({doc}`recipes/diffraction-efficiency`,
+  {doc}`recipes/emissivity`, {doc}`recipes/metasurface-from-cells`).
 - **Materials and designs**: {py:obj}`gfem.Material` per region (isotropic, or
   anisotropic: real symmetric tensors on shared principal axes,
   {doc}`recipes/anisotropic-materials`), {py:obj}`gfem.MaterialField` per
@@ -290,6 +299,12 @@ returning a wrong value:
   nodes of a Floquet surface. In the gradient matrix, a model with Floquet ports takes the
   rows of the periodic driven problems (plain and Bloch), with S read from
   its Floquet ports. Details: {doc}`recipes/floquet-ports`.
+- **Periodic surfaces**: no gradient with respect to the incidence angle; a
+  power balance needs a port for every propagating order and polarization; a
+  cell response has one parameter at one incidence; aperture fields assume
+  normal incidence, a rectangular lattice and cells that do not diffract, and
+  propagate scalar tangential components at fixed distances. Details:
+  {doc}`recipes/diffraction-efficiency`, {doc}`recipes/metasurface-from-cells`.
 - **Perfectly matched layers**: no error estimates or mesh refinement for
   driven and eigenmode problems (electrostatic refinement runs). Box shells
   around the interior box only, one thickness per side. Each layer region's
