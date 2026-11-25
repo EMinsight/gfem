@@ -192,8 +192,8 @@ def check_branch(branch: Any, who: str) -> tuple[int, int]:
         raise TypeError(
             f"{who}: branch must be an int or a pair of ints, got {branch!r}."
         )
-    m = tuple(_check_int(b, who) for b in parts)
-    return m if pair else (m[0], m[0])
+    m = [_check_int(b, who) for b in parts]
+    return (m[0], m[1]) if pair else (m[0], m[0])
 
 
 def _check_normal(who: str, cell: Any, names: dict[str, list[str]]) -> None:
