@@ -71,6 +71,7 @@ from gfem._engine.port_mode_sensitivity import (
     section_inputs,
 )
 from gfem._engine.port_mode_shape import ShapeForm, chain_to_nodes, voltage_eulerian
+from gfem._engine.port_rows import Mode, ModeValues, Row, RowInputs
 from gfem._engine.sensitivity import Integrated
 from gfem._engine.wave_ports import PortSurfaceCoupling
 from gfem._sweep.port_mode import _voltage_row, _voltage_rule, _wavenumbers
@@ -158,49 +159,6 @@ class FaceForms:
         out = np.zeros((len(self.tangential), trace.shape[1]), trace.dtype)
         out[self.tangential] = trace[self.free_t]
         return out
-
-
-@dataclasses.dataclass(eq=False)
-class ModeValues:
-    r"""The modes of one surface at one frequency, ``nk`` of them.
-
-    Attributes:
-        field: ``(n_free, nk)`` the normalized field, :math:`(E_t, E_n)` on the
-            free DOFs, at 1 W.
-        gamma: ``(nk,)`` the propagation constants per file unit.
-        voltage: ``(nk,)`` the voltages along the paths, NaN without one.
-        phase: ``(nk,)`` the power phases :math:`P/|P|`.
-    """
-
-    field: np.ndarray
-    gamma: np.ndarray
-    voltage: np.ndarray
-    phase: np.ndarray
-
-
-@dataclasses.dataclass(eq=False)
-class RowInputs:
-    r"""What one frequency's port terms read from the 3D solve and the outputs.
-
-    Attributes:
-        omega: The angular frequency, rad/s.
-        adjoint: ``(n_t, width)`` the traces :math:`a_j` of the adjoint columns.
-        solution: ``(n_t, width)`` the traces :math:`u_j` of the solutions.
-        weights: ``(nk, width)`` :math:`C_{ij} d_i s_j`, the cotangent of S
-            (and of the port waves) with the de-embedding factors, per mode
-            and column.
-        gamma: ``(nk,)`` the cotangent of :math:`\gamma` per file unit that
-            comes from outside the terms (the outputs, the de-embedding).
-        impedance: ``(nk,)`` the cotangent of :math:`Z_{PV}`, ``0`` where a
-            mode has no voltage path.
-    """
-
-    omega: float
-    adjoint: np.ndarray
-    solution: np.ndarray
-    weights: np.ndarray
-    gamma: np.ndarray
-    impedance: np.ndarray
 
 
 @dataclasses.dataclass(eq=False)
@@ -403,21 +361,6 @@ class _Face:
 
 
 @dataclasses.dataclass(eq=False)
-class _Row:
-    """One frequency's stored terms."""
-
-    omega: float
-    traces: list[tuple[np.ndarray, np.ndarray]]
-    weights: np.ndarray
-    gamma: np.ndarray
-    impedance: np.ndarray
-    #: The traces of the line ports' adjoint columns and solutions, per line.
-    line_traces: list[tuple[np.ndarray, np.ndarray]] = dataclasses.field(
-        default_factory=list
-    )
-
-
-@dataclasses.dataclass(eq=False)
 class _Line:
     """One active line port surface (a 2D model's wave port)."""
 
@@ -499,7 +442,7 @@ class PortPass:
                     FaceForms.of(space, lead=lead, excited=excited),
                 )
             )
-        self.rows: dict[int, _Row] = {}
+        self.rows: dict[int, Row] = {}
         self.wants_mu = wanted is None or any(
             k[0] == "material" and k[2] == "mu_r" for k in wanted
         )
@@ -648,7 +591,7 @@ class PortPass:
                 (_mpi.reduce_bcast(self.comm, a), _mpi.reduce_bcast(self.comm, u))
             )
         weights = ct * d[:, None] * s[None, :]
-        self.rows[n] = _Row(omega, stored, weights, row_gamma, ct_z, line_traces)
+        self.rows[n] = Row(omega, stored, weights, row_gamma, ct_z, line_traces)
 
     def _cotangents(
         self, n: int, n_columns: int, cotangents: Mapping[str, np.ndarray]
@@ -864,7 +807,7 @@ class PortPass:
         return None if rule is None else _voltage_row(space, rule)
 
     def _normalization(
-        self, context: _Context, k: int, state: _Mode, bars: RowBars, omega: float
+        self, context: _Context, k: int, state: Mode, bars: RowBars, omega: float
     ) -> Any:
         """The pullback of mode ``k``'s normalization: its raw pair's cotangents."""
         field_bar = bars.field[:, k]
@@ -883,8 +826,8 @@ class PortPass:
         )
 
     def _modes(
-        self, context: _Context, n: int, row: _Row, pencil: Any, factor: Any
-    ) -> tuple[ModeValues, list[_Mode]]:
+        self, context: _Context, n: int, row: Row, pencil: Any, factor: Any
+    ) -> tuple[ModeValues, list[Mode]]:
         """The surface's modes at frequency ``n``, polished where reduced.
 
         Each mode's stored pair is a solve of the reduced model unless the
@@ -927,7 +870,7 @@ class PortPass:
             gamma[k] = gam
             voltage[k] = norm.voltage[0]
             phase[k] = norm.phase[0]
-            state.append(_Mode(x, lam, gam, norm, reference))
+            state.append(Mode(x, lam, gam, norm, reference))
         return ModeValues(field, gamma, voltage, phase), state
 
 
@@ -940,17 +883,6 @@ class _Context:
     mass: sp.csr_matrix
     volts: list[np.ndarray | None]
     rules: list[tuple[np.ndarray, np.ndarray] | None]
-
-
-@dataclasses.dataclass(eq=False)
-class _Mode:
-    """One mode's polished pair and its normalization at one row."""
-
-    x: np.ndarray
-    lam: complex
-    gamma: complex
-    norm: Any
-    reference: np.ndarray
 
 
 def _who(face: _Face | _Line, k: int) -> str:

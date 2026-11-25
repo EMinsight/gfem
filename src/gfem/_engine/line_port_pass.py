@@ -39,6 +39,7 @@ from gfem._engine.port_mode_adjoint import (
     shift_invert_factor,
 )
 from gfem._engine.port_mode_normalization import normalize_rows
+from gfem._engine.port_rows import Mode, ModeValues, Row, RowInputs
 from gfem._sweep.port_mode import _wavenumbers
 
 __all__ = ["LineFaceForms", "line_face", "line_pullback_row"]
@@ -99,7 +100,7 @@ class LineRowBars:
 
 
 def line_pullback_row(  # noqa: PLR0915
-    forms: LineFaceForms, modes: Any, row: Any
+    forms: LineFaceForms, modes: ModeValues, row: RowInputs
 ) -> LineRowBars:
     r"""The derivative of :math:`\Psi` by one line port's modes at one frequency.
 
@@ -196,24 +197,13 @@ def line_pullback_row(  # noqa: PLR0915
     return LineRowBars(field_bar, gamma_bar, pairs)
 
 
-@dataclasses.dataclass(eq=False)
-class _Mode:
-    """One mode's polished pair and its normalization at one row."""
-
-    x: np.ndarray
-    lam: complex
-    gamma: complex
-    norm: Any
-    reference: np.ndarray
-
-
 def line_face(
     coupling: Any,
     space: LineModeSpace,
     forms: LineFaceForms,
     *,
     index: list[int],
-    rows: dict[int, Any],
+    rows: dict[int, Row],
     position: int,
     who: Any,
 ) -> LineCotangents:
@@ -229,8 +219,6 @@ def line_face(
         position: The line's position among the stored line traces.
         who: ``who(k)`` labels the ``k``-th mode for messages.
     """
-    from gfem._engine.port_pass import ModeValues, RowInputs
-
     section = space.section
     fields = full_line_reduction(space)
     mass = space.mass
@@ -273,7 +261,7 @@ def line_face(
             )
             field[:, k] = norm.z[0]
             gamma[k] = gam
-            state.append(_Mode(x, lam, gam, norm, stored))
+            state.append(Mode(x, lam, gam, norm, stored))
         modes = ModeValues(
             field,
             gamma,
