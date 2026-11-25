@@ -1,4 +1,4 @@
-r"""The Kerr coefficient of a port mode converges to closed forms and matches exact solves.
+r"""The Kerr coefficient of a port mode converges to closed forms.
 
 Two guides have a closed form for the overlap of the mode's fourth power: a
 220 nm silicon slab in silica crossed by an Ez line port with perfectly
@@ -21,9 +21,7 @@ sweep reduces are held to exact solves at their frequency.
 
 import itertools
 from pathlib import Path
-import math
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -57,7 +55,7 @@ GUIDE_N_EFF, GUIDE_GAMMA = 1.256258769165717, 4.013914625089216e-14
 
 
 def _converges(errors, floor):
-    """Each order at least 5x below the last (measured 90x and more), the last below ``floor``."""
+    """Each order at least 5x below the last (measured 90x), the last under ``floor``."""
     assert all(e2 < e1 / 5 for e1, e2 in itertools.pairwise(errors)), errors
     assert errors[-1] < floor, errors
 
@@ -166,7 +164,7 @@ def test_the_wire_tensor_is_real_and_obeys_its_identities(wire_tensor):
     assert 200 < g[0, 0, 0, 0].real < 350
     # swapping the two unconjugated factors; round-off of the einsum, 1e-16
     np.testing.assert_allclose(g, g.transpose(0, 2, 1, 3), rtol=0, atol=1e-13 * scale)
-    # energy: gamma_abcd / omega_a = conj(gamma_badc) / omega_b
+    # energy: entry abcd over omega_a is the conjugate of badc over omega_b
     omega = 2 * np.pi * np.asarray(mode.frequency)
     left = g / omega[:, None, None, None]
     right = np.conj(g.transpose(1, 0, 3, 2)) / omega[None, :, None, None]
@@ -203,7 +201,8 @@ def test_the_coefficient_differentiates_through_the_lower_layer_of_a_line(tmp_pa
 
     eps0, n20, beta0 = ramp(mesh, "lo", 3.5, 4.5), ramp(mesh, "lo", 1.0, 3.0), ones
     g0 = np.asarray(gamma(eps0, n20, beta0))
-    assert np.all(g0.real > 0) and np.all(g0.imag > 0)
+    assert np.all(g0.real > 0)
+    assert np.all(g0.imag > 0)
 
     def objective(which):
         def f(p):
