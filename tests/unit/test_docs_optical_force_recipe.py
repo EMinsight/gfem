@@ -5,9 +5,9 @@ executed blocks on the repository's own docs/tutorials/data/sphere.msh and
 docs/recipes/slab_pair_section.py and compares what they print with the page;
 and ties each item of its Limits to the refusal tests of
 tests/unit/test_optical_force.py, so a new refusal without a page line fails,
-and so does a page line without one. Two sections are not run: the eigenmode
-one reads a cavity mesh the page does not ship (tests/unit/test_optical_force.py
-runs that case), and the gradient one waits for the gradient of the force.
+and so does a page line without one. One section is not run: the eigenmode one
+reads a cavity mesh the page does not ship (tests/unit/test_optical_force.py
+runs that case).
 """
 
 import ast
@@ -21,7 +21,7 @@ import gfem
 PAGE = dp.DOCS / "recipes" / "optical-force.md"
 REFUSALS = dp.ROOT / "tests" / "unit" / "test_optical_force.py"
 #: The sections whose blocks are not run, and why (see the module docstring).
-NOT_RUN = ("Eigenmodes at 1 J", "Gradient force")
+NOT_RUN = ("Eigenmodes at 1 J",)
 #: Each item of the page's Limits (its bold lead) -> the tests that refuse it.
 LIMITS = {
     "A 3D electric field": (
@@ -45,6 +45,9 @@ LIMITS = {
     ),
     "One process, no refinement": (
         "test_a_distributed_field_the_recorder_and_a_2d_mesh_are_refused",
+    ),
+    "No gradient through the geometry or the shell": (
+        "test_the_node_coordinates_the_shell_material_and_a_reduced_field_raise_by_name",
     ),
     "Typed arguments": (
         "test_wrong_argument_types_raise_type_errors",
