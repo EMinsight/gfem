@@ -28,8 +28,18 @@ OXIDE = gfem.Material(
 )
 DIRECT = gfem.SolverOptions(order=2, linear_solver="direct")
 PROBLEM = gfem.SteadyThermal(gfem.HeatSource.uniform("bar", power=1e-1))
-VALUES = np.array([300.0, 25.0, 290.0, 5.0])
-STEPS = (20.0, 1.0, 20.0, 2000.0)  # the linear values take any step; h a few percent
+VALUES = np.array([300.0, 1000.0, 290.0, 5.0])
+# The objective is a mean temperature, |J| ~ 700 K, carrying round-off
+# delta ~ 2e-15 |J| (1e-15 measured on one thread, 1.6e-15 back-solved from
+# a CI failure). The fourth-order difference then errs by about
+# 1.5 delta / (step |dJ/dx|) relative. The boundary values move J weakly
+# (|J| / |dJ/dx| ~ 1e9 for h and the ambient at h = 1000, 1.6e12 for the
+# flux), so each step keeps that bound at or below 3e-8, thirty times under
+# the gate. J is linear in the temperature, ambient and flux, and nearly so in h
+# (measured fourth-order truncation below 1e-9 at a 20 % step), so large
+# steps cost nothing; at h = 25 the ambient's derivative was 40 times smaller
+# and a unit step on h left the round-off at the 1e-6 gate.
+STEPS = (100.0, 200.0, 100.0, 2e5)
 NAMES = ("temperature", "coefficient", "ambient", "flux")
 
 
@@ -124,14 +134,14 @@ def test_the_rise_does_not_move_with_ambient_flux_or_fixed_temperature(mesh):
 
 def test_a_flux_traced_at_zero_has_a_gradient(mesh):
     objective = _objective(mesh, ("temperature",))
-    values = jnp.asarray([300.0, 25.0, 290.0, 0.0])
+    values = jnp.asarray([300.0, 1000.0, 290.0, 0.0])
     grad = np.asarray(jax.grad(objective)(values))
     assert grad[3] != 0.0
     assert_gradient_matches(
         objective,
         values,
         [np.array([0.0, 0.0, 0.0, 1.0])],
-        step=2000.0,
+        step=STEPS[3],
         grad=grad,
     )
 
