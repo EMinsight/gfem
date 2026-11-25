@@ -281,18 +281,23 @@ def test_jax_grad_reaches_a_material_field_s_solid_tensors():
     ]
     for name in ("stiffness", "piezoelectric_tensor", "mechanical_quality_factor"):
         assert f".{name}" in paths
-    wc = jnp.arange(36.0).reshape(6, 6)
+    # The field hands its leaves to the objective unchanged, so each gradient
+    # is the objective's own weight, bit for bit. The stiffness weight is
+    # scaled by a multiplication, not a division: older JAX transposes a
+    # division by a constant as a product with its reciprocal, one ulp off
+    # wc / GPa, which says nothing about the field.
+    wc = jnp.arange(36.0).reshape(6, 6) * (1.0 / GPa)
     we = jnp.arange(18.0).reshape(3, 6)
 
     def objective(f):
         return (
-            jnp.sum(wc * f.stiffness) / GPa
+            jnp.sum(wc * f.stiffness)
             + jnp.sum(we * f.piezoelectric_tensor)
             + jnp.sum(f.mechanical_quality_factor)
         )
 
     grad = jax.grad(objective)(field)
-    np.testing.assert_array_equal(grad.stiffness, jnp.tile(wc / GPa, (n, 1, 1)))
+    np.testing.assert_array_equal(grad.stiffness, jnp.tile(wc, (n, 1, 1)))
     np.testing.assert_array_equal(grad.piezoelectric_tensor, we)
     np.testing.assert_array_equal(grad.mechanical_quality_factor, jnp.ones(n))
     # through isotropic_stiffness, by the chain rule
