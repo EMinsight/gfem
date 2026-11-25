@@ -2535,6 +2535,19 @@ RAISE_TABLE_NAMES = tuple(
 )
 
 
+#: The cases whose cells take over 15 minutes as one item: one item per result leaf.
+SPLIT_BY_LEAF = ("eigenmode_wave",)
+RAISE_TABLE_ITEMS = tuple(
+    (name, leaf)
+    for name in RAISE_TABLE_NAMES
+    for leaf in (
+        sorted({c[1] for c in EXPECTED if c[0] == name})
+        if name in SPLIT_BY_LEAF
+        else [None]
+    )
+)
+
+
 def test_the_raise_table_names_are_the_built_cases(cases):
     assert set(RAISE_TABLE_NAMES) == set(cases)
 
@@ -2654,11 +2667,17 @@ def test_a_shift_keeps_refusing_the_optical_inputs_of_its_mode(rule):
 
 
 @pytest.mark.bitwise  # its low-Q lumped mode converges run to run only on one thread
-@pytest.mark.parametrize("name", RAISE_TABLE_NAMES)
-def test_raise_table(request, name):
-    """One case, one item: only the fixtures this case needs are built."""
+@pytest.mark.parametrize(
+    ("name", "leaf"),
+    RAISE_TABLE_ITEMS,
+    ids=[n if leaf is None else f"{n}-{leaf}" for n, leaf in RAISE_TABLE_ITEMS],
+)
+def test_raise_table(request, name, leaf):
+    """One case (a slow one, one result leaf) per item: it builds only its fixtures."""
     only = {name: _case(request, name)}
     for _, model, problem, out_name, out_path, index, kind in _cells(only):
+        if leaf is not None and out_name != leaf:
+            continue
         expected = EXPECTED[(name, out_name, kind)]
         objective, x = _objective(model, problem, out_path, index)
         cell = f"{name} {out_name} x {kind}"
