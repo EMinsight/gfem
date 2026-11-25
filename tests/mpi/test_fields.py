@@ -391,6 +391,9 @@ def _refused_methods(directory):
         "region_mean": _feature(lambda: gfem.region_mean(field, "sub")),
         "electric_energy": _feature(lambda: gfem.electric_energy(field, model=model)),
         "dissipated_power": _feature(lambda: gfem.dissipated_power(field, model=model)),
+        "optical_force": _feature(
+            lambda: gfem.optical_force(field, "sub", model=model)
+        ),
         "electromagnetic_heating": _feature(
             lambda: gfem.electromagnetic_heating(
                 result,
@@ -449,6 +452,7 @@ def test_export_means_energy_and_estimate_raise_their_keys_on_every_rank(tmp_pat
         "region_mean": "region_mean",
         "electric_energy": "electric_energy",
         "dissipated_power": "dissipated_power",
+        "optical_force": "optical_force",
         "electromagnetic_heating": "electromagnetic_heating",
         "error_estimate": "error_estimate",
         # no distributed thermal result exists: the thermal solve's key

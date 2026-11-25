@@ -1092,6 +1092,19 @@ Cross sections
   {term}`incident intensity`, in m² (`gfem.cross_sections`); extinction is
   absorption plus scattering.
 
+Optical force
+  The time-averaged force and torque of a solved electric field on a body
+  (`gfem.optical_force`): the derivative of the discrete time-averaged
+  Lagrangian under a rigid motion of the body's nodes, the volume form of the
+  Maxwell stress tensor on its {term}`stress shell`. A driven field gives it
+  per incident power, an eigenmode at 1 J of stored energy.
+
+Stress shell
+  The solve-domain elements outside a body that share a vertex with it, where
+  `gfem.optical_force` reads the Maxwell stress. It must be one homogeneous,
+  lossless medium; another shell would change the force by discretization
+  error only.
+
 Incident intensity
   The power per unit area that {term}`cross sections` are divided by: a plane
   wave's $|E_0|^2/(2\eta)$, a Gaussian beam's {term}`focal intensity`, or the

@@ -97,8 +97,10 @@ v0.1.
 - **Measurements**: {py:obj}`gfem.characteristic_impedance`,
   {py:obj}`gfem.interface_participation`, {py:obj}`gfem.power_flow`,
   {py:obj}`gfem.dissipated_power` (a driven field's loss per region and
-  metal surface) and {py:obj}`gfem.electric_energy`
-  ({doc}`recipes/measurements`); the free-space measurements above.
+  metal surface), {py:obj}`gfem.optical_force` (the force and torque on a
+  body, differentiable; {doc}`recipes/optical-force`) and
+  {py:obj}`gfem.electric_energy` ({doc}`recipes/measurements`); the
+  free-space measurements above.
 - **Circuits**: {py:obj}`gfem.SaxComponent` puts a driven solve in a SAX
   circuit as a photonic block (wavelength in µm) or an RF block (frequency in
   Hz, on one reference impedance for the circuit), answering any wavelength or

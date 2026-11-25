@@ -1231,6 +1231,7 @@ REFUSAL_LABELS = {
     "element_mean": "`element_mean`",
     "electric_energy": "`electric_energy`",
     "dissipated_power": "`dissipated_power`",
+    "optical_force": "`optical_force`",
     "electromagnetic_heating": "`electromagnetic_heating`",
     "error_estimate": "`error_estimate` of a result solved across ranks",
     "mesh_refinement": "`refine_mesh`",
