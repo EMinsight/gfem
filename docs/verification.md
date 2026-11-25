@@ -208,6 +208,56 @@ Tests: [unit checks](https://github.com/benvial/gfem/blob/main/tests/unit/test_p
 [sweeps](https://github.com/benvial/gfem/blob/main/tests/verification/test_port_mode_sweep.py),
 [MPI](https://github.com/benvial/gfem/blob/main/tests/mpi/test_wave_ports.py).
 
+## Kerr nonlinearity
+
+A port mode's nonlinear coefficient $\gamma_\mathrm{NL}$ and the coupling
+tensor between its waves are checked against closed forms, against identities
+that hold to rounding and against finite differences:
+
+- **Closed forms, and the element order.** The TE10 mode of a filled
+  rectangular guide obeys
+  $\gamma_\mathrm{NL} = \tfrac32\,(k_0 n_2/ab)\,(n/n_\mathrm{eff})^2$, with the
+  discrete $n_\mathrm{eff}$; and the TE0 mode of a 220 nm silicon slab in
+  oxide with line ports has a value computed to 30 digits. The error
+  falls by at least a factor of 5 for each element order, and is below
+  $10^{-10}$ at order 5.
+- **Every row.** On a filled guide the coefficient of each row of a 41-row
+  grid, reduced rows included, follows $(f_i/f_0)(n_{\mathrm{eff},0}/n_{\mathrm{eff},i})^2$
+  to $10^{-10}$, with a lossless Lorentz fill too. A row of a sweep that the
+  reduced model serves matches an exact solve at its frequency.
+- **Two-photon absorption.** $\mathrm{Im}/\mathrm{Re} =
+  \beta_\mathrm{TPA}/(2k_0 n_2)$ to $10^{-12}$; with $n_2 = 0$ the real part
+  vanishes. On a lossy fill the value is the lossless one times
+  $(n_\mathrm{eff}/\mathrm{Re}\,n_\mathrm{eff})^2$.
+- **The coupling tensor.** Its diagonal is $\gamma_\mathrm{NL}$ row by row; it
+  is symmetric in its two $+\omega$ slots, obeys the energy identity
+  $\gamma_{abcd}/\omega_a = \overline{\gamma_{badc}}/\omega_b$, and for one
+  mode at one frequency has 16 equal entries, so the cross-phase sum is
+  twice the self-phase. Cross-phase modulation of TE10 by TE01 in a filled
+  guide equals $\tfrac49\,n_m/n_n$ of the self-phase.
+- **A silicon wire.** The 500 × 220 nm strip at three wavelengths gives
+  a real tensor, in the gauge where the transverse field is real.
+- **Gradients.** $\gamma_\mathrm{NL}$ differentiates with respect to
+  $\varepsilon_r$, $n_2$ and $\beta_\mathrm{TPA}$ of a density blend, matching
+  fourth-order central differences to $10^{-6}$; the value under
+  `jax.grad` is the eager one.
+- **Quadrature and layers.** The field's quadrature columns reproduce the
+  field at their points, sum to the section's area, and a rule two degrees
+  higher gives the same value; a perfectly matched layer's triangles
+  carrying $n_2$ change nothing.
+- **Refusals.** A region without a property, an anisotropic region, an Hz line
+  port, traced node coordinates, a result without a field and waves of
+  different ports each raise the error that names them.
+
+Not checked: a measured nonlinear coefficient of a fabricated guide, and any
+literature value: the silicon and nitride constants are inputs. The recipe
+{doc}`recipes/waveguide-nonlinearity` prints the value of a silicon wire at
+1.55 µm beside the figure of merit it implies.
+
+Tests: [unit checks](https://github.com/benvial/gfem/blob/main/tests/unit/test_kerr.py),
+[closed forms, orders and gradients](https://github.com/benvial/gfem/blob/main/tests/verification/test_kerr.py),
+[recipe](https://github.com/benvial/gfem/blob/main/tests/unit/test_docs_waveguide_nonlinearity_recipe.py).
+
 ## Eigenmodes with wave ports
 
 Each case solves an eigenmode problem with wave ports and compares it with an

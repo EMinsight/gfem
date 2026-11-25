@@ -100,6 +100,12 @@ Third-order dispersion
   $\beta_3 = \mathrm{d}^3\beta/\mathrm{d}\omega^3$ of a {term}`port mode`, in
   s³/m. Not the dispersion slope $\mathrm{d}D/\mathrm{d}\lambda$.
 
+Kerr nonlinear coefficient
+  $\gamma_\mathrm{NL}$ of a {term}`port mode`, in 1/(W m): a power $P$ moves
+  its propagation constant by $\mathrm{Re}\,\gamma_\mathrm{NL}\,P$ and its
+  field attenuation by $\mathrm{Im}\,\gamma_\mathrm{NL}\,P$ (two-photon
+  loss). Short form: nonlinear coefficient.
+
 Resonant mode
   A source-free field of the whole model, found by an
   {term}`eigenmode problem`: its complex angular frequency $\omega$ is found,
