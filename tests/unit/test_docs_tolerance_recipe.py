@@ -25,7 +25,7 @@ Q5, Q8 = "|S21|² at 5 GHz", "|S21|² at 8 GHz"
 
 
 def cascade(f, eps, width=WIDTH):
-    """|S21|^2 of 10 mm of air, 20 mm of ceramic and 10 mm of air between 62.8 ohm ports."""
+    """|S21|^2: 10 mm of air, 20 mm of ceramic, 10 mm of air, 62.8 ohm ports."""
 
     def section(z, k, length):
         return np.array(
