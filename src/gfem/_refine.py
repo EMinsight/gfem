@@ -250,6 +250,7 @@ def _gather_field(field: MaterialField, region: str, gather) -> MaterialField:
     for name in (
         "electro_optic_tensor",
         "photoelastic_tensor",
+        "second_order_nonlinear_tensor",
         "stiffness",
         "piezoelectric_tensor",
     ):

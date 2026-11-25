@@ -207,17 +207,31 @@ _PHOTOELASTIC = _SolidTensor(
     "contract a full p_ijkl to rows and columns ij = xx, yy, zz, yz, xz, xy, with "
     "no factors of 2",
 )
-_SOLID_BY_NAME = {t.name: t for t in (*_SOLID_TENSORS, _PHOTOELASTIC)}
+# the second-order nonlinear tensor d is optical too: contracted like the
+# piezoelectric tensor (3x6, no factor 2 on the shear columns)
+_SECOND_ORDER = _SolidTensor(
+    "second_order_nonlinear_tensor",
+    (3, 6),
+    (3, 3, 3),
+    "the contracted 3x6 matrix d_il = d_ijk in m/V, d = chi2 / 2 (rows x, y, z "
+    "of the polarization; columns xx, yy, zz, yz, xz, xy of the field pair)",
+    "contract a full d_ijk to columns jk = xx, yy, zz, yz, xz, xy, with no "
+    "factors of 2",
+)
+_SOLID_BY_NAME = {t.name: t for t in (*_SOLID_TENSORS, _PHOTOELASTIC, _SECOND_ORDER)}
 #: A material field's tensors outside the property table, as its leaves.
 _FIELD_TENSORS = (
     "electro_optic_tensor",
     "photoelastic_tensor",
+    "second_order_nonlinear_tensor",
     "stiffness",
     "piezoelectric_tensor",
 )
 # dimensionless: above every tabulated photoelastic constant (below 1 in every
 # solid), far below a value typed in percent
 _PHOTOELASTIC_MAX = 10.0
+# m/V: above the largest known d (about 1e-9), far below a value typed in pm/V
+_SECOND_ORDER_MAX = 1e-8
 # Pa: below the largest constant of every solid (even a rubber-like c11 is
 # near 1e9 Pa), far above a value typed in GPa
 _STIFFNESS_MIN = 1e5
@@ -251,6 +265,8 @@ def _solid_real(tensor: _SolidTensor, owner: str) -> ValueError:
     )
     if tensor is _PHOTOELASTIC:
         remedy = "; no photoelastic loss is modelled"
+    if tensor is _SECOND_ORDER:
+        remedy = "; no nonlinear loss is modelled"
     return ValueError(f"{owner}: {tensor.name} must be real{remedy}.")
 
 
@@ -270,6 +286,14 @@ def _check_solid_values(tensor: _SolidTensor, arr: np.ndarray, owner: str) -> No
                 f"{_short(big.max())}, above {_PHOTOELASTIC_MAX:g}: p is "
                 "dimensionless and below 1 in every solid, so 0.12 is not 12 "
                 "(percent)."
+            )
+        return
+    if tensor is _SECOND_ORDER:
+        if big.max(initial=0.0) > _SECOND_ORDER_MAX:
+            raise ValueError(
+                f"{owner}: second_order_nonlinear_tensor has an entry of "
+                f"{_short(big.max())} m/V, above {_SECOND_ORDER_MAX:g} m/V: d is "
+                "in m/V, so 25 pm/V is 25e-12."
             )
         return
     if tensor is _PIEZOELECTRIC:
@@ -338,6 +362,7 @@ def _check_solid(
     quality_factor: Any,
     electro_optic: Any,
     photoelastic: Any = None,
+    second_order: Any = None,
 ) -> None:
     """Raise for a solid's values that do not go together.
 
@@ -370,6 +395,19 @@ def _check_solid(
             "(eps_r, stiffness, piezoelectric_tensor, mass_density) and an "
             "optical one (eps_r, photoelastic_tensor, electro_optic_tensor), one "
             "for each model."
+        )
+    if second_order is not None and (
+        stiffness is not None or piezoelectric is not None
+    ):
+        given = "stiffness" if stiffness is not None else "piezoelectric_tensor"
+        raise ValueError(
+            f"{owner}: a {given} sits beside a second_order_nonlinear_tensor, but "
+            "the two read different eps_r: the clamped static permittivity of an "
+            "acoustic problem, the optical permittivity at the wavelength of a "
+            "nonlinear one. Give the crystal two Materials, an acoustic one "
+            "(eps_r, stiffness, piezoelectric_tensor, mass_density) and an "
+            "optical one (eps_r, second_order_nonlinear_tensor), one for each "
+            "model."
         )
     if piezoelectric is not None and stiffness is None:
         raise ValueError(
@@ -1438,6 +1476,22 @@ class Material:
             coefficients :math:`p^E`: the electro-optic part of an acoustic
             field is counted through the clamped `electro_optic_tensor`.
             ``None``: no photoelastic effect.
+        second_order_nonlinear_tensor: The second-order nonlinear tensor
+            :math:`d_{il}` in m/V, with :math:`d = \chi^{(2)}/2` (the
+            convention of the data sheets and of Boyd, not :math:`\chi^{(2)}`
+            itself), contracted to a real 3x6 matrix: rows :math:`i` the
+            components x, y, z of the polarization, columns :math:`l` in the
+            Voigt order xx, yy, zz, yz, xz, xy of the field pair, so that
+            :math:`d_{il} = d_{ijk}` with no factor of 2 on the shear
+            columns. Given in the frame whose x, y, z are the rows of `axes`,
+            in order and with sign (the global frame if ``None``), rotated as
+            the `piezoelectric_tensor` is; with it `axes` are right-handed
+            (an odd-rank tensor changes sign under a reflection) and `eps_r`
+            is the crystal's optical permittivity. A `PermittivityLaw` is
+            accepted (the tensor is then in the global frame, since a law
+            takes no `axes`). Read by `gfem.three_wave_coupling` and
+            `gfem.second_harmonic` only, never by a solve. ``None``: no
+            second-order nonlinearity.
         name: A free-form label (for example ``"silicon"``), shown in reprs.
 
     Raises:
@@ -1469,7 +1523,12 @@ class Material:
             tensor beside a matrix property, left-handed `axes`, a
             `PermittivityLaw` or an `electro_optic_tensor` (give the crystal
             an acoustic and an optical `Material`); a `piezoelectric_tensor`
-            with an `eps_r` of 1 (the clamped permittivity left out).
+            with an `eps_r` of 1 (the clamped permittivity left out); a
+            `second_order_nonlinear_tensor` that is not a real, finite 3x6
+            matrix (a 3x3x3 input is refused: contract it), has an entry
+            above 1e-8 m/V (a value in pm/V), or sits beside a `stiffness`
+            or `piezoelectric_tensor`, a matrix property, left-handed `axes`
+            or an `eps_r` of 1.
         TypeError: `eps_r` is a bare dispersion term such as `Drude`; wrap
             it in a `PermittivityLaw`; ``density=`` beside ``mass_density=``.
         NonDifferentiableError: A constant value is computed inside
@@ -1495,6 +1554,7 @@ class Material:
     piezoelectric_tensor: tuple[tuple[float, ...], ...] | None = None
     mechanical_quality_factor: float | None = None
     photoelastic_tensor: tuple[tuple[float, ...], ...] | None = None
+    second_order_nonlinear_tensor: tuple[tuple[float, ...], ...] | None = None
     name: str | None = None
 
     density = property(_no_density_attribute)
@@ -1513,6 +1573,10 @@ class Material:
             _PHOTOELASTIC, self.photoelastic_tensor, owner
         )
         object.__setattr__(self, "photoelastic_tensor", photoelastic)
+        second_order = _material_solid_tensor(
+            _SECOND_ORDER, self.second_order_nonlinear_tensor, owner
+        )
+        object.__setattr__(self, "second_order_nonlinear_tensor", second_order)
         _check_solid(
             owner,
             stiffness=stiffness,
@@ -1520,6 +1584,7 @@ class Material:
             quality_factor=self.mechanical_quality_factor,
             electro_optic=tensor,
             photoelastic=photoelastic,
+            second_order=second_order,
         )
         # a piezoelectric tensor comes with a stiffness, which names the frame
         solid = None if stiffness is None else "stiffness"
@@ -1541,6 +1606,8 @@ class Material:
             if tensor is not None
             else "photoelastic_tensor"
             if photoelastic is not None
+            else "second_order_nonlinear_tensor"
+            if second_order is not None
             else solid
         )
         if crystal is not None:
@@ -1550,6 +1617,8 @@ class Material:
             raise ValueError(_eo_without_eps_message(owner))
         if photoelastic is not None and vacuum:
             raise ValueError(_pe_without_eps_message(owner))
+        if second_order is not None and vacuum:
+            raise ValueError(_second_order_without_eps_message(owner))
         if piezoelectric is not None and vacuum:
             raise ValueError(_piezoelectric_without_eps_message(owner))
         values, axes = _principal(values, self.axes, owner)
@@ -1618,6 +1687,16 @@ def _pe_without_eps_message(owner: str) -> str:
         f"{owner}: a photoelastic_tensor needs the crystal's optical eps_r "
         "at the wavelength, e.g. eps_r=(n_o**2, n_o**2, n_e**2) with axes; "
         "without it eps_r is 1 and the index shift is n^4 too small."
+    )
+
+
+def _second_order_without_eps_message(owner: str) -> str:
+    """Why a second-order nonlinear tensor needs the crystal's optical permittivity."""
+    return (
+        f"{owner}: a second_order_nonlinear_tensor needs the crystal's optical "
+        "eps_r at the wavelength, e.g. eps_r=(n_o**2, n_o**2, n_e**2) with axes; "
+        "without it eps_r is 1, the guide has no crystal and the overlap no "
+        "mode."
     )
 
 
@@ -2114,11 +2193,16 @@ def _has_photoelastic(*materials: Material) -> bool:
     return any(m.photoelastic_tensor is not None for m in materials)
 
 
+def _has_second_order(*materials: Material) -> bool:
+    return any(m.second_order_nonlinear_tensor is not None for m in materials)
+
+
 def _has_crystal(*materials: Material) -> bool:
     """Whether a material has a tensor given in the frame of its axes."""
     return (
         _has_eo(*materials)
         or _has_photoelastic(*materials)
+        or _has_second_order(*materials)
         or any(m.stiffness is not None for m in materials)
     )
 
@@ -2225,6 +2309,24 @@ def _blend_photoelastic(void: Material, solid: Material, axes: Any, w: Any) -> A
     return a + jnp.asarray(w)[..., None, None] * (b - a)
 
 
+def _blend_second_order(void: Material, solid: Material, axes: Any, w: Any) -> Any:
+    """The second-order nonlinear tensor blended by weight ``w`` in ``axes``.
+
+    An end without a tensor counts as zero; ``None`` when neither has one.
+    """
+    if not _has_second_order(void, solid):
+        return None
+    a, b = (
+        np.zeros((3, 6))
+        if m.second_order_nonlinear_tensor is None
+        else piezoelectric_in_frame(
+            np.asarray(m.second_order_nonlinear_tensor), m.axes, axes
+        )
+        for m in (void, solid)
+    )
+    return a + jnp.asarray(w)[..., None, None] * (b - a)
+
+
 @_renamed_density
 @dataclasses.dataclass(frozen=True, kw_only=True, eq=False)
 class MaterialField:
@@ -2273,6 +2375,11 @@ class MaterialField:
     ``(n_elements, 6, 6)`` per element, in the frame of `axes` as the
     stiffness is; `jax.grad` reaches its entries.
 
+    `second_order_nonlinear_tensor` is the contracted 3x6 matrix :math:`d_{il}`
+    of `Material` (m/V), shape ``(3, 6)`` for the whole region or
+    ``(n_elements, 3, 6)`` per element, in the frame of `axes` as the
+    piezoelectric tensor is; `jax.grad` reaches its entries.
+
     Build one with `MaterialField.interpolate` (a design density blended
     between two materials) or `MaterialField.uniform` (a whole region whose
     constant material should be differentiable).
@@ -2307,7 +2414,11 @@ class MaterialField:
             `mechanical_quality_factor` without `stiffness`; a
             `photoelastic_tensor` that fails the checks of `Material` (per
             element), or comes with left-handed `axes`, in a blend or beside a
-            `stiffness` or `piezoelectric_tensor`.
+            `stiffness` or `piezoelectric_tensor`; a
+            `second_order_nonlinear_tensor` that fails the checks of
+            `Material` (per element), or comes with left-handed `axes`,
+            without `eps_r` (outside a blend) or beside a `stiffness` or
+            `piezoelectric_tensor`.
         NonDifferentiableError: `axes` is computed inside `jax.grad`,
             `jax.jit` or `jax.vmap` from their arguments; pass a fixed value.
     """
@@ -2327,6 +2438,7 @@ class MaterialField:
     piezoelectric_tensor: jax.Array | None = None
     mechanical_quality_factor: jax.Array | None = None
     photoelastic_tensor: jax.Array | None = None
+    second_order_nonlinear_tensor: jax.Array | None = None
     region: str | None = None
     axes: tuple[tuple[float, float, float], ...] | None = None
     blend: jax.Array | None = None
@@ -2361,6 +2473,7 @@ class MaterialField:
                 _check_right_handed(self.axes, "MaterialField")
         sizes |= self._check_solid()
         sizes |= self._check_photoelastic()
+        sizes |= self._check_second_order()
         size = self._check_blend()
         if size is not None:
             sizes.add(size)
@@ -2424,6 +2537,28 @@ class MaterialField:
             _check_right_handed(self.axes, "MaterialField", "photoelastic_tensor")
         if self.eps_r is None:
             raise ValueError(_pe_without_eps_message("MaterialField"))
+        return {value.shape[0]} if value.ndim == 3 else set()
+
+    def _check_second_order(self) -> set[int]:
+        """Check the second-order nonlinear tensor; its per-element size."""
+        value = _field_solid_tensor(_SECOND_ORDER, self.second_order_nonlinear_tensor)
+        object.__setattr__(self, "second_order_nonlinear_tensor", value)
+        if value is None:
+            return set()
+        _check_solid(
+            "MaterialField",
+            stiffness=self.stiffness,
+            piezoelectric=self.piezoelectric_tensor,
+            quality_factor=None,
+            electro_optic=None,
+            second_order=value,
+        )
+        if self.axes is not None:
+            _check_right_handed(
+                self.axes, "MaterialField", "second_order_nonlinear_tensor"
+            )
+        if self.eps_r is None and self.blend is None:
+            raise ValueError(_second_order_without_eps_message("MaterialField"))
         return {value.shape[0]} if value.ndim == 3 else set()
 
     def _check_blend(self) -> int | None:
@@ -2556,6 +2691,10 @@ class MaterialField:
         right-handed, or the global frame for an isotropic field. A layer
         density and a law end refuse it.
 
+        The `second_order_nonlinear_tensor` blends the same way, an end
+        without one counting as zero; a law end accepts it (in the global
+        frame), a layer density refuses it.
+
         A `stiffness` blends linearly between two solids, and a
         `piezoelectric_tensor` with an end without one counting as zero,
         both in the field's frame as the electro-optic tensor is, and so does
@@ -2629,6 +2768,7 @@ class MaterialField:
             **props,
             electro_optic_tensor=tensor,
             photoelastic_tensor=photoelastic,
+            second_order_nonlinear_tensor=_blend_second_order(void, solid, axes, w),
             axes=axes,
         )
 
@@ -2659,6 +2799,9 @@ class MaterialField:
                 props[name] = a + w * (b - a)
         props["electro_optic_tensor"] = _blend_eo(void, solid, None, w)
         props["photoelastic_tensor"] = _blend_photoelastic(void, solid, None, w)
+        props["second_order_nonlinear_tensor"] = _blend_second_order(
+            void, solid, None, w
+        )
         if law:
             blend = Blend(ends[0], ends[1], scheme, float(penalty))
             return cls(**props, blend=rho, blend_ends=blend)
