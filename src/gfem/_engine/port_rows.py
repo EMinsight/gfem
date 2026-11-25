@@ -1,4 +1,4 @@
-"""What the rows of a driven port pass share: modes, inputs and stored terms.
+"""What the rows of a driven port pass share: its records and sample factor.
 
 The planar port pass (`gfem._engine.port_pass`) and the line port pass
 (`gfem._engine.line_port_pass`) read the same three records, so they live
@@ -12,7 +12,12 @@ from typing import Any
 
 import numpy as np
 
-__all__ = ["Mode", "ModeValues", "Row", "RowInputs"]
+from gfem._engine.line_mode import LineModeSpace
+from gfem._engine.port_mode import PortModeSpace
+from gfem._engine.port_mode_adjoint import shift_invert_factor
+from gfem._sweep.port_mode import _wavenumbers
+
+__all__ = ["Mode", "ModeValues", "Row", "RowInputs", "sample_factor"]
 
 
 @dataclasses.dataclass(eq=False)
@@ -82,3 +87,10 @@ class Mode:
     gamma: complex
     norm: Any
     reference: np.ndarray
+
+
+def sample_factor(space: PortModeSpace | LineModeSpace, frequency: float) -> Any:
+    """The shift-invert factor of the pencil at an exact sample's frequency."""
+    k0, _, shift = _wavenumbers(space.section, frequency)
+    a, b = space.pencil.at(k0)
+    return shift_invert_factor(a, b, shift)

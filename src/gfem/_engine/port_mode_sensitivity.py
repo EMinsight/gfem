@@ -33,6 +33,7 @@ direct cotangents by input kind.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 from collections.abc import Sequence
 from typing import Any
@@ -201,10 +202,11 @@ class SectionKernel:
             self._edge_dof[a, b] = self._surface.GetDofNrs(el)[0]
 
     def at(self, k0: float) -> SectionKernel:
-        """This kernel at another wavenumber (the forms and spaces are shared)."""
-        self.k0 = float(k0)
-        self.theta = self.space.pencil.theta(self.k0)
-        return self
+        """A copy of this kernel at another wavenumber (the forms are shared)."""
+        out = copy.copy(self)
+        out.k0 = float(k0)
+        out.theta = self.space.pencil.theta(out.k0)
+        return out
 
     # --- integrals -------------------------------------------------------------
 

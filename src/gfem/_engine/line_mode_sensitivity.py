@@ -27,6 +27,7 @@ The convention is :math:`\mathrm{d}L = \operatorname{Re}\sum \bar c\,
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import math
 from collections.abc import Sequence
@@ -116,16 +117,18 @@ class LineKernel:
 
     def __init__(self, space: LineModeSpace, k0: float) -> None:
         self.space = space
-        self.at(k0)
+        self.k0 = float(k0)
+        self.theta = space.pencil.theta(self.k0)
         self._gf = ngs.GridFunction(space.space)
         self._gl = ngs.GridFunction(space.space)
         self._ends = _absorbing_ends(space)
 
     def at(self, k0: float) -> LineKernel:
-        """This kernel at another wavenumber (the forms are shared)."""
-        self.k0 = float(k0)
-        self.theta = self.space.pencil.theta(self.k0)
-        return self
+        """A copy of this kernel at another wavenumber (the forms are shared)."""
+        out = copy.copy(self)
+        out.k0 = float(k0)
+        out.theta = self.space.pencil.theta(out.k0)
+        return out
 
     # --- integrals -------------------------------------------------------------
 

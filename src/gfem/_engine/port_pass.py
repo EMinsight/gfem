@@ -60,7 +60,6 @@ from gfem._engine.port_mode import FullReduction, PortModeSpace
 from gfem._engine.port_mode_adjoint import (
     pencil_cotangent,
     polish,
-    shift_invert_factor,
 )
 from gfem._engine.port_mode_normalization import normalize_rows, normalize_vjp
 from gfem._engine.port_mode_sensitivity import (
@@ -71,7 +70,7 @@ from gfem._engine.port_mode_sensitivity import (
     section_inputs,
 )
 from gfem._engine.port_mode_shape import ShapeForm, chain_to_nodes, voltage_eulerian
-from gfem._engine.port_rows import Mode, ModeValues, Row, RowInputs
+from gfem._engine.port_rows import Mode, ModeValues, Row, RowInputs, sample_factor
 from gfem._engine.sensitivity import Integrated
 from gfem._engine.wave_ports import PortSurfaceCoupling
 from gfem._sweep.port_mode import _voltage_row, _voltage_rule, _wavenumbers
@@ -733,7 +732,7 @@ class PortPass:
             sample = int(solved[np.argmin(np.abs(freq[solved] - freq[n]))])
             if sample not in factors:
                 factors.clear()
-                factors[sample] = _sample_factor(space, freq[sample])
+                factors[sample] = sample_factor(space, freq[sample])
             k0 = _wavenumbers(section, freq[n])[0]
             pencil = space.pencil.at(k0)
             modes, state = self._modes(context, n, row, pencil, factors[sample])
@@ -781,7 +780,7 @@ class PortPass:
             if shape is not None:
                 for pair in pairs:
                     shape.add_pair(pair)
-            kernel_row = _at(kernel, space, k0)
+            kernel_row = kernel.at(k0)
             cot = kernel_row.cotangents(triples)
             if material_pairs:
                 cot.add(kernel_row.explicit(material_pairs))
@@ -888,23 +887,6 @@ class _Context:
 def _who(face: _Face | _Line, k: int) -> str:
     """The label of surface ``face``'s ``k``-th wave port, for messages."""
     return f"WavePort {face.coupling.ports[k].port.name!r}"
-
-
-def _at(kernel: SectionKernel, space: PortModeSpace, k0: float) -> SectionKernel:
-    """``kernel`` at wavenumber ``k0`` (a shallow copy: the forms are shared)."""
-    import copy
-
-    out = copy.copy(kernel)
-    out.k0 = float(k0)
-    out.theta = space.pencil.theta(k0)
-    return out
-
-
-def _sample_factor(space: PortModeSpace, frequency: float) -> Any:
-    """The shift-invert factor of the pencil at an exact sample's frequency."""
-    k0, _, shift = _wavenumbers(space.section, frequency)
-    a, b = space.pencil.at(k0)
-    return shift_invert_factor(a, b, shift)
 
 
 def _pack(

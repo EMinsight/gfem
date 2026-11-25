@@ -36,10 +36,9 @@ from gfem._engine.line_mode_sensitivity import (
 from gfem._engine.port_mode_adjoint import (
     pencil_cotangent,
     polish,
-    shift_invert_factor,
 )
 from gfem._engine.port_mode_normalization import normalize_rows
-from gfem._engine.port_rows import Mode, ModeValues, Row, RowInputs
+from gfem._engine.port_rows import Mode, ModeValues, Row, RowInputs, sample_factor
 from gfem._sweep.port_mode import _wavenumbers
 
 __all__ = ["LineFaceForms", "line_face", "line_pullback_row"]
@@ -233,9 +232,7 @@ def line_face(
         sample = int(solved[np.argmin(np.abs(freq[solved] - freq[n]))])
         if sample not in factors:
             factors.clear()
-            k0s, _, shift = _wavenumbers(section, freq[sample])
-            a0, b0 = space.pencil.at(k0s)
-            factors[sample] = shift_invert_factor(a0, b0, shift)
+            factors[sample] = sample_factor(space, freq[sample])
         k0 = _wavenumbers(section, freq[n])[0]
         pencil = space.pencil.at(k0)
         n_modes = len(sweeps)
