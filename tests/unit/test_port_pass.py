@@ -109,7 +109,15 @@ def _case(seed, n_modes, excited, lead, with_path):
 
 def _derivatives(forms, modes, row, name, index):
     """The real derivatives ``(d/dx, d/dy)`` of ``Psi`` in one complex entry."""
-    h = 1e-6
+    # The central difference errs by its truncation, h^2 |Psi'''| / 6, plus
+    # the round-off of the two values of Psi over 2h. Psi reaches 1e4 here and
+    # its value moves by a few ulps (1.8e-12 each) with the BLAS/LAPACK build's
+    # summation order: k ulps give k * 1.8e-12 / h. At h = 1e-6 that is
+    # k * 1.8e-6, past the check's abs tolerance of 1e-6 from k = 1 (one build
+    # was 2.4e-6 off). At h = 5e-5 even k = 6 stays near 2e-7, a fifth of it,
+    # while the truncation, which grows as h^2, stays under a tenth of the
+    # check's tolerance on every entry of these cases.
+    h = 5e-5
     out = []
     for step in (1.0, 1j):
         values = []
