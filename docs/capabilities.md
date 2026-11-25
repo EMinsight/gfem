@@ -119,7 +119,8 @@ v0.1.
   Boundaries {py:obj}`gfem.FixedTemperature`, {py:obj}`gfem.Convection` and
   {py:obj}`gfem.HeatFlux`; a surface no thermal boundary names is insulated.
   Materials take `thermal_conductivity`, `mass_density`, `specific_heat`,
-  an electrical `conductivity` and a `thermo_optic_coefficient`, and
+  an electrical `conductivity`, a `thermo_optic_coefficient`, a
+  `nonlinear_index` and a `two_photon_absorption`, and
   `excluded=` leaves regions out of one physics at a time
   ({doc}`recipes/heater-temperature`).
 - **Heat and phase**: {py:obj}`gfem.joule_heating`,
@@ -148,6 +149,12 @@ v0.1.
   and an `electro_optic_tensor`; photoelastic and electro-optic parts, $V_\pi L$
   per arm and push-pull; differentiable in the tensors, the acoustic inputs and
   the windows' `offset`) ({doc}`recipes/acousto-optic-shift`).
+- **Kerr nonlinearity**: {py:obj}`gfem.kerr_nonlinearity` (a port mode's
+  $\gamma_\mathrm{NL}$ and two-photon loss at every row of its grid) and
+  {py:obj}`gfem.kerr_coupling` (the tensor between its waves, for self- and
+  cross-phase modulation and four-wave mixing), from the materials'
+  `nonlinear_index` and `two_photon_absorption`
+  ({doc}`recipes/waveguide-nonlinearity`).
 - **Broadband models and time responses**:
   `NetworkParameters.fit_rational` (a passive {term}`rational model` of S,
   written as a SPICE subcircuit or a Verilog-A module) and

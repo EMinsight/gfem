@@ -606,6 +606,36 @@ dispersion. Units: :math:`\beta_2` in s²/m, :math:`\beta_3` in s³/m,
 :math:`D` in s/m². A perfectly matched layer keeps its reference frequency's
 stretch over the whole grid, and the derivatives are those of that section.
 
+Kerr nonlinearity
+-----------------
+A material's ``nonlinear_index`` :math:`n_2` (m²/W) and
+``two_photon_absorption`` :math:`\beta_\mathrm{TPA}` (m/W) give a complex
+:math:`\tilde n_2 = n_2 - i\beta_\mathrm{TPA}/(2k_0)`, :math:`k_0 = \omega/c`.
+For a port mode :math:`E` of 1 W, all three components, and
+:math:`n^2 = \mathrm{Re}\,\varepsilon_r` of each element at the row's
+frequency:
+
+.. math::
+
+    \gamma_\mathrm{NL} = \frac{k_0 c^2 \varepsilon_0^2}{12} \int_S n^2\,
+    \tilde n_2 \left[2|E|^4 + |E\cdot E|^2\right] \mathrm{d}A,
+
+:math:`E\cdot E` without conjugation. It is reported in the convention of
+pulse-propagation tools, :math:`e^{-i\omega t}`: a power :math:`P` moves the
+mode's phase constant by :math:`\delta\beta = \mathrm{Re}\,
+\gamma_\mathrm{NL}\,P` and its field attenuation by :math:`\delta\alpha =
+\mathrm{Im}\,\gamma_\mathrm{NL}\,P \ge 0`, the two-photon loss, and the
+envelope obeys :math:`\mathrm{d}A/\mathrm{d}z = i\gamma_\mathrm{NL}|A|^2A` as
+in the generalized nonlinear Schrödinger equation. It is the complex
+conjugate of the integral in gfem's own :math:`e^{+i\omega t}` phasors.
+Between waves :math:`a, b, c, d` the tensor
+:math:`\gamma_{abcd}` is the coefficient of :math:`A_b A_c \overline{A_d}` in
+the equation of :math:`A_a`, summed over all tuples with no degeneracy
+factor; :math:`\gamma_{aaaa} = \gamma_\mathrm{NL}`. Units: 1/(W m), and 1/W
+on an Ez line port of a 2D model (1 W/m, integral along the line). The
+isotropic scalar :math:`n_2` is real and constant over the grid, and the
+formula holds while :math:`\alpha \ll \beta`.
+
 Incident fields
 ---------------
 A `gfem.PlaneWave` or `gfem.GaussianBeam` travels along

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+Optics:
+
+- **Kerr nonlinearity of a port mode.** Materials take `nonlinear_index`
+  ($n_2$) and `two_photon_absorption`; `gfem.kerr_nonlinearity` gives a port
+  mode's $\gamma_\mathrm{NL}$ on every row of its grid and `gfem.kerr_coupling`
+  the tensor between its waves ({doc}`../recipes/waveguide-nonlinearity`).
+
 Jobs and files:
 
 - **A refused value names both versions.** A job or result bundle written by

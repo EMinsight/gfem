@@ -80,6 +80,12 @@ from gfem.errors import (  # noqa: E402
     UnsettledTraceWarning,
 )
 from gfem.job import Job, load_result  # noqa: E402
+from gfem.kerr import (  # noqa: E402
+    KerrCoupling,
+    KerrNonlinearity,
+    kerr_coupling,
+    kerr_nonlinearity,
+)
 from gfem.measurements import (  # noqa: E402
     CrossSections,
     CurrentMoments,
@@ -235,6 +241,8 @@ __all__ = [
     "IncidentField",
     "InterfaceParticipation",
     "Job",
+    "KerrCoupling",
+    "KerrNonlinearity",
     "LayerClearanceWarning",
     "LinearSolverConvergenceError",
     "Lorentz",
@@ -327,6 +335,8 @@ __all__ = [
     "interface_participation",
     "isotropic_stiffness",
     "joule_heating",
+    "kerr_coupling",
+    "kerr_nonlinearity",
     "load_result",
     "log",
     "materials",

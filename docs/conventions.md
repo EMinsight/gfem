@@ -964,6 +964,47 @@ quote them in other units: 1 ps/(nm km) is $10^{-6}$ s/m², 1 ps²/km
 {py:obj}`gfem.conventions` module, "Group index and dispersion", gives the
 formulas, and {doc}`recipes/waveguide-dispersion` the calculation.
 
+## Kerr nonlinearity
+
+A material's `nonlinear_index` $n_2$ (m²/W) and `two_photon_absorption`
+$\beta_\mathrm{TPA}$ (m/W) make its permittivity depend on the intensity,
+$n = n_0 + n_2 I$ and $\alpha_I = \beta_\mathrm{TPA} I$ in the intensity
+$I$. They combine in a complex index
+$\tilde n_2 = n_2 - i\beta_\mathrm{TPA}/(2k_0)$, with $k_0 = \omega/c$. The
+nonlinear coefficient of a port mode $E$ (all three components, normalized
+to 1 W; $n^2 = \mathrm{Re}\,\varepsilon_r$ of each element at the frequency
+of the row) is
+
+$$
+\gamma_\mathrm{NL} = \frac{k_0 c^2 \varepsilon_0^2}{12} \int_S n^2\,\tilde n_2
+\left[2|E|^4 + |E\cdot E|^2\right] \mathrm{d}A,
+$$
+
+with $E\cdot E$ the product without conjugation. $\gamma_\mathrm{NL}$ is
+reported in the convention of pulse-propagation tools, $e^{-i\omega t}$: the
+envelope $A$ of power $P = |A|^2$ obeys $\mathrm{d}A/\mathrm{d}z =
+i\gamma_\mathrm{NL}|A|^2 A$, the propagation constant moves by
+$\delta\beta = \mathrm{Re}\,\gamma_\mathrm{NL}\,P$ and the field attenuation
+by $\delta\alpha = \mathrm{Im}\,\gamma_\mathrm{NL}\,P \ge 0$, the loss of
+two-photon absorption: $\mathrm{d}P/\mathrm{d}z = -2\,\mathrm{Im}\,
+\gamma_\mathrm{NL}\,P^2$. It is the complex conjugate of the same integral in
+gfem's own $e^{+i\omega t}$ phasors, so the sign of its imaginary part does
+not follow `n_eff`'s $n' - in''$.
+
+Between several waves $a, b, c, d$ (rows of port mode results) the
+tensor $\gamma_{abcd}$ is the coefficient of $A_b A_c \overline{A_d}$ in the
+equation of $A_a$, summed over every index tuple with no degeneracy factor,
+so the factor 2 of cross-phase modulation and of four-wave mixing comes out
+of the sum; $\gamma_{aaaa} = \gamma_\mathrm{NL}$ of the same row.
+
+Units: $\gamma_\mathrm{NL}$ is in 1/(W m) on a 3D section. On a line port of
+a 2D model the field is for 1 W/m and the integral runs along the line, so it
+is in 1/W. Only the $E_z$ polarization of a line port has it. The
+isotropic scalar $n_2$ is real and does not disperse over the grid; the
+formula holds while the attenuation is small against the phase constant.
+The {py:obj}`gfem.conventions` module, "Kerr nonlinearity", gives the same
+formulas, and {doc}`recipes/waveguide-nonlinearity` the calculation.
+
 ## Thin metals
 
 A {py:obj}`gfem.Conductor` with a thickness describes one face of a film. On

@@ -144,6 +144,123 @@ def test_interpolate_blends_mass_density_and_thermo_optic_coefficient():
     np.testing.assert_allclose(f.thermo_optic_coefficient, [1e-5, 0.0, -1e-5])
 
 
+def test_kerr_properties_default_to_none_and_stay_out_of_the_solve():
+    m = gfem.Material()
+    assert (m.nonlinear_index, m.two_photon_absorption) == (None, None)
+    assert "nonlinear_index" not in repr(m)
+
+
+@pytest.mark.parametrize("value", [2.6e-20, -1.0e-18, 0.0])
+def test_nonlinear_index_is_a_real_scalar_of_any_sign(value):
+    assert gfem.Material(nonlinear_index=value).nonlinear_index == value
+
+
+@pytest.mark.parametrize("value", [8e-12, 0.0])
+def test_two_photon_absorption_is_a_nonnegative_scalar(value):
+    assert gfem.Material(two_photon_absorption=value).two_photon_absorption == value
+
+
+@pytest.mark.parametrize("name", ["nonlinear_index", "two_photon_absorption"])
+@pytest.mark.parametrize(
+    "bad",
+    [1e-18 + 1e-19j, (1e-18, 1e-18, 2e-18), np.eye(3) * 1e-18, float("nan")],
+    ids=["complex", "principal", "matrix", "nan"],
+)
+def test_kerr_properties_reject_complex_tensor_and_non_finite(name, bad):
+    with pytest.raises(ValueError, match=name):
+        gfem.Material(**{name: bad})
+
+
+def test_a_negative_two_photon_absorption_is_refused_without_a_passivity_claim():
+    with pytest.raises(
+        ValueError, match=r"two_photon_absorption must be >= 0 m/W"
+    ) as e:
+        gfem.Material(two_photon_absorption=-1e-12)
+    assert "passive" not in str(e.value)
+    with pytest.raises(ValueError, match="two_photon_absorption must be >= 0"):
+        gfem.MaterialField(two_photon_absorption=jnp.array([1e-12, -1e-12]))
+
+
+def test_a_kerr_property_beside_a_permittivity_law_is_kept():
+    law = gfem.PermittivityLaw(
+        eps_inf=2.0,
+        terms=[gfem.Lorentz(delta_eps=1.0, resonance_frequency=1e14, damping=0.0)],
+    )
+    m = gfem.Material(eps_r=law, nonlinear_index=2.6e-20, two_photon_absorption=1e-12)
+    assert (m.nonlinear_index, m.two_photon_absorption) == (2.6e-20, 1e-12)
+
+
+def test_kerr_properties_per_element_field():
+    n2 = jnp.array([6e-18, 2.6e-20, -1e-19])
+    beta = jnp.array([8e-12, 0.0, 0.0])
+    f = gfem.MaterialField(nonlinear_index=n2, two_photon_absorption=beta)
+    np.testing.assert_array_equal(f.nonlinear_index, n2)
+    np.testing.assert_array_equal(f.two_photon_absorption, beta)
+    assert f.n_elements == 3
+    assert {"nonlinear_index", "two_photon_absorption"} <= set(f.properties)
+    # one value per element beside principal values
+    g = gfem.MaterialField(
+        eps_r=jnp.ones((3, 3)) * 2.0,
+        nonlinear_index=n2,
+        two_photon_absorption=beta,
+        axes=np.eye(3),
+    )
+    assert g.nonlinear_index.shape == g.two_photon_absorption.shape == (3,)
+    with pytest.raises(ValueError, match="nonlinear_index must be real"):
+        gfem.MaterialField(nonlinear_index=n2 * (1 + 1j))
+    with pytest.raises(ValueError, match="two_photon_absorption has shape"):
+        gfem.MaterialField(two_photon_absorption=jnp.ones((3, 3)))
+    grad = jax.grad(
+        lambda v: jnp.sum(gfem.MaterialField(nonlinear_index=v).nonlinear_index)
+    )(n2)
+    np.testing.assert_array_equal(grad, 1.0)
+    uniform = gfem.MaterialField.uniform(
+        "core", gfem.Material(eps_r=4.0, nonlinear_index=6e-18)
+    )
+    assert float(uniform.nonlinear_index) == 6e-18
+    assert uniform.two_photon_absorption is None
+
+
+def test_interpolate_blends_the_kerr_properties_linearly():
+    void = gfem.Material(nonlinear_index=0.0, two_photon_absorption=0.0)
+    solid = gfem.Material(nonlinear_index=6e-18, two_photon_absorption=8e-12)
+    rho = jnp.array([0.0, 0.25, 1.0])
+    for scheme in ("linear", "index"):
+        f = gfem.MaterialField.interpolate(rho, void, solid, scheme=scheme)
+        want = np.array([0.0, 0.25, 1.0])
+        np.testing.assert_allclose(f.nonlinear_index, 6e-18 * want, rtol=1e-15)
+        np.testing.assert_allclose(f.two_photon_absorption, 8e-12 * want, rtol=1e-15)
+    # SIMP weights its own density: the same linear form in the weight
+    f = gfem.MaterialField.interpolate(rho, void, solid, scheme="simp")
+    np.testing.assert_allclose(
+        f.nonlinear_index, 6e-18 * np.asarray(rho) ** 3, rtol=1e-15
+    )
+
+
+def test_interpolate_blends_the_kerr_properties_beside_a_permittivity_law():
+    law = gfem.PermittivityLaw(
+        eps_inf=2.0,
+        terms=[gfem.Lorentz(delta_eps=1.0, resonance_frequency=1e14, damping=0.0)],
+    )
+    void = gfem.Material(eps_r=law, nonlinear_index=0.0)
+    solid = gfem.Material(eps_r=4.0, nonlinear_index=6e-18)
+    f = gfem.MaterialField.interpolate(jnp.array([0.0, 0.5]), void, solid)
+    np.testing.assert_allclose(f.nonlinear_index, [0.0, 3e-18], rtol=1e-15)
+
+
+@pytest.mark.parametrize("name", ["nonlinear_index", "two_photon_absorption"])
+@pytest.mark.parametrize("which", ["void", "solid"])
+@pytest.mark.parametrize("scheme", ["linear", "index"])
+def test_interpolate_refuses_one_end_with_a_kerr_property(name, which, scheme):
+    given = gfem.Material(**{name: 1e-18})
+    other = gfem.Material()
+    ends = (given, other) if which == "solid" else (other, given)
+    with pytest.raises(
+        ValueError, match=rf"other end has a {name} but the {which} end"
+    ):
+        gfem.MaterialField.interpolate(jnp.array([0.5]), *ends, scheme=scheme)
+
+
 def test_missing_material_property_error_lists_mass_density_and_remedies():
     err = gfem.errors.MissingMaterialPropertyError(
         [

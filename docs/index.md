@@ -78,6 +78,7 @@ recipes/mesh-refinement
 recipes/anisotropic-materials
 recipes/dispersive-materials
 recipes/waveguide-dispersion
+recipes/waveguide-nonlinearity
 recipes/fit-measured-data
 recipes/periodic-cell
 recipes/floquet-ports
