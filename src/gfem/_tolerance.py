@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import numbers
 from collections.abc import Callable, Mapping
+from types import MappingProxyType
 from typing import Any
 
 import jax
@@ -21,7 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.special import ndtr
 
-from gfem._checks import is_traced
+from gfem._checks import is_staging, is_traced
 
 __all__ = ["ToleranceReport", "tolerance_report"]
 
@@ -39,8 +41,11 @@ _SEED = 0
 _PSD_FLOOR = -1e-10
 
 # A quantity is flagged when the linear model misses a forward evaluation at
-# plus or minus the tolerance by more than this fraction of its three sigma.
+# plus or minus the tolerance by more than this fraction of its three sigma,
+# plus _ROUND_OFF unit round-offs of the largest value involved: a quantity
+# with no spread is not flagged for the rounding of its own evaluations.
 _NONLINEAR = 0.1
+_ROUND_OFF = 8.0
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -81,14 +86,15 @@ class ToleranceReport:
             has one, ``None`` for an open side.
         yields: The probability that each quantity with a spec lies in its
             window, in :math:`[0, 1]`, exact on the linear model.
-        cpk: The process capability :math:`\min((u - f)/3s, (f - l)/3s)` of each
+        cpk: The process capability
+            :math:`\min\left(\frac{u - f}{3 s}, \frac{f - l}{3 s}\right)` of each
             quantity with a spec, over its finite sides.
         joint_yield: The probability that every spec is met; ``None`` without
             specs. Exact with one spec, otherwise a seeded Monte Carlo on the
             linear model.
         joint_yield_error: The Monte Carlo standard error of ``joint_yield``
             (0 with one spec); ``None`` without specs.
-        joint_yield_bounds: The Bonferroni lower and Frechet upper bounds on
+        joint_yield_bounds: The Bonferroni lower and Fréchet upper bounds on
             the joint yield; ``None`` without specs.
         checked: The parameters whose linearity was checked, largest variance
             share first; empty when the check is off.
@@ -124,6 +130,28 @@ class ToleranceReport:
     linear_error: np.ndarray
     mean_shift: Mapping[str, float]
     nonlinear: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        # a report is a value: copy the arrays read-only, wrap the mappings
+        for name in ("jacobian", "effect", "share", "linear_error"):
+            array = np.array(getattr(self, name))
+            array.setflags(write=False)
+            object.__setattr__(self, name, array)
+        for name in (
+            "nominal",
+            "tolerance",
+            "values",
+            "correlation_share",
+            "std",
+            "worst_case",
+            "specs",
+            "yields",
+            "cpk",
+            "mean_shift",
+        ):
+            mapping = getattr(self, name)
+            if mapping is not None:
+                object.__setattr__(self, name, MappingProxyType(dict(mapping)))
 
     def __str__(self) -> str:
         return self._render(markdown=False)
@@ -174,12 +202,13 @@ class ToleranceReport:
         return "\n\n".join("\n".join(b) for b in blocks if b) + "\n"
 
     def _starred(self, name: str) -> bool:
-        """Whether a finite spec limit of ``name`` lies beyond three sigma."""
-        low, high = self.specs[name]
+        """Whether a finite spec limit of ``name`` lies beyond three sigma of it."""
         reach = 3 * self.std[name]
+        if reach == 0:
+            return False
         f = self.values[name]
-        return (low is not None and f - low > reach) or (
-            high is not None and high - f > reach
+        return any(
+            limit is not None and abs(limit - f) > reach for limit in self.specs[name]
         )
 
     def _quantity_block(self, markdown: bool) -> list[str]:
@@ -203,7 +232,7 @@ class ToleranceReport:
             row.append(worst)
             if has_specs:
                 if name in self.specs:
-                    star = "*" if self._starred(name) else ""
+                    star = (r"\*" if markdown else "*") if self._starred(name) else ""
                     row += [
                         _spec(*self.specs[name]),
                         _percent(self.yields[name]) + star,
@@ -225,14 +254,16 @@ class ToleranceReport:
                 tail = f"{_percent(self.joint_yield)} (exact on the linear model)"
             lines += ["", f"All specs: {tail}"] if markdown else [f"All specs: {tail}"]
         if any(self._starred(name) for name in self.specs):
-            lines.append(
-                f"* the spec limit lies beyond ±3{_SIGMA}, where the linear model "
+            star = r"\*" if markdown else "*"
+            note = (
+                f"{star} the spec limit lies beyond ±3{_SIGMA}, where the linear model "
                 "was not checked."
             )
+            lines += ["", note] if markdown else [note]
         return lines
 
     def _effect_block(self, markdown: bool) -> list[str]:
-        title = "Effect at +tolerance (share of variance), largest first"
+        title = "Effect at +tolerance (share of variance)"
         corr = self.correlation_share
         if markdown:
             header = ["Quantity", *self.parameters] + (["correlation"] if corr else [])
@@ -247,7 +278,7 @@ class ToleranceReport:
                 rows.append(row)
             return [title, "", *_table(header, rows, markdown)]
         width = max(len(q) for q in self.quantities)
-        lines = [title]
+        lines = [title + ", largest first"]
         for i, name in enumerate(self.quantities):
             order = sorted(
                 range(len(self.parameters)), key=lambda j, i=i: -self.share[i, j]
@@ -381,10 +412,23 @@ def _parameters(
             "every parameter."
         )
         raise ValueError(msg)
+    return names, _nominal_values(nominal, names), _tolerance_values(tolerance, names)
+
+
+def _nominal_values(nominal: Mapping[str, float], names: tuple[str, ...]) -> np.ndarray:
+    """The nominal values as a validated real vector."""
     x0 = np.empty(len(names))
     for k, name in enumerate(names):
         value = np.asarray(nominal[name])
-        if value.shape != () or np.iscomplexobj(value):
+        if np.iscomplexobj(value):
+            msg = (
+                f"{_OWNER}: nominal[{name!r}] is complex: a parameter is a real scalar."
+            )
+            raise ValueError(msg)
+        if value.dtype == np.bool_:
+            msg = f"{_OWNER}: nominal[{name!r}] is a bool: give a real number."
+            raise ValueError(msg)
+        if value.shape != ():
             msg = (
                 f"{_OWNER}: nominal[{name!r}] must be a real scalar, got shape "
                 f"{value.shape}. A density design is not a tolerance parameter: "
@@ -395,6 +439,13 @@ def _parameters(
             msg = f"{_OWNER}: nominal[{name!r}] must be finite, got {value}."
             raise ValueError(msg)
         x0[k] = value
+    return x0
+
+
+def _tolerance_values(
+    tolerance: Mapping[str, float], names: tuple[str, ...]
+) -> np.ndarray:
+    """The tolerances as a validated non-negative vector."""
     t = np.empty(len(names))
     for k, name in enumerate(names):
         value = np.asarray(tolerance[name], dtype=float)
@@ -405,7 +456,7 @@ def _parameters(
             )
             raise ValueError(msg)
         t[k] = value
-    return names, x0, t
+    return t
 
 
 def _specs(
@@ -419,16 +470,25 @@ def _specs(
         except (TypeError, ValueError):
             msg = f"{_OWNER}: the spec of {name!r} must be (low, high), got {window!r}."
             raise ValueError(msg) from None
+        for limit in (low, high):
+            if limit is not None and math.isnan(limit):
+                msg = f"{_OWNER}: the spec of {name!r} has a NaN limit."
+                raise ValueError(msg)
+        # an infinite limit on its own side is an open side
+        low = None if low is not None and low == -math.inf else low
+        high = None if high is not None and high == math.inf else high
+        if low == math.inf or high == -math.inf:
+            msg = (
+                f"{_OWNER}: the spec of {name!r} has a limit at the wrong infinity "
+                f"(low +inf or high -inf), so no value meets it, got {window!r}."
+            )
+            raise ValueError(msg)
         if low is None and high is None:
             msg = (
                 f"{_OWNER}: the spec of {name!r} is open on both sides: leave the "
                 "quantity out of specs."
             )
             raise ValueError(msg)
-        for limit in (low, high):
-            if limit is not None and math.isnan(limit):
-                msg = f"{_OWNER}: the spec of {name!r} has a NaN limit."
-                raise ValueError(msg)
         if low is not None and high is not None and not low < high:
             msg = f"{_OWNER}: the spec of {name!r} needs low < high, got {window!r}."
             raise ValueError(msg)
@@ -447,11 +507,17 @@ def _correlation(
         return None
     pairs: dict[frozenset[str], float] = {}
     for key, value in correlation.items():
-        try:
-            a, b = key
-        except (TypeError, ValueError):
-            msg = f"{_OWNER}: a correlation key is two parameter names, got {key!r}."
-            raise ValueError(msg) from None
+        if not (
+            isinstance(key, tuple)
+            and len(key) == 2
+            and all(isinstance(n, str) for n in key)
+        ):
+            msg = (
+                f"{_OWNER}: a correlation key is a tuple of two parameter names "
+                f"(str), got {key!r}."
+            )
+            raise ValueError(msg)
+        a, b = key
         for name in (a, b):
             if name not in names:
                 msg = (
@@ -481,10 +547,11 @@ def _correlation(
     for pair, rho in pairs.items():
         i, j = (names.index(n) for n in pair)
         r[i, j] = r[j, i] = rho
-    if np.linalg.eigvalsh(r).min() < _PSD_FLOOR:
+    smallest = np.linalg.eigvalsh(r).min()
+    if smallest < _PSD_FLOOR:
         msg = (
             f"{_OWNER}: the correlation matrix is not positive semidefinite "
-            f"(smallest eigenvalue {np.linalg.eigvalsh(r).min():.3g}): the "
+            f"(smallest eigenvalue {smallest:.3g}): the "
             "pairwise coefficients contradict each other."
         )
         raise ValueError(msg)
@@ -548,7 +615,7 @@ def _finite_values(q: tuple[str, ...], f: np.ndarray, where: str) -> None:
 
 
 def _yield(f: float, s: float, low: float | None, high: float | None) -> float:
-    """The probability that a Gaussian :math:`N(f, s^2)` lies in ``[low, high]``."""
+    r"""The probability that :math:`\mathcal{N}(f, s^2)` lies in ``[low, high]``."""
     if s == 0:
         return float((low is None or f >= low) and (high is None or f <= high))
     a = -math.inf if low is None else (low - f) / s
@@ -582,8 +649,13 @@ def _joint(
     """The fraction of samples of the linear model inside every window."""
     p = jac.shape[1]
     corr = np.eye(p) if r is None else r
-    w, v = np.linalg.eigh(corr)
-    root = v * np.sqrt(np.clip(w, 0.0, None))
+    try:
+        root = np.linalg.cholesky(corr)
+    except (
+        np.linalg.LinAlgError
+    ):  # singular: the eigen root, negative round-off clipped
+        w, v = np.linalg.eigh(corr)
+        root = v * np.sqrt(np.clip(w, 0.0, None))
     # f = f0 + J D L z, z standard normal
     a = jac @ (sigma[:, None] * root)
     rng = np.random.default_rng(_SEED)
@@ -627,6 +699,8 @@ def _yields(  # noqa: PLR0917
     low = np.array([-math.inf if w[0] is None else w[0] for w in windows.values()])
     high = np.array([math.inf if w[1] is None else w[1] for w in windows.values()])
     joint = _joint(f0=f0[rows], jac=jac[rows], sigma=sigma, r=r, low=low, high=high)
+    # the estimate scatters by about its error: keep it inside the sure bounds
+    joint = min(max(joint, bounds[0]), bounds[1])
     return yields, cpk, joint, math.sqrt(joint * (1 - joint) / _SAMPLES), bounds
 
 
@@ -640,8 +714,12 @@ def _linearity(  # noqa: PLR0917
     jac: np.ndarray,
     share: np.ndarray,
     count: int,
-) -> tuple[list[int], np.ndarray, np.ndarray]:
-    r"""The checked parameters, their linear errors and the mean shift.
+) -> tuple[list[int], np.ndarray, np.ndarray, np.ndarray]:
+    r"""The checked parameters, their linear errors, the mean shift and the scale.
+
+    The scale is the largest absolute value of each quantity among the nominal
+    and the two forward evaluations, ``(n_quantities, len(chosen))``: the unit
+    of the round-off of the linear error.
 
     The parameters are ranked by their summed variance share, held ones out;
     each of the first ``count`` is evaluated at :math:`p_j \pm t_j`.
@@ -650,8 +728,10 @@ def _linearity(  # noqa: PLR0917
     ranked = [j for j in np.argsort(-share.sum(axis=0), kind="stable") if t[j] > 0]
     chosen = ranked[:count]
     linear_error = np.zeros((len(qnames), len(chosen)))
+    scale = np.zeros((len(qnames), len(chosen)))
     shift = np.zeros(len(qnames))
     for c, j in enumerate(chosen):
+        scale[:, c] = np.abs(f0)
         for sign in (1.0, -1.0):
             x = x0.copy()
             x[j] += sign * t[j]
@@ -666,8 +746,9 @@ def _linearity(  # noqa: PLR0917
             linear_error[:, c] = np.maximum(
                 linear_error[:, c], np.abs(f - f0 - sign * jac[:, j] * t[j])
             )
+            scale[:, c] = np.maximum(scale[:, c], np.abs(f))
             shift += 0.5 * (f - f0) * sigma[j] ** 2 / t[j] ** 2
-    return chosen, linear_error, shift
+    return chosen, linear_error, shift, scale
 
 
 def tolerance_report(
@@ -729,17 +810,29 @@ def tolerance_report(
 
     Raises:
         TypeError: ``quantities`` returns no mapping, a non-str name or a complex
-            value, or ``nominal`` or ``tolerance`` is traced.
+            value, ``nominal`` or ``tolerance`` is traced, or the call is staged
+            by ``jax.jit``.
         ValueError: A quantity is not a scalar or not finite, an input is
-            non-finite, negative where it must not be, inconsistent (keys,
-            specs, correlation not positive semidefinite) or out of range
+            non-finite, complex or bool, negative where it must not be,
+            inconsistent (keys, specs, correlation keys or not positive
+            semidefinite) or out of range or not an integer
             (``check_linearity``).
     """
+    if is_staging():
+        msg = (
+            f"{_OWNER} is not differentiable: it is called inside jax.jit or a "
+            "scan body. Call it outside them; it returns NumPy values."
+        )
+        raise TypeError(msg)
     names, x0, t = _parameters(nominal, tolerance)
     n_params = len(names)
     spec_windows = _specs(specs)
     r = _correlation(correlation, names)
-    if isinstance(check_linearity, bool) or not 0 <= check_linearity <= n_params:
+    if (
+        isinstance(check_linearity, bool)
+        or not isinstance(check_linearity, numbers.Integral)
+        or not 0 <= check_linearity <= n_params
+    ):
         msg = (
             f"{_OWNER}: check_linearity must be an integer from 0 to the number of "
             f"parameters ({n_params}), got {check_linearity!r}."
@@ -756,7 +849,6 @@ def tolerance_report(
     jac, f0 = jax.jacrev(stacked, has_aux=True)(jnp.asarray(x0, dtype=jnp.float64))
     qnames = seen[-1]
     jac, f0 = np.asarray(jac, dtype=float), np.asarray(f0, dtype=float)
-    m = len(qnames)
     _finite_values(qnames, f0, "at the nominal point")
     for i, j in zip(*np.nonzero(~np.isfinite(jac)), strict=True):
         msg = (
@@ -792,15 +884,12 @@ def tolerance_report(
         spec_windows, qnames, f0, s, jac, sigma, r
     )
 
-    chosen, linear_error, shift = _linearity(
+    chosen, linear_error, shift, scale = _linearity(
         quantities, names, qnames, x0, t, f0, jac, share, check_linearity
     )
     mean_shift = {q: float(shift[i]) for i, q in enumerate(qnames)} if chosen else {}
-    flagged = (
-        (linear_error > 3 * _NONLINEAR * s[:, None]).any(axis=1)
-        if chosen
-        else np.zeros(m, dtype=bool)
-    )
+    floor = _ROUND_OFF * np.finfo(float).eps * scale
+    flagged = (linear_error > 3 * _NONLINEAR * s[:, None] + floor).any(axis=1)
 
     return ToleranceReport(
         parameters=names,

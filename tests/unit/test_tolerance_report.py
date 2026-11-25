@@ -234,7 +234,7 @@ def test_a_quantity_without_a_spec_has_no_yield():
 
 
 def quadratic(c):
-    """q = p + c p^2 at p = 0: slope 1, curvature 2 c."""
+    r""":math:`q = p + c p^2` at :math:`p = 0`: slope 1, curvature :math:`2 c`."""
     return lambda p: {"q": p["p"] + c * p["p"] ** 2}
 
 
@@ -262,6 +262,27 @@ def test_a_quantity_is_flagged_when_the_error_exceeds_a_tenth_of_three_sigma():
     fine = gfem.tolerance_report(quadratic(0.5), {"p": 0.0}, tolerance={"p": T})
     assert fine.nonlinear == ()
     assert "within a tenth of" in str(fine)
+
+
+def test_round_off_alone_does_not_flag_a_quantity():
+    # q = exp(p) exp(-p) is 1: the slope is 0 (s = 0) and the forward value at
+    # p = 0.4 differs from 1 by one unit round-off, 1.1e-16 (measured). Against
+    # 0.3 s = 0 that is "nonlinear" without a floor; the floor 8 eps max|f| with
+    # eps = 2.2e-16 is 1.8e-15 here, 16 times the measured scatter.
+    def identity(p):
+        return {"q": jnp.exp(p["p"]) * jnp.exp(-p["p"])}
+
+    r = gfem.tolerance_report(identity, {"p": 0.3}, tolerance={"p": 0.1})
+    assert r.std["q"] == 0.0
+    assert r.linear_error[0, 0] < 8 * np.finfo(float).eps
+    assert r.nonlinear == ()
+    assert "nonlinear within" not in str(r)
+
+
+def test_a_real_curvature_is_still_flagged_above_the_round_off_floor():
+    # the floor is 8 eps max|f| ~ 2e-15 against a linear error c T^2 = 0.02
+    r = gfem.tolerance_report(quadratic(2.0), {"p": 0.0}, tolerance={"p": T})
+    assert r.nonlinear == ("q",)
 
 
 def test_check_linearity_zero_skips_the_pair():
@@ -318,6 +339,29 @@ def test_a_limit_beyond_three_sigma_is_marked_tail_extrapolated():
     assert "beyond" in str(far)
     near = report(specs={"a": (8.5, None)})
     assert "%*" not in str(near)
+
+
+def test_the_tail_star_follows_the_distance_to_a_finite_limit_either_side():
+    # a: f = 9, 3 s = 3 sqrt(0.4) = 1.90
+    above = report(specs={"a": (12.0, None)})  # the limit is 3 above f: beyond 3 s
+    assert above.yields["a"] < 1e-5
+    assert "*" in str(above)
+    inside = report(specs={"a": (10.5, None)})  # 1.5 above f: within 3 s
+    assert "%*" not in str(inside)
+    assert "*" not in str(inside)
+
+
+def test_no_star_without_a_spread():
+    # all tolerances 0: s = 0, the limit is far but the model is exact there
+    r = report(tolerance={"x": 0.0, "y": 0.0}, specs={"a": (-100.0, None)})
+    assert r.std["a"] == 0.0
+    assert "*" not in str(r)
+
+
+def test_markdown_escapes_the_tail_star():
+    md = report(specs={"a": (4.0, None)}).to_markdown()
+    assert r"\*" in md
+    assert "%*" not in md
 
 
 def test_a_parameter_the_function_does_not_read_is_named():
@@ -408,9 +452,27 @@ def test_repr_is_one_line():
 
 
 def test_the_report_is_a_frozen_value():
-    r = report()
+    r = report(specs={"a": (8.5, None)}, correlation={("x", "y"): 0.3})
     with pytest.raises(dataclasses.FrozenInstanceError):
         r.joint_yield = 1.0  # ty: ignore[invalid-assignment]
+    for array in (r.jacobian, r.effect, r.share, r.linear_error):
+        assert not array.flags.writeable
+        with pytest.raises(ValueError, match="read-only"):
+            array[...] = 0.0
+    for mapping in (
+        r.nominal,
+        r.tolerance,
+        r.values,
+        r.correlation_share,
+        r.std,
+        r.worst_case,
+        r.specs,
+        r.yields,
+        r.cpk,
+        r.mean_shift,
+    ):
+        with pytest.raises(TypeError):
+            mapping["a"] = 0.0  # ty: ignore[invalid-assignment]
 
 
 # --- refusals -----------------------------------------------------------------------
@@ -433,6 +495,25 @@ def call(quantities=linear, nominal=None, **kwargs):
 def test_bad_quantities_raise_type_error(quantities, match):
     with pytest.raises(TypeError, match=match):
         call(quantities)
+
+
+def test_a_numpy_integer_check_count_is_accepted():
+    assert report(check_linearity=np.int64(2)).checked == ("y", "x")
+
+
+def test_a_call_under_jit_raises_type_error():
+    @jax.jit
+    def staged(_):
+        return gfem.tolerance_report(linear, NOMINAL, tolerance=TOLERANCE).jacobian
+
+    with pytest.raises(TypeError, match="not differentiable"):
+        staged(0.0)
+
+
+def test_a_complex_nominal_is_named_as_complex_not_as_a_shape():
+    with pytest.raises(ValueError, match="complex") as info:
+        call(nominal={"x": 1.0 + 0j, "y": 2.0})
+    assert "shape" not in str(info.value)
 
 
 def test_a_traced_nominal_raises_type_error():
@@ -466,6 +547,15 @@ def test_a_traced_nominal_raises_type_error():
         ({"correlation": {("x", "y"): 0.1, ("y", "x"): 0.2}}, "twice"),
         ({"correlation": {("x", "y"): 1.5}}, r"\[-1, 1\]"),
         ({"correlation": {("x", "y"): float("nan")}}, r"\[-1, 1\]"),
+        ({"correlation": {"xy": 0.3}}, "two parameter names"),
+        ({"correlation": {(1, 2): 0.3}}, "two parameter names"),
+        ({"correlation": {("x", "y", "x"): 0.3}}, "two parameter names"),
+        ({"nominal": {"x": 1.0 + 2.0j, "y": 2.0}}, "complex"),
+        ({"nominal": {"x": True, "y": 2.0}}, "bool"),
+        ({"check_linearity": 1.0}, "check_linearity"),
+        ({"check_linearity": 1.5}, "check_linearity"),
+        ({"check_linearity": "1"}, "check_linearity"),
+        ({"check_linearity": True}, "check_linearity"),
         ({"check_linearity": -1}, "check_linearity"),
         ({"check_linearity": 3}, "check_linearity"),
     ],
@@ -473,6 +563,91 @@ def test_a_traced_nominal_raises_type_error():
 def test_bad_inputs_raise_value_error(kwargs, match):
     with pytest.raises(ValueError, match=match):
         call(**kwargs)
+
+
+def test_an_infinite_limit_is_an_open_side():
+    inf = float("inf")
+    r = report(specs={"a": (-inf, 8.5), "b": (-6.0, inf)})
+    assert r.specs == {"a": (None, 8.5), "b": (-6.0, None)}
+    assert r.yields["a"] == pytest.approx(phi((8.5 - 9.0) / math.sqrt(0.4)), abs=1e-12)
+    assert "inf" not in str(r)
+    assert np.isfinite(list(r.cpk.values())).all()
+
+
+@pytest.mark.parametrize(
+    ("window", "match"),
+    [
+        ((-math.inf, math.inf), "both sides"),
+        ((math.inf, math.inf), "infinity"),
+        ((math.inf, None), "infinity"),
+        ((None, -math.inf), "infinity"),
+        ((1.0, -math.inf), "infinity"),
+        ((math.inf, 1.0), "infinity"),
+    ],
+)
+def test_an_empty_or_infinite_window_is_refused(window, match):
+    with pytest.raises(ValueError, match=match):
+        report(specs={"a": window})
+
+
+def test_the_joint_yield_of_fully_correlated_quantities_is_the_single_yield():
+    # rho = 1: v = u exactly; a window (-1, 1) is met with P = Phi(1) - Phi(-1)
+    def uv(p):
+        return {"u": p["x"], "v": p["y"]}
+
+    r = gfem.tolerance_report(
+        uv,
+        {"x": 0.0, "y": 0.0},
+        tolerance={"x": 3.0, "y": 3.0},
+        specs={"u": (-1.0, 1.0), "v": (-1.0, 1.0)},
+        correlation={("x", "y"): 1.0},
+    )
+    exact = phi(1) - phi(-1)
+    assert abs(r.joint_yield - exact) <= 4 * standard_error(exact)
+    assert r.joint_yield_error == pytest.approx(standard_error(r.joint_yield), rel=1e-9)
+
+
+def test_the_joint_yield_samples_with_the_cholesky_factor_of_a_regular_correlation():
+    # u = x, v = y, rho = 0.6, sigma = 1: with R = L L^T the samples are
+    # z @ L^T. Rebuilt here from the same stream; a boundary flip needs a
+    # sample within round-off of 0 (probability ~1e-16 per sample), so the
+    # counts agree and the two yields differ by less than one sample.
+    rho = 0.6
+
+    def uv(p):
+        return {"u": p["x"], "v": p["y"]}
+
+    r = gfem.tolerance_report(
+        uv,
+        {"x": 0.0, "y": 0.0},
+        tolerance={"x": 3.0, "y": 3.0},
+        specs={"u": (0.0, None), "v": (0.0, None)},
+        correlation={("x", "y"): rho},
+    )
+    chol = np.linalg.cholesky(np.array([[1.0, rho], [rho, 1.0]]))
+    z = np.random.default_rng(0).standard_normal((N_SAMPLES, 2))
+    f = z @ chol.T
+    mine = np.count_nonzero((f >= 0).all(axis=1)) / N_SAMPLES
+    assert abs(r.joint_yield - mine) < 1 / N_SAMPLES
+
+
+@pytest.mark.parametrize("limit", [-1.3, -0.7, -0.2, 0.4, 0.9, 1.5, 2.2])
+def test_the_joint_yield_lies_within_its_bounds(limit):
+    # rho = 1 makes the joint yield equal to each single yield, on the bound
+    # itself: the Monte Carlo estimate scatters around it by about 1e-3 and
+    # must be clipped, not reported outside the bounds.
+    def uv(p):
+        return {"u": p["x"], "v": p["y"]}
+
+    r = gfem.tolerance_report(
+        uv,
+        {"x": 0.0, "y": 0.0},
+        tolerance={"x": 3.0, "y": 3.0},
+        specs={"u": (limit, None), "v": (limit, None)},
+        correlation={("x", "y"): 1.0},
+    )
+    lower, upper = r.joint_yield_bounds
+    assert lower <= r.joint_yield <= upper
 
 
 def test_a_correlation_matrix_that_is_not_positive_semidefinite_is_refused():
@@ -492,7 +667,7 @@ def test_a_correlation_matrix_that_is_not_positive_semidefinite_is_refused():
 
 
 def test_a_singular_correlation_is_allowed():
-    # rho = 1: y follows x, and q = x - y is exactly constant: s = 0 up to round-off
+    # rho = 1: y follows x, so d = x + y = 2 x has s = 2 (a singular correlation)
     def diff(p):
         return {"d": p["x"] + p["y"]}
 
@@ -593,12 +768,24 @@ def test_the_jacobian_of_a_real_solve_matches_central_differences(tmp_path):
         out = quantities(dict(zip(nominal, x, strict=True)))
         return np.array([float(v) for v in out.values()])
 
-    # Central differences at h and h / 2. Truncation error is c h^2, so
-    # FD(h/2) is off by (FD(h) - FD(h/2)) / 3; the bound takes that estimate
-    # three times over. The round-off term is d f / h with d f the
-    # error of a direct solve of this small system, taken as 1e-13 of
-    # quantities of order 1 (100 times the double-precision unit round-off).
-    steps = {"edge bias": 2e-6, "eps_lo": 1e-4}
+    # Central differences at h and h' = h / 2. The AD Jacobian J is compared
+    # with FD(h'). Truncation error is c h^2, so FD(h') is off by
+    # (FD(h) - FD(h')) / 3. Round-off: every solve is off by at most delta, so
+    # a central difference with divisor 2 h' is off by at most 2 delta / (2 h')
+    # = delta / h' for FD(h') and delta / (2 h') for FD(h). Then
+    # |J - FD(h')| <= |FD(h) - FD(h')| / 3 + 0.5 delta / h' (the round-off of the
+    # truncation estimate) + delta / h' (that of FD(h')), and the bound below,
+    # |FD(h) - FD(h')| + 4 delta / h', is at least that with room to spare.
+    # delta was measured on this system (Linux, 1 thread, direct solver):
+    # 17 solves at steps of 1e-2 of the test step around the nominal point,
+    # residual of a cubic fit, at most 1.1e-14 on |S21|^2 (order 1) and 5.4e-15
+    # on |S11|^2 (order 3e-3); the real-solve tests of other platforms may be
+    # noisier. delta = 1e-13 is 10 times the measured maximum, so a solver 10
+    # times noisier still passes. The steps make truncation dominate the
+    # round-off term: the two FD differ by 3e-3 (edge bias, h = 2e-6) against a
+    # round-off term of 4e-7, and by 6e-8 (eps_lo, h = 1e-2) against 8e-11.
+    delta = 1e-13
+    steps = {"edge bias": 2e-6, "eps_lo": 1e-2}
     x0 = np.array(list(nominal.values()))
     for j, name in enumerate(nominal):
         e = np.zeros(2)
@@ -606,7 +793,7 @@ def test_the_jacobian_of_a_real_solve_matches_central_differences(tmp_path):
         h = steps[name]
         coarse = (values(x0 + h * e) - values(x0 - h * e)) / (2 * h)
         fine = (values(x0 + h / 2 * e) - values(x0 - h / 2 * e)) / h
-        bound = np.abs(coarse - fine) + 4 * 1e-13 / (h / 2)
+        bound = np.abs(coarse - fine) + 4 * delta / (h / 2)
         assert (np.abs(r.jacobian[:, j] - fine) <= bound).all(), (
             name,
             r.jacobian[:, j],
