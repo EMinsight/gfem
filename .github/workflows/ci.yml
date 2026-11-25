@@ -50,11 +50,16 @@ jobs:
     # Which test jobs this push or pull request needs (tools/ci_scope.py): none
     # for the whitepaper and Markdown no test reads; only the unit tier on one
     # runner for docs/ and README.md, which unit tests read (recipes, pages);
-    # every job otherwise. Scheduled and on-demand runs, and a diff that cannot
-    # be computed (a force push, a new branch), take every job.
+    # every job otherwise. A push is compared with the last push whose CI run
+    # passed on its branch, not the push before it: that one's run may have been
+    # cancelled or failed. Scheduled and on-demand runs, and a diff that cannot
+    # be computed (no passed run yet, a force push), take every job.
     name: change scope
     if: inputs.tests == ''
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read  # the last passed push run
     outputs:
       scope: ${{ steps.scope.outputs.scope }}
     steps:
@@ -65,17 +70,23 @@ jobs:
       id: scope
       env:
         EVENT: ${{ github.event_name }}
-        BEFORE: ${{ github.event.before }}
+        BRANCH: ${{ github.ref_name }}
         SHA: ${{ github.sha }}
-      # pull_request checks out the merge commit: its first parent is the base
+        GH_TOKEN: ${{ github.token }}
+      # pull_request checks out the merge commit: its first parent is the base.
+      # --no-renames lists both sides of a move, so code moved under docs/ is
+      # still a code change.
       run: |
         case "$EVENT" in
-          push) from=$BEFORE to=$SHA ;;
+          push)
+            from=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow CI --branch "$BRANCH" \
+              --event push --status success --limit 1 --json headSha --jq '.[0].headSha // empty' || true)
+            to=$SHA ;;
           pull_request) from=HEAD^1 to=HEAD ;;
           *) from= to= ;;
         esac
         scope=scope=full
-        if [ -n "$from" ] && paths=$(git diff --name-only "$from" "$to"); then
+        if [ -n "$from" ] && paths=$(git diff --no-renames --name-only "$from" "$to"); then
           scope=$(printf '%s\n' "$paths" | python3 tools/ci_scope.py) || scope=scope=full
         fi
         echo "$scope" | tee -a "$GITHUB_OUTPUT"
@@ -90,6 +101,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       RUN_TIER: ${{ needs.changes.outputs.scope != 'none' && (needs.changes.outputs.scope != 'docs' || (matrix.os == 'ubuntu-latest' && matrix.python == '3.12')) }}
+      # a docs change runs the slow tests too: most of them check the recipes
+      TEST_MARK: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.scope == 'docs') && 'unit' || 'unit and not slow' }}
     strategy:
       fail-fast: false
       matrix:
@@ -121,7 +134,7 @@ jobs:
       run: uv run ty check src benchmarks
     - name: Unit tier
       if: env.RUN_TIER == 'true'
-      run: uv run pytest -m "${{ env.UNIT_MARK }}" --junitxml=junit-unit.xml
+      run: uv run pytest -m "${{ env.TEST_MARK }}" --junitxml=junit-unit.xml
     - name: Durations
       if: always() && env.RUN_TIER == 'true' && env.FULL_RUN == 'true'
       uses: actions/upload-artifact@v4
