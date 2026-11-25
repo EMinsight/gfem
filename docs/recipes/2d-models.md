@@ -171,6 +171,11 @@ def material(rho):
   `grid.x` and `grid.y`, with their 0.5 contour as the material edge.
 - `jax.grad` of any S functional goes through the solve to the pixels, in both
   polarizations.
+- A design at a line port differentiates too: a `gfem.MaterialField` region
+  with elements on a port's line moves the port's mode, and `jax.grad` of
+  an S functional or of `PortMode`'s `n_eff` and field values follows it, in
+  both polarizations, lossless or lossy. The node coordinates, law
+  parameters and boundary values are still not differentiated.
 - Hz takes blends of constant permittivities only: a permittivity law or a
   conductivity in a blend raises. A {py:obj}`gfem.Material` region with a law
   or a conductivity is accepted.

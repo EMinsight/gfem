@@ -226,8 +226,8 @@ The electro-optic shift differentiates with respect to its tensor, the
 static permittivity of every element, the drive and the electrostatic
 mesh's nodes (an electrode gap through a shape morph), each checked against
 finite differences; with respect to the optical model's permittivity or
-nodes it raises, because the mode is held constant
-({doc}`recipes/electro-optic-gradient`).
+nodes it raises, because the shift holds the mode constant (a port mode on its own
+differentiates) ({doc}`recipes/electro-optic-gradient`).
 
 A SAX component's S differentiates as the driven problem's, with respect to
 every input its model function builds from its settings, so one `jax.grad` of
@@ -352,14 +352,31 @@ returning a wrong value:
   port mode's cutoff raises {py:obj}`gfem.PortModeError`, and a root below
   a cutoff that does not decay in time is dropped with
   {py:obj}`gfem.AntiBoundRootWarning`. Under `jax.grad`, a design touching
-  a wave port face raises {py:obj}`gfem.PortGeometryError`, as in a driven
-  solve. The wave ports' $\sum_p 1/q_p$ matches $1/Q$ of an otherwise
+  a wave port face raises {py:obj}`gfem.PortGeometryError`; a driven solve
+  differentiates it. The wave ports' $\sum_p 1/q_p$ matches $1/Q$ of an otherwise
   lossless model to $O(1/Q^2)$. Details: {doc}`modes-and-ports`.
 - **Lossy port lines**: wave-port S reads each mode by the biorthogonal
   projection, so a lossy port line is matched to its own mode and the modes
   of a lossy shared port surface separate. With a `voltage_path` its
   reference impedance is the mode's complex $Z_{PV}$ (pseudo-waves); give
-  every wave port a `voltage_path`, or none, for a symmetric S.
+  every wave port a `voltage_path`, or none, for a symmetric S. With ports of
+  one kind, $S$ is symmetric to round-off when the port faces are meshed
+  alike; otherwise it is symmetric to the discretization error of the two
+  ports' modes, since $S_{12}/S_{21}$ is the ratio of the two discrete modes'
+  normalizations ($\kappa^2/N$ each), about $10^{-5}$ on a coarse lossy
+  microstrip and independent of the device.
+- **Designs at wave ports**: a design may reach a wave port face: the
+  materials of its elements (laws and material fields included), a sheet's
+  fill or an `Impedance` on its edge, and its nodes
+  (`gfem.shape.boundary_morph(..., sliding_ports=...)`), on every driven path
+  except a Bloch wave vector and a fixed-angle sweep. The port's mode follows
+  the design, so S stays in the pseudo-waves of the moved mode: renormalize S
+  where a port meets a fixed external line. A {py:obj}`gfem.PortMode`
+  result's $\gamma$, `n_eff`, $Z_{PV}$ and field differentiate the same way.
+  An eigenmode solve raises {py:obj}`gfem.PortGeometryError` for such a
+  design. A voltage path is a fixed set of points: a design that moves a
+  conductor at its end, or an interface along it, gives $Z_{PV}$ a kink.
+  Details: {doc}`recipes/port-mode-gradient`.
 
 - **2D models**: normal incidence and one polarization only. Eigenmode,
   electrostatic and thermal problems, lumped and Floquet ports, periodic
@@ -405,7 +422,7 @@ returning a wrong value:
   field with the mode held constant. It refuses a lossy optical section, a 2D
   model and a potential split across ranks. The optical model does not see
   the electrodes, so their absorption is absent. No gradient goes through the
-  mode: the ridge's shape or width takes a difference over remeshes. Details:
+  shift's mode: the ridge's shape or width takes a difference over remeshes. Details:
   {doc}`recipes/electro-optic-phase`, {doc}`recipes/electro-optic-gradient`.
 - **Piezoelectric problems**: 2D sections only (a tetrahedral or slab mesh
   raises); one process and the direct solver (sparse Cholesky); no periodic

@@ -76,7 +76,7 @@ A {term}`distributed solve` runs these, with their gradients:
   `Conductor` and `Impedance` sheets, `SheetField`, anisotropic materials and
   `MaterialField`;
 - gradients in permittivity, conductivity, `mu_r`, `tan_delta`, sheet fill and
-  node coordinates, also under `jax.jit`, `jax.vmap` and `jax.jacrev`;
+  node coordinates, a design at a wave port face included, also under `jax.jit`, `jax.vmap` and `jax.jacrev`;
 - the solvers `auto`, `direct` and `petsc`, and `bddc_gmres` at order 2 and
   above. `auto` is `bddc_gmres` for driven and electrostatic solves and
   `direct` for eigenmode. The eigen solver is SLEPc: `eigen_solver="auto"`

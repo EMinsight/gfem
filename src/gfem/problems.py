@@ -695,11 +695,20 @@ class PortMode:
     driven solve's port mode sweep does: one `SolverOptions` serves a
     `PortMode` check and the driven solve after it.
 
-    Port modes are constants: under `jax.grad` an input the problem reads
-    (an electromagnetic material property, the node coordinates) raises
-    `gfem.NonDifferentiableError` and a thermal property gets an exact
-    zero. Under `jax.jit` and `jax.vmap` the solve runs, but the result's
-    ``e_field`` is not available.
+    Port modes are differentiable: under `jax.grad`, ``gamma`` (so ``n_eff``),
+    ``Z_PV`` and the field's values (`PortModeField.at`) differentiate with
+    respect to every input the problem reads that the same model
+    differentiates elsewhere: the material values and `gfem.MaterialField`
+    designs of the regions on the port face, permittivity-law parameters, the
+    fill of a sheet field and the R, L, C of an `Impedance` on an edge of the
+    section, and the node coordinates of the face (not through ``at``).
+    ``residual`` raises `gfem.NonDifferentiableError`, and a thermal property
+    gets an exact zero. ``gamma`` alone adds no solve to the backward pass; a
+    field or ``Z_PV`` objective adds one 2D solve per mode and frequency. A
+    line port's mode (a 2D mesh) differentiates with respect to the material
+    field values of the regions on its line, in Ez and Hz (``Z_PV`` is NaN
+    there: a line port has no voltage path); its node coordinates and law
+    parameters raise `gfem.NonDifferentiableError`.
     """
 
     port: str

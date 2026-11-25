@@ -22,6 +22,7 @@ import pytest
 import scipy.constants
 import scipy.sparse as sp
 import structured_meshes as sm
+from finite_differences import assert_gradient_matches
 from gradient_cases import (
     HYBRID_EPS,
     HYBRID_PORTS,
@@ -240,11 +241,26 @@ def test_wave_port_s_comes_out_of_jit_unchanged(plate_mesh, plate_result):
     )
 
 
-def test_a_design_touching_a_wave_port_face_raises_under_grad(plate_mesh):
-    # "fill" fills the whole line, so its elements sit on both port faces:
-    # the port mode would depend on the design.
-    model = line(plate_mesh).with_material(
-        "fill", gfem.MaterialField.uniform("fill", gfem.Material(eps_r=EPS))
+def test_a_design_filling_the_line_to_its_port_faces_differentiates(plate_mesh):
+    # "fill" fills the whole line, so its elements sit on both port faces: the
+    # port modes follow the design, and the gradient is the finite difference's
+    field = gfem.MaterialField.uniform("fill", gfem.Material(eps_r=EPS))
+    model = line(plate_mesh).with_material("fill", field)
+    # the forward's modes at the reduced rows are exact at the one frequency
+    options = gfem.SolverOptions(order=3, port_mode_tolerance=1e-12)
+
+    def s21_of(eps):
+        m = model.with_material("fill", dataclasses.replace(field, eps_r=eps))
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        result = gfem.solve(m, gfem.Driven(F[:1]), options=options)
+        # the line is lossless, so |S21| = 1 whatever the fill: its phase moves
+        return jnp.real(result.s.values[0, 1, 0])
+
+    rng = np.random.default_rng(0)
+    direction = rng.standard_normal(np.shape(field.eps_r))
+    direction /= np.linalg.norm(direction)
+    assert_gradient_matches(
+        s21_of, jnp.asarray(field.eps_r), [direction], step=1e-2, rel=1e-6
     )
 
     def s21(m):
@@ -252,8 +268,6 @@ def test_a_design_touching_a_wave_port_face_raises_under_grad(plate_mesh):
         result = gfem.solve(m, gfem.Driven(F[:1]), options=OPTIONS)
         return jnp.abs(result.s.values[0, 1, 0])
 
-    with pytest.raises(gfem.PortGeometryError, match=r"WavePort 'p1'.*'fill'"):
-        jax.grad(s21)(model)
     # a forward solve of the same model is fine, and so is stop_gradient
     assert np.isfinite(float(s21(model)))
     frozen = jax.grad(lambda m: s21(jax.lax.stop_gradient(m)))(model)
@@ -407,8 +421,8 @@ def test_a_singular_reaction_raises_instead_of_dropping_the_correction(
 
     built = wave_ports.PortSurfaceCoupling
 
-    def vanishing(piece, vectors, reaction, ports):
-        return built(piece, vectors, np.zeros_like(reaction), ports)
+    def vanishing(piece, vectors, reaction, ports, **rest):
+        return built(piece, vectors, np.zeros_like(reaction), ports, **rest)
 
     monkeypatch.setattr(wave_ports, "PortSurfaceCoupling", vanishing)
     cache._DISCRETIZATIONS.clear()  # earlier solves kept the plate's couplings
@@ -958,14 +972,11 @@ def test_a_lone_hybrid_port_correction_is_the_closed_form(hybrid_couplings):
 
 # --- warnings: skipped port modes --------------------------------------------
 
-PORT_MODE_WARNINGS = (gfem.SkippedPortModeWarning, gfem.PortModeProjectionWarning)
-
 
 def _silent(model, problem, options):
-    """Solve with both port mode warnings turned into errors."""
+    """Solve with the skipped port mode warning turned into an error."""
     with warnings.catch_warnings():
-        for category in PORT_MODE_WARNINGS:
-            warnings.simplefilter("error", category)
+        warnings.simplefilter("error", gfem.SkippedPortModeWarning)
         return gfem.solve(model, problem, options=options)
 
 
@@ -1544,3 +1555,113 @@ def test_evicted_kept_state_is_rebuilt_not_read_stale(tmp_path, monkeypatch):
         np.testing.assert_allclose(s, s0, rtol=1e-12, atol=1e-14)
         np.testing.assert_allclose(grad, grad0, rtol=1e-9, atol=1e-14)
     cache.ENTRIES.clear()
+
+
+def test_the_surface_keeps_the_face_trace_maps_that_lift_its_columns(turned_wr28):
+    model, op, surface = turned_wr28
+    trace = surface.trace
+    sweep = surface.ports[0].sweep
+    idx3, idx2 = trace_dofs(model, sweep.space.section, sweep.space, op.built, op.space)
+    free = op.space.FreeDofs()
+    keep = np.array([free[i] for i in idx3], bool)
+    np.testing.assert_array_equal(trace.idx3, idx3[keep])
+    np.testing.assert_array_equal(trace.idx2, idx2[keep])
+    assert trace.writers.shape == (op.space.ndof,)
+    assert (trace.writers[trace.idx3] >= 1).all()
+    # the surface's vectors are the lift of its 2D columns
+    r = np.random.default_rng(0).standard_normal((len(sweep.space.free), 3))
+    lifted = trace.lift(r)
+    expected = np.zeros_like(lifted)
+    expected[trace.idx3] = r[trace.idx2] / trace.writers[trace.idx3, None]
+    np.testing.assert_array_equal(lifted, expected)
+
+
+# --- reciprocity: alike or unlike port faces -------------------------------------
+
+LAYER_L, LAYER_W, LAYER_H = 4.0, 2.0, 1.0  # mm
+LAYER_F = (30e9, 40e9)
+
+
+def _layered_line(tmp_path, *, unlike):
+    """A lossy two-layer line between plates, a wave port with a voltage path
+    at each end; ``unlike`` moves the grid lines near port 2, so the two port
+    faces carry different triangulations of the same cross-section."""
+    eps = 1e-9
+
+    def volume(c):
+        return "substrate" if c[2] < LAYER_H / 2 else "air"
+
+    def surface(c):
+        x, _, z = c
+        for at, name in ((0.0, "port1"), (LAYER_L, "port2")):
+            if abs(x - at) < eps:
+                return name
+        return "plates" if min(z, LAYER_H - z) < eps else ""
+
+    def mapping(p):
+        if not unlike:
+            return p
+        q = p.copy()
+        w = np.clip((p[:, 0] - 3.0) / 1.0, 0, 1)
+        moves_y = (p[:, 1] > eps) & (p[:, 1] < LAYER_W - eps)
+        moves_z = (np.abs(p[:, 2] - LAYER_H / 2) > eps) & (p[:, 2] > eps)
+        moves_z &= p[:, 2] < LAYER_H - eps
+        q[:, 1] += np.where(moves_y, 0.12 * w * np.sin(3 * p[:, 1]), 0)
+        q[:, 2] += np.where(moves_z, 0.06 * w * np.sin(5 * p[:, 2]), 0)
+        return q
+
+    edges = (
+        np.linspace(0, LAYER_L, 9),
+        np.linspace(0, LAYER_W, 5),
+        np.linspace(0, LAYER_H, 5),
+    )
+    path = tmp_path / ("unlike.msh" if unlike else "alike.msh")
+    sm.write_msh22(path, sm.structured(edges, volume, surface, mapping))
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+    mm = 1e-3
+    model = gfem.Model(
+        mesh,
+        materials={
+            "substrate": gfem.Material(eps_r=4.4, tan_delta=0.02),
+            "air": gfem.Material(),
+        },
+        boundaries=[gfem.PEC("plates")],
+        ports=[
+            gfem.WavePort(
+                f"p{k}",
+                f"port{k}",
+                voltage_path=(
+                    (x * mm, LAYER_W / 2 * mm, 0.0),
+                    (x * mm, LAYER_W / 2 * mm, LAYER_H * mm),
+                ),
+            )
+            for k, x in ((1, 0.0), (2, LAYER_L))
+        ],
+    )
+    return model
+
+
+def _s_and_ratio(model):
+    """Driven S, and the two ports' ``free_dual_ratio`` at the same frequencies."""
+    options = gfem.SolverOptions(order=2, linear_solver="direct")
+    result = gfem.solve(model, gfem.Driven(LAYER_F), options=options)
+    c = {}
+    for port in model.ports:
+        mode = gfem.solve(model, gfem.PortMode(port.name, LAYER_F), options=options)
+        c[port.name] = wave_ports.free_dual_ratio(mode, port)
+    return np.asarray(result.s.values), c["p1"] / c["p2"]
+
+
+def test_wave_port_s_is_symmetric_to_round_off_on_alike_port_faces(tmp_path):
+    s, _ = _s_and_ratio(_layered_line(tmp_path, unlike=False))
+    assert np.abs(s[:, 0, 1] - s[:, 1, 0]).max() <= 1e-12
+
+
+def test_wave_port_s_asymmetry_is_the_ratio_of_the_ports_normalizations(tmp_path):
+    # S12 / S21 = c1 / c2, c = kappa^2 / N of each port's mode: with the two
+    # faces meshed differently the discrete modes' normalizations differ, and
+    # that is all the asymmetry (a functional that were not parallel to its
+    # excitation, or a normalization slip, would break the equality)
+    s, ratio = _s_and_ratio(_layered_line(tmp_path, unlike=True))
+    np.testing.assert_allclose(s[:, 0, 1] / s[:, 1, 0], ratio, rtol=1e-10, atol=0)
+    assert np.abs(ratio - 1).max() > 1e-9

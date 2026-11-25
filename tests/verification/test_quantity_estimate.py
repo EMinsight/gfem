@@ -32,8 +32,9 @@ Cases and references (none recomputed by the tests but the closed forms):
   on n = 4, 8 against `refinement_cases.LOSSY_GUIDE_S` (order 4 on n = 4),
   the slab's and step's tan_delta 0.3 thru entries on n = 8 left out (their
   reference is not within 20 % of their error). "uniform" (TE10, parallel:
-  the free dual), "slab" and "step" (a hybrid lossy port mode: the adjoint
-  of port ``to``'s S functional);
+  the free dual), "slab" and "step" (a hybrid lossy port mode, whose
+  functional is parallel to its load like every wave port's: its dual is the
+  port's own field);
 - hybrid strip guide (`refinement_cases.hybrid_strip_model`), lossless,
   wave ports de-embedded by half its length in all: S21 and S11 at 170 GHz
   on n = 4 against the closed form in `refinement_cases.HYBRID_STRIP_GAMMA`;

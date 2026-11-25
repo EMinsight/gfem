@@ -72,35 +72,23 @@ differentiates too, with lumped ports and with wave ports:
 - gfem keeps the adjoint's operator, within `retain_memory`, for each later
   `jax.vjp` or `jax.grad` call on the same solve.
 
-## Keep the design off wave ports
+## Designs at wave ports
 
-S differentiates through {py:obj}`gfem.WavePort`s, lossy ones included, as
-long as the design stays off the port faces. A wave port's mode comes from
-its cross-section (the materials of the elements beside the face), and gfem
-treats it as a constant of the solve. A perturbed material whose region has
-an element on a wave port face therefore raises
-{py:obj}`gfem.PortGeometryError` when `jax.grad` is called; a forward solve of
-the same model is fine. Give the elements next to each port a region of their
-own with a constant {py:obj}`gfem.Material`, and put the design further in:
+S differentiates through {py:obj}`gfem.WavePort`s, lossy ones included,
+wherever the design is. A wave port's mode comes from its cross-section, the
+materials of the elements beside the face. A design with elements on the face
+changes the mode, and the port follows it: `result.port_modes` and the
+reference impedances `s.z_ref` (the ports' `Z_PV`) differentiate with the
+design, and S stays in the pseudo-waves of the moved mode. Where a port meets
+a fixed external line, renormalize S to it; see {doc}`port-mode-gradient`.
+With the design away from every port face, the port modes and `s.z_ref` do
+not depend on it: their gradient is an exact zero, and no 2D work runs.
 
-```python
-model = gfem.Model(
-    mesh,
-    materials={"lead": gfem.Material(eps_r=4.0), "core": gfem.MaterialField(eps_r=eps)},
-    boundaries=[gfem.PEC("ground"), gfem.PEC("signal")],
-    ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")],
-)
-```
-
-- The port modes in `result.port_modes`, and the reference impedances
-  `s.z_ref` (the ports' `Z_PV`), are then constants: their gradient is an
-  exact zero.
-- A lossless wave port reuses its own solution as the adjoint, as a lumped
-  port does.
-- A lossy port's mode is complex (conductor or dielectric loss in the
-  cross-section), so its S row is not its own adjoint. Each frequency with a
-  lossy port in the objective takes one adjoint solve, all such rows in one
-  call.
+- An excited wave port reuses its own solution as the adjoint, as a lumped
+  port does, lossy or not: by reciprocity the biorthogonal S functional is
+  the port's own load scaled. A port that is not excited has no field of its
+  own; each frequency with such a port in the objective takes one adjoint
+  solve, all such rows in one call.
 - Several wave ports on one surface, one mode each, give S between modes. A
   cross-mode entry such as `s["out_TM0", "in_TE0"]` differentiates like any
   other S entry, and reading the row of a mode left out of
@@ -112,8 +100,8 @@ model = gfem.Model(
 - `Driven(sweep="adaptive")` differentiates too, with its reduced basis held
   fixed and its samples frozen (`Driven(samples=...)`): see
   {doc}`adaptive-sweep-gradient`.
-- The mesh node coordinates differentiate as long as no port moves: see
-  {doc}`shape-gradient`.
+- The mesh node coordinates differentiate, a wave port's face included when
+  it is named in `sliding_ports`: see {doc}`shape-gradient`.
 - The fill of a {py:obj}`gfem.SheetField` on a `Conductor` or `Impedance`
   differentiates: see {doc}`sheet-design`.
 - The {term}`lumped values <lumped value>` that enter only the operator
@@ -121,8 +109,8 @@ model = gfem.Model(
   `Impedance`'s `resistance`, `inductance` and `capacitance`, on both sweeps.
   Build the port or the sheet inside the differentiated function, for example
   `gfem.LumpedPort("p1", "port1", "+y", resistance=50.0, inductance=l)`. An
-  `Impedance` whose surface shares an edge with a wave port's face raises
-  `gfem.PortGeometryError` instead: the port mode reads it there.
+  `Impedance` beside a wave port's face differentiates too: the port mode
+  reads it there, and follows it.
 - The numbers of a permittivity law differentiate, on both sweeps: see
   {doc}`dispersive-materials`.
 - Thermal properties are not read: their gradient is an exact zero.

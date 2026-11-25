@@ -47,6 +47,7 @@ recipes/capacitance-gradient
 recipes/eigenmode-gradient
 recipes/quantum-metrics
 recipes/shape-gradient
+recipes/port-mode-gradient
 recipes/adaptive-sweep-gradient
 recipes/thermal-gradient
 recipes/electro-optic-gradient

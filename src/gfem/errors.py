@@ -178,9 +178,9 @@ class PortGeometryError(ValueError):
     """A port whose geometry the solver cannot use.
 
     For example a wave port surface that is not planar, or, under
-    differentiation, a design that touches a wave port face (the port mode
-    is a constant of the solve, so the materials beside the face must be
-    too). The message names the port and the remedy.
+    differentiation, a design at a wave port face of an eigenmode problem
+    (a `gfem.Driven` solve differentiates it), or a moved node of a lumped or
+    Floquet port surface. The message names the port and the remedy.
     """
 
 
@@ -323,18 +323,6 @@ class FloquetOrderCapWarning(UserWarning):
     the distance from the structure at which the cap stops binding: move the
     face out, or refine the face mesh. Filter it with Python's `warnings`
     module.
-    """
-
-
-class PortModeProjectionWarning(UserWarning):
-    """No longer emitted: wave-port S is exact on lossy port lines.
-
-    Earlier versions projected the field on each wave port's conjugated
-    mode, exact only for a lossless port line, and warned with this class
-    when a lossy line made S inexact. gfem now projects biorthogonally on
-    the modes, exact lossy or not, and never emits it. The class
-    stays so that filters naming it keep working; it will be removed in a
-    later release.
     """
 
 

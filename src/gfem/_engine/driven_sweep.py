@@ -42,7 +42,7 @@ from gfem.problems import Driven
 if TYPE_CHECKING:
     from gfem._engine.driven import DrivenRule
     from gfem._engine.gauge import GaugeChoice
-    from gfem._engine.sensitivity import FieldPair
+    from gfem._engine.sensitivity import FieldPair, Integrated
     from gfem._pml import Stretch
     from gfem.model import Model
     from gfem.options import SolverOptions
@@ -331,7 +331,7 @@ class FixedAngleChildren:
         cotangents: dict[str, np.ndarray],
         *,
         wanted: frozenset | None,
-    ) -> list[FieldPair]:
+    ) -> list[FieldPair | Integrated]:
         """The backward of a fixed-angle sweep: each frequency on its own ±k(f).
 
         Each frequency's single-frequency rule (`child`) builds its
@@ -347,7 +347,7 @@ class FixedAngleChildren:
         width = len(parent.excite)
         ct_s = cotangents.get("s")
         ct_e = cotangents.get("e_field")
-        pairs: list[FieldPair] = []
+        pairs: list[FieldPair | Integrated] = []
         frequencies = parent.problem.frequency
         with _progress.task(
             _progress.UNIFORM_SWEEP_ADJOINT, total=len(frequencies)
@@ -411,9 +411,9 @@ class SweepSplit:
     With wave ports, each surface's port mode sweep runs in the parent, once
     over the whole grid and before any block: a block's own sweep would
     track other modes. Each block takes its rows of the swept arrays; the
-    port modes of the result, a `PortModeError` and the cross-projection
-    warning are the parent's. A block handed rows already (a fixed-angle
-    sweep in a frequency worker) takes its rows of those.
+    port modes of the result and a `PortModeError` are the parent's. A block
+    handed rows already (a fixed-angle sweep in a frequency worker) takes its
+    rows of those.
 
     Attributes:
         frequency: The grid, Hz.
@@ -556,8 +556,8 @@ class SweepSplit:
     def _port_modes(self, model: Model) -> list[SweptSurface]:
         """Each wave port surface's port mode sweep over the whole grid.
 
-        Run once by the parent, which hands each block its rows; warns about
-        cross-projections. Empty without wave ports.
+        Run once by the parent, which hands each block its rows. Empty without
+        wave ports.
         """
         if not self.wave_ports:
             return []

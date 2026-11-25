@@ -8,6 +8,7 @@ verification tier.
 
 import dataclasses
 import math
+import types
 from pathlib import Path
 
 import anisotropy
@@ -749,34 +750,111 @@ def test_a_voltage_path_off_the_port_plane_raises(plate_mesh):
         gfem.solve(model, gfem.PortMode("p1", 1e9))
 
 
+def test_a_voltage_path_beyond_the_port_section_raises(plate_mesh):
+    # a path longer than the gap integrates points where the mode has no field
+    model = plate(plate_mesh, path=False)
+    long = ((W / 2, 0.0, 0.0), (W / 2, 1.2 * D, 0.0))
+    model = model.replace(
+        ports=[gfem.WavePort("p1", "port1", voltage_path=long), model.ports[1]]
+    )
+    with pytest.raises(ValueError, match=r"voltage_path.*outside the port section"):
+        gfem.solve(model, gfem.PortMode("p1", 1e9))
+
+
+def test_a_voltage_path_across_the_whole_gap_is_accepted(plate_mesh):
+    model = plate(plate_mesh, path=False)
+    full = ((W / 2, 0.0, 0.0), (W / 2, D, 0.0))
+    model = model.replace(
+        ports=[gfem.WavePort("p1", "port1", voltage_path=full), model.ports[1]]
+    )
+    assert np.isfinite(gfem.solve(model, gfem.PortMode("p1", 1e9)).Z_PV).all()
+
+
 def _fill(mesh, **values):
     n = len(mesh.elements("fill"))
     return gfem.MaterialField(**{k: jnp.full(n, v) for k, v in values.items()})
 
 
-def test_port_mode_is_not_differentiable(plate_mesh):
+@pytest.mark.parametrize("tan_delta", [0.0, 0.05])
+@pytest.mark.parametrize("frequency", [10e9, 40e9])
+def test_port_mode_gamma_by_the_fill_is_the_tem_closed_form(
+    plate_mesh, frequency, tan_delta
+):
+    """The plate carries an exact TEM mode: gamma ~ sqrt(eps), Z ~ 1/sqrt(eps)."""
+    eps = 4.0
+    options = gfem.SolverOptions(port_mode_tolerance=1e-12)
+
+    def mode(eps_r):
+        model = plate(plate_mesh, _fill(plate_mesh, eps_r=eps_r, tan_delta=tan_delta))
+        return gfem.solve(model, gfem.PortMode("p1", frequency), options=options)
+
+    def gamma(eps_r):
+        return jnp.asarray(mode(eps_r).gamma[0])
+
+    def impedance(eps_r):
+        return jnp.asarray(mode(eps_r).Z_PV[0])
+
+    def real_imag(f):
+        # holomorphic in eps_r: the gradient of the real and imaginary parts
+        def part(which):
+            return lambda x: getattr(jnp, which)(f(x))
+
+        return jax.grad(part("real"))(eps) + 1j * jax.grad(part("imag"))(eps)
+
+    solved = mode(eps)
+    # d gamma / d eps = gamma / (2 eps) and d Z / d eps = -Z / (2 eps), to the
+    # discrete TEM mode's own accuracy (the 1 GHz floor is not asserted)
+    np.testing.assert_allclose(real_imag(gamma), solved.gamma[0] / (2 * eps), rtol=1e-8)
+    np.testing.assert_allclose(
+        real_imag(impedance), -solved.Z_PV[0] / (2 * eps), rtol=1e-8
+    )
+
+
+def test_port_mode_residual_is_a_diagnostic_and_raises(plate_mesh):
     def objective(eps):
         model = plate(plate_mesh, _fill(plate_mesh, eps_r=eps))
-        return jnp.real(gfem.solve(model, gfem.PortMode("p1", 1e9)).gamma[0])
+        return gfem.solve(model, gfem.PortMode("p1", 10e9)).residual[0]
 
-    with pytest.raises(gfem.NonDifferentiableError, match="eps_r"):
+    with pytest.raises(gfem.NonDifferentiableError, match=r"'residual'.*diagnostic"):
         jax.grad(objective)(4.0)
 
 
-def test_port_mode_runs_under_jit_without_its_field(plate_mesh):
+def test_port_mode_runs_under_jit_and_reads_its_field(plate_mesh):
     problem = gfem.PortMode("p1", [10e9, 40e9])
+    points = np.array([[W / 3, D / 3, 0.0], [W / 2, D / 2, 0.0]])
     exact = gfem.solve(plate(plate_mesh), problem)
 
     @jax.jit
-    def gamma(eps):
+    def solved(eps):
         return gfem.solve(plate(plate_mesh, _fill(plate_mesh, eps_r=eps)), problem)
 
-    traced = gamma(4.0)
+    traced = solved(4.0)
     np.testing.assert_allclose(traced.gamma, exact.gamma, rtol=1e-10)
     np.testing.assert_allclose(traced.Z_PV, exact.Z_PV, rtol=1e-10)
-    with pytest.raises(TypeError, match="e_field") as err:
-        traced.e_field.at([W / 2, D / 2, 0.0])
-    assert "computed inside jax.grad, jax.jit or jax.vmap" in str(err.value)
+
+    @jax.jit
+    def field(eps):
+        result = gfem.solve(plate(plate_mesh, _fill(plate_mesh, eps_r=eps)), problem)
+        return result.e_field.at(points)
+
+    reference = exact.e_field.at(points)
+    # components that vanish on the TEM plate carry eigensolver round-off of
+    # the field's own scale, which depends on the thread count
+    np.testing.assert_allclose(
+        field(4.0), reference, rtol=1e-10, atol=1e-10 * np.abs(reference).max()
+    )
+
+
+def test_port_mode_field_under_a_traced_mesh_asks_for_concrete_nodes(plate_mesh):
+    problem = gfem.PortMode("p1", [10e9])
+
+    @jax.jit
+    def field(mesh):
+        model = plate(mesh)
+        return gfem.solve(model, problem).e_field.at([W / 2, D / 2, 0.0])
+
+    with pytest.raises(TypeError, match="needs concrete node coordinates"):
+        field(plate_mesh)
 
 
 def test_port_mode_gradient_of_an_unread_property_is_an_exact_zero(plate_mesh):
@@ -828,3 +906,71 @@ def test_solve_rejects_unknown_problems_and_options(plate_mesh):
         gfem.solve(model, gfem.PortMode("p1", 1e9), options={"order": 2})  # ty: ignore[invalid-argument-type]
     with pytest.raises(TypeError, match=r"gfem\.Model"):
         gfem.solve(None, gfem.PortMode("p1", 1e9))  # ty: ignore[invalid-argument-type]
+
+
+@pytest.mark.parametrize("tan_delta", [0.0, 0.05])
+def test_a_filled_guide_gamma_and_impedance_follow_their_closed_forms(
+    guide_mesh, tan_delta
+):
+    """gamma_h^2 + c eps k0^2 is constant, c = 1 - i tan(delta): discrete-exact."""
+    eps, frequency = 2.0, 10e9
+    k0 = 2 * math.pi * frequency / C0
+    c = 1 - 1j * tan_delta
+    options = gfem.SolverOptions(port_mode_tolerance=1e-12)
+    n = len(guide_mesh.elements("air"))
+    path = ((A / 2, 0.0, 0.0), (A / 2, B, 0.0))
+
+    def mode(x):
+        model = gfem.Model(
+            guide_mesh,
+            materials={
+                "air": gfem.MaterialField(
+                    eps_r=x * jnp.ones(n), tan_delta=tan_delta * jnp.ones(n)
+                )
+            },
+            boundaries=[gfem.PEC("walls")],
+            ports=[gfem.WavePort("p1", "port1", voltage_path=path)],
+        )
+        return gfem.solve(model, gfem.PortMode("p1", frequency), options=options)
+
+    def derivative(f):
+        real = jax.grad(lambda x: jnp.real(f(mode(x))))(eps)
+        return real + 1j * jax.grad(lambda x: jnp.imag(f(mode(x))))(eps)
+
+    solved = mode(eps)
+    gamma, z = complex(solved.gamma[0]), complex(solved.Z_PV[0])
+    # gamma^2 + c eps k0^2 is constant: d gamma / d eps = -c k0^2 / (2 gamma)
+    np.testing.assert_allclose(
+        derivative(lambda r: r.gamma[0]), -c * k0**2 / (2 * gamma), rtol=1e-9
+    )
+    # Z_PV goes as 1 / beta_h: d Z / d eps = Z c k0^2 / (2 gamma^2)
+    np.testing.assert_allclose(
+        derivative(lambda r: r.Z_PV[0]), z * c * k0**2 / (2 * gamma**2), rtol=1e-9
+    )
+
+
+def test_a_failed_adjoint_solve_raises_the_degenerate_mode_error(
+    plate_mesh, monkeypatch
+):
+    from gfem._engine import port_mode_adjoint as adjoint
+
+    class Zero:
+        def solve(self, rhs):
+            return np.zeros_like(rhs)
+
+    # neither the projected iteration nor the direct fallback reaches the residual
+    def stalled(_op, _pre, rhs, **_options):
+        return 0 * rhs, 1
+
+    monkeypatch.setattr(adjoint, "_gmres", stalled)
+    monkeypatch.setattr(
+        adjoint, "spla", types.SimpleNamespace(splu=lambda _a, **_k: Zero())
+    )
+
+    def objective(eps):
+        model = plate(plate_mesh, _fill(plate_mesh, eps_r=eps))
+        field = gfem.solve(model, gfem.PortMode("p1", 10e9)).e_field
+        return jnp.sum(jnp.abs(field.at([W / 3, D / 3, 0.0])) ** 2)
+
+    with pytest.raises(Exception, match="another mode has nearly the same propagation"):
+        jax.grad(objective)(4.0)

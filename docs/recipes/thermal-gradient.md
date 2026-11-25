@@ -243,7 +243,9 @@ Rather than return a wrong value, these raise:
 
 - the optical model's `eps_r`, `tan_delta`, `mu_r`, `conductivity` and node
   coordinates under `thermo_optic_shift` or `route_phase`
-  ({py:obj}`gfem.NonDifferentiableError`): the mode is held constant;
+  ({py:obj}`gfem.NonDifferentiableError`): the shift holds its mode constant
+  (a {py:obj}`gfem.PortMode` result differentiates on its own, but not
+  through the shift in this version);
 - the node coordinates of a thermal or DC conduction model (a shape
   gradient);
 - {py:func}`gfem.rise_time` and {py:func}`gfem.time_constant` of a traced

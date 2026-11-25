@@ -115,15 +115,12 @@ inputs, and an eigenfrequency's `d omega / d fill` needs no extra solve at
 all. An adaptive sweep differentiates the fill like a material, with frozen
 samples ({doc}`adaptive-sweep-gradient`). Shape gradients see the sheet too:
 node coordinates differentiate through it like any other surface term, and the
-fill stays attached to its face.
+fill stays attached to its face. A fill on a sheet that shares an edge with a
+wave port's face differentiates too: the port mode reads the fill on its
+edges and follows it.
 
-Three cases raise:
+Two cases raise:
 
-- A perturbed fill on a sheet that shares an edge with a **wave port** face
-  raises {py:obj}`gfem.PortGeometryError`: the port mode reads the sheet there
-  and is a constant of the solve. Split the sheet so the part touching the
-  port is a boundary of its own, or `jax.lax.stop_gradient` the fill. The
-  forward solve works: the port mode applies the fill on its edges.
 - A negative fill raises `ValueError` in the forward solve: the sheet would be
   active. `SheetField.interpolate` of a density in [0, 1] keeps it passive.
 - The solid's own values (conductivity, thickness, R, L, C) are fixed numbers:

@@ -127,8 +127,10 @@ phase at 1 V: -0.19565 rad
 - The phase is negative on arm a: the static field there points from the
   signal to the ground, along the crystal's $+z$, and lowers the index by
   about $\tfrac12 n_e^3 r_{33} E_z$. On arm b the field and the phase reverse.
-- The mode is solved once and held constant, so the gradient goes through
-  the static field and the tensor, not through the mode. The optical model's
+- The shift holds its mode constant (a {py:obj}`gfem.PortMode` result
+  differentiates on its own, but not through the shift in this version), so
+  the gradient goes through the static field and the tensor, not through the
+  mode. The optical model's
   permittivity and node coordinates cannot be inputs (see "What raises").
 
 ## Check the gradient against closed forms

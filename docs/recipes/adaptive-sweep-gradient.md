@@ -85,12 +85,21 @@ The backward pass (the part of `jax.grad` that runs after the solve) solves
 no full-size system and keeps no solver. It solves one small reduced adjoint
 per frequency, then a few element-wise integrals: at most one per basis vector
 and material term, however many frequencies the grid has. Each port that is
-not excited, and each lossy wave port, adds one right-hand side per sample to
+not excited adds one right-hand side per sample to
 the sweep, which keeps the gradient exact at the samples. An adaptive sweep
 with `Driven(excite=...)` therefore solves as many right-hand sides per
 sample as one that excites every port; these run in every adaptive solve,
 under `jax.grad` or not, so a value does not depend on whether its gradient
 is taken.
+
+A design at a wave port's face (the material of a region that touches it) moves
+the port's mode too. The backward then also differentiates each row's mode
+exactly, on the traces of the reduced solution and adjoint, for every row whose
+outputs have a cotangent; it holds the basis and the samples like the rest, so
+the gradient is exact at the samples. The mode's 2D factors are built during the
+backward and freed after it. It adds, at each frequency whose output the
+objective reads, a small 2D solve per port mode on that face; on a long
+broadband grid this can cost as much as a few full factorizations.
 
 ## Re-sample with a tight tolerance
 

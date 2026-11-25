@@ -178,7 +178,9 @@ def te10_guide(path: str | Path, *, cells: float = 14) -> Path:
 SLAB = (0.5, 1.0)
 
 
-def slab_line(path: str | Path, *, cells: float = 10) -> Path:
+def slab_line(
+    path: str | Path, *, cells: float = 10, lead: float | None = None
+) -> Path:
     """The TEM line with a "slab" region in its air, for gradients.
 
     As `tem_line`, two cells across the section, with the tetrahedra
@@ -189,6 +191,8 @@ def slab_line(path: str | Path, *, cells: float = 10) -> Path:
         path: The gmsh 2.2 file to write.
         cells: Cells per um along z (multiples of 1 / ``cells`` must hit the
             slab's faces and the layer's).
+        lead: The tetrahedra below this z (um) are a region "lead" of their
+            own, the one that holds the port face.
 
     Returns:
         ``path``.
@@ -205,6 +209,8 @@ def slab_line(path: str | Path, *, cells: float = 10) -> Path:
     def volume(c):
         if c[2] > AIR_LENGTH:
             return "pml"
+        if lead is not None and c[2] < lead:
+            return "lead"
         return "slab" if SLAB[0] < c[2] < SLAB[1] else "air"
 
     def surface(c):

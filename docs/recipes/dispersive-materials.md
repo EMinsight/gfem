@@ -280,9 +280,9 @@ What raises, each with its remedy (the full list is on
   Q instead.
 - A law's numbers on a Bloch cell or a periodic eigenmode problem raise
   `gfem.NonDifferentiableError`. Differentiate on the plain periodic cell.
-- A law region with elements on a wave port's face raises
-  `gfem.PortGeometryError` when its law is differentiated. Keep it off the
-  port faces.
+- A law region with elements on a wave port's face differentiates as
+  elsewhere: the port mode reads the law and follows it (not under a Bloch
+  wave vector).
 - The ends of a blend are not design inputs: a law built inside the
   differentiated function and passed to `interpolate` raises
   `gfem.NonDifferentiableError`. Differentiate the law on a `Material` region.

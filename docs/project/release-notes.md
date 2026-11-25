@@ -473,6 +473,31 @@ Meshes:
   coordinates, not node numbers; values computed on a cross-section move by
   up to about 4e-4 relative (the tutorials' checked values).
 
+Wave ports:
+
+- **Removed `gfem.PortModeProjectionWarning`.** It has not been emitted since
+  0.1.0, when wave-port S became exact on lossy port lines. Delete any
+  warning filter that names it.
+- **Designs at wave ports.** A design may reach a wave port face: S, port
+  waves, kept fields, `port_modes` and `z_ref` differentiate with respect to
+  the materials of the face's elements (laws and material fields included),
+  a sheet's fill and an `Impedance` on its edge, and its node coordinates,
+  lone or on a shared port surface, on every driven sweep and solver and
+  across ranks (not under a Bloch wave vector or on a fixed-angle sweep). Line
+  ports of 2D models differentiate their materials the same way
+  ({doc}`../recipes/port-mode-gradient`).
+- **Port modes differentiate.** A `gfem.PortMode` result's `gamma`,
+  `n_eff`, `Z_PV` and field (`e_field.at`) differentiate with respect to
+  the same inputs; `residual` raises `gfem.NonDifferentiableError`.
+- **Sliding ports.** `gfem.shape.boundary_morph(..., sliding_ports=...)`
+  lets the faces of the named wave ports slide in their plane, so a shape
+  design reaches the port.
+- **Polarity reference with gradients.** A port mode's field outputs
+  differentiate exactly when its `WavePort` has a `polarity` reference: the
+  gradient follows the phase the reference fixes.
+- **Voltage path.** A `WavePort` whose `voltage_path` has a point outside the
+  port section now raises `ValueError` in the solve.
+
 ## 0.2.0 (2026-11-23)
 
 - **Native 2D models.** A gmsh file of triangles at one height reads as a
@@ -1361,7 +1386,7 @@ Anisotropic materials and shared port surfaces:
 - **New warnings.** {py:obj}`gfem.SkippedPortModeWarning`: a surface leaves
   out a port mode ranked below a requested one (a lone `mode=2`, or modes 1
   and 3), which the port then partly reflects. A lone `mode=1` never warns.
-  {py:obj}`gfem.PortModeProjectionWarning`: on a shared port surface with
+  `gfem.PortModeProjectionWarning`: on a shared port surface with
   loss in the cross-section, one port's S reads part of another port's mode
   above 1e-3.
 - **New errors at `gfem.Model`.** Two wave ports on one surface that request

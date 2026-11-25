@@ -951,6 +951,7 @@ def on_root(
     compute: collections.abc.Callable[[], dict[str, np.ndarray]],
     *,
     results: tuple[type[Exception], ...] = (),
+    broadcast: bool = True,
 ) -> dict[str, np.ndarray]:
     """``compute()``'s named arrays on every rank, computed once on rank 0.
 
@@ -964,6 +965,9 @@ def on_root(
         comm: The resolved communicator.
         compute: The computation; run on rank 0 alone.
         results: The errors that are a result of the computation, for all ranks.
+        broadcast: ``False`` when only rank 0 reads the arrays: the other ranks
+            then get an empty dict and the arrays are not sent (the failures
+            and warnings still are).
     """
     if comm is None:
         return compute()
@@ -979,7 +983,12 @@ def on_root(
                 failure = error
         outcome = (failure, [(str(w.message), w.category) for w in seen])
     failure, recorded = comm.bcast(outcome, root=0)
-    shared = {} if failure is not None else bcast_arrays(comm, arrays)
+    if failure is not None:
+        shared = {}
+    elif broadcast:
+        shared = bcast_arrays(comm, arrays)
+    else:
+        shared = arrays or {}
     for message, category in recorded:
         warn(comm, message, category, stacklevel=2)
     if failure is not None:

@@ -492,25 +492,43 @@ def _replicated_cotangents(
     }
 
 
-def _add_explicit_lumped(
-    out: dict, explicit: dict[tuple, float], *, wants: set[Hashable]
+_LUMPED_VALUES = ("resistance", "inductance", "capacitance")
+
+
+def _has_lumped_pass(kind: Hashable) -> bool:
+    """Whether the input ``kind`` is a lumped port or sheet value (R, L or C)."""
+    return (
+        isinstance(kind, tuple)
+        and kind[0] in ("port", "boundary")
+        and kind[-1] in _LUMPED_VALUES
+    )
+
+
+def _add_explicit_inputs(
+    out: dict, explicit: dict[tuple, Any], *, wants: set[Hashable]
 ) -> None:
-    """Add a rule's explicit lumped terms to the lumped pass's values in ``out``.
+    """Add a rule's explicit terms by input kind to the values in ``out``.
 
     A term of an input that is not wanted is dropped (the rule computes them
-    for every lumped port). A wanted one always has its lumped pass in
-    ``out``: one without is a programming error.
+    for every input it reads itself). A wanted lumped value (R, L or C of a
+    port or sheet) always has its lumped pass in ``out``: one without is a
+    programming error. Any other wanted kind (a law, a sheet fill, an
+    impedance value read by the rule alone) takes the term as its value when
+    no pass produced one. Values add as they are: scalars or arrays.
     """
     for kind, value in explicit.items():
         if kind not in wants:
             continue
-        if kind not in out:
+        if kind in out:
+            out[kind] = out[kind] + value
+        elif _has_lumped_pass(kind):
             msg = (
                 f"The explicit lumped term of {kind} has no lumped pass value to "
                 "add to (an internal error)."
             )
             raise RuntimeError(msg)
-        out[kind] = out[kind] + value
+        else:
+            out[kind] = value
 
 
 def _local_cotangents(
@@ -528,7 +546,7 @@ def _local_cotangents(
     The forward runs again unless every rank still holds its entry: a backward on
     some ranks alone would hang. A rank that holds one frees it, since the next
     forward on the same design would otherwise keep a second. A rule's
-    ``explicit_lumped`` values (by input kind) add to the lumped pass's.
+    ``explicit_inputs`` values (by input kind) add to the pass values.
     ``request`` is the forward's, for a rerun.
     """
     from gfem._engine.cache import ENTRIES, retain_budget
@@ -569,10 +587,11 @@ def _local_cotangents(
                 else None,
                 comm=comm,
             )
-        # the rule's explicit terms in the lumped values (outside any piece:
-        # the eigenmode ratios' 1 / L and C |V|^2 / 2), once over the ranks
-        if hasattr(rule, "explicit_lumped") and _mpi.rank(comm) == 0:
-            _add_explicit_lumped(out, rule.explicit_lumped(), wants=wants)
+        # the rule's explicit terms by input kind (outside any piece: the
+        # eigenmode ratios' 1 / L and C |V|^2 / 2 in the lumped values), once
+        # over the ranks
+        if hasattr(rule, "explicit_inputs") and _mpi.rank(comm) == 0:
+            _add_explicit_inputs(out, rule.explicit_inputs(), wants=wants)
         # the node coordinates' terms outside the operator (a point load's
         # element moving), each rank's own part
         explicit = getattr(rule, "explicit_nodes", None)

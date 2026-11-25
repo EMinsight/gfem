@@ -396,3 +396,17 @@ def test_no_sweep_record_is_built_when_the_logger_is_off(slab_mesh, monkeypatch)
         lambda *_, **__: pytest.fail("a record was built while off"),
     )
     gfem.solve(slab(slab_mesh), gfem.PortMode("p1", [10e9, 15e9, 20e9]))
+
+
+def test_a_traced_port_mode_field_has_no_basis_or_coordinates():
+    import jax.numpy as jnp
+
+    from gfem.errors import NonDifferentiableError
+    from gfem.results import PortModeField
+
+    field = PortModeField._on_vector(
+        "p1", lambda: None, jnp.zeros((1, 3)), quantity="E", unit="V/m"
+    )
+    for name in ("_basis", "_coords"):
+        with pytest.raises(NonDifferentiableError, match="traced vector"):
+            getattr(field, name)

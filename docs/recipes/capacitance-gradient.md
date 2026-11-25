@@ -133,7 +133,7 @@ The same works on an output that has no gradient: wrap it in
 ## When a gradient raises
 
 Some errors can only be found while `jax.grad` computes the gradient, after
-the solve has succeeded. Examples are a port node moved by a shape update
+the solve has succeeded. Examples are a lumped port's node moved by a shape update
 ({py:obj}`gfem.PortGeometryError`) and a degenerate mode cluster your objective
 does not treat symmetrically ({py:obj}`gfem.DegenerateModeError`). JAX does not
 pass gfem's error class through at that stage. You get a

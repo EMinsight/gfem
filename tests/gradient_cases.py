@@ -16,7 +16,8 @@ pytest ``tmp_path_factory.mktemp`` directory).
 - `wave_mesh` / `wave_line`: a two-layer line between wave ports with a
   design "core" away from the port faces.
 - `hybrid_mesh` / `hybrid_line`: a line whose leads carry two hybrid modes,
-  both requested at each end (a shared port surface), with the same "core".
+  both requested at each end (a shared port surface), with the same "core";
+  lossy leads with ``tan_delta`` (the matrix's ``shared_lossy`` variant).
 - `sheet_mesh` / `sheet_line`: a parallel-plate line glued at mid-height,
   the interior surface "sheet" carrying a `gfem.SheetField`.
 - `sheet_cavity` / `cavity_model`: a PEC cavity with a resistive sheet where
@@ -368,8 +369,11 @@ def hybrid_mesh(directory: Path, cells: tuple[int, int, int] = (8, 8, 4)) -> gfe
     return _mesh(directory, "hybrid.msh", sm.structured(edges, volume, surface))
 
 
-def hybrid_line(mesh: gfem.Mesh) -> gfem.Model:
+def hybrid_line(mesh: gfem.Mesh, tan_delta: float = 0.0) -> gfem.Model:
     """Modes 1 and 2 at both ends of the hybrid line; a uniform eps 3 core.
+
+    ``tan_delta``: the loss tangent of both lead regions (a lossy shared
+    surface); the core stays lossless.
 
     The quadrant block makes the leads asymmetric in y and z, so their two
     propagating modes (from about 48 GHz) are hybrid and not orthogonal in
@@ -378,7 +382,10 @@ def hybrid_line(mesh: gfem.Mesh) -> gfem.Model:
     return gfem.Model(
         mesh,
         materials={
-            **{name: gfem.Material(eps_r=eps) for name, eps in HYBRID_EPS.items()},
+            **{
+                name: gfem.Material(eps_r=eps, tan_delta=tan_delta)
+                for name, eps in HYBRID_EPS.items()
+            },
             "core": gfem.Material(eps_r=3.0),
         },
         boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
@@ -1096,3 +1103,142 @@ def wave_resonator(mesh: gfem.Mesh, layers, design: dict, ports) -> gfem.Model:
         boundaries=[gfem.PEC("walls")],
         ports=ports,
     )
+
+
+# --- driven: wave ports with a design at their faces ---------------------------------
+
+#: A voltage path across both layers on the face of p1, inside the elements.
+FACE_PATH = ((0.0, 0.5e-3, 0.0), (0.0, 0.5e-3, 1e-3))
+#: The face variants of the two-layer line and the lead's loss.
+FACE_LEADS = {
+    "face_lossless": "lossless",
+    "face_lossy": "lossy",
+    "face_path": "lossy",
+    "face_absorbing": "lossy",
+}
+
+
+def face_line(mesh: gfem.Mesh, variant: str) -> gfem.Model:
+    """`wave_line` for a design at its port faces, in a variant of its ports.
+
+    ``"face_lossless"`` and ``"face_lossy"`` are the two lead materials;
+    ``"face_path"`` adds a voltage path on p1 (so ``Z_PV`` and ``z_ref`` of p1
+    are defined), ``"face_absorbing"`` first-order absorbing side walls.
+    """
+    model = wave_line(mesh, FACE_LEADS[variant])
+    if variant == "face_path":
+        d1, d2 = WAVE_OFFSETS["lossy"]
+        model = model.replace(
+            ports=[
+                gfem.WavePort("p1", "port1", offset=d1, voltage_path=FACE_PATH),
+                gfem.WavePort("p2", "port2", offset=d2),
+            ]
+        )
+    if variant == "face_absorbing":
+        model = model.replace(
+            boundaries=[*model.boundaries, gfem.Absorbing("side", order=1)]
+        )
+    return model
+
+
+def face_functional(result, rows, paths=(), s_part=None):
+    """The S objective, the ports' ``gamma`` and, with a path, ``Z_PV`` and ``z_ref``.
+
+    ``s_functional`` of S at ``rows``, plus per wave port ``(Im gamma + 0.3 Re
+    gamma) / k0`` summed over the rows, plus, for each port of ``paths`` (the
+    ones with a voltage path, whose ``Z_PV`` is defined), Re and Im of ``Z_PV``
+    and of its S reference impedance over 50 ohm. ``s_part`` replaces the S
+    objective (a shared surface's). Every term is O(1), so a small entry that
+    cancels does not set the margin.
+    """
+    rows = jnp.asarray(rows)
+    value = s_functional(result.s.values[rows]) if s_part is None else s_part
+    k0 = 2 * math.pi * jnp.asarray(result.s.frequency)[rows] / const.c
+    for mode in result.port_modes.values():
+        gamma = mode.gamma[rows]
+        value = value + jnp.sum((jnp.imag(gamma) + 0.3 * jnp.real(gamma)) / k0)
+    for name in paths:
+        z = result.port_modes[name].Z_PV[rows]
+        z_ref = result.s.z_ref[rows, result.s.ports.index(name)]
+        value = (
+            value
+            + jnp.sum(
+                jnp.real(z)
+                + 0.7 * jnp.imag(z)
+                + jnp.real(z_ref)
+                + 0.4 * jnp.imag(z_ref)
+            )
+            / 50.0
+        )
+    return value
+
+
+# --- port modes ---------------------------------------------------------------------
+
+#: The port mode cells' frequencies on the wave line, and the voltage path of its
+#: port p1 (m): across both layers, inside the elements (not on a mesh edge).
+PORT_MODE_FREQUENCIES = (12e9, 18e9, 24e9)
+PORT_MODE_PATH = ((0.0, 0.7e-3, 0.0), (0.0, 0.7e-3, 1e-3))
+#: Points on port p1's face (m) where the cells read the mode's field.
+PORT_MODE_POINTS = np.array(
+    [
+        [0.0, 0.3e-3, 0.2e-3],
+        [0.0, 0.7e-3, 0.4e-3],
+        [0.0, 1.2e-3, 0.6e-3],
+        [0.0, 1.6e-3, 0.8e-3],
+        [0.0, 0.9e-3, 0.25e-3],
+    ]
+)
+#: The field's scale at 1 W through the line's 2 x 1 mm face (V/m).
+PORT_MODE_E0 = 1e4
+#: A polarity reference of port p1 (m): the mode's E_z at a point of the lower
+#: layer, read along -z so that it disagrees with the default phase.
+PORT_MODE_POLARITY = ((0.0, 0.9e-3, 0.25e-3), "-z")
+
+
+def port_mode_line(
+    mesh: gfem.Mesh, lower, *, path: bool = True, polarity=None
+) -> gfem.Model:
+    """The wave line with a design ``lower`` on the leads' lower layer "lo".
+
+    ``lo`` touches both port faces. Wave ports with ``path`` a voltage path on
+    p1, or else its ``polarity``; "hi" and the core are constants.
+    """
+    return gfem.Model(
+        mesh,
+        materials={
+            "lo": lower,
+            "hi": gfem.Material(eps_r=2.0),
+            "core": gfem.Material(eps_r=3.0),
+        },
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.WavePort(
+                "p1",
+                "port1",
+                voltage_path=PORT_MODE_PATH if path else None,
+                polarity=polarity,
+            ),
+            gfem.WavePort("p2", "port2"),
+        ],
+    )
+
+
+def port_mode_functional(
+    result, frequency, points=PORT_MODE_POINTS, e0=PORT_MODE_E0, *, field: bool = True
+):
+    """``Im gamma/k0 + 0.3 Re gamma/k0``, ``Z_PV/50`` and the field, over the rows.
+
+    The field term carries the phase: ``sum |e|^2`` and ``Re((0.3 - 0.7i) e_z)``
+    at ``points``, scaled by ``e0``. Every term is O(1).
+    """
+    k0 = 2 * math.pi * jnp.asarray(frequency) / const.c
+    g = result.gamma / k0
+    value = jnp.sum(g.imag + 0.3 * g.real)
+    z = result.Z_PV / 50.0
+    value += jnp.sum(jnp.nan_to_num(z.real) + 0.5 * jnp.nan_to_num(z.imag))
+    if field:
+        e = result.e_field.at(points) / e0
+        value += jnp.sum(jnp.abs(e) ** 2)
+        value += jnp.sum(jnp.real((0.3 - 0.7j) * e[:, :, 2]))
+    return value

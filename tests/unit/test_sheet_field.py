@@ -15,6 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 import structured_meshes as sm
+from finite_differences import assert_gradient_matches
 from jax.test_util import check_grads
 
 import gfem
@@ -219,15 +220,68 @@ def test_port_mode_reads_the_fill_on_the_port_edges(mesh):
     )
 
 
-def test_fill_beside_a_wave_port_is_not_differentiable(mesh):
-    def objective(values):
-        sheet = gfem.Impedance(
-            "sheet", resistance=400.0, fill=gfem.SheetField(fill=values)
-        )
-        s = gfem.solve(_wave_model(mesh, sheet), gfem.Driven(frequency=F)).s.values
-        return jnp.sum(jnp.abs(s) ** 2)
+def test_fill_beside_a_wave_port_differentiates(mesh):
+    # the port mode reads the sheet on the port edges: the gradient carries its
+    # derivative. A uniform fill f on an impedance of R per square is R / f
+    resistance, level = 400.0, 0.5
+    options = gfem.SolverOptions(linear_solver="direct", port_mode_tolerance=1e-12)
 
-    fill = jnp.full(_faces(mesh), 0.5)
-    assert np.isfinite(float(objective(fill)))  # the forward runs
-    with pytest.raises(gfem.PortGeometryError, match=r"boundaries\[2\].*stop_gradient"):
-        jax.make_jaxpr(jax.grad(objective))(fill)
+    def values(model):
+        result = gfem.solve(model, gfem.Driven(frequency=F), options=options)
+        gamma = result.port_modes["p1"].gamma
+        return jnp.sum(jnp.abs(result.s.values) ** 2), jnp.real(gamma[0]) + jnp.imag(
+            gamma[0]
+        )
+
+    def by_fill(fill):
+        sheet = gfem.Impedance(
+            "sheet", resistance=resistance, fill=gfem.SheetField(fill=fill)
+        )
+        return values(_wave_model(mesh, sheet))
+
+    def by_resistance(r):
+        return values(_wave_model(mesh, gfem.Impedance("sheet", resistance=r)))
+
+    fill = jnp.full(_faces(mesh), level)
+    for i in (0, 1):  # the S objective, then gamma
+        by_f = jax.grad(lambda f, i=i: by_fill(f)[i])(fill)
+        by_r = jax.grad(lambda r, i=i: by_resistance(r)[i])(resistance / level)
+        # the equivalent impedance is R / f: d(R / f) / df = -R / f^2
+        assert float(jnp.sum(by_f)) == pytest.approx(
+            -(resistance / level**2) * float(by_r), rel=1e-10
+        )
+
+    # the S gradient against a central difference, along one direction
+    direction = np.random.default_rng(1).standard_normal(_faces(mesh))
+    direction /= np.linalg.norm(direction)
+    assert_gradient_matches(
+        lambda f: by_fill(f)[0], fill, [direction], step=5e-3, rel=1e-6
+    )
+
+
+def test_port_mode_gamma_by_a_uniform_fill_follows_the_resistance(mesh):
+    # gamma depends on R / fill only (the forward test above), so
+    # d gamma / d fill = -(R / fill) d gamma / dR on the same filled model
+    problem = gfem.PortMode("p1", F)
+    resistance, fill = 400.0, 0.25
+    n = _faces(mesh)
+
+    def gamma(r, f):
+        sheet = gfem.Impedance(
+            "sheet", resistance=r, fill=gfem.SheetField(fill=jnp.full(n, f))
+        )
+        return gfem.solve(_wave_model(mesh, sheet), problem).gamma[0]
+
+    def derivative(wrt):
+        parts = [
+            jax.grad(lambda r, f, p=part: p(gamma(r, f)), argnums=wrt)(resistance, fill)
+            for part in (jnp.real, jnp.imag)
+        ]
+        return parts[0] + 1j * parts[1]
+
+    # the fill's gradient is the sum over the sheet's faces
+    d_fill, d_resistance = derivative(1), derivative(0)
+    np.testing.assert_allclose(
+        d_fill, -(resistance / fill) * d_resistance, rtol=1e-10, atol=0
+    )
+    assert abs(d_resistance) > 0

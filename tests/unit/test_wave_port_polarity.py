@@ -10,10 +10,12 @@ import json
 import warnings
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pml_cases
 import pytest
 import structured_meshes as sm
+from finite_differences import assert_gradient_matches
 from wave_port_cases import CASE_A, ported_guide, ported_model
 
 import gfem
@@ -295,6 +297,21 @@ def test_the_port_mode_problem_drops_the_polarity_for_another_mode(slabs):
     problem = gfem.PortMode(port="p1", frequency=F, mode=2, polarization="Ez")
     other = _solve(model, problem)
     assert other.mode == 2
+
+
+def test_another_modes_gradient_reads_the_sweep_without_the_polarity(slabs):
+    # the backward runs on the port as swept, without the arrow drawn on mode 1
+    model = _slab(slabs["B to A"], mode=1, polarity=((0.0, 0.0), (2e-6, 0.0)))
+    problem = gfem.PortMode(port="p1", frequency=F, mode=2, polarization="Ez")
+    n = len(model.mesh.elements("core"))
+
+    def objective(eps):
+        field = gfem.MaterialField(eps_r=jnp.full(n, eps))
+        mode = _solve(model.with_material("core", field), problem)
+        e = mode.e_field.at((0.0, 0.2e-6))
+        return jnp.real(mode.gamma[0]) * 1e-6 + jnp.real((0.3 - 0.7j) * e[0])
+
+    assert_gradient_matches(objective, jnp.asarray(3.5**2), [np.array(1.0)], step=1e-2)
 
 
 # --- the eigenmode problem -------------------------------------------------------

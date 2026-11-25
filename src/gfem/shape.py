@@ -20,7 +20,7 @@ import numpy as np
 import scipy.sparse as sp
 
 from gfem import _morph, _mpi, _periodic, _pml, _truncation
-from gfem._boundaries import surfaces_of
+from gfem._boundaries import WavePort, surfaces_of
 from gfem._checks import is_traced
 from gfem._dim2 import refuse_entry
 from gfem._pytree import readonly
@@ -227,7 +227,7 @@ def _quality_message(
 
 
 class BoundaryMorph:
-    """A fixed linear map from normal displacements of surface nodes to a mesh.
+    r"""A fixed linear map from normal displacements of surface nodes to a mesh.
 
     Build it with `boundary_morph`. Calling it with ``t``, one normal
     displacement in metres per parameter, returns the moved `Mesh`::
@@ -247,7 +247,9 @@ class BoundaryMorph:
             first surface of its pairs).
         normals: Unit normal of each moving node, shape ``(n_params, 3)``:
             parameter ``i`` moves node ``i`` (and its tie class) by
-            ``t[i] * normals[i]``.
+            ``t[i] * normals[i]``. A node on the face of a sliding wave port
+            (``sliding_ports``) has the normal projected into the face's
+            plane and scaled to keep :math:`n \cdot d = t`: :math:`n_t / |n_t|^2`.
         surface: The moving surface's name.
         extension: ``"elastic"`` or ``"laplace"``.
     """
@@ -383,9 +385,10 @@ def boundary_morph(  # noqa: PLR0915
     where: Callable[[np.ndarray], np.ndarray] | None = None,
     grows: str | None = None,
     fixed: Sequence[str] = (),
+    sliding_ports: Sequence[str] = (),
     extension: Extension = "elastic",
 ) -> BoundaryMorph:
-    """Move a named surface of the mesh by normal displacements of its nodes.
+    r"""Move a named surface of the mesh by normal displacements of its nodes.
 
     Each parameter is one node of the moving surface, displaced along its
     normal (the area-weighted normal of the selected faces around it, taken
@@ -393,7 +396,8 @@ def boundary_morph(  # noqa: PLR0915
     elastic extension, solved once on the imported mesh. Surfaces play roles:
 
     - the moving nodes are displaced by ``t[i] * normals[i]``;
-    - nodes on port surfaces (from the model), on ``fixed`` surfaces, of
+    - nodes on port surfaces (from the model; a wave port named in
+      ``sliding_ports`` slides instead), on ``fixed`` surfaces, of
       the tetrahedra of a perfectly matched layer and of the elements
       touching the truncation (the physical tetrahedra with a vertex on the
       layer or on a `gfem.Absorbing` face) are held, and are not parameters
@@ -443,6 +447,17 @@ def boundary_morph(  # noqa: PLR0915
         grows: The volume region that grows for ``t > 0`` where the moving
             surface separates two volumes of the solve domain.
         fixed: Further surface regions whose nodes are held.
+        sliding_ports: Wave ports whose faces slide in their plane instead of
+            being held, so a design reaches the port: a taper's width at its
+            port, say. The face's nodes then move as those of any other
+            named surface do (in the face's plane, its edges along their
+            lines). A node of the moving surface on such a face moves by
+            :math:`t\,n_t/|n_t|^2`, with :math:`n_t` the moving surface's
+            normal projected into the face's plane, which keeps it in the
+            plane and on the moved surface. The port keeps its reference
+            plane, and its mode follows the moved section. Naming one wave
+            port of a shared port surface lets the whole surface slide: its
+            ports share the face. Lumped and Floquet ports stay held.
         extension: ``"elastic"`` (default: linear elasticity, Poisson ratio
             0.3, stiffened by ``V_min / V_e``) or ``"laplace"`` (each
             coordinate harmonic, same stiffening).
@@ -456,8 +471,15 @@ def boundary_morph(  # noqa: PLR0915
             ``fixed`` surfaces, in the layer or in the elements touching
             the truncation), ``grows`` is
             missing where it is needed (or given where it means nothing),
-            ``extension`` is unknown, or ``moving`` is a periodic surface.
-        TypeError: An argument has the wrong type.
+            ``extension`` is unknown, or ``moving`` is a periodic surface; a
+            name in ``sliding_ports`` is not a port of the model, or is a
+            lumped or Floquet port (their geometry is held by the gradient);
+            a sliding port's surface is the moving surface (a port face
+            moves only in its plane: move the surfaces that meet it) or is in
+            ``fixed``; or a moving node on a sliding face lies where the
+            moving surface is within 1 degree of the face's plane.
+        TypeError: An argument has the wrong type (``fixed`` or
+            ``sliding_ports`` is a string, not a sequence of names).
     """
     refuse_entry(getattr(model, "mesh", None), "boundary_morph")
     if not isinstance(model, Model):
@@ -477,6 +499,13 @@ def boundary_morph(  # noqa: PLR0915
     if moving in fixed:
         msg = f"Surface {moving!r} is both moving and fixed=; remove it from fixed."
         raise ValueError(msg)
+    if isinstance(sliding_ports, str) or not isinstance(sliding_ports, (list, tuple)):
+        msg = (
+            f"sliding_ports= takes a list or tuple of wave port names, got "
+            f"{sliding_ports!r}."
+        )
+        raise TypeError(msg)
+    sliding_surfaces = _sliding_surfaces(model, sliding_ports, moving, fixed)
     pairings = model._periodic  # noqa: SLF001
     for p in pairings:
         if moving in (p.first, p.second):
@@ -491,7 +520,12 @@ def boundary_morph(  # noqa: PLR0915
     n_nodes = len(x0)
     # paired nodes move together: one displacement per tie class
     ties = _periodic.tie_classes(n_nodes, pairings)
-    held_surfaces = {s for port in model.ports for s in surfaces_of(port)}
+    held_surfaces = {
+        s
+        for port in model.ports
+        for s in surfaces_of(port)
+        if s not in sliding_surfaces
+    }
     held_surfaces |= set(fixed)
     tag = {r.name: r.tag for r in mesh.regions if r.dim == mesh.dim - 1}
     tri_tags = mesh.triangle_tags
@@ -529,6 +563,10 @@ def boundary_morph(  # noqa: PLR0915
         moving=moving,
         groups=np.searchsorted(params, ties[movers]),
     )
+    if sliding_surfaces:
+        normals = _project_on_sliding_faces(
+            model, normals, params, sliding_surfaces, moving
+        )
 
     constrained = held | ~in_tet
     constrained[params] = True
@@ -549,6 +587,102 @@ def boundary_morph(  # noqa: PLR0915
         stiffness=stiffness,
         ties=ties if pairings else None,
     )
+
+
+def _sliding_surfaces(
+    model: Model, names: Sequence[str], moving: str, fixed: Sequence[str]
+) -> set[str]:
+    """The surfaces of the wave ports named in ``sliding_ports``, after checks."""
+    ports = {p.name: p for p in model.ports}
+    waves = [p.name for p in model.ports if isinstance(p, WavePort)]
+    surfaces: set[str] = set()
+    for name in names:
+        port = ports.get(name)
+        if port is None:
+            msg = (
+                f"sliding_ports names {name!r}, which is not a port of the model. "
+                f"Its wave ports: {', '.join(map(repr, waves)) or 'none'}."
+            )
+            raise ValueError(msg)
+        if not isinstance(port, WavePort):
+            msg = (
+                f"sliding_ports names {name!r}, a {type(port).__name__}; only a "
+                "wave port's face can slide (a lumped or Floquet port's geometry "
+                "is held by shape gradients). Its wave ports: "
+                f"{', '.join(map(repr, waves)) or 'none'}."
+            )
+            raise ValueError(msg)  # noqa: TRY004 - a name's value, not a type
+        if port.surface == moving:
+            msg = (
+                f"Surface {moving!r} is the face of the sliding wave port "
+                f"{name!r}: a port face moves only in its plane. Move the "
+                "surfaces that meet it; the face's nodes follow."
+            )
+            raise ValueError(msg)
+        if port.surface in fixed:
+            msg = (
+                f"Surface {port.surface!r} is the face of the sliding wave port "
+                f"{name!r} and is also in fixed=: a face cannot both slide and be "
+                "held. Remove it from one of them."
+            )
+            raise ValueError(msg)
+        surfaces |= set(surfaces_of(port))
+    return surfaces
+
+
+#: A node of the moving surface on a sliding face is refused where the
+#: surface is within this angle of the face's plane (the projected normal
+#: would be shorter than its sine and the node would travel 1 / sin times t).
+_MIN_SLIDE_ANGLE = np.radians(1.0)
+
+
+def _project_on_sliding_faces(
+    model: Model,
+    normals: np.ndarray,
+    params: np.ndarray,
+    surfaces: set[str],
+    moving: str,
+) -> np.ndarray:
+    r"""``normals`` with those on a sliding face moved into the face's plane.
+
+    A node of the moving surface on a sliding face moves by
+    :math:`t\,n_t/|n_t|^2`, with :math:`n_t` the normal projected on the
+    plane (or the line, on two faces) the node may move in: it stays on the
+    face and on the moved surface (:math:`n\cdot d = t`).
+
+    Raises:
+        ValueError: The moving surface is within 1 degree of a face's plane
+            at a node.
+    """
+    mesh = model.mesh
+    x0 = mesh.imported_nodes
+    tags = [mesh.region(s).tag for s in sorted(surfaces)]
+    faces = mesh.triangles[np.isin(mesh.triangle_tags, tags)]
+    face_normals = _morph.unit_normals(x0, faces)
+    corner = faces.ravel()
+    corner_normal = np.repeat(face_normals, 3, axis=0)
+    out = normals.copy()
+    for i, node in enumerate(params):
+        here = corner_normal[corner == node]
+        if not len(here):
+            continue
+        _, s, vt = np.linalg.svd(here)
+        rank = int((s > 1e-8 * s[0]).sum())
+        free = vt[rank:]  # the directions the node may move in
+        n_t = free.T @ (free @ normals[i]) if len(free) else np.zeros(3)
+        length = float(np.linalg.norm(n_t))
+        if length < np.sin(_MIN_SLIDE_ANGLE):
+            msg = (
+                f"Moving surface {moving!r} lies within 1 degree of the plane of a "
+                f"sliding wave port's face at node {int(node)} ({x0[node]} m): "
+                "a node on the face moves only in the face's plane, so it would "
+                "have to travel 1/sin(angle) times its displacement. Move a "
+                "surface that meets the port across its plane, or narrow where= "
+                "away from the face."
+            )
+            raise ValueError(msg)
+        out[i] = n_t / length**2
+    return out
 
 
 def _select(

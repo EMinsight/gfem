@@ -406,6 +406,9 @@ PROPERTIES: dict[str, frozenset[str]] = {
             "mechanical_quality_factor",
         }
     ),
+    # a wave port's cross-section forms, mapped to the owner tetrahedra of the
+    # port face (`gfem._engine.port_mode_sensitivity.integrated`)
+    "port mode": frozenset({"eps_r", "tan_delta", "mu_r", "conductivity"}),
 }
 
 
@@ -567,13 +570,15 @@ def energy_term(
 
 
 #: Operator families whose rules' terms the node pass reads.
-SHAPE_FORMS = frozenset({"electrostatic", "driven", "eigenmode", "piezoelectric"})
+SHAPE_FORMS = frozenset(
+    {"electrostatic", "driven", "eigenmode", "piezoelectric", "port mode"}
+)
 #: Operator families whose pairs carry the sheet pieces' weights (by name).
-SHEET_FORMS = frozenset({"driven", "eigenmode"})
+SHEET_FORMS = frozenset({"driven", "eigenmode", "port mode"})
 #: Operator families whose pairs carry the lumped pieces' weights (by name).
-LUMPED_FORMS = frozenset({"driven", "eigenmode"})
+LUMPED_FORMS = frozenset({"driven", "eigenmode", "port mode"})
 #: Operator families whose pairs carry the law pieces' dθ/dp (`law_key`).
-LAW_FORMS = frozenset({"driven", "eigenmode", "electrostatic"})
+LAW_FORMS = frozenset({"driven", "eigenmode", "electrostatic", "port mode"})
 #: Operator families with a load pass: their problem leaves are
 #: read, the power density by the pass, the others by the rule's explicit terms.
 LOAD_FORMS = frozenset({"steady_thermal", "transient_thermal"})

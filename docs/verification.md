@@ -28,8 +28,9 @@ as principal values on tilted axes), the permeability and the loss tangent
 coordinates moved through `gfem.shape.boundary_morph`, the parameters of a
 permittivity law (its high-frequency permittivity, strengths and
 frequencies) and the density of a metal-dielectric blend. The problems are
-capacitance and the electric energy of each region, driven S on lumped ports, on wave ports and between modes of a
-shared port surface, driven S on periodic and Bloch cells,
+capacitance and the electric energy of each region, driven S on lumped ports, on wave ports (with the design away from the port
+faces and on them) and between modes of a shared port surface, a port mode's
+propagation constant, impedance and field, driven S on periodic and Bloch cells,
 eigenfrequency and Q, and, on the direct solver, the participation ratios,
 port Q and mode field of an isolated mode and the dispersive shift and
 anharmonicity of a junction's dressed modes. The heat cells differentiate a
@@ -102,10 +103,40 @@ Tests: [gauged solves](https://github.com/benvial/gfem/blob/main/tests/unit/test
 - Before each release: TE0 and TM0 of a 500 × 220 nm silicon strip, requested
   on one port surface at each end, are each transmitted with their own phase,
   without reflection or conversion.
+- **Gradients of port modes.** The derivatives of a port mode's $\gamma$ and
+  $Z_{PV}$ meet closed forms written with the discrete mode's own values, which
+  hold on any mesh: a rectangular guide filled with a lossy dielectric,
+  $\partial\gamma/\partial\varepsilon_r = -c\,k_0^2/(2\gamma)$ with
+  $c = 1 - i\tan\delta$; the TEM mode of a parallel-plate line,
+  $\partial\gamma/\partial\varepsilon_r = \gamma/(2\varepsilon_r)$ and
+  $\partial Z_{PV}/\partial\varepsilon_r = -Z_{PV}/(2\varepsilon_r)$; a
+  uniform stretch of a guide's face; and a sheet, whose fill and resistance
+  enter only as their ratio. On a guide loaded by a dielectric slab, the
+  derivative of the transverse-resonance root is reached as the element order
+  rises.
+- **Designs at a port face.** With the design on the port faces, driven S, the
+  port modes, `z_ref`, port waves and kept fields match finite differences for
+  every input. The inputs are the permittivity, conductivity, loss tangent and
+  permeability (isotropic and on axes), a permittivity law, a density blend, a
+  sheet's fill and an `Impedance`'s values, and node coordinates moved in and
+  across the face's plane. The cases cover lossless and lossy lines, a lone
+  port and a shared port surface, a voltage path, an absorbing wall beside the
+  face and a face cut by a perfectly matched layer, on the direct and
+  BDDC + GMRES solvers and the adaptive sweep. S's gradient does not depend on
+  which ports are excited, and a driven solve's $\partial\gamma$ and
+  $\partial Z_{PV}$ equal a `gfem.PortMode` solve's.
+- **Moved port faces.** When a guide's faces stretch, the gradient's volume part
+  and its port-mode part each match a difference taken with the other frozen,
+  although the two nearly cancel. Between the frequencies a port mode sweep
+  solves exactly, the gradient matches differences of exact solves. Two port
+  modes $2\times10^{-3}$ apart keep exact gradients.
 
 Tests: [shared port surface](https://github.com/benvial/gfem/blob/main/tests/verification/test_shared_port_surface.py),
 [wave ports](https://github.com/benvial/gfem/blob/main/tests/unit/test_driven_wave_ports.py),
-[silicon strip](https://github.com/benvial/gfem/blob/main/tests/reference/test_shared_port_surface.py).
+[silicon strip](https://github.com/benvial/gfem/blob/main/tests/reference/test_shared_port_surface.py),
+[port mode gradients](https://github.com/benvial/gfem/blob/main/tests/verification/test_port_mode_gradient.py),
+[shape gradients](https://github.com/benvial/gfem/blob/main/tests/verification/test_shape_gradient.py),
+[recipe](https://github.com/benvial/gfem/blob/main/tests/unit/test_docs_port_mode_gradient_recipe.py).
 
 ## SAX circuits
 
@@ -201,6 +232,10 @@ differences:
   design area that owns a second-order absorbing line is differentiated too.
   The {doc}`tutorials/metal-bend` bend's band objective, through gold's law and
   the index blend, matches a difference on both the 2D model and the slab.
+  A design that reaches a line port differentiates too, in Ez and Hz, lossless
+  and lossy: the port's $\gamma$ and field match finite differences, and a
+  uniform line its closed form
+  $\partial\gamma/\partial\varepsilon_r = i k_0 c/(2\sqrt{c\,\varepsilon_r})$.
 - Before each release, on that bend's 45° gold mirror: the tutorial mesh at
   element order 3 gives the S of the same 2D model on cells eight times
   smaller at order 2, a value computed once and frozen; and the band
@@ -212,6 +247,7 @@ Tests: [closed forms and the slab](https://github.com/benvial/gfem/blob/main/tes
 [guide modes](https://github.com/benvial/gfem/blob/main/tests/verification/test_2d_line_port_modes.py),
 [material-field gradients](https://github.com/benvial/gfem/blob/main/tests/unit/test_2d_gradients.py),
 [layer-grid gradients](https://github.com/benvial/gfem/blob/main/tests/unit/test_2d_layer_gradients.py),
+[line port gradients](https://github.com/benvial/gfem/blob/main/tests/verification/test_line_port_gradient.py),
 [metal bend](https://github.com/benvial/gfem/blob/main/tests/verification/test_metal_bend.py),
 [metal bend, fine mesh and slab gradient](https://github.com/benvial/gfem/blob/main/tests/reference/test_metal_bend_fine.py).
 

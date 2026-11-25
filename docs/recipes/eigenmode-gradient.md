@@ -216,7 +216,8 @@ How gfem itself is checked: {doc}`../verification`.
   still differentiate there, as {doc}`../capabilities` shows; or wrap the
   value in `jax.lax.stop_gradient` to use it without its derivative.
 - With wave ports, a design region touching a wave port face raises
-  `gfem.PortGeometryError`, as in a driven solve. A wave port's `q_port`
+  `gfem.PortGeometryError`: the port's term at a complex eigenfrequency holds
+  its mode. A driven solve differentiates such a design. A wave port's `q_port`
   raises `gfem.NonDifferentiableError` for a mode with no amplitude on the
   port, and for degenerate port modes on a shared port surface:
   differentiate `omega` there.

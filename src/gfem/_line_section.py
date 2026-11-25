@@ -58,6 +58,9 @@ class LineSection:
             `gfem.PermittivityLaw`; empty without one.
         law_index: ``(n_seg,)`` each segment's index in ``laws``, -1 off
             them; ``None`` without laws.
+        cells: ``(n_seg,)`` the area element (a row of
+            `gfem.Mesh.volume_elements`) behind each segment, the owner of its
+            material values.
     """
 
     port: WavePort
@@ -75,6 +78,7 @@ class LineSection:
     end_segments: np.ndarray
     laws: tuple[tuple[str, PermittivityLaw], ...] = ()
     law_index: np.ndarray | None = None
+    cells: np.ndarray | None = None
 
     #: A line port has no impedance edges (the sweep's slow-wave bound).
     impedance_terms = ()
@@ -157,8 +161,32 @@ class LineSection:
         return (self.origin + t[:, None] * self.frame[0]) * self.scale
 
 
-def line_section(model: Model, port: WavePort) -> LineSection:
+def line_elements(model: Model, port: WavePort) -> tuple[np.ndarray, np.ndarray]:
+    """The mesh segments of the line port, and the area element behind each.
+
+    Rows of `gfem.Mesh.surface_elements` and of `gfem.Mesh.volume_elements`,
+    from the topology alone (no material values).
+    """
+    mesh = model.mesh
+    topology = mesh._topology  # noqa: SLF001 - the role arrays of a 2D mesh
+    active = model._domain.active  # noqa: SLF001
+    tag = mesh.region(port.surface).tag
+    nb = topology.surface_neighbours
+    sel = np.flatnonzero(topology.surface_tags == tag)
+    side_ok = (nb[sel] >= 0) & active[np.maximum(nb[sel], 0)]
+    one = side_ok.sum(axis=1) == 1
+    sel, side_ok = sel[one], side_ok[one]
+    cells = np.where(side_ok[:, 0], nb[sel, 0], nb[sel, 1])
+    return sel, cells
+
+
+def line_section(
+    model: Model, port: WavePort, *, geometry: bool = False
+) -> LineSection:
     """Extract the cross-section of the line port ``port`` from a 2D ``model``.
+
+    With ``geometry``, the materials are vacuum and no law: the line's mesh and
+    ends alone, which need no material value.
 
     Raises:
         PortGeometryError: The line is not straight, not one connected line,
@@ -168,14 +196,7 @@ def line_section(model: Model, port: WavePort) -> LineSection:
     topology = mesh._topology  # noqa: SLF001 - the role arrays of a 2D mesh
     scale = LENGTH_UNITS[mesh.length_unit]
     nodes = np.asarray(mesh.nodes, float) / scale
-    active = model._domain.active  # noqa: SLF001
-    tag = mesh.region(port.surface).tag
-    nb = topology.surface_neighbours
-    sel = np.flatnonzero(topology.surface_tags == tag)
-    side_ok = (nb[sel] >= 0) & active[np.maximum(nb[sel], 0)]
-    one = side_ok.sum(axis=1) == 1
-    sel, side_ok = sel[one], side_ok[one]
-    cells = np.where(side_ok[:, 0], nb[sel, 0], nb[sel, 1])
+    sel, cells = line_elements(model, port)
     segs = topology.surface_elements[sel]
 
     used, local = np.unique(segs, return_inverse=True)
@@ -219,8 +240,12 @@ def line_section(model: Model, port: WavePort) -> LineSection:
         )
     ends = ends[np.argsort(points[ends])]
     end_segments = np.array([np.flatnonzero((local == e).any(axis=1))[0] for e in ends])
-    eps, mu, sigma = _materials(model, port, cells)
-    laws, law_index = _laws(model, cells)
+    if geometry:
+        eps, mu = np.ones(len(cells), complex), np.ones(len(cells), complex)
+        sigma, laws, law_index = np.zeros(len(cells)), (), None
+    else:
+        eps, mu, sigma = _materials(model, port, cells)
+        laws, law_index = _laws(model, cells)
     return LineSection(
         port=port,
         scale=scale,
@@ -237,6 +262,7 @@ def line_section(model: Model, port: WavePort) -> LineSection:
         end_segments=end_segments,
         laws=laws,
         law_index=law_index if laws else None,
+        cells=cells,
     )
 
 

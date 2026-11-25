@@ -23,6 +23,7 @@ from gfem._field import Field, FieldMap, ReducedFields
 from gfem._pytree import register_fields
 from gfem._sources import INCIDENT, Source
 from gfem._text import hertz, hertz_band
+from gfem.errors import NonDifferentiableError
 
 if TYPE_CHECKING:
     import skrf.network
@@ -602,6 +603,14 @@ class PortModeField:
     ``polarity`` the field at its point along its direction is real and
     positive at every frequency.
 
+    Under `jax.grad` the values `at` returns differentiate with respect to
+    the section's material, law, sheet and `Impedance` inputs (see
+    `gfem.PortMode`), not to the node coordinates: `at` raises
+    `gfem.NonDifferentiableError` there. The phase follows the gauge of
+    `gfem.conventions`, so prefer phase-invariant objectives such as
+    :math:`|E|^2`. A field objective costs one 2D solve per mode and
+    frequency.
+
     Attributes:
         quantity: ``"E"``; on a line port, ``"Ez"`` or ``"Hz"``.
         unit: ``"V/m"``; ``"A/m"`` for ``"Hz"``.
@@ -620,10 +629,38 @@ class PortModeField:
             coords,
         )
         self._build: Callable[[], tuple] | None = None
+        self._vector: jax.Array | None = None
+        self._locate: Callable[[], ModeSpace] | None = None
         self._port = space.section.port.name
         # a space that does not name its field is a planar port's: E in V/m
         self.quantity = getattr(space, "quantity", "E")
         self.unit = getattr(space, "unit", "V/m")
+
+    @classmethod
+    def _on_vector(
+        cls,
+        port: str,
+        locate: Callable[[], ModeSpace],
+        vector: jax.Array,
+        *,
+        quantity: str = "E",
+        unit: str = "V/m",
+    ) -> PortModeField:
+        """Internal: the field as a JAX array of its full DOF vector, per frequency.
+
+        A port mode solve traced by JAX returns this vector (``(n_freq,
+        n_dof)``, linear in the mode's normalized coordinates); ``locate()``
+        gives the port's discrete space, built from the geometry alone,
+        when a point is read, and raises when the node coordinates are traced.
+        """
+        field = object.__new__(cls)
+        field._parts = None
+        field._build = None
+        field._vector = vector
+        field._locate = locate
+        field._port = port
+        field.quantity, field.unit = quantity, unit
+        return field
 
     @classmethod
     def _deferred(
@@ -643,11 +680,15 @@ class PortModeField:
         field = object.__new__(cls)
         field._parts = None
         field._build = build
+        field._vector = None
+        field._locate = None
         field._port = port
         field.quantity, field.unit = quantity, unit
         return field
 
     def _data(self) -> tuple[ModeSpace, np.ndarray, np.ndarray]:
+        if self._parts is None and self._locate is not None:
+            self._parts = (self._locate(), np.zeros((0, 0)), np.zeros((0, 0)))
         if self._parts is None:
             if self._build is None:  # pragma: no cover - set by the constructors
                 raise RuntimeError("PortModeField has no data.")
@@ -659,13 +700,28 @@ class PortModeField:
     def _space(self) -> ModeSpace:
         return self._data()[0]
 
+    def _concrete(self) -> tuple[ModeSpace, np.ndarray, np.ndarray]:
+        """The data of a field that carries its basis and coordinates.
+
+        Raises:
+            NonDifferentiableError: The field is a traced vector, which holds
+                no basis or coordinates.
+        """
+        if self._vector is not None:
+            raise NonDifferentiableError(
+                "this port mode field is a traced vector inside jax.grad, jax.jit "
+                "or jax.vmap, with no basis or coordinates of its own: read it "
+                "with PortModeField.at, or solve outside the transformation."
+            )
+        return self._data()
+
     @property
     def _basis(self) -> np.ndarray:
-        return self._data()[1]
+        return self._concrete()[1]
 
     @property
     def _coords(self) -> np.ndarray:
-        return self._data()[2]
+        return self._concrete()[2]
 
     @property
     def _section(self) -> PortSection | LineSection:
@@ -692,6 +748,8 @@ class PortModeField:
             ValueError: A point is not on the port plane (line), or has the
                 wrong number of coordinates.
         """
+        if self._vector is not None:
+            return self._at_vector(points)
         p = np.asarray(points, float)
         single = p.ndim == 1
         p = np.atleast_2d(p)
@@ -712,31 +770,75 @@ class PortModeField:
         e = np.einsum("fk,kpc->fpc", self._coords, columns) @ self._section.frame
         return jnp.asarray(e[:, 0] if single else e)
 
+    def _at_vector(self, points: Any) -> jax.Array:
+        """`at` on the traced DOF vector: host-built columns times the vector."""
+        assert self._locate is not None  # noqa: S101 - set with the vector
+        space: Any = self._locate()
+        section = space.section
+        p = np.asarray(points, float)
+        single = p.ndim == 1
+        p = np.atleast_2d(p)
+        if len(section.normal) == 2:
+            if p.shape[-1] != 2:
+                raise ValueError(
+                    f"points on line port {self._port!r} must be (x, y) pairs in m, "
+                    f"got shape {p.shape}."
+                )
+            dofs, weights = space.point_columns(_local_points(section, p))
+            picked = jnp.asarray(self._vector)[:, dofs]
+            u = jnp.einsum("pl,fpl->fp", jnp.asarray(weights), picked)
+            return u[:, 0] if single else u
+        if p.shape[-1] != 3:
+            raise ValueError(f"points must be 3-vectors in m, got shape {p.shape}.")
+        local = _local_points(section, p)
+        dofs, weights = space.point_columns(local)
+        picked = jnp.asarray(self._vector)[:, dofs]
+        e = jnp.einsum("pcl,fpl->fpc", jnp.asarray(weights), picked)
+        e = e @ jnp.asarray(section.frame)
+        return e[:, 0] if single else e
+
     def _local(self, p: np.ndarray) -> np.ndarray:
-        s = self._section
-        local, dist = s.to_local(p)
-        tol = 1e-5 * s.diameter
-        if (np.abs(dist) > tol).any():
-            worst = p[int(np.argmax(np.abs(dist)))]
-            where = "line" if len(self.normal) == 2 else "plane"
-            raise ValueError(
-                f"Point {tuple(float(x) for x in worst)} (m) is not on the {where} "
-                f"of wave port {s.port.name!r}."
-            )
-        return local
+        return _local_points(self._section, p)
 
     def __repr__(self) -> str:
-        n = "not built" if self._parts is None else f"{len(self._coords)} frequencies"
+        if self._vector is not None:
+            n = f"{len(self._vector)} frequencies, traced"
+        else:
+            n = (
+                "not built"
+                if self._parts is None
+                else f"{len(self._coords)} frequencies"
+            )
         return f"PortModeField({self.quantity}, {self.unit}, {n}, port {self._port!r})"
+
+
+def _local_points(section: PortSection | LineSection, p: np.ndarray) -> np.ndarray:
+    """Plane coordinates of global points (m) on a port's plane (line).
+
+    Raises:
+        ValueError: A point is not on the plane.
+    """
+    local, dist = section.to_local(p)
+    tol = 1e-5 * section.diameter
+    if (np.abs(dist) > tol).any():
+        worst = p[int(np.argmax(np.abs(dist)))]
+        where = "line" if len(section.normal) == 2 else "plane"
+        raise ValueError(
+            f"Point {tuple(float(x) for x in worst)} (m) is not on the {where} "
+            f"of wave port {section.port.name!r}."
+        )
+    return local
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class PortModeResult:
     r"""The mode of a wave port over frequency.
 
-    Not differentiable on its own (`gfem.PortMode`); on a `DrivenResult`
-    the modes are constants of the solve (a design may not touch a wave port
-    face), so their gradient is an exact zero.
+    Differentiable on its own (`gfem.PortMode`); on a `DrivenResult`
+    the modes follow a design at the wave port's face, as S does: ``gamma``
+    and ``Z_PV`` differentiate, a design the port's section does not read gives
+    them an exact zero, and ``residual`` is a diagnostic that raises
+    `gfem.NonDifferentiableError` beside such a design.
 
     Fields follow :math:`e^{+i\omega t}`; a mode propagates into the solve
     domain as :math:`e^{-\gamma s}`.
@@ -756,7 +858,7 @@ class PortModeResult:
             `gfem.characteristic_impedance`. On a section cut by a perfectly
             matched layer, :math:`P` counts the section outside the layer, so
             :math:`Z_{PV}` is low by the mode's share inside it.
-        residual: Backward error of the mode at each frequency,
+        residual: Not differentiable. Backward error of the mode at each frequency,
             :math:`|A x - \lambda B x| / (|A x| + |\lambda| |B x|)` on the 2D port mode
             problem. It exceeds ``SolverOptions.port_mode_tolerance`` only at
             the formulation's low-frequency accuracy floor, where it is at
@@ -766,9 +868,10 @@ class PortModeResult:
             surface); elsewhere it comes from the reduced port mode model.
         e_field: The mode's electric field, normalized to 1 W (1 W/m for a
             line port of a 2D mesh) through the section outside any
-            perfectly matched layer (S does not depend on it); ``None`` on a
-            driven result computed inside `jax.jit`, `jax.grad` or
-            `jax.vmap`, and for an Hz line port, whose field is ``h_field``.
+            perfectly matched layer (S does not depend on it); a traced field
+            inside `jax.grad`, `jax.jit` or `jax.vmap` (read it with
+            `PortModeField.at`); ``None`` on a driven result computed there,
+            and for an Hz line port, whose field is ``h_field``.
         h_field: The magnetic field ``Hz`` of an Hz line port's mode,
             normalized to 1 W/m; ``None`` otherwise.
         pml: The model's perfectly matched layer (`gfem.PML`) the mode was
@@ -1873,7 +1976,8 @@ class DrivenResult:
             it before the 3D solve; empty without wave ports. Each carries
             its mode field, with or without ``Driven(keep_fields=...)``,
             except inside `jax.jit`, `jax.grad` or `jax.vmap`, where it is
-            ``None``. Constants of the solve: not differentiable.
+            ``None``. ``gamma`` and ``Z_PV`` follow a design at the port's
+            face; ``residual`` is not differentiable.
         offsets: ``(port name, distance in m)`` of each wave and Floquet
             port (static labels; ``dict(result.offsets)``), from
             ``WavePort(offset=...)`` or ``FloquetPort(offset=...)``: S of
@@ -2147,8 +2251,8 @@ class DrivenResult:
         A port not named keeps its plane. ``z_ref``, the kept fields,
         `port_modes` and `sweep` are unchanged.
 
-        Written in `jax.numpy`, so the new S differentiates like S
-        (``gamma`` is a constant of the solve).
+        Written in `jax.numpy`, so the new S differentiates like S, and
+        through ``gamma``, which follows a design at the port's face.
 
         Args:
             offsets: The new distance of each named wave or Floquet port, m,

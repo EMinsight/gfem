@@ -44,6 +44,10 @@ mapping below does not know, a grid cell with no outcome or with
 conflicting ones, a missing ``OUT_OF_SCOPE`` row the grid needs, and an
 ``OUT_OF_SCOPE`` row off the grid with no site label (or a label with no row).
 
+A cell whose variant starts with ``face`` puts the design on a wave port
+face; a verified cell with one says so (``faces``), and a face variant on a
+problem without wave ports raises `CapabilitiesError`.
+
 `derive` returns one plain dict (lists, dicts, strings and numbers). The
 directives on docs/capabilities.md (the matrix, the raises list in the site's
 words of ``RAISES_LABELS``) and docs/verification.md (the matrix's provenance
@@ -118,7 +122,11 @@ ROWS = {
     "electrostatic": Row(
         "Electrostatic", "capacitance", recipe="recipes/capacitance-gradient"
     ),
-    "port_mode": Row("Port mode problem", "2D, wave-port modes"),
+    "port_mode": Row(
+        "Port mode problem",
+        "effective index, impedance and field",
+        recipe="recipes/port-mode-gradient",
+    ),
     "piezoelectric": Row(
         "Piezoelectric",
         "admittance and clamped capacitance, 2D",
@@ -232,6 +240,10 @@ PROBLEMS = {
     "driven": Problem("driven", "s.values", "lumped"),
     "driven_wave": Problem("driven", "s.values", "wave"),
     "driven_wave_shared": Problem("driven", "s.values", "wave"),
+    "driven_wave_face": Problem("driven", "s.values", "wave"),
+    "driven_wave_shared_face": Problem("driven", "s.values", "wave"),
+    "driven_wave_face_sheet": Problem("driven", "s.values", "wave"),
+    "driven_wave_face_law": Problem("driven", "s.values", "wave"),
     "driven_sheet": Problem("driven", "s.values", "lumped"),
     "driven_adaptive": Problem("driven", "s.values", "lumped"),
     "driven_periodic_plain": Problem("driven_periodic_plain", "s.values", "lumped"),
@@ -413,14 +425,6 @@ RAISES_LABELS = {
         "Eigenmode of a periodic model, with respect to the parameters of a "
         "permittivity law"
     ),
-    "driven x fill of a sheet beside a wave port": (
-        "Driven S-parameters, with respect to the fill of a sheet that shares "
-        "an edge with a wave port's face"
-    ),
-    "driven x Impedance value beside a wave port": (
-        "Driven S-parameters, with respect to the resistance, inductance or "
-        "capacitance of an `Impedance` that shares an edge with a wave port's face"
-    ),
     "LumpedPort resistance": (
         "Any result, with respect to a lumped port's resistance (its reference "
         "impedance)"
@@ -475,14 +479,6 @@ RAISES_LABELS = {
         "`Model.bloch_wave_vector`, with respect to the incidence angles (the "
         "incidence of a Floquet port is a constant of the solve)"
     ),
-    "driven x material on a wave port face": (
-        "Driven S-parameters, with respect to the material of a region with "
-        "elements on a wave port's face"
-    ),
-    "driven x law parameter of a region on a wave port face": (
-        "Driven S-parameters, with respect to the parameters of a permittivity "
-        "law in a region with elements on a wave port's face"
-    ),
     "law parameter of a blend's end": (
         "Any result, with respect to the parameters of a permittivity law at an "
         "end of a metal-dielectric blend"
@@ -490,10 +486,6 @@ RAISES_LABELS = {
     "driven x law parameter under a Bloch wave vector": (
         "Driven S-parameters at a Bloch `wave_vector`, with respect to the "
         "parameters of a permittivity law"
-    ),
-    "driven x material field with axes on a wave port face": (
-        "Driven S-parameters, with respect to the principal values of a "
-        "`MaterialField` with axes, in a region with elements on a wave port's face"
     ),
     "material axes (orientation)": (
         "Any result, with respect to a material's principal axes"
@@ -505,12 +497,45 @@ RAISES_LABELS = {
         "Any result, with respect to node coordinates, when an `Absorbing` "
         "surface borders an anisotropic material"
     ),
-    "driven x material on a shared wave port face": (
-        "Driven S-parameters, with respect to the material of a region with "
-        "elements on a shared wave port surface"
+    "2D PortMode x law region at the line port": (
+        "A line port's `PortMode`, with respect to the parameters of a "
+        "permittivity law in a region at the port (the material field values "
+        "differentiate)"
+    ),
+    "port mode residual": (
+        "The backward error of a port mode (`PortModeResult.residual`), with "
+        "respect to anything (a diagnostic)"
+    ),
+    "port mode field at points x node coordinates": (
+        "A port mode's field at points (`PortModeField.at`), with respect to "
+        "node coordinates (`gamma`, `n_eff` and `Z_PV` differentiate)"
+    ),
+    "characteristic_impedance of a traced mode": (
+        "`characteristic_impedance` of a port mode inside `jax.grad` (`Z_PV` on "
+        "the result differentiates)"
+    ),
+    "electro-optic shift x optical permittivity": (
+        "`electro_optic_shift`, with respect to the optical model's "
+        "permittivity, loss tangent, permeability or conductivity (the shift "
+        "holds the mode constant; the tensor, the static permittivity, the "
+        "drive and the electrode gap differentiate)"
+    ),
+    "driven x port mode residual at a port-face design": (
+        "The `residual` of a wave port's mode in a driven result, with respect "
+        "to a design a wave port's mode reads (the backward error of the mode "
+        "solve is a diagnostic)"
+    ),
+    "driven x port-face design under a Bloch wave vector": (
+        "Driven results at a Bloch `wave_vector`, with respect to a design a wave "
+        "port's mode reads"
+    ),
+    "driven x port-face design on a fixed-angle sweep": (
+        "Driven results on a fixed-angle sweep, with respect to a design a wave "
+        "port's mode reads"
     ),
     "driven x nodes of a port surface": (
-        "Driven S-parameters, with respect to node coordinates on a port surface"
+        "Driven S-parameters, with respect to node coordinates on a lumped or "
+        "Floquet port surface"
     ),
     "eigenmode x nodes of a port surface": (
         "Eigenmode results, with respect to node coordinates on a port surface"
@@ -994,9 +1019,11 @@ def gradient_matrix(cells, expected, out_of_scope) -> dict:
 #: The ``EXPECTED`` outcomes an off-grid input's cells may verify, by input:
 #: gradients, and for a permittivity law also the exact zeros of the
 #: parameters a problem never reads (the electrostatic static permittivity
-#: reads no frequency).
+#: reads no frequency), and for lumped values the exact zeros of a lumped
+#: port's own L and C beside a wave port's mode (which never reads them).
 _VERIFIED_CLAIMS = {name: ({"gradient"},) for name in OFF_GRID} | {
-    "law": ({"gradient"}, {"gradient", "zero"})
+    "law": ({"gradient"}, {"gradient", "zero"}),
+    "lumped": ({"gradient"}, {"gradient", "zero"}),
 }
 
 
@@ -1095,6 +1122,15 @@ def _resolve(row, column, *, cells, claimed, labels, ports_of_row) -> dict:
         )
     (status,) = statuses
     ports = [p for p in dict.fromkeys(PROBLEMS[c.problem].ports for c in cells) if p]
+    face_cells = [
+        c for c in cells if c.variant == "face" or c.variant.startswith("face_")
+    ]
+    for c in face_cells:
+        if PROBLEMS[c.problem].ports != "wave":
+            raise CapabilitiesError(
+                f"{where}: face variant {c.variant!r} on problem {c.problem!r}, "
+                "which has no wave ports"
+            )
     forms = sorted({FORMS[c.input] for c in cells if c.input in FORMS})
     note = f"{' and '.join(ports)} ports" if ports and set(ports) < ports_of_row else ""
     label = STATUS_TEXT[status]
@@ -1113,6 +1149,7 @@ def _resolve(row, column, *, cells, claimed, labels, ports_of_row) -> dict:
         "solvers": [SOLVERS[s] for s in dict.fromkeys(c.solver for c in cells)],
         "sweeps": [s for s in dict.fromkeys(c.sweep for c in cells) if s],
         "ports": ports,
+        "faces": bool(face_cells),
         "forms": forms,
         "forms_text": forms_text(forms),
         "source": MATRIX_TEST if cells else RAISE_TEST,
@@ -1793,6 +1830,8 @@ def _directives() -> dict:
                     parts.append(f"{' and '.join(cell['sweeps'])} sweep")
                 if cell["ports"]:
                     parts.append(f"{' and '.join(cell['ports'])} ports")
+                if cell["faces"]:
+                    parts.append("at wave port faces too")
                 out += [
                     nodes.Text(" "),
                     nodes.inline(text=" · ".join(parts), classes=["gfem-detail"]),

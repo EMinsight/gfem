@@ -220,3 +220,22 @@ def test_node_coordinates_still_raise(mesh):
     # traced nodes count as moved at the solve entry
     with pytest.raises(NotImplementedError, match=r"nodes moved.*2D mesh"):
         jax.grad(objective)(leaves[0])
+
+
+def test_ez_lossy_feed_at_the_line_ports_differentiates(mesh):
+    # the feed region touches both line ports: its permittivity moves their modes
+    rng = np.random.default_rng(6)
+    n = len(mesh.elements("feed"))
+    eps = jnp.asarray(2.0 * rng.uniform(0.9, 1.1, n))
+
+    def objective(eps):
+        feed = gfem.MaterialField(eps_r=eps, tan_delta=jnp.full(n, 0.05))
+        model = gfem.Model(
+            mesh,
+            materials={"feed": feed, "design": gfem.Material(eps_r=3.0)},
+            ports=(gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")),
+        )
+        problem = gfem.Driven(F, polarization="Ez")
+        return functional(gfem.solve(model, problem, options=OPTIONS).s.values[0])
+
+    check(objective, eps, rng, step=1e-2)
