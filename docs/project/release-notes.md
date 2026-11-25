@@ -19,6 +19,15 @@ Measurements:
   differentiable. The result is a `gfem.OpticalForce`
   ({doc}`../recipes/optical-force`).
 
+Design:
+
+- **Tolerance report.** `gfem.tolerance_report` differentiates a forward model
+  at its nominal design and returns a `gfem.ToleranceReport`: the spread of named
+  quantities under named tolerances, each parameter's effect and variance share,
+  the worst case and the linearized yield against spec windows. A
+  `BoundaryMorph` called with a scalar moves its surface by that edge bias
+  ({doc}`../recipes/tolerance-report`).
+
 Jobs and files:
 
 - **A refused value names both versions.** A job or result bundle written by

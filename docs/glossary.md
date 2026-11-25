@@ -853,6 +853,18 @@ Edge bias
   drawn ones; positive grows the solid. A line's width changes by twice the edge
   bias.
 
+Tolerance report
+  The linearized spread of a device's named quantities under Gaussian variations
+  of named parameters about their nominal values, each tolerance $\pm t$ read as
+  three standard deviations: each parameter's effect and share of the variance, the
+  worst case and the {term}`linearized yield` against spec windows
+  ({py:obj}`gfem.tolerance_report`).
+
+Linearized yield
+  The probability under the linear model $f_0 + J\delta$ that a quantity, or every
+  quantity together, lies in its spec window: exact for one spec, a seeded Monte
+  Carlo on the linear model for several.
+
 Minimum width
   The smallest distance a foundry allows across solid between facing edges of a
   {term}`layer pattern`, measured perpendicular to an edge.

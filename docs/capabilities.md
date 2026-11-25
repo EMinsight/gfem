@@ -94,6 +94,10 @@ v0.1.
   spacing and written to GDS ({py:obj}`gfem.design.write_gds`); a fabrication
   model (blur, edge bias) and length-scale constraints inside the gradient
   ({doc}`recipes/fabricable-layout`, {doc}`recipes/robust-optimization`).
+- **Tolerance report**: {py:obj}`gfem.tolerance_report` (the spread of named
+  quantities under named fabrication tolerances, each parameter's effect and
+  variance share, the worst case, the linearized yield against spec windows and a
+  linearity check, from one adjoint pass per quantity) ({doc}`recipes/tolerance-report`).
 - **Measurements**: {py:obj}`gfem.characteristic_impedance`,
   {py:obj}`gfem.interface_participation`, {py:obj}`gfem.power_flow`,
   {py:obj}`gfem.dissipated_power` (a driven field's loss per region and

@@ -317,8 +317,10 @@ class BoundaryMorph:
         check runs when the mesh is solved on.
 
         Args:
-            t: Normal displacements in metres, shape ``(n_params,)``. For a
-                positive ``t`` the surface moves into the solve domain.
+            t: Normal displacements in metres, shape ``(n_params,)``, or a
+                scalar: every moving node moves by it, the surface's uniform
+                offset (its edge bias). For a positive ``t`` the surface moves
+                into the solve domain.
 
         Returns:
             The moved mesh, which shares the imported mesh's topology.
@@ -332,10 +334,12 @@ class BoundaryMorph:
                 imported quality.
         """
         t = jnp.asarray(t, dtype=jnp.float64)
+        if t.ndim == 0:
+            t = jnp.broadcast_to(t, (self.n_params,))
         if t.shape != (self.n_params,):
             msg = (
                 f"This boundary morph takes {self.n_params} normal displacements "
-                f"(one per moving node), got an array of shape {t.shape}."
+                f"(one per moving node) or one scalar, got an array of shape {t.shape}."
             )
             raise ValueError(msg)
 

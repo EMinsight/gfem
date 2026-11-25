@@ -61,6 +61,7 @@ recipes/piezoelectric-gradient
 
 recipes/sheet-design
 recipes/robust-optimization
+recipes/tolerance-report
 recipes/fabricable-layout
 recipes/remesh-and-restart
 ```
