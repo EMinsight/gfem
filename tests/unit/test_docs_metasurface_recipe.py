@@ -1,4 +1,4 @@
-"""The metasurface recipe names public objects, its closed form is right, no test evidence.
+"""The metasurface recipe names public objects and its closed form is right.
 
 docs/recipes/metasurface-from-cells.md runs nothing at docs build time: its
 meshes are the reader's own. This reads its code without solving: blocks parse,
