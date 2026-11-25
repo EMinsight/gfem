@@ -368,8 +368,9 @@ incidence TM is $\hat{\mathbf{e}}_1$ and TE is $\hat{\mathbf{e}}_2$ on both face
 the Jones matrix is then the lab Cartesian one, and a wave plate with its axis
 at $\psi$ from $\hat{\mathbf{e}}_1$ reads at $\psi$ from either side. The entries are power-wave
 ratios like S, so $|J_{ij}|^2$ is an efficiency; the ratio of the fields is
-$J_{ij}\sqrt{Z_{\mathrm{out},i}/Z_{\mathrm{in},j}}$, and the two coincide only
-for a reflection at normal incidence. Both polarizations of each order need a
+$J_{ij}\sqrt{Z_{\mathrm{out},i}/Z_{\mathrm{in},j}}$, and the two coincide when
+the two orders' impedances are equal (same medium, same polarization, same
+angle). Both polarizations of each order need a
 port, and both columns of the incident order must be excited. The transmission
 of the interface above, glass to air, is diagonal, with
 $|J|^2 = 1 - r^2$ for the reflection $r$ of the

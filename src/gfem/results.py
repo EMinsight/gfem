@@ -845,8 +845,10 @@ class DiffractionOrderResult:
     r"""The diffraction order of a Floquet port over frequency.
 
     Constants of the solve, read off the lattice and the medium behind the
-    Floquet surface: not differentiable. The arrays are NumPy constants under
-    every JAX transformation (concrete inside ``jit``, ``grad`` and ``vmap``).
+    Floquet surface: not differentiable. The arrays are NumPy constants when the
+    solve runs inside a JAX transformation (concrete inside ``jit``, ``grad``
+    and ``vmap``); they are traced if the result itself enters ``jit`` or
+    ``vmap`` as an argument.
     Plane waves follow :math:`e^{+i\omega t}`; the order leaves the cell into
     the half-space as :math:`e^{-\gamma s}`, :math:`s` the distance from the
     face (see `gfem.conventions`).
