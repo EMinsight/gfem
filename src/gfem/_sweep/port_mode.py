@@ -291,7 +291,8 @@ class PortModeRule:
     `gfem.results.PortModeField.at`) differentiate with respect to the
     material, law, sheet and `Impedance` inputs of the section and the face's
     node coordinates (`gfem._sweep.port_mode_pass`; not through ``at``; a line
-    port's mode differentiates material field values only); ``residual`` raises
+    port's mode differentiates material field values only); ``residual`` and
+    the group index and dispersion (``n_g``, ``beta_2``, ``beta_3``) raise
     `gfem.NonDifferentiableError` and a thermal property gets an exact zero.
     """
 
@@ -428,8 +429,10 @@ class PortModeRule:
     def nondifferentiable_output(self, name: str, kinds: Any = ()) -> str | None:
         """The error message for a cotangent on output ``name``, or ``None``.
 
-        ``residual`` is a diagnostic. The field's vector cannot carry a
-        cotangent while the node coordinates are wanted, as
+        ``residual`` is a diagnostic. The group index and dispersion have no
+        backward pass: their gradient reads the mode derivative, which the
+        pass of ``gamma`` does not differentiate. The field's vector cannot
+        carry a cotangent while the node coordinates are wanted, as
         `gfem.results.PortModeField.at` cannot.
         """
         if name == "residual":
@@ -438,6 +441,14 @@ class PortModeRule:
                 f"port {self.port.name!r}: it is the backward error of the mode "
                 "solve, a diagnostic, not a physical quantity. Wrap it in "
                 "jax.lax.stop_gradient to use its value without its derivative."
+            )
+        if name in _DISPERSION_FIELDS:
+            return (
+                f"gfem cannot differentiate the port mode output {name!r} of wave "
+                f"port {self.port.name!r}: the group index and dispersion (n_g, "
+                "beta_2, beta_3 and D) are not differentiable in this version; "
+                "gamma, n_eff and Z_PV are. Wrap it in jax.lax.stop_gradient to "
+                "use its value without its derivative."
             )
         if name == "field" and ("nodes",) in set(kinds):
             return _AT_NODES

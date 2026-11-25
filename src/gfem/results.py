@@ -838,7 +838,10 @@ class PortModeResult:
     the modes follow a design at the wave port's face, as S does: ``gamma``
     and ``Z_PV`` differentiate, a design the port's section does not read gives
     them an exact zero, and ``residual`` is a diagnostic that raises
-    `gfem.NonDifferentiableError` beside such a design.
+    `gfem.NonDifferentiableError` beside such a design. The group index and
+    dispersion (``n_g``, ``beta_2``, ``beta_3``, ``D``) are not differentiable: a
+    gradient through them raises `gfem.NonDifferentiableError` wherever
+    ``gamma`` differentiates.
 
     Fields follow :math:`e^{+i\omega t}`; a mode propagates into the solve
     domain as :math:`e^{-\gamma s}`.

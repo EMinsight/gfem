@@ -2918,6 +2918,15 @@ def _out_port_mode_residual(_request):
     jax.make_jaxpr(jax.grad(residual))(4.0)
 
 
+def _out_port_mode_dispersion(_request):
+    # the group index and dispersion have no backward pass, beside gamma's
+    def group_index(eps):
+        mode, _ = _plate_mode(eps)
+        return jnp.real(mode.n_g[0])
+
+    jax.make_jaxpr(jax.grad(group_index))(4.0)
+
+
 def _out_port_mode_field_at_nodes(_request):
     # `PortModeField.at` reads fixed points: traced nodes are not available
     _, model = _plate_mode(4.0)
@@ -4768,6 +4777,12 @@ OUT_OF_SCOPE = [
         _out_port_mode_residual,
         gfem.NonDifferentiableError,
         r"'residual'.*diagnostic.*stop_gradient",
+    ),
+    (
+        "port mode group index and dispersion",
+        _out_port_mode_dispersion,
+        gfem.NonDifferentiableError,
+        r"'n_g'.*group index and dispersion.*stop_gradient",
     ),
     (
         "port mode field at points x node coordinates",

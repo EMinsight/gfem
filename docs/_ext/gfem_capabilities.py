@@ -510,6 +510,11 @@ RAISES_LABELS = {
         "The backward error of a port mode (`PortModeResult.residual`), with "
         "respect to anything (a diagnostic)"
     ),
+    "port mode group index and dispersion": (
+        "A port mode's group index and dispersion (`PortModeResult.n_g`, "
+        "`beta_2`, `beta_3` and `D`), with respect to anything (`gamma`, "
+        "`n_eff` and `Z_PV` differentiate)"
+    ),
     "port mode field at points x node coordinates": (
         "A port mode's field at points (`PortModeField.at`), with respect to "
         "node coordinates (`gamma`, `n_eff` and `Z_PV` differentiate)"

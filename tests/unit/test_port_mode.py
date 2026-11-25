@@ -831,11 +831,21 @@ def test_port_mode_group_index_is_not_differentiable(plate_mesh):
 
         return value
 
-    # gamma differentiates at the port face (beta grows with eps); its
-    # frequency derivatives do not
+    # gamma differentiates at the port face (beta grows with eps), with the
+    # dispersion outputs beside it as constants; its frequency derivatives
+    # refuse a cotangent by name (D reads beta_2)
     assert jax.grad(objective("gamma"))(4.0) > 0
-    with pytest.raises(gfem.NonDifferentiableError, match="n_g"):
-        jax.grad(objective("n_g"))(4.0)
+    for name, output in (
+        ("n_g", "n_g"),
+        ("beta_2", "beta_2"),
+        ("beta_3", "beta_3"),
+        ("D", "beta_2"),
+    ):
+        with pytest.raises(
+            gfem.NonDifferentiableError,
+            match=rf"'{output}'.*group index and dispersion.*gamma, n_eff and Z_PV",
+        ):
+            jax.make_jaxpr(jax.grad(objective(name)))(4.0)
 
 
 def test_port_mode_runs_under_jit_and_reads_its_field(plate_mesh):

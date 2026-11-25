@@ -706,13 +706,14 @@ class PortMode:
     designs of the regions on the port face, permittivity-law parameters, the
     fill of a sheet field and the R, L, C of an `Impedance` on an edge of the
     section, and the node coordinates of the face (not through ``at``).
-    ``residual`` raises `gfem.NonDifferentiableError`, and a thermal property
-    gets an exact zero. ``gamma`` alone adds no solve to the backward pass; a
-    field or ``Z_PV`` objective adds one 2D solve per mode and frequency. A
-    line port's mode (a 2D mesh) differentiates with respect to the material
-    field values of the regions on its line, in Ez and Hz (``Z_PV`` is NaN
-    there: a line port has no voltage path); its node coordinates and law
-    parameters raise `gfem.NonDifferentiableError`.
+    ``residual`` and the group index and dispersion (``n_g``, ``beta_2``,
+    ``beta_3``, ``D``) raise `gfem.NonDifferentiableError`, and a thermal
+    property gets an exact zero. ``gamma`` alone adds no solve to the backward
+    pass; a field or ``Z_PV`` objective adds one 2D solve per mode and
+    frequency. A line port's mode (a 2D mesh) differentiates with respect to
+    the material field values of the regions on its line, in Ez and Hz
+    (``Z_PV`` is NaN there: a line port has no voltage path); its node
+    coordinates and law parameters raise `gfem.NonDifferentiableError`.
     """
 
     port: str
