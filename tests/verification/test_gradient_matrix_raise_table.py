@@ -22,6 +22,7 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
+import line_port_cases as lpc
 import numpy as np
 import periodic_cases as pc
 import piezo_cases as pz
@@ -2836,6 +2837,39 @@ def _out_nodes_beside_a_tensor_absorbing_face(request):
     jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
 
 
+def _out_line_port_mode_law_parameter(request):
+    # a line port's mode does not differentiate a law's parameters: a silent
+    # zero would pass for the true derivative
+    path = request.getfixturevalue("tmp_path_factory").mktemp("law_line_port")
+    mesh = gfem.Mesh.from_gmsh(lpc.write_guide(path / "guide.msh"), length_unit="mm")
+
+    def objective(eps_inf):
+        law = gfem.PermittivityLaw(
+            eps_inf=eps_inf,
+            terms=[
+                gfem.Lorentz(delta_eps=1.0, resonance_frequency=200e9, damping=2e9)
+            ],
+        )
+        model = gfem.Model(
+            mesh,
+            materials={
+                "clad": gfem.Material(),
+                "core1": gfem.Material(eps_r=law),
+                "core2": gfem.Material(eps_r=4.0),
+            },
+            boundaries=[gfem.PEC("side")],
+            ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")],
+        )
+        result = gfem.solve(
+            model,
+            gfem.PortMode("p1", lpc.FREQUENCY, polarization="Ez"),
+            options=gfem.SolverOptions(threads=1),
+        )
+        return jnp.imag(result.gamma[0])
+
+    jax.grad(objective)(4.0)
+
+
 def _out_driven_port_mode_residual(request):
     # the backward error of a mode is a diagnostic: a cotangent on it raises
     # where a wanted input moves the mode
@@ -4117,6 +4151,12 @@ OUT_OF_SCOPE = [
         _out_eigenmode_port_nodes_moved,
         HOST,
         r"PortGeometryError.*port1",
+    ),
+    (
+        "2D PortMode x law region at the line port",
+        _out_line_port_mode_law_parameter,
+        gfem.NonDifferentiableError,
+        r"gradients of a 2D model are available in this version with respect to",
     ),
     (
         "driven x port mode residual at a port-face design",
