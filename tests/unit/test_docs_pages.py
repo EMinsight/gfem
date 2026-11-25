@@ -329,7 +329,6 @@ USER_TERMS = (
     "Radiation conductance",
     "Synchronous frequency",
     "Node map",
-
     "Reciprocal lattice",
     "High-symmetry point",
     "Wave vector path",
