@@ -17,6 +17,7 @@ from gfem._diffraction.outputs import (
     check_offsets,
     check_surface,
     incidence_of,
+    jones_block,
 )
 from gfem._pytree import readonly, register_fields
 from gfem._text import hertz
@@ -479,11 +480,11 @@ def aperture_field(
             f"aperture_field: amplitude of shape {np.shape(amplitude)} does not "
             f"broadcast to the parameter map's shape {shape}."
         )
-    if response.wave_vector is not None and any(response.wave_vector[:2]):
-        kx, ky = response.wave_vector[:2]
+    if response.wave_vector is not None and any(response.wave_vector):
+        kx, ky, kz = response.wave_vector
         raise ValueError(
             "aperture_field: the cell response was sampled at oblique incidence "
-            f"(in-plane wave vector ({kx:g}, {ky:g}) rad/m); the aperture field "
+            f"(wave vector ({kx:g}, {ky:g}, {kz:g}) rad/m); the aperture field "
             "assumes normal incidence, where every cell's TM and TE references "
             "are ê1 and ê2."
         )
@@ -512,11 +513,18 @@ def aperture_field(
         _check_range(response, arr)
         parameter = arr
     p = jnp.asarray(parameter, dtype=float)
-    # interpolate the entries the block reads only: 2 rows x the used columns
-    r = [response.ports.index(n) for n in rows]
-    c = [response.excited.index(n) for n in names]
-    values = response.values[:, :, r][:, :, :, c]
-    derivative = response.derivative[:, :, r][:, :, :, c]
+
+    # interpolate the entries the block reads only: 2 rows x the used columns,
+    # cut out by the extractor `jones` uses
+    def block(a):
+        return jax.vmap(
+            lambda v: jones_block(
+                _Labels(response.ports, response.excited, v), rows, names
+            )
+        )(a)
+
+    values = block(response.values)
+    derivative = block(response.derivative)
     per_cell = jax.vmap(lambda q: interpolate(response, q, values, derivative))(
         p.ravel()
     )
@@ -543,6 +551,7 @@ class _Labels:
 
     ports: tuple[str, ...]
     excited: tuple[str, ...]
+    values: Any = None
 
     @property
     def s(self) -> _Labels:

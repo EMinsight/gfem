@@ -469,12 +469,15 @@ def test_l6_the_aperture_messages():
         ValueError,
         match=(
             r"^aperture_field: the cell response was sampled at oblique incidence "
-            r"\(in-plane wave vector \(1e\+06, 0\) rad/m\); the aperture field "
+            r"\(wave vector \(1e\+06, 0, 0\) rad/m\); the aperture field "
             r"assumes normal incidence, where every cell's TM and TE references are "
             r"ê1 and ê2\.$"
         ),
     ):
         _ap(pc.analytic_response(wave_vector=(1e6, 0.0, 0.0)))
+    # a Bloch vector is tangential: a component along z is oblique as well
+    with pytest.raises(ValueError, match=r"wave vector \(0, 0, 2e\+06\) rad/m"):
+        _ap(pc.analytic_response(wave_vector=(0.0, 0.0, 2e6)))
     hexagonal = _lat(
         a1=(0.16 * UM, 0.0, 0.0), a2=(0.08 * UM, 0.08 * math.sqrt(3) * UM, 0.0)
     )
