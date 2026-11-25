@@ -673,7 +673,7 @@ def kerr_nonlinearity(model: Model, mode: PortModeResult) -> KerrNonlinearity:
 
     Exactly linear in ``nonlinear_index`` and ``two_photon_absorption``;
     under `jax.grad` the traced mode field makes it differentiable with
-    respect to the section's `eps_r`, laws, losses and density blends (one 2D
+    respect to the section's ``eps_r``, laws, losses and density blends (one 2D
     adjoint per row), not to the node coordinates (width is co-designed by
     finite differences over a remesh). The inputs of the solve can still be
     differentiated through the exact :math:`\gamma` of the same rows.
