@@ -10,6 +10,14 @@ Cases:
 Targets at the default ``port_mode_tolerance`` (1e-6): relative error of the
 propagation constant <= 1e-8, of the mode field (1 W, same phase) <= 1e-5,
 above the low-frequency floor, and at most 12 exact solves per port.
+
+The group index and dispersion of every reduced row come from the derivative
+basis, with no exact solve beyond the sweep's own. The hybrid guide's rows
+agree with exact solves to 1e-12 (n_g), 1e-10 (beta_2) and 1e-8 (beta_3),
+relative. The coplanar line is nearly dispersionless, so its beta_2 and beta_3
+are small differences of large terms: an exact solve's own beta_2 moves by
+5e-3 relative with the eigensolver's shift on the low-frequency floor, and
+beta_2 and beta_3 are held against the largest value of the band.
 """
 
 from pathlib import Path
@@ -18,6 +26,7 @@ import numpy as np
 import pytest
 
 import gfem
+from gfem._sweep.port_mode import _Greedy
 
 DATA = Path(__file__).parents[1] / "unit" / "data"
 N_GRID = 300
@@ -55,12 +64,21 @@ def case(request):
     model, grid, (x, y) = {"cpw": _cpw, "hybrid": _hybrid}[request.param]()
     xx, yy = np.meshgrid(x, y)
     points = np.stack([xx.ravel(), yy.ravel(), np.zeros(xx.size)], axis=1)
-    swept = gfem.solve(model, gfem.PortMode("p1", grid))
-    return request.param, model, grid, points, swept
+    fallbacks = []
+    real = _Greedy._fallback
+
+    def counted(self, i, k):
+        fallbacks.append(i)
+        return real(self, i, k)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(_Greedy, "_fallback", counted)
+        swept = gfem.solve(model, gfem.PortMode("p1", grid))
+    return request.param, model, grid, points, swept, fallbacks
 
 
 def test_at_most_twelve_exact_solves_cover_the_band(case):
-    _, _, grid, _, swept = case
+    _, _, grid, _, swept, _ = case
     solved = np.asarray(swept.solved)
     assert solved[0]
     assert solved[-1]
@@ -68,7 +86,7 @@ def test_at_most_twelve_exact_solves_cover_the_band(case):
 
 
 def test_the_sweep_matches_exact_solves(case):
-    name, model, grid, points, swept = case
+    name, model, grid, points, swept, _ = case
     gamma = np.asarray(swept.gamma)
     field = np.asarray(swept.e_field.at(points))
     residual = np.asarray(swept.residual)
@@ -86,3 +104,36 @@ def test_the_sweep_matches_exact_solves(case):
         k_tol, e_tol = (1e-6, 1e-4) if on_floor else (1e-8, 1e-5)
         assert k_err <= k_tol, (name, grid[i], k_err, on_floor)
         assert e_err <= e_tol, (name, grid[i], e_err, on_floor)
+
+
+# relative to the band's largest |beta_2| and |beta_3|, by the exact solve's
+# noise on the floor (the CPW's rows with residual > 1e-6) and off it
+CPW_FLOOR = (1e-7, 1e-3, 5e-2)
+CPW_OFF_FLOOR = (1e-9, 1e-6, 1e-5)
+HYBRID = (1e-12, 1e-10, 1e-8)
+
+
+def test_the_sweep_s_dispersion_matches_exact_solves(case):
+    name, model, grid, _, swept, _ = case
+    residual = np.asarray(swept.residual)
+    got = np.stack([np.asarray(v) for v in (swept.n_g, swept.beta_2, swept.beta_3)])
+    assert np.isfinite(got).all()
+    band_max = np.abs(got).max(axis=1)
+    for i in np.linspace(1, N_GRID - 2, 7).astype(int):
+        exact = gfem.solve(model, gfem.PortMode("p1", grid[i]))
+        want = np.array(
+            [complex(np.asarray(v)[0]) for v in (exact.n_g, exact.beta_2, exact.beta_3)]
+        )
+        if name == "hybrid":
+            gate = HYBRID
+            error = np.abs(got[:, i] - want) / np.abs(want)
+        else:
+            gate = CPW_FLOOR if residual[i] > 1e-6 else CPW_OFF_FLOOR
+            error = np.abs(got[:, i] - want) / np.abs(want)
+            error[1:] = np.abs(got[1:, i] - want[1:]) / band_max[1:]
+        assert (error <= gate).all(), (name, grid[i], error, gate)
+
+
+def test_the_dispersion_needs_no_fallback_solve(case):
+    _, _, _, _, _, fallbacks = case
+    assert fallbacks == []

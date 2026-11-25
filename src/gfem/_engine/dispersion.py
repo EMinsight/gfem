@@ -84,6 +84,7 @@ __all__ = [
     "resonance_seeds",
     "static_eps",
     "susceptibility",
+    "susceptibility_taylor",
     "warn_fitted_range",
 ]
 
@@ -583,6 +584,61 @@ def _second(term: object, f: complex) -> complex:
         scale = d / math.log(f2 / f1)
         return scale * (1 / (f2 + 1j * f) ** 2 - 1 / (f1 + 1j * f) ** 2)
     raise TypeError(f"Unknown dispersion term {term!r}.")  # pragma: no cover
+
+
+def _third(term: object, f: complex) -> complex:
+    r""":math:`d^3\chi/df^3` of one term at ``f`` (Hz)."""
+    if isinstance(term, Drude):
+        fp, g = float(term.plasma_frequency), float(term.damping)
+        den, slope = f * (f - 1j * g), 2 * f - 1j * g
+        return -(fp**2) * (12 * slope * den - 6 * slope**3) / den**4
+    if isinstance(term, Lorentz):
+        d, f0, g = (
+            float(term.delta_eps),
+            float(term.resonance_frequency),
+            float(term.damping),
+        )
+        den, slope = f0**2 - f * f + 1j * g * f, -2 * f + 1j * g
+        return d * f0**2 * (-12 * slope * den - 6 * slope**3) / den**4
+    if isinstance(term, Debye):
+        d, fr = float(term.delta_eps), float(term.relaxation_frequency)
+        den, slope = 1 + 1j * f / fr, 1j / fr
+        return -6 * d * slope**3 / den**4
+    if isinstance(term, DjordjevicSarkar):
+        d, f1, f2 = (
+            float(term.delta_eps),
+            float(term.low_frequency),
+            float(term.high_frequency),
+        )
+        scale = d / math.log(f2 / f1)
+        return scale * (-2j / (f2 + 1j * f) ** 3 + 2j / (f1 + 1j * f) ** 3)
+    raise TypeError(f"Unknown dispersion term {term!r}.")  # pragma: no cover
+
+
+def susceptibility_taylor(law: PermittivityLaw, omega: float) -> np.ndarray:
+    r""":math:`\chi^{(n)}(\omega)/n!` for :math:`n \le 3` at real ``omega`` (rad/s).
+
+    The real-axis Taylor coefficients of `susceptibility` in :math:`\omega`,
+    shape (4,). Non-finite (never raising) on a lossless pole.
+    """
+    f = omega / _TWO_PI
+    with np.errstate(all="ignore"):
+        try:
+            pairs = [_term(t, f) for t in law.terms]
+            second = sum(_second(t, f) for t in law.terms)
+            third = sum(_third(t, f) for t in law.terms)
+        except ZeroDivisionError:
+            return np.full(4, complex(math.nan, math.nan))
+    # :math:`d^n/d\omega^n = (2\pi)^{-n}\,d^n/df^n`
+    return np.array(
+        [
+            sum(chi for chi, _ in pairs),
+            sum(d for _, d in pairs) / _TWO_PI,
+            second / _TWO_PI**2 / 2,
+            third / _TWO_PI**3 / 6,
+        ],
+        dtype=complex,
+    )
 
 
 def _derivatives(

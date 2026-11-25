@@ -220,9 +220,11 @@ def test_the_tem_mode_has_a_voltage_of_positive_real_part(plate_mesh):
 def test_result_is_a_pytree_of_its_arrays(plate_mesh):
     result = gfem.solve(plate(plate_mesh), gfem.PortMode("p1", [1e9, 2e9]))
     leaves = jax.tree_util.tree_leaves(result)
-    assert len(leaves) == 5  # frequency, gamma, Z_PV, residual, solved
+    # frequency, gamma, Z_PV, residual, solved, n_g, beta_2, beta_3
+    assert len(leaves) == 8
     assert "PortModeResult" in repr(result)
     assert "Z_PV" in repr(result)
+    assert "n_g " in repr(result)
 
 
 # --- waveguide modes -----------------------------------------------------------
@@ -819,18 +821,63 @@ def test_port_mode_residual_is_a_diagnostic_and_raises(plate_mesh):
         jax.grad(objective)(4.0)
 
 
+def test_port_mode_group_index_is_not_differentiable(plate_mesh):
+    def objective(name):
+        def value(eps):
+            model = plate(plate_mesh, _fill(plate_mesh, eps_r=eps))
+            return jnp.abs(
+                getattr(gfem.solve(model, gfem.PortMode("p1", 1e9)), name)[0]
+            )
+
+        return value
+
+    # gamma differentiates at the port face (beta grows with eps), with the
+    # dispersion outputs beside it as constants; its frequency derivatives
+    # refuse a cotangent by name (D reads beta_2)
+    assert jax.grad(objective("gamma"))(4.0) > 0
+    for name, output in (
+        ("n_g", "n_g"),
+        ("beta_2", "beta_2"),
+        ("beta_3", "beta_3"),
+        ("D", "beta_2"),
+    ):
+        with pytest.raises(
+            gfem.NonDifferentiableError,
+            match=rf"'{output}'.*group index and dispersion.*gamma, n_eff and Z_PV",
+        ):
+            jax.make_jaxpr(jax.grad(objective(name)))(4.0)
+
+
 def test_port_mode_runs_under_jit_and_reads_its_field(plate_mesh):
     problem = gfem.PortMode("p1", [10e9, 40e9])
     points = np.array([[W / 3, D / 3, 0.0], [W / 2, D / 2, 0.0]])
     exact = gfem.solve(plate(plate_mesh), problem)
+    seen = []
 
     @jax.jit
     def solved(eps):
-        return gfem.solve(plate(plate_mesh, _fill(plate_mesh, eps_r=eps)), problem)
+        result = gfem.solve(plate(plate_mesh, _fill(plate_mesh, eps_r=eps)), problem)
+        seen.append(repr(result))
+        return result
 
     traced = solved(4.0)
+    assert seen == ["PortModeResult(port 'p1', mode 1, 2 frequencies)"]
     np.testing.assert_allclose(traced.gamma, exact.gamma, rtol=1e-10)
     np.testing.assert_allclose(traced.Z_PV, exact.Z_PV, rtol=1e-10)
+    # the TEM mode does not disperse: beta_2 and beta_3 are rounding of their
+    # natural scales n_g / (c omega^(k - 1)), which threads change
+    omega = 2 * math.pi * np.asarray(problem.frequency)
+    n_g = np.abs(np.asarray(exact.n_g))
+    natural = {
+        "n_g": n_g,
+        "beta_2": n_g / (C0 * omega),
+        "beta_3": n_g / (C0 * omega**2),
+    }
+    for name, size in natural.items():
+        value = getattr(traced, name)
+        assert value.shape == (2,)
+        assert value.dtype == jnp.complex128
+        assert (np.abs(value - getattr(exact, name)) <= 1e-10 * size).all(), name
 
     @jax.jit
     def field(eps):
@@ -855,6 +902,20 @@ def test_port_mode_field_under_a_traced_mesh_asks_for_concrete_nodes(plate_mesh)
 
     with pytest.raises(TypeError, match="needs concrete node coordinates"):
         field(plate_mesh)
+
+
+def test_a_vmapped_port_mode_counts_its_exact_solves_per_frequency(plate_mesh):
+    problem = gfem.PortMode("p1", [10e9, 20e9, 40e9])
+    seen = []
+
+    def solve(eps):
+        result = gfem.solve(plate(plate_mesh, _fill(plate_mesh, eps_r=eps)), problem)
+        seen.append(repr(result))
+        return result
+
+    batch = jax.vmap(solve)(jnp.array([4.0, 4.0]))
+    assert seen == ["PortModeResult(port 'p1', mode 1, 3 frequencies)"]
+    assert "3 frequencies 10-40 GHz (3 exact solves)" in repr(batch)
 
 
 def test_port_mode_gradient_of_an_unread_property_is_an_exact_zero(plate_mesh):

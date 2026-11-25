@@ -5,6 +5,10 @@ One coarse fixed mesh per guide; p-refinement only. Cases:
   ``2 b Z_TE / a`` along the centre line, and the ``sin(pi x / a)`` profile;
 - WR-90 with a full-height dielectric slab against one wall: the TE10-like
   mode of the transcendental dispersion relation (a hybrid material case).
+
+The group index and the second and third order dispersion converge with the
+order as well, to the closed form (TE10) and to 40-digit literals of the
+dispersion relation's derivatives (slab-loaded guide).
 """
 
 import itertools
@@ -58,6 +62,27 @@ def test_te10_propagation_constant_converges_with_order(te10):
         assert np.abs(np.asarray(te10[p].gamma).real).max() < 1e-12 * beta.min()
 
 
+def _te10_dispersion(f):
+    r"""$n_g$, $\beta_2$, $\beta_3$ of TE10 from $\beta = \sqrt{k_0^2 - k_c^2}$."""
+    k0, beta, kc2 = 2 * np.pi * f / C0, _te10_beta(f), (np.pi / A) ** 2
+    return {
+        "n_g": k0 / beta,
+        "beta_2": -kc2 / (C0**2 * beta**3),
+        "beta_3": 3 * kc2 * k0 / (C0**3 * beta**5),
+    }
+
+
+def test_te10_dispersion_converges_with_order(te10):
+    exact = _te10_dispersion(FREQS)
+    for name, gate in (("n_g", 1e-10), ("beta_2", 1e-9), ("beta_3", 1e-9)):
+        errors = [
+            np.abs(np.asarray(getattr(te10[p], name)) / exact[name] - 1).max()
+            for p in ORDERS
+        ]
+        assert all(e2 < e1 / 5 for e1, e2 in itertools.pairwise(errors)), errors
+        assert errors[-1] < gate, (name, errors)
+
+
 def test_te10_power_voltage_impedance_converges_with_order(te10):
     k0 = 2 * np.pi * FREQS / C0
     z_te = ETA0 * k0 / _te10_beta(FREQS)
@@ -102,6 +127,15 @@ def _slab_beta(f, eps=EPS_SLAB):
     return max(roots)
 
 
+# n_g, beta_2 (s^2/m), beta_3 (s^3/m) of the dispersion relation at 8 and 12 GHz
+# (40-digit derivatives of `_slab_beta`'s relation, rounded).
+SLAB_DISPERSION = {
+    "n_g": [2.3131144036306833, 2.2376220080974062],
+    "beta_2": [-1.7002258510098628e-20, -1.0306202573954573e-20],
+    "beta_3": [3.0937328674974562e-30, 2.8723862689500176e-32],
+}
+
+
 def test_slab_loaded_guide_mode_converges_with_order():
     mesh = gfem.Mesh.from_gmsh(DATA / "slab_waveguide.msh", length_unit="mm")
     model = gfem.Model(
@@ -113,13 +147,26 @@ def test_slab_loaded_guide_mode_converges_with_order():
     freqs = np.array([8e9, 12e9])
     beta = np.array([_slab_beta(f) for f in freqs])
     errors = []
+    dispersion = {name: [] for name in SLAB_DISPERSION}
     for p in ORDERS:
         result = gfem.solve(
             model, gfem.PortMode("p1", freqs), options=gfem.SolverOptions(order=p)
         )
         errors.append(np.abs(np.asarray(result.gamma) / (1j * beta) - 1).max())
+        for name, series in dispersion.items():
+            ref = np.array(SLAB_DISPERSION[name])
+            # beta_3 passes through a small value inside the band: its error is
+            # measured against the band's maximum, never against its own value.
+            scale = np.abs(ref).max() if name == "beta_3" else np.abs(ref)
+            series.append(
+                (np.abs(np.asarray(getattr(result, name)) - ref) / scale).max()
+            )
     assert all(e2 < e1 / 10 for e1, e2 in itertools.pairwise(errors)), errors
     assert errors[-1] < 1e-9, errors
+    for name, gate in (("n_g", 2e-9), ("beta_2", 2e-7), ("beta_3", 5e-8)):
+        series = dispersion[name]
+        assert all(e2 < e1 / 5 for e1, e2 in itertools.pairwise(series)), (name, series)
+        assert series[-1] < gate, (name, series)
 
 
 def test_slab_loaded_guide_root_derivative_converges_with_order():

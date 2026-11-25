@@ -32,7 +32,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
 import netgen.meshing as ngm
 import ngsolve as ngs
@@ -42,9 +42,14 @@ import scipy.sparse as sp
 
 from gfem._boundaries import Conductor
 from gfem._engine import quadrature
-from gfem._engine.dispersion import d_susceptibility, susceptibility
+from gfem._engine.dispersion import (
+    d_susceptibility,
+    susceptibility,
+    susceptibility_taylor,
+)
 from gfem._engine.stretch import stretch_factors
-from gfem._engine.terms import surface_impedance, surface_impedance_slope
+from gfem._engine.taylor import Taylor
+from gfem._engine.terms import _THICK, surface_impedance, surface_impedance_slope
 from gfem._linalg.base import free_mask
 from gfem._port_section import PortSection
 
@@ -55,6 +60,18 @@ _QUADRANT_RTOL = 1e-10
 Z0 = scipy.constants.mu_0 * scipy.constants.c  # vacuum wave impedance, ohm
 
 
+class PencilScalar(Protocol):
+    """A further scalar of the pencil: its value and real-axis Taylor series."""
+
+    def __call__(self, k0: float) -> complex:
+        """The value at wavenumber ``k0`` (per local unit)."""
+        ...
+
+    def taylor(self, k0: float) -> np.ndarray:
+        r""":math:`\theta^{(n)}(k_0)/n!` for :math:`n \le 3` along real ``k0``."""
+        ...
+
+
 @dataclasses.dataclass(frozen=True)
 class Pencil:
     """``A(k0) = sum theta_j(k0) A_j`` and ``B(k0)`` likewise, on free DOFs.
@@ -63,7 +80,8 @@ class Pencil:
         a: Matrices multiplying 1, -k0^2, i k0, then each of ``extra``.
         b: Likewise for ``B``.
         extra: The further scalars of k0 (one per conductor edge group, then
-            one per law and one per law with absorbing edges).
+            one per law and one per law with absorbing edges), each with its
+            real-axis Taylor series.
         slopes: The k0-derivative of each of ``extra``, analytic in a
             complex k0, or ``None`` for a scalar that is not analytic (an
             absorbing edge beside a law, which reads Re eps); empty when the
@@ -72,7 +90,7 @@ class Pencil:
 
     a: tuple[sp.csr_matrix, ...]
     b: tuple[sp.csr_matrix, ...]
-    extra: tuple[Callable[[float], complex], ...] = ()
+    extra: tuple[PencilScalar, ...] = ()
     slopes: tuple[Callable[[complex], complex] | None, ...] = ()
 
     def theta(self, k0: float) -> tuple[complex, ...]:
@@ -102,6 +120,21 @@ class Pencil:
             )
         return (0.0, -2 * k0, 1j, *(f(k0) for f in self.slopes if f is not None))
 
+    def taylor(self, k0: float) -> np.ndarray:
+        r"""The Taylor coefficients of each scalar of `theta` along real ``k0``.
+
+        Shape (J, 4): row :math:`j` holds :math:`\theta_j^{(n)}(k_0)/n!`,
+        :math:`n = 0..3`, so that
+        :math:`A(k_0 + h) = \sum_n h^n \sum_j c_{jn} A_j + O(h^4)`. Real
+        ``k0`` only: an absorbing edge beside a law reads
+        :math:`\operatorname{Re}\varepsilon`, whose series holds along the
+        real axis and nowhere else.
+        """
+        k = Taylor.variable(k0)
+        base = (Taylor.constant(1.0), -(k * k), 1j * k)
+        rows = [t.c for t in base] + [f.taylor(k0) for f in self.extra]
+        return np.array(rows, dtype=complex)
+
     def at(self, k0: float) -> tuple[sp.csr_matrix, sp.csr_matrix]:
         """``A`` and ``B`` at wavenumber ``k0`` (per local length unit)."""
         theta = self.theta(k0)
@@ -126,17 +159,40 @@ def admittance(eps: Any, mu: Any) -> Any:
     return np.sqrt(eps / mu)
 
 
-def law_theta(law: Any, scale: float) -> Callable[[float], complex]:
-    r""":math:`-k_0^2\chi(\omega)` of a law's susceptibility piece."""
+def susceptibility_series(law: Any, scale: float, k0: float) -> Taylor:
+    r""":math:`\chi(\omega(k_0 + h))` of a law as a `Taylor` series in :math:`h`.
 
-    def theta(k0: float) -> complex:
-        return -(k0**2) * susceptibility(law, omega_of(k0, scale))
+    :math:`d\omega/dk_0 = c/s`, ``s`` the ``scale``.
+    """
+    rate = scipy.constants.c / scale
+    omega = omega_of(k0, scale)
+    return Taylor(susceptibility_taylor(law, omega) * rate ** np.arange(4))
 
-    return theta
+
+@dataclasses.dataclass(frozen=True)
+class LawScalar:
+    r""":math:`-k_0^2\chi(\omega)` of a law's susceptibility piece.
+
+    Attributes:
+        law: The permittivity law.
+        scale: The local unit in metres.
+    """
+
+    law: Any
+    scale: float
+
+    def __call__(self, k0: float) -> complex:
+        """The value at wavenumber ``k0`` (per local unit)."""
+        return -(k0**2) * susceptibility(self.law, omega_of(k0, self.scale))
+
+    def taylor(self, k0: float) -> np.ndarray:
+        r""":math:`\theta^{(n)}(k_0)/n!` for :math:`n \le 3` along real ``k0``."""
+        k = Taylor.variable(k0)
+        return (-(k * k) * susceptibility_series(self.law, self.scale, k0)).c
 
 
 def law_slope(law: Any, scale: float) -> Callable[[complex], complex]:
-    r"""The k0-derivative of `law_theta`, :math:`-2k_0\chi - k_0^2\chi'(\omega)\,c/s`.
+    r"""The k0-derivative of `LawScalar`, :math:`-2k_0\chi - k_0^2\chi'(\omega)\,c/s`.
 
     ``s`` is ``scale``, so :math:`d\omega/dk_0 = c/s`.
     """
@@ -151,21 +207,79 @@ def law_slope(law: Any, scale: float) -> Callable[[complex], complex]:
     return slope
 
 
-def law_absorbing_theta(
-    law: Any, mu: float, scale: float, *, inverse: bool = False
-) -> Callable[[float], complex]:
+@dataclasses.dataclass(frozen=True)
+class LawEdgeScalar:
     r""":math:`ik_0 Y(\omega)` of the absorbing edges beside a law.
 
     :math:`Y` is the `admittance` of :math:`\operatorname{Re}\varepsilon_r(\omega)`
-    and ``mu``, or its inverse with ``inverse``.
+    and ``mu``, or its inverse with ``inverse``. Not analytic in
+    :math:`k_0`: its series takes the real part of each coefficient of the
+    law's, which holds along the real axis only.
+
+    Attributes:
+        law: The permittivity law.
+        mu: The real relative permeability beside the edges.
+        scale: The local unit in metres.
+        inverse: Whether the scalar holds :math:`1/Y`.
     """
-    eps_inf = float(law.eps_inf)
 
-    def theta(k0: float) -> complex:
-        eps = eps_inf + susceptibility(law, omega_of(k0, scale)).real
-        return 1j * k0 * (admittance(mu, eps) if inverse else admittance(eps, mu))
+    law: Any
+    mu: float
+    scale: float
+    inverse: bool = False
 
-    return theta
+    def __call__(self, k0: float) -> complex:
+        """The value at wavenumber ``k0`` (per local unit)."""
+        eps = (
+            float(self.law.eps_inf)
+            + susceptibility(self.law, omega_of(k0, self.scale)).real
+        )
+        mu = self.mu
+        return 1j * k0 * (admittance(mu, eps) if self.inverse else admittance(eps, mu))
+
+    def taylor(self, k0: float) -> np.ndarray:
+        r""":math:`\theta^{(n)}(k_0)/n!` for :math:`n \le 3` along real ``k0``."""
+        k = Taylor.variable(k0)
+        chi = susceptibility_series(self.law, self.scale, k0)
+        eps = float(self.law.eps_inf) + chi.real
+        y = (self.mu / eps).sqrt() if self.inverse else (eps / self.mu).sqrt()
+        return (1j * k * y).c
+
+
+@dataclasses.dataclass(frozen=True)
+class ConductorScalar:
+    r""":math:`ik_0\eta_0/Z_s(\omega)` of a conductor edge group.
+
+    Attributes:
+        sigma: Conductivity, S/m.
+        thickness: Thickness in m, or ``None`` for thick metal.
+        scale: The local unit in metres.
+    """
+
+    sigma: float
+    thickness: float | None
+    scale: float
+
+    def __call__(self, k0: float) -> complex:
+        """The value at wavenumber ``k0`` (per local unit)."""
+        omega = omega_of(k0, self.scale)
+        return 1j * k0 * Z0 / surface_impedance(self.sigma, self.thickness, omega)
+
+    def taylor(self, k0: float) -> np.ndarray:
+        r""":math:`\theta^{(n)}(k_0)/n!` for :math:`n \le 3` along real ``k0``.
+
+        `gfem._engine.terms.surface_impedance` as a series, on the same
+        thick-film branch.
+        """
+        k = Taylor.variable(k0)
+        omega = k * (scipy.constants.c / self.scale)
+        g = (omega * (1j * scipy.constants.mu_0 * self.sigma)).sqrt()
+        z = g / self.sigma
+        if self.thickness is not None:
+            u = g * (0.5 * self.thickness)
+            if u.c[0].real < _THICK:
+                z = z / u.tanh()
+        return (1j * Z0 * k / z).c
 
 
 @dataclasses.dataclass(frozen=True)
@@ -282,7 +396,7 @@ class PortModeSpace:
 
     def _form_list(
         self,
-    ) -> tuple[list[FormItem], list[Callable[[float], complex]], list[Any]]:
+    ) -> tuple[list[FormItem], list[PencilScalar], list[Any]]:
         """The pencil's form items, and the scalar and slope of each extra slot.
 
         The one list that assembly reads (`_integrand`): a pass that
@@ -304,7 +418,7 @@ class PortModeSpace:
                 FormItem(2, "A", "edge_t", c["Y_tau"], "absorbing.*", ("absorbing",)),
                 FormItem(2, "B", "edge_n", c["Y_n"], "absorbing.*", ("absorbing",)),
             ]
-        extra: list[Callable[[float], complex]] = []
+        extra: list[PencilScalar] = []
         slopes: list[Any] = []
         fill = _edge_fill(self.mesh, self.section)
         for g, (item, factor) in enumerate(self.section.impedance_terms):
@@ -315,7 +429,8 @@ class PortModeSpace:
                     FormItem(slot, "A", "edge_t", fill, region, ("fill", g)),
                     FormItem(slot, "B", "edge_n", fill, region, ("fill", g)),
                 ]
-                extra.append(self._conductor_theta(item, factor))
+                h = None if item.thickness is None else factor * item.thickness
+                extra.append(ConductorScalar(item.conductivity, h, self.section.scale))
                 slopes.append(self._conductor_slope(item, factor))
                 continue
             for slot, name, weight in self._impedance_weights(item):
@@ -333,7 +448,7 @@ class PortModeSpace:
                 FormItem(slot, "A", "value_t", inside, "dx", ("law", g)),
                 FormItem(slot, "B", "value_n", inside, "dx", ("law", g)),
             ]
-            extra.append(law_theta(law, self.section.scale))
+            extra.append(LawScalar(law, self.section.scale))
             slopes.append(law_slope(law, self.section.scale))
             if absorbing_law is not None and (absorbing_law == g).any():
                 slot = 3 + len(extra)
@@ -344,7 +459,7 @@ class PortModeSpace:
                 ]
                 rows = np.asarray(index) == g
                 mu = 1 / float(self.section.nu_nn[rows][0].real)
-                extra.append(law_absorbing_theta(law, mu, self.section.scale))
+                extra.append(LawEdgeScalar(law, mu, self.section.scale))
                 slopes.append(None)  # reads Re eps: not analytic
         return items, extra, slopes
 
@@ -376,23 +491,10 @@ class PortModeSpace:
             c = w * c
         return c * trace.Trace() * test.Trace() * measure
 
-    def _conductor_theta(
-        self, item: Conductor, factor: float
-    ) -> Callable[[float], complex]:
-        """``i k0 eta0 / Z_s(omega)`` of a conductor edge group."""
-        scale = self.section.scale
-        h = None if item.thickness is None else factor * item.thickness
-        sigma = item.conductivity
-
-        def theta(k0: float) -> complex:
-            return 1j * k0 * Z0 / surface_impedance(sigma, h, omega_of(k0, scale))
-
-        return theta
-
     def _conductor_slope(
         self, item: Conductor, factor: float
     ) -> Callable[[complex], complex]:
-        r"""The k0-derivative of `_conductor_theta`, :math:`\theta (1 - s) / k_0`.
+        r"""The k0-derivative of `ConductorScalar`, :math:`\theta (1 - s) / k_0`.
 
         :math:`s = (\omega / Z_s)\,dZ_s/d\omega`
         (`gfem._engine.terms.surface_impedance_slope`).

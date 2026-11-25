@@ -42,8 +42,8 @@ mm
 [0.04  0.006 0.001]
 ```
 
-The thermal problems use the same SI units, with temperatures in kelvin
-(see "Temperature and thermo-optic phase" below):
+These quantities use the same SI units, with temperatures in kelvin (see
+"Temperature and thermo-optic phase" below):
 
 | Quantity | Unit |
 | --- | --- |
@@ -64,6 +64,7 @@ The thermal problems use the same SI units, with temperatures in kelvin
 | on a cross-section: `Trace.heat_out_per_length` | J/m |
 | `electro_optic_tensor` | m/V |
 | `delta_n_eff_per_volt`, `phase_per_length_per_volt`, `v_pi_l` | 1/V, rad/(V m), V m |
+| a port mode's `n_g`, `beta_2`, `beta_3`, `D` | 1, s²/m, s³/m, s/m² |
 
 ## Time dependence
 
@@ -912,6 +913,28 @@ so a quantity per terminal volt is referred to the incident wave by that
 factor. The {doc}`recipes/piezoelectric-admittance` recipe and the
 {doc}`transducer tutorial <tutorials/transducer>` use these conventions; the
 {py:obj}`gfem.conventions` module, "Piezoelectric problems", states them.
+
+## Group index and dispersion
+
+A port mode's group index and dispersion are the frequency derivatives of
+$\gamma / i$, with $\omega = 2\pi f$ and $\lambda = c/f$ the vacuum
+wavelength:
+
+$$
+n_g = \frac{c}{i}\frac{\mathrm{d}\gamma}{\mathrm{d}\omega}, \qquad
+\beta_k = \frac{1}{i}\frac{\mathrm{d}^k\gamma}{\mathrm{d}\omega^k}, \qquad
+D = -\frac{2\pi c}{\lambda^2}\,\beta_2 .
+$$
+
+For a lossless mode they are real and the same under either time
+dependence, so a published value compares directly. With loss they are
+complex and written $n' - in''$ like `n_eff`; a code that uses
+$e^{-i\omega t}$ reports their complex conjugates. $\beta_2 > 0$,
+equivalently $D < 0$, is normal dispersion; $D > 0$ is anomalous. Papers
+quote them in other units: 1 ps/(nm km) is $10^{-6}$ s/m², 1 ps²/km
+(1 fs²/mm) is $10^{-27}$ s²/m and 1 ps³/km is $10^{-39}$ s³/m. The
+{py:obj}`gfem.conventions` module, "Group index and dispersion", gives the
+formulas, and {doc}`recipes/waveguide-dispersion` the calculation.
 
 ## Thin metals
 

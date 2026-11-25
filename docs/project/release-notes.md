@@ -170,6 +170,33 @@ Piezoelectric acoustics:
   "Piezoelectric acoustics" section of the glossary and a section of the
   verification page.
 
+Port modes:
+
+- **Group index and dispersion.** Every `gfem.PortMode` solve now gives its
+  mode's group index, group-velocity dispersion and third-order dispersion
+  at every frequency of its grid, the rows of the reduced port mode model
+  included: `PortModeResult.n_g`, `beta_2` (s²/m), `beta_3` (s³/m), and the
+  dispersion parameter `PortModeResult.D` (s/m²). They are exact frequency
+  derivatives of the propagation constant, through permittivity laws,
+  conductors, lossy and leaky sections and perfectly matched layers. They
+  are complex like `n_eff`, with the derivatives of $\beta$ as their real
+  parts. `to_xarray` carries them. They are not differentiable:
+  `jax.grad` through them raises `gfem.NonDifferentiableError`, while
+  `gamma` and `n_eff` of the same result differentiate. A driven solve's
+  `port_modes` carry `None`.
+
+- **Behaviour changes.** A `PortMode` solve takes about 15-30 % longer.
+  Its result's repr adds the range of the group index, and the result has
+  three more pytree leaves. Its repr no longer raises inside `jax.jit`. A
+  saved `PortMode` result now holds the three arrays, and gfem 0.2.0 does
+  not load it; older files load with them `None`.
+
+- **Documentation.** A recipe, "Find the group index and dispersion of a
+  waveguide": a silicon wire with Sellmeier laws, its dispersion over a
+  band, the widths where it vanishes, and the cladding it needs. A "Group
+  index and dispersion" section in "Modes and ports" and in the
+  conventions, and four glossary terms.
+
 Linear solvers:
 
 - **Fewer stale iterations across a frequency sweep.** A reused BDDC or
@@ -500,7 +527,8 @@ Wave ports:
   ({doc}`../recipes/port-mode-gradient`).
 - **Port modes differentiate.** A `gfem.PortMode` result's `gamma`,
   `n_eff`, `Z_PV` and field (`e_field.at`) differentiate with respect to
-  the same inputs; `residual` raises `gfem.NonDifferentiableError`.
+  the same inputs; `residual`, and the group index and dispersion (`n_g`,
+  `beta_2`, `beta_3`, `D`), raise `gfem.NonDifferentiableError`.
 - **Sliding ports.** `gfem.shape.boundary_morph(..., sliding_ports=...)`
   lets the faces of the named wave ports slide in their plane, so a shape
   design reaches the port.

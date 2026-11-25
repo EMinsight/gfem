@@ -182,6 +182,10 @@ def test_get_started_links_every_tutorial():
 # -- The user glossary --------------------------------------------------------
 
 USER_TERMS = (
+    "Group index",
+    "Group-velocity dispersion",
+    "Dispersion parameter",
+    "Third-order dispersion",
     "S-parameters",
     "Power waves",
     "Lumped port",

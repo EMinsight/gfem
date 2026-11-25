@@ -68,6 +68,15 @@ from gfem._engine import terms as driven_terms
 from gfem._engine.cache import Entry, discretization
 from gfem._engine.line_mode import LineModeSpace, ModeSpace, mode_space
 from gfem._engine.line_mode_sensitivity import line_integrated
+from gfem._engine.mode_derivative import (
+    ModeDerivative,
+    gmres_on,
+    mode_derivative,
+    piece_series,
+    rayleigh_series,
+    right_hand_side,
+    slope,
+)
 from gfem._engine.port_mode import PortModeSpace
 from gfem._engine.port_mode_normalization import normalize_rows
 from gfem._engine.port_mode_sensitivity import section_inputs
@@ -76,7 +85,11 @@ from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import Term, is_thermal_value
 from gfem._engine.solve_request import SolveRequest
 from gfem._linalg import report
-from gfem._linalg.superlu import backward_error, shift_invert_eigs
+from gfem._linalg.superlu import (
+    EIGS_TOLERANCE,
+    ShiftInvert,
+    backward_error,
+)
 from gfem._line_section import LineSection, line_elements, line_section
 from gfem._port_section import (
     PLANE_RTOL,
@@ -143,6 +156,11 @@ _PML_SHARE = 0.5
 _CLEARANCE = 1e-2
 # With at most this many frequencies every one is solved exactly.
 _EXACT_ONLY = 3
+# A mode derivative is solved to the eigensolver's own tolerance: the mode is
+# good to no better, so a tighter solve buys nothing. A mode at the
+# low-frequency floor is good only to its backward error, so its derivative
+# is solved to that (the preconditioned system cannot reach 1e-10 there).
+_DERIVATIVE_RTOL = EIGS_TOLERANCE
 # A new mode adds its part orthogonal to the basis unless that part is below
 # this fraction of the mode (rounding noise). It must be tiny: a smooth mode
 # has |A x| << |A| |x|, so a part of 1e-8 still carries a backward error ~1e-6.
@@ -156,6 +174,9 @@ _POLARITY_GUARD = 1e-2
 # A polarity direction whose in-plane part is below this is normal to the
 # port plane: it reads no field, refused before the sweep.
 _NORMAL_ARROW = 1e-6
+# The per-mode fields of a `PortModeSweep` that only a sweep asked for its
+# modes' dispersion carries.
+_DISPERSION_FIELDS = ("n_g", "beta_2", "beta_3")
 # Gauss-Legendre rule for voltage line integrals: points per piece, pieces.
 _GAUSS = np.polynomial.legendre.leggauss(4)
 _PIECES = 32
@@ -167,11 +188,13 @@ class PortModeSweep:
     r"""One wave port's mode over a frequency grid.
 
     The field at ``frequency[i]`` is ``basis @ coords[i]`` (full coefficient
-    vector of ``(E_t, E_n)`` on ``space``, V/m at 1 W). The basis is real and
-    fixed; for a planar port it splits into a tangential and a normal block,
-    so the field is affine in ``coords`` even though the pencil vector is
-    ``(gamma E_t, E_n)``. A line port's field is its scalar mode ``u`` (Ez
-    in V/m or Hz in A/m, at 1 W/m), and its basis is the reduced one.
+    vector of ``(E_t, E_n)`` on ``space``, V/m at 1 W). The output basis is
+    real and fixed; for a planar port it splits into a tangential and a
+    normal block, so the field is affine in ``coords`` even though the
+    pencil vector is ``(gamma E_t, E_n)``. Only this output basis is split:
+    the sweep's reduced model holds the real and imaginary parts of the
+    pencil vectors. A line port's field is its scalar mode ``u`` (Ez in V/m
+    or Hz in A/m, at 1 W/m), and its basis is the reduced one.
 
     Attributes:
         space: The discrete port mode problem.
@@ -193,6 +216,13 @@ class PortModeSweep:
             basis ``v``; ``None`` likewise.
         v: ``(n_free, m)`` the real reduced basis of pencil vectors;
             ``None`` likewise.
+        n_g: ``(n_f,)`` complex group index
+            :math:`(c/i)\,\mathrm{d}\gamma/\mathrm{d}\omega`; ``None`` for a
+            mode the sweep was not asked the dispersion of.
+        beta_2: ``(n_f,)`` :math:`(1/i)\,\mathrm{d}^2\gamma/\mathrm{d}\omega^2`,
+            s²/m, or ``None``.
+        beta_3: ``(n_f,)`` :math:`(1/i)\,\mathrm{d}^3\gamma/\mathrm{d}\omega^3`,
+            s³/m, or ``None``.
     """
 
     space: ModeSpace
@@ -208,6 +238,9 @@ class PortModeSweep:
     lam: np.ndarray | None = None
     y: np.ndarray | None = None
     v: np.ndarray | None = None
+    n_g: np.ndarray | None = None
+    beta_2: np.ndarray | None = None
+    beta_3: np.ndarray | None = None
 
     @property
     def z_pv(self) -> np.ndarray:
@@ -258,7 +291,8 @@ class PortModeRule:
     `gfem.results.PortModeField.at`) differentiate with respect to the
     material, law, sheet and `Impedance` inputs of the section and the face's
     node coordinates (`gfem._sweep.port_mode_pass`; not through ``at``; a line
-    port's mode differentiates material field values only); ``residual`` raises
+    port's mode differentiates material field values only); ``residual`` and
+    the group index and dispersion (``n_g``, ``beta_2``, ``beta_3``) raise
     `gfem.NonDifferentiableError` and a thermal property gets an exact zero.
     """
 
@@ -338,6 +372,8 @@ class PortModeRule:
             "field": jax.ShapeDtypeStruct(
                 (*n, self._field_width(model)), jnp.complex128
             ),
+        } | {
+            name: jax.ShapeDtypeStruct(n, jnp.complex128) for name in _DISPERSION_FIELDS
         }
 
     def _field_width(self, model: Model) -> int:
@@ -393,8 +429,10 @@ class PortModeRule:
     def nondifferentiable_output(self, name: str, kinds: Any = ()) -> str | None:
         """The error message for a cotangent on output ``name``, or ``None``.
 
-        ``residual`` is a diagnostic. The field's vector cannot carry a
-        cotangent while the node coordinates are wanted, as
+        ``residual`` is a diagnostic. The group index and dispersion have no
+        backward pass: their gradient reads the mode derivative, which the
+        pass of ``gamma`` does not differentiate. The field's vector cannot
+        carry a cotangent while the node coordinates are wanted, as
         `gfem.results.PortModeField.at` cannot.
         """
         if name == "residual":
@@ -403,6 +441,14 @@ class PortModeRule:
                 f"port {self.port.name!r}: it is the backward error of the mode "
                 "solve, a diagnostic, not a physical quantity. Wrap it in "
                 "jax.lax.stop_gradient to use its value without its derivative."
+            )
+        if name in _DISPERSION_FIELDS:
+            return (
+                f"gfem cannot differentiate the port mode output {name!r} of wave "
+                f"port {self.port.name!r}: the group index and dispersion (n_g, "
+                "beta_2, beta_3 and D) are not differentiable in this version; "
+                "gamma, n_eff and Z_PV are. Wrap it in jax.lax.stop_gradient to "
+                "use its value without its derivative."
             )
         if name == "field" and ("nodes",) in set(kinds):
             return _AT_NODES
@@ -426,6 +472,8 @@ class PortModeRule:
         Returns:
             The per-frequency arrays of `output_specs` plus ``"sweep"`` (the
             `PortModeSweep`), and the entry a backward reads (or ``None``).
+            Only the requested port's mode carries its dispersion, also on a
+            shared surface.
         """
         del request
         ports = self._ports
@@ -446,6 +494,7 @@ class PortModeRule:
                 tolerance=self.options.port_mode_tolerance,
                 ports=ports,
                 pairs=keep,
+                dispersive_modes=(self._index,),
             )
         sweep = sweeps[self._index]
         field = sweep.coords @ sweep.basis.T
@@ -456,7 +505,7 @@ class PortModeRule:
             "solved": sweep.solved,
             "field": field,
             "sweep": sweep,
-        }
+        } | {name: getattr(sweep, name) for name in _DISPERSION_FIELDS}
         entry = PortModeEntry("em", sweeps=sweeps) if keep else None
         return outputs, entry
 
@@ -618,7 +667,7 @@ class PortModeRule:
                 quantity=quantity,
                 unit=unit,
             )
-        fields = {"h_field": field} if polarization == "Hz" else {"e_field": field}
+        hz = polarization == "Hz"
         return PortModeResult(
             port=self.port.name,
             mode=self.mode,
@@ -627,8 +676,12 @@ class PortModeRule:
             Z_PV=jnp.asarray(outputs["Z_PV"]),
             residual=jnp.asarray(outputs["residual"]),
             solved=jnp.asarray(outputs["solved"]),
-            **fields,
+            e_field=None if hz else field,
+            h_field=field if hz else None,
             pml=self._model.pml,
+            n_g=jnp.asarray(outputs["n_g"]),
+            beta_2=jnp.asarray(outputs["beta_2"]),
+            beta_3=jnp.asarray(outputs["beta_3"]),
         )
 
     def _locate(self) -> PortModeSpace | LineModeSpace:
@@ -716,6 +769,7 @@ def port_mode_sweep(
     *,
     tolerance: float,
     ports: list[WavePort],
+    dispersive_modes: Sequence[int] = (),
 ) -> list[PortModeSweep]:
     """The guarded port mode sweep of one port surface (see the module docstring).
 
@@ -730,6 +784,8 @@ def port_mode_sweep(
         tolerance: Backward error a reduced mode must reach.
         ports: The wave port of each mode (its name for messages, its
             voltage path or polarity).
+        dispersive_modes: The modes (indices into ``modes``) whose group index and
+            dispersion the sweep reports; the others carry ``None``.
 
     Returns:
         One `PortModeSweep` per mode, sharing ``space``, ``basis`` and
@@ -763,12 +819,28 @@ def port_mode_sweep(
         for p in ports
     ]
     order = np.argsort(f_given, kind="stable")
-    sweep = _Greedy(space, f_given[order], modes, tolerance, ports)
+    sweep = _Greedy(
+        space,
+        f_given[order],
+        modes,
+        tolerance,
+        ports,
+        dispersive_modes=dispersive_modes,
+    )
     sweep.run()
+    sweep.dispersion_pass()
+    sweep.log()
     basis, coords, gamma, voltage, power = sweep.normalized(rules, arrows)
     reduced = sweep.reduced.v
     out = np.empty_like(order)
     out[order] = np.arange(len(order))
+
+    def derived(k: int) -> dict[str, np.ndarray]:
+        if k not in sweep.dispersive_modes:
+            return {}
+        rows = sweep.dispersion_rows(k)
+        return {name: rows[n, out] for n, name in enumerate(_DISPERSION_FIELDS)}
+
     return [
         PortModeSweep(
             space=space,
@@ -784,6 +856,7 @@ def port_mode_sweep(
             lam=sweep.lam[k, out],
             y=sweep.rows[k][out],
             v=reduced,
+            **derived(k),
         )
         for k in range(len(modes))
     ]
@@ -797,6 +870,7 @@ def swept_once(
     *,
     tolerance: float,
     ports: list[WavePort],
+    dispersive_modes: Sequence[int] = (),
     derived: Callable[[np.ndarray], dict[str, np.ndarray]] | None = None,
     pairs: bool = False,
 ) -> tuple[list[PortModeSweep], dict[str, np.ndarray]]:
@@ -812,6 +886,8 @@ def swept_once(
         modes: As `port_mode_sweep`.
         tolerance: As `port_mode_sweep`.
         ports: As `port_mode_sweep`.
+        dispersive_modes: As `port_mode_sweep`; a mode it leaves out has NaN rows in
+            the dispersion arrays whenever another mode carries them.
         derived: More arrays read off the sweep's basis, computed beside it and
             sent with it, since an assembled form may round differently per rank.
         pairs: Also send each mode's eigenvalue and pencil vector rows and the
@@ -823,13 +899,23 @@ def swept_once(
 
     def compute() -> dict[str, np.ndarray]:
         sweeps = port_mode_sweep(
-            space, frequency, modes, tolerance=tolerance, ports=ports
+            space,
+            frequency,
+            modes,
+            tolerance=tolerance,
+            ports=ports,
+            dispersive_modes=dispersive_modes,
         )
         first = sweeps[0]
         arrays: dict[str, np.ndarray] = {
             name: np.stack([getattr(sweep, name) for sweep in sweeps])
             for name in _PER_MODE
         }
+        if dispersive_modes:
+            missing = np.full(len(first.frequency), complex(math.nan, math.nan))
+            for name in _DISPERSION_FIELDS:
+                rows = [getattr(sweep, name) for sweep in sweeps]
+                arrays[name] = np.stack([missing if r is None else r for r in rows])
         arrays |= {"basis": first.basis, "solved": first.solved}
         if pairs:
             arrays |= {
@@ -875,6 +961,7 @@ def sweeps_on(
                 if "lam" in arrays
                 else {}
             ),
+            **{name: arrays[name][k] for name in _DISPERSION_FIELDS if name in arrays},
         )
         for k in range(len(arrays["gamma"]))
     ]
@@ -891,8 +978,9 @@ def rows_of(
     """
     rows = np.asarray(rows, int)
     out = dict(arrays)
-    for name in _PER_MODE:
-        out[name] = arrays[name][:, rows]
+    for name in _PER_MODE + _DISPERSION_FIELDS:
+        if name in arrays:
+            out[name] = arrays[name][:, rows]
     out["solved"] = arrays["solved"][rows]
     return out
 
@@ -906,6 +994,28 @@ class _Candidates:
     residual: np.ndarray
     #: Each candidate's layer energy share; ``None`` reads as zero (no layer).
     share: np.ndarray | None = None
+    #: The solve's shift-invert factor while a mode derivative may need it.
+    factor: ShiftInvert | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class _DerivativeRow:
+    r"""A reduced row's mode, mode derivative and the residuals that guard them.
+
+    Attributes:
+        derivative: The row's `ModeDerivative`, on the derivative basis'
+            coordinates.
+        eta: Residual of the mode at the sweep's eigenvalue, on the scale
+            of the sweep's own row (`_Reduced.derivative_row`).
+        eta1: Residual of the mode derivative equation, on the scale of the
+            sweep's own row's right-hand side (`_Reduced.derivative_row`).
+        y: The mode's coordinates on the derivative basis.
+    """
+
+    derivative: ModeDerivative
+    eta: float
+    eta1: float
+    y: np.ndarray
 
 
 class _Greedy:
@@ -920,6 +1030,12 @@ class _Greedy:
 
     Per mode ``k`` (row of ``lam``, ``residual``, ``floor``; entry of
     ``coords`` and of each ``pick``); ``solved`` is shared by the modes.
+
+    The modes ``k`` in ``dispersive_modes`` carry dispersion: each exact solve kept
+    for them gives their mode derivative (``derivatives[j][k]``, ``None`` for
+    the other modes) while its factor is alive. With ``dispersive_modes`` empty no
+    factor outlives its solve and nothing more is computed. After the sweep
+    `dispersion_pass` gives the reduced rows theirs.
     """
 
     def __init__(
@@ -929,12 +1045,20 @@ class _Greedy:
         modes: list[int],
         tolerance: float,
         ports: list[WavePort],
+        *,
+        dispersive_modes: Sequence[int] = (),
     ) -> None:
         self.space = space
         self.f = f
         self.modes = list(modes)
         self.ports = list(ports)
         self.tolerance = tolerance
+        self.dispersive_modes = tuple(dispersive_modes)
+        self.derivatives: dict[int, list[ModeDerivative | None]] = {}
+        # reduced rows' dispersion by mode, and the derivatives-only exact
+        # solves the guard asked for (their mode derivatives, by (k, row))
+        self._reduced_rows: dict[int, np.ndarray] = {}
+        self.fallbacks: dict[tuple[int, int], ModeDerivative] = {}
         n, n_modes = len(f), len(self.modes)
         self.k0 = np.empty(n)
         self.k_max = np.empty(n)
@@ -952,8 +1076,10 @@ class _Greedy:
         # exact solves: candidates and the positions (in shift-inverted order) kept
         self.candidates: dict[int, _Candidates] = {}
         self.pick: dict[int, list[int]] = {}
-        # the sweep's size, for its record
+        # the sweep's size, for its record: its samples' exact solves and the
+        # derivatives-only ones of `dispersion_pass`
         self.exact_solves = 0
+        self.fallback_solves = 0
         self.rounds = 0
 
     # --- driver ---------------------------------------------------------------
@@ -966,13 +1092,15 @@ class _Greedy:
 
     def _run(self, row: _progress.ProgressRow) -> None:
         n = len(self.f)
+        self.exact_solves += 1
         first = self._solve(0)
         if len(first.lam) < max(self.modes):
             raise self._cutoff_error(first)
         for k in range(len(self.modes)):
             self._check_degenerate(first, k)
-        self._keep(0, first, [mode - 1 for mode in self.modes])
         self._warn_clearance(first)
+        self._keep(0, first, [mode - 1 for mode in self.modes])
+        del first  # the kept copy dropped its factor; this one would hold it
         if n <= _EXACT_ONLY:
             for j in range(1, n):
                 self._exact(j, j - 1, certain=True)
@@ -987,12 +1115,6 @@ class _Greedy:
             if passed.all():
                 for k in range(len(self.modes)):
                     self._warn_crossing(k)
-                report.port_mode_sweep(
-                    ports=list(dict.fromkeys(p.name for p in self.ports)),
-                    frequencies=n,
-                    exact_solves=self.exact_solves,
-                    rounds=self.rounds,
-                )
                 return
             # the worst mode at each frequency decides where to enrich
             excess = (self.residual / self.floor).max(axis=0)
@@ -1004,6 +1126,19 @@ class _Greedy:
                 self._exact(j, int(good[np.argmin(np.abs(good - j))]), certain=False)
         raise self._unsettled_error()  # pragma: no cover - a safeguard
 
+    def log(self) -> None:
+        """Log the sweep's record (`gfem._linalg.report.port_mode_sweep`).
+
+        After `dispersion_pass`, so that it counts the fallback solves.
+        """
+        report.port_mode_sweep(
+            ports=list(dict.fromkeys(p.name for p in self.ports)),
+            frequencies=len(self.f),
+            exact_solves=self.exact_solves,
+            rounds=self.rounds,
+            fallback_solves=self.fallback_solves,
+        )
+
     # --- exact solves -----------------------------------------------------------
 
     def candidates_at(self, j: int) -> _Candidates:
@@ -1012,16 +1147,16 @@ class _Greedy:
 
     def _solve(self, j: int) -> _Candidates:
         space, mode = self.space, max(self.modes)
-        self.exact_solves += 1
         a, b = space.pencil.at(self.k0[j])
         n = a.shape[0]
+        factor = ShiftInvert.factor(a, b, self.shift[j])
         first = max(6, 2 * mode + 4)
         # PML modes crowd the shift: widen until enough candidates survive
         layered = space.section.layer is not None
         wants = itertools.count() if layered else range(2)
         for step in wants:
             want = first * (2**step if layered else 4**step)
-            lam, vecs = shift_invert_eigs(a, b, self.shift[j], min(want, n - 2))
+            lam, vecs = factor.eigs(min(want, n - 2))
             beta = np.sqrt(-lam + 0j)
             res = np.array(
                 [backward_error(a, b, lam[i], vecs[:, i]) for i in range(len(lam))]
@@ -1044,6 +1179,7 @@ class _Greedy:
             vecs=vecs[:, ranked],
             residual=res[ranked],
             share=share[ranked],
+            factor=factor if self.dispersive_modes else None,
         )
 
     def _warn_clearance(self, first: _Candidates) -> None:
@@ -1067,8 +1203,17 @@ class _Greedy:
             )
 
     def _keep(self, j: int, cand: _Candidates, picks: list[int]) -> None:
-        """Make candidate ``picks[k]`` of the exact solve at ``j`` mode ``k`` there."""
+        """Make candidate ``picks[k]`` of the exact solve at ``j`` mode ``k`` there.
+
+        The modes that carry dispersion get their mode derivative, on the
+        solve's factor or, for a sample re-picked after its factor was
+        dropped, on a new one; then the factor is dropped (one per sample
+        would hold hundreds of MiB each on a large section).
+        """
         new = j not in self.candidates
+        if self.dispersive_modes:
+            self._derive(j, cand, picks)
+            cand = dataclasses.replace(cand, factor=None)
         self.candidates[j] = cand
         self.pick[j] = list(picks)
         self.solved[j] = True
@@ -1076,6 +1221,159 @@ class _Greedy:
         self.residual[:, j] = cand.residual[picks]
         if new:
             self.reduced.add(cand.vecs[:, picks])
+
+    def _derive(self, j: int, cand: _Candidates, picks: list[int]) -> None:
+        """The mode derivatives at ``j`` of the modes that carry dispersion.
+
+        A mode whose pick is unchanged keeps its derivative.
+        """
+        new = self.derivatives.get(j, [None] * len(self.modes))
+        todo = [
+            k
+            for k in self.dispersive_modes
+            if new[k] is None or self.pick[j][k] != picks[k]
+        ]
+        if not todo:
+            return
+        factor = self._factor_of(j, cand)
+        new = list(new)
+        for k in todo:
+            new[k] = self._mode_derivative(j, cand, picks[k], factor)
+        self.derivatives[j] = new
+
+    def _factor_of(self, j: int, cand: _Candidates) -> ShiftInvert:
+        """The exact solve at ``j``'s shift-invert factor, refactored if dropped."""
+        if cand.factor is not None:
+            return cand.factor
+        a, b = self.space.pencil.at(self.k0[j])
+        return ShiftInvert.factor(a, b, self.shift[j])
+
+    def _mode_derivative(
+        self, j: int, cand: _Candidates, p: int, factor: ShiftInvert
+    ) -> ModeDerivative:
+        """The mode derivative of candidate ``p`` of the exact solve at ``j``."""
+        pencil = self.space.pencil
+        rtol = max(_DERIVATIVE_RTOL, float(cand.residual[p]))
+        return mode_derivative(
+            pencil.a,
+            pencil.b,
+            pencil.taylor(self.k0[j]),
+            complex(cand.lam[p]),
+            cand.vecs[:, p],
+            solve=gmres_on(factor, rtol),
+            k0=float(self.k0[j]),
+        )
+
+    def dispersion_rows(self, k: int) -> np.ndarray:
+        r"""Mode ``k``'s :math:`n_g`, :math:`\beta_2`, :math:`\beta_3` per row.
+
+        ``(3, n)``, SI (s²/m, s³/m). Each exact solve's mode derivative gives
+        its row; a reduced row is NaN until `dispersion_pass` fills it.
+        """
+        out = np.full(
+            (len(_DISPERSION_FIELDS), len(self.f)), complex(math.nan, math.nan)
+        )
+        reduced = self._reduced_rows.get(k)
+        if reduced is not None:
+            out[:] = reduced
+        scale = self.space.section.scale
+        for (mode, j), derivative in self.fallbacks.items():
+            if mode == k:
+                out[:, j] = derivative.dispersion(scale)
+        for j, derivatives in self.derivatives.items():
+            derivative = derivatives[k]
+            if derivative is not None:
+                out[:, j] = derivative.dispersion(scale)
+        return out
+
+    def dispersion_pass(self) -> None:
+        r"""Give every reduced row its dispersion, after `run`.
+
+        The derivative basis is the sweep's reduced basis, unchanged and
+        first, then the real and imaginary parts of every sample's mode
+        derivative. A reduced row's mode and its derivative are the vectors
+        of that basis that minimize their residuals at the sweep's eigenvalue,
+        the row keeping its mode across a fallback when that gives the smaller
+        derivative residual (`_Reduced.derivative_row`), so adding vectors
+        never raises them. A row passes when both are at
+        most its floor (`_guard_floor`) and its mode still overlaps the
+        sweep's own row; the worst failing row gets an exact solve for its
+        mode derivative alone, whose mode and derivative join the basis (the
+        row's :math:`\gamma`, field and ``solved`` stay the sweep's). Never
+        touches the sweep's own basis, eigenvalues or fields.
+        """
+        rows = np.flatnonzero(~self.solved)
+        self._reduced_rows = {
+            k: np.full(
+                (len(_DISPERSION_FIELDS), len(self.f)), complex(math.nan, math.nan)
+            )
+            for k in self.dispersive_modes
+        }
+        if not self.dispersive_modes or not len(rows):
+            return
+        floor = self._guard_floor()
+        scale = self.space.section.scale
+        taylor = {int(i): self.space.pencil.taylor(self.k0[i]) for i in rows}
+        extra: list[np.ndarray] = []
+        modes: dict[tuple[int, int], np.ndarray] = {}
+        while True:
+            basis = self._derivative_basis(extra)
+            ratio: dict[tuple[int, int], float] = {}
+            for k in self.dispersive_modes:
+                for i in map(int, rows):
+                    if (k, i) in self.fallbacks:
+                        continue
+                    ref = self.coords_at(i, k)
+                    row = basis.derivative_row(
+                        taylor[i],
+                        self.lam[k, i],
+                        self.k0[i],
+                        ref,
+                        prior=modes.get((k, i)),
+                    )
+                    modes[k, i] = row.y
+                    self._reduced_rows[k][:, i] = row.derivative.dispersion(scale)
+                    ratio[k, i] = _excess(row, basis.overlap(ref, row.y), floor[k, i])
+            if not ratio:
+                return
+            (k, i), worst = max(ratio.items(), key=lambda item: item[1])
+            if worst <= 1:
+                return
+            derivative = self._fallback(i, k)
+            self.fallbacks[k, i] = derivative
+            extra += [derivative.x, derivative.x1]
+
+    def _guard_floor(self) -> np.ndarray:
+        """The residual each mode's reduced derivative at each row must reach.
+
+        ``(n_modes, n)``: the row's own floor from the sweep.
+        """
+        return self.floor
+
+    def _derivative_basis(self, extra: Sequence[np.ndarray]) -> _Reduced:
+        """The sweep's basis then the samples' mode derivatives and ``extra``."""
+        basis = _Reduced.on(self.space, self.reduced.v.copy())
+        vectors = [
+            d.x1
+            for j in sorted(self.derivatives)
+            for d in self.derivatives[j]
+            if d is not None
+        ]
+        if vectors or extra:
+            basis.add(np.column_stack([*vectors, *extra]))
+        return basis
+
+    def _fallback(self, i: int, k: int) -> ModeDerivative:
+        """Mode ``k``'s mode derivative at row ``i`` from an exact solve.
+
+        The solve is not a sweep sample: it is counted apart from the exact
+        solves, and its eigenvalue and field are discarded.
+        """
+        self.fallback_solves += 1
+        cand = self._solve(i)
+        x_ref = self.reduced.lift(self.coords_at(i, k))
+        p = int(np.argmax(_overlaps(self.space.mass, x_ref, cand.vecs)))
+        return self._mode_derivative(i, cand, p, self._factor_of(i, cand))
 
     def _exact(self, j: int, ref: int, *, certain: bool) -> None:
         """Exact solve at ``j``, keeping the candidates closest to the modes at ``ref``.
@@ -1086,6 +1384,7 @@ class _Greedy:
             certain: The reference is accurate modes at the grid neighbour,
                 so an ambiguous choice is an error.
         """
+        self.exact_solves += 1
         cand = self._solve(j)
         if len(cand.lam) < len(self.modes):
             # too few candidates for distinct modes
@@ -1504,6 +1803,121 @@ class _Reduced:
     def project(self, x: np.ndarray) -> np.ndarray:
         return self.v.T @ x
 
+    def overlap(self, ref: np.ndarray, y: np.ndarray) -> float:
+        """``|<ref, y>| / (|ref| |y|)`` in the mass inner product.
+
+        ``ref`` holds the coordinates on a prefix of this basis.
+        """
+        ref = np.concatenate([ref, np.zeros(self.size - len(ref))])
+        num = abs(ref.conj() @ self._mass @ y)
+        den = np.sqrt(
+            (ref.conj() @ self._mass @ ref).real * (y.conj() @ self._mass @ y).real
+        )
+        return float(num / den)
+
+    def derivative_row(
+        self,
+        coefficients: np.ndarray,
+        lam: complex,
+        k0: float,
+        ref: np.ndarray,
+        *,
+        prior: np.ndarray | None = None,
+    ) -> _DerivativeRow:
+        r"""The mode and mode derivative of the pencil at the pieces' ``coefficients``.
+
+        Both are taken at the sweep's ``lam``, written :math:`\lambda_s`, and
+        :math:`G = A_0 - \lambda_sB_0`. The mode :math:`y` is the right
+        singular vector of the smallest singular value of :math:`G` on the
+        basis (a refined Ritz vector, through the QR factor of the pieces'
+        products). Its eigenvalue :math:`\lambda` is its Rayleigh quotient and
+        :math:`\lambda'` follows from Hellmann-Feynman (`slope`). Then
+        :math:`y'`, with :math:`y^TB_0y' = 0`, minimizes :math:`|Gy' - r|`,
+        where :math:`r = -(A_1 - \lambda'B_0 - \lambda_sB_1)y`
+        (`right_hand_side`).
+
+        The two residuals the guard reads are those minima over fixed scales,
+        both from the sweep's own row :math:`x_s` (``ref``):
+        :math:`\eta = |Gy| / s` with :math:`|y| = 1` and
+        :math:`s = (|A_0x_s| + |\lambda_s||B_0x_s|)/|x_s|`, and
+        :math:`\eta' = |Gy' - r| / s'` with :math:`s'` the uncancelled size of
+        :math:`x_s`'s own right-hand side per unit :math:`|x_s|`
+        (`gfem._engine.mode_derivative.residual`). Not :math:`|r|`: where the
+        mode does not change with :math:`k_0` (a homogeneous fill,
+        :math:`y' = 0`), :math:`r` is rounding of its terms, and a residual
+        relative to it would fail every row. Over the sweep's basis alone
+        :math:`\eta` is at most the sweep's own backward error of the row,
+        and on a larger basis it can only fall. So can :math:`\eta'` for the
+        same :math:`y`, but a sharper :math:`y` moves :math:`r`: given the
+        mode ``prior`` of a basis this one extends, the row keeps that mode,
+        with :math:`y'` minimized anew, whenever the refined vector's
+        :math:`\eta'` would be the larger. Neither residual then rises as the
+        basis grows.
+
+        Args:
+            coefficients: :math:`c_{jn}` of the pieces, shape (J, 4)
+                (`gfem._engine.port_mode.Pencil.taylor`).
+            lam: The sweep's eigenvalue of the row.
+            k0: The wavenumber of the row, per local unit.
+            ref: The sweep's coordinates of the row, on a prefix of this
+                basis.
+            prior: The row's mode on a prefix of this basis, if any.
+        """
+        m = self.size
+        pieces = self._pieces
+
+        def orders(blocks: Sequence[np.ndarray], is_b: bool) -> list[np.ndarray]:
+            chosen = [p for p, (b, _, _) in enumerate(pieces) if b == is_b]
+            rows = coefficients[[pieces[p][1] for p in chosen]]
+            return piece_series([blocks[p] for p in chosen], rows)
+
+        # on the QR factor for norms of full-space products, projected for
+        # bilinear forms
+        rs = [self._r[:, p * m : (p + 1) * m] for p in range(len(pieces))]
+        ra, rb = orders(rs, False), orders(rs, True)
+        ar, br = orders(self._red, False), orders(self._red, True)
+
+        norm = np.linalg.norm
+        g = ra[0] - lam * rb[0]
+        ref = np.concatenate([ref, np.zeros(m - len(ref))])
+        scale = (norm(ra[0] @ ref) + abs(lam) * norm(rb[0] @ ref)) / norm(ref)
+        ref1 = slope(ref, ar[1] @ ref, br[0] @ ref, br[1] @ ref, lam)
+        _, size = right_hand_side(ra[1] @ ref, rb[0] @ ref, rb[1] @ ref, lam, ref1)
+        size /= norm(ref)
+
+        def row(y: np.ndarray) -> _DerivativeRow:
+            lam_y = complex((y @ ar[0] @ y) / (y @ br[0] @ y))
+            lam1 = slope(y, ar[1] @ y, br[0] @ y, br[1] @ y, lam_y)
+            rhs, _ = right_hand_side(ra[1] @ y, rb[0] @ y, rb[1] @ y, lam, lam1)
+            # y' orthogonal to B_0 y in the bilinear form: a basis of its
+            # complement
+            q, _ = np.linalg.qr(
+                np.column_stack([(br[0] @ y).conj(), np.eye(m)[:, : m - 1]])
+            )
+            free = q[:, 1:]
+            z, *_ = np.linalg.lstsq(g @ free, rhs, rcond=None)
+            y1 = free @ z
+            eta1 = float(norm(g @ y1 - rhs) / size)
+            series = rayleigh_series(ar, br, y, y1)
+            derivative = ModeDerivative(
+                k0=k0,
+                lam=lam_y,
+                x=y,
+                x1=y1,
+                coefficients=coefficients,
+                lam_taylor=np.array([lam_y, lam1, series[2], series[3]], complex),
+                residual=eta1,
+            )
+            return _DerivativeRow(derivative, norm(g @ y) / scale, eta1, y)
+
+        _, _, vh = np.linalg.svd(g, full_matrices=False)
+        out = row(vh[-1].conj())
+        if prior is not None:
+            kept = row(np.concatenate([prior, np.zeros(m - len(prior))]))
+            if kept.eta1 < out.eta1:
+                return kept
+        return out
+
     def lift(self, y: np.ndarray) -> np.ndarray:
         return self.v @ y
 
@@ -1577,6 +1991,18 @@ class _Reduced:
                 ax += block
         den = np.linalg.norm(ax) + abs(lam) * np.linalg.norm(bx)
         return float(np.linalg.norm(ax - lam * bx) / den) if den > 0 else math.inf
+
+
+def _excess(row: _DerivativeRow, overlap: float, floor: float) -> float:
+    """How far a reduced derivative row is past its guard (above 1 fails).
+
+    The larger residual over ``floor``, infinite when the row's mode no longer
+    overlaps the sweep's.
+    """
+    if overlap < 1 - _AMBIGUOUS:
+        return math.inf
+    error = max(row.eta, row.eta1)
+    return error / floor if floor > 0 else math.inf
 
 
 def propagating_modes(space: ModeSpace, frequency: float, mode: int) -> int:

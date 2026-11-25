@@ -130,11 +130,20 @@ EXPECTED |= {
 EM_PROPERTIES = ("eps_r", "mu_r", "tan_delta", "conductivity")
 # The port mode problem: gamma, Z_PV (with a voltage path) and the field
 # differentiate with respect to the material, law, fill and Impedance inputs
-# its section reads, a diagnostic (residual) raises, constants (frequency,
-# solved) and the thermal properties get exact zeros. The node coordinates
-# of the face move the mode like any other input. These cases
-# run in `test_port_face_raise_table`, one item per case.
-PORT_MODE_OUTPUTS = ("frequency", "gamma", "Z_PV", "residual", "solved")
+# its section reads, a diagnostic (residual) and the frequency derivatives of
+# gamma (n_g, beta_2, beta_3) raise, constants (frequency, solved) and the
+# thermal properties get exact zeros. The node coordinates of the face move
+# the mode like any other input. These cases run in
+# `test_port_face_raise_table`, one item per case.
+PORT_MODE_DISPERSION = ("n_g", "beta_2", "beta_3")
+PORT_MODE_OUTPUTS = (
+    "frequency",
+    "gamma",
+    "Z_PV",
+    "residual",
+    "solved",
+    *PORT_MODE_DISPERSION,
+)
 PORT_FACE_CASES = (
     "driven_wave_face",
     "driven_wave_shared_face",
@@ -159,7 +168,7 @@ def _port_mode_outcome(out, kind, *, path, zero=()):
     """
     if kind[0] == "material" and kind[2] not in EM_PROPERTIES:
         return ZERO
-    if out == "residual":
+    if out == "residual" or out in PORT_MODE_DISPERSION:
         return RAISES
     if out in ("frequency", "solved") or kind in zero:
         return ZERO
@@ -2909,6 +2918,15 @@ def _out_port_mode_residual(_request):
     jax.make_jaxpr(jax.grad(residual))(4.0)
 
 
+def _out_port_mode_dispersion(_request):
+    # the group index and dispersion have no backward pass, beside gamma's
+    def group_index(eps):
+        mode, _ = _plate_mode(eps)
+        return jnp.real(mode.n_g[0])
+
+    jax.make_jaxpr(jax.grad(group_index))(4.0)
+
+
 def _out_port_mode_field_at_nodes(_request):
     # `PortModeField.at` reads fixed points: traced nodes are not available
     _, model = _plate_mode(4.0)
@@ -4759,6 +4777,12 @@ OUT_OF_SCOPE = [
         _out_port_mode_residual,
         gfem.NonDifferentiableError,
         r"'residual'.*diagnostic.*stop_gradient",
+    ),
+    (
+        "port mode group index and dispersion",
+        _out_port_mode_dispersion,
+        gfem.NonDifferentiableError,
+        r"'n_g'.*group index and dispersion.*stop_gradient",
     ),
     (
         "port mode field at points x node coordinates",

@@ -1,0 +1,767 @@
+r"""The mode derivative of an exact port mode solve: group index and dispersion.
+
+On a homogeneously filled PEC guide the discrete modes obey
+:math:`\beta_h^2 = \varepsilon k_0^2 - k_{c,h}^2` with a cutoff
+:math:`k_{c,h}` fixed by the mesh, so the computed :math:`\gamma` gives
+:math:`k_{c,h}` and the closed form isolates the method error from the mesh
+error. There the mode's shape does not change with :math:`k_0`
+(:math:`x' = 0`), so the slab-loaded guide carries the cases with a mode
+derivative to solve for.
+"""
+
+import dataclasses
+import logging
+import math
+from pathlib import Path
+from types import SimpleNamespace
+
+import jax.numpy as jnp
+import numpy as np
+import pml_cases
+import pytest
+import scipy.constants
+import scipy.sparse.linalg as spla
+
+import gfem
+from gfem._engine.mode_derivative import ModeDerivative, gmres_on, mode_derivative
+from gfem._engine.port_mode import PortModeSpace
+from gfem._engine.taylor import Taylor
+from gfem._linalg.superlu import ShiftInvert
+from gfem._port_section import port_section
+from gfem._sweep import port_mode as sweep
+from gfem._sweep.port_mode import _Greedy, _wavenumbers
+
+DATA = Path(__file__).parent / "data"
+LINE_MESH = Path(__file__).parents[2] / "docs" / "tutorials" / "data" / "line2d.msh"
+C0 = 299792458.0
+EPS0 = scipy.constants.epsilon_0
+F = 15e9
+
+# A strongly dispersive Lorentz law, resonance above the X band
+LORENTZ = gfem.PermittivityLaw(
+    eps_inf=2.0,
+    terms=[gfem.Lorentz(delta_eps=2.0, resonance_frequency=40e9, damping=2e9)],
+)
+
+
+def _space(mesh, region, fill, *others):
+    materials = {region: gfem.Material(eps_r=fill)}
+    materials.update({name: gfem.Material() for name in others})
+    model = gfem.Model(
+        mesh,
+        materials=materials,
+        boundaries=[gfem.PEC("walls")],
+        ports=[gfem.WavePort("p1", "port1")],
+    )
+    return PortModeSpace(port_section(model, model.ports[0]), 2)
+
+
+def _fundamental(space, frequency):
+    """``k0``, the factor, and the fundamental mode's eigenvalue and vector."""
+    k0, _, shift = _wavenumbers(space.section, frequency)
+    a, b = space.pencil.at(k0)
+    factor = ShiftInvert.factor(a, b, shift)
+    lam, vecs = factor.eigs(6)
+    q = int(np.argmax(np.sqrt(-lam + 0j).real))
+    return k0, factor, complex(lam[q]), vecs[:, q]
+
+
+def _derive(space, k0, lam, x, solve):
+    pencil = space.pencil
+    return mode_derivative(
+        pencil.a, pencil.b, pencil.taylor(k0), lam, x, solve=solve, k0=k0
+    )
+
+
+def _relative(a, b):
+    return abs(a - b) / abs(b)
+
+
+def _eps_series(fill, k0, scale):
+    r""":math:`\varepsilon` along real :math:`k_0`, written out from the law."""
+    if not isinstance(fill, gfem.PermittivityLaw):
+        return Taylor.constant(fill)
+    f = Taylor.variable(k0) * (C0 / (2 * math.pi * scale))
+    eps = Taylor.constant(fill.eps_inf)
+    for t in fill.terms:
+        f0, g = t.resonance_frequency, t.damping
+        eps = eps + t.delta_eps * f0**2 / (f0**2 - f * f + 1j * g * f)
+    return eps
+
+
+@pytest.fixture(scope="module")
+def guide_mesh():
+    return gfem.Mesh.from_gmsh(DATA / "waveguide.msh", length_unit="mm")
+
+
+@pytest.fixture(scope="module")
+def slab_mesh():
+    return gfem.Mesh.from_gmsh(DATA / "slab_waveguide.msh", length_unit="mm")
+
+
+@pytest.mark.parametrize("fill", [1.0, 4.0, LORENTZ], ids=["air", "eps4", "lorentz"])
+def test_a_filled_guide_s_dispersion_is_its_closed_form(guide_mesh, fill):
+    space = _space(guide_mesh, "air", fill)
+    scale = space.section.scale
+    k0, factor, lam, x = _fundamental(space, F)
+    derivative = _derive(space, k0, lam, x, gmres_on(factor, 1e-10))
+    assert isinstance(derivative, ModeDerivative)
+    n_g, beta_2, beta_3 = derivative.dispersion(scale)
+    # the discrete cutoff from the computed gamma, then beta_h along k0
+    eps = _eps_series(fill, k0, scale)
+    k = Taylor.variable(k0)
+    cutoff = eps.c[0] * k0**2 + lam
+    beta = (eps * k * k - cutoff).sqrt()
+    assert _relative(n_g, beta.c[1]) <= 1e-12
+    assert _relative(beta_2, 2 * beta.c[2] * scale / C0**2) <= 1e-10
+    assert _relative(beta_3, 6 * beta.c[3] * scale**2 / C0**3) <= 1e-9
+
+
+def test_a_filled_guide_s_mode_derivative_needs_no_direct_solve(
+    guide_mesh, monkeypatch
+):
+    # x' = 0 exactly: the right-hand side is rounding of its uncancelled terms
+    space = _space(guide_mesh, "air", 1.0)
+    k0, factor, lam, x = _fundamental(space, F)
+    direct = []
+    monkeypatch.setattr(spla, "splu", lambda *args: direct.append(args))
+    derivative = _derive(space, k0, lam, x, gmres_on(factor, 1e-10))
+    assert derivative.residual <= 1e-12
+    assert direct == []
+
+
+def test_gmres_that_does_not_converge_falls_back_to_a_direct_solve(slab_mesh):
+    space = _space(slab_mesh, "slab", 4.0, "air")
+    k0, factor, lam, x = _fundamental(space, F)
+    preconditioned = _derive(space, k0, lam, x, gmres_on(factor, 1e-10))
+    # no preconditioner: 4 restarts of 50 iterations cannot reach 1e-10
+    identity = SimpleNamespace(solve=lambda r: r)
+    fallen_back = _derive(space, k0, lam, x, gmres_on(identity, 1e-10))
+    assert fallen_back.residual <= 1e-12
+    scale = space.section.scale
+    got = fallen_back.dispersion(scale)
+    ref = preconditioned.dispersion(scale)
+    for value, gate, want in zip(got, (1e-12, 1e-10, 1e-9), ref, strict=True):
+        assert _relative(value, want) <= gate
+
+
+# --- the sweep's exact solves ----------------------------------------------------
+
+
+def _greedy(slab_mesh, dispersive_modes=(), tolerance=1e-6):
+    space = _space(slab_mesh, "slab", 4.0, "air")
+    grid = np.linspace(10e9, 20e9, 20)
+    return _Greedy(
+        space,
+        grid,
+        [1],
+        tolerance,
+        [gfem.WavePort("p1", "port1")],
+        dispersive_modes=dispersive_modes,
+    )
+
+
+def _spy_rtol(monkeypatch):
+    seen = []
+
+    def spy(factor, rtol):
+        seen.append(rtol)
+        return gmres_on(factor, rtol)
+
+    monkeypatch.setattr(sweep, "gmres_on", spy)
+    return seen
+
+
+def test_a_sample_s_mode_derivative_solves_to_its_own_backward_error(
+    slab_mesh, monkeypatch
+):
+    seen = _spy_rtol(monkeypatch)
+    greedy = _greedy(slab_mesh, dispersive_modes=(0,))
+    first = greedy._solve(0)
+    assert first.residual[0] < 1e-10
+    greedy._keep(0, first, [0])
+    # a sample at the low-frequency floor solves no tighter than its mode
+    greedy._keep(1, dataclasses.replace(first, residual=np.full(1, 1e-6)), [0])
+    assert seen == [1e-10, 1e-6]
+
+
+def test_a_kept_sample_holds_its_derivative_and_drops_its_factor(slab_mesh):
+    greedy = _greedy(slab_mesh, dispersive_modes=(0,))
+    first = greedy._solve(0)
+    assert first.factor is not None
+    greedy._keep(0, first, [0])
+    assert greedy.candidates[0].factor is None
+    (derivative,) = greedy.derivatives[0]
+    assert derivative.lam == first.lam[0]
+    assert derivative.k0 == greedy.k0[0]
+
+
+def test_a_re_picked_sample_refactors_for_its_new_mode(slab_mesh, monkeypatch):
+    greedy = _greedy(slab_mesh, dispersive_modes=(0,))
+    greedy._keep(0, greedy._solve(0), [0])
+    factors = []
+    real = ShiftInvert.factor
+
+    def counted(*args):
+        factors.append(args)
+        return real(*args)
+
+    monkeypatch.setattr(ShiftInvert, "factor", counted)
+    greedy._keep(0, greedy.candidates[0], [1])
+    assert len(factors) == 1
+    assert greedy.derivatives[0][0].lam == greedy.candidates[0].lam[1]
+
+
+def test_without_dispersion_a_sweep_keeps_no_factor_and_derives_nothing(
+    slab_mesh, monkeypatch
+):
+    seen = _spy_rtol(monkeypatch)
+    greedy = _greedy(slab_mesh)
+    first = greedy._solve(0)
+    assert first.factor is None
+    greedy._keep(0, first, [0])
+    assert greedy.derivatives == {}
+    assert seen == []
+
+
+def test_derivatives_leave_the_sweep_bit_identical(slab_mesh):
+    plain, derived = _greedy(slab_mesh), _greedy(slab_mesh, dispersive_modes=(0,))
+    plain.run()
+    derived.run()
+    np.testing.assert_array_equal(derived.lam, plain.lam)
+    np.testing.assert_array_equal(derived.residual, plain.residual)
+    np.testing.assert_array_equal(derived.solved, plain.solved)
+    assert sorted(derived.derivatives) == np.flatnonzero(derived.solved).tolist()
+
+
+# --- the public result: homogeneous fills -----------------------------------------
+#
+# A homogeneous fill's discrete mode obeys beta^2 = eps(omega) k0^2 - k_c^2 with
+# k_c fixed by the mesh and read from the reported gamma. The permittivity's
+# omega derivatives are written out here, apart from the laws' own code.
+
+
+def _law_eps(eps_inf, term):
+    r""":math:`\varepsilon` and its first three :math:`\omega` derivatives."""
+
+    def eps(w):
+        g = 2 * math.pi * term.damping
+        if isinstance(term, gfem.Lorentz):
+            w0 = 2 * math.pi * term.resonance_frequency
+            d, d1, d2 = w0**2 - w * w + 1j * g * w, -2 * w + 1j * g, -2.0
+            k = term.delta_eps * w0**2
+        else:  # Drude
+            d, d1, d2 = w * w - 1j * g * w, 2 * w - 1j * g, 2.0
+            k = -((2 * math.pi * term.plasma_frequency) ** 2)
+        return np.array(
+            [
+                eps_inf + k / d,
+                -k * d1 / d**2,
+                k * (2 * d1**2 / d**3 - d2 / d**2),
+                k * (-6 * d1**3 / d**4 + 6 * d1 * d2 / d**3),
+            ]
+        )
+
+    return eps
+
+
+def _constant(eps):
+    return lambda _w: np.array([eps, 0, 0, 0], complex)
+
+
+def _conductive(eps, sigma):
+    s = sigma / EPS0
+    return lambda w: np.array(
+        [
+            eps - 1j * s / w,
+            1j * s / w**2,
+            -2j * s / w**3,
+            6j * s / w**4,
+        ]
+    )
+
+
+def _closed_form(gamma, f, eps):
+    r""":math:`n_g`, :math:`\beta_2`, :math:`\beta_3` of
+    :math:`\beta^2 = \varepsilon(\omega)k_0^2 - k_c^2`, :math:`k_c` from ``gamma``.
+    """
+    beta = gamma / 1j
+    w = 2 * math.pi * f
+    k0 = w / C0
+    e0, e1, e2, e3 = eps(w) * C0 ** np.arange(4)  # derivatives in k0
+    q1 = 2 * k0 * e0 + k0**2 * e1
+    q2 = 2 * e0 + 4 * k0 * e1 + k0**2 * e2
+    q3 = 6 * e1 + 6 * k0 * e2 + k0**2 * e3
+    b1 = q1 / (2 * beta)
+    b2 = (q2 / 2 - b1**2) / beta
+    b3 = (q3 / 2 - 3 * b1 * b2) / beta
+    return b1, b2 / C0**2, b3 / C0**3
+
+
+def _assert_closed_form(result, eps):
+    want = _closed_form(complex(result.gamma[0]), float(result.frequency[0]), eps)
+    got = (result.n_g[0], result.beta_2[0], result.beta_3[0])
+    for value, gate, ref in zip(got, (1e-12, 1e-10, 1e-9), want, strict=True):
+        assert _relative(complex(value), ref) <= gate
+
+
+def _law(eps_inf, term):
+    """A material of one law term, and its permittivity series (`_law_eps`)."""
+    law = gfem.PermittivityLaw(eps_inf=eps_inf, terms=[term])
+    return gfem.Material(eps_r=law), _law_eps(eps_inf, term)
+
+
+GUIDE_FILLS = {
+    "air": (gfem.Material(), _constant(1.0)),
+    "eps4": (gfem.Material(eps_r=4.0), _constant(4.0)),
+    "lorentz": _law(
+        2.0, gfem.Lorentz(delta_eps=1.5, resonance_frequency=30e9, damping=0.0)
+    ),
+    "lossy-lorentz": _law(
+        2.0, gfem.Lorentz(delta_eps=1.5, resonance_frequency=30e9, damping=3e9)
+    ),
+    "drude": _law(1.0, gfem.Drude(plasma_frequency=5e9, damping=0.0)),
+    "lossy-drude": _law(1.0, gfem.Drude(plasma_frequency=5e9, damping=1e9)),
+}
+
+
+@pytest.mark.parametrize("fill", GUIDE_FILLS)
+def test_a_filled_guide_s_reported_dispersion_is_its_closed_form(guide_mesh, fill):
+    material, eps = GUIDE_FILLS[fill]
+    model = gfem.Model(
+        guide_mesh,
+        materials={"air": material},
+        boundaries=[gfem.PEC("walls")],
+        ports=[gfem.WavePort("p1", "port1")],
+    )
+    _assert_closed_form(gfem.solve(model, gfem.PortMode("p1", 10e9)), eps)
+
+
+LINE_LAW = (
+    2.0,
+    gfem.Lorentz(delta_eps=2.0, resonance_frequency=200e9, damping=5e9),
+)
+# a loss tangent of 0.4 at the line cases' frequency
+LINE_SIGMA = 0.4 * 2 * math.pi * 50e9 * EPS0
+LINE_CASES = {
+    "Ez-law": ("Ez", _law(*LINE_LAW), {}),
+    "Hz-law": ("Hz", _law(*LINE_LAW), {}),
+    "Hz-law-pec-ends": ("Hz", _law(*LINE_LAW), {"pec_edges": ("side",)}),
+    "Hz-conductive-pec-ends": (
+        "Hz",
+        (
+            gfem.Material(eps_r=4.0, conductivity=LINE_SIGMA),
+            _conductive(4.0, LINE_SIGMA),
+        ),
+        {"pec_edges": ("side",)},
+    ),
+    "Ez-conductive-pec-ends": (
+        "Ez",
+        (
+            gfem.Material(eps_r=4.0, conductivity=LINE_SIGMA),
+            _conductive(4.0, LINE_SIGMA),
+        ),
+        {"pec_edges": ("side",)},
+    ),
+}
+
+
+@pytest.mark.parametrize("case", LINE_CASES)
+def test_a_filled_line_port_s_dispersion_is_its_closed_form(case):
+    polarization, (material, eps), port = LINE_CASES[case]
+    mesh = gfem.Mesh.from_gmsh(LINE_MESH, length_unit="mm")
+    model = gfem.Model(
+        mesh,
+        materials={"feed": material, "design": material},
+        ports=[gfem.WavePort("p1", "port1", **port), gfem.WavePort("p2", "port2")],
+    )
+    problem = gfem.PortMode("p1", 50e9, polarization=polarization)
+    result = gfem.solve(model, problem, options=gfem.SolverOptions(order=3))
+    _assert_closed_form(result, eps)
+
+
+# --- the public result: finite differences of exact solves -------------------------
+#
+# Up to three frequencies are all exact solves, and a perfectly matched layer
+# keeps the lowest one's stretch, so the outer rows of one three-row PortMode
+# difference the middle row's derivatives. Each order is checked against the
+# difference of the order below it (n_g of beta, beta_2 of n_g, beta_3 of
+# beta_2), never a second difference of beta, which rounding swamps.
+
+DELTA = 1e-4
+
+
+def _guide_walls(walls):
+    mesh = gfem.Mesh.from_gmsh(DATA / "waveguide.msh", length_unit="mm")
+    model = gfem.Model(
+        mesh,
+        materials={"air": gfem.Material()},
+        boundaries=[walls],
+        ports=[gfem.WavePort("p1", "port1")],
+    )
+    return model, 10e9, {}
+
+
+def _lossy_plates():
+    mesh = gfem.Mesh.from_gmsh(DATA / "parallel_plate.msh", length_unit="um")
+    model = gfem.Model(
+        mesh,
+        materials={"fill": gfem.Material(eps_r=4.0)},
+        boundaries=[gfem.Conductor("plates", conductivity=1e6)],
+        ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")],
+    )
+    return model, 50e9, {}
+
+
+def _absorbing_end_beside_a_law(polarization, damping):
+    law = gfem.PermittivityLaw(
+        eps_inf=2.0,
+        terms=[gfem.Lorentz(delta_eps=2.0, resonance_frequency=200e9, damping=damping)],
+    )
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh(LINE_MESH, length_unit="mm"),
+        materials={
+            "feed": gfem.Material(eps_r=law),
+            "design": gfem.Material(eps_r=4.0),
+        },
+        boundaries=[gfem.Absorbing("side", order=2)],
+        ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")],
+    )
+    return model, 50e9, {"polarization": polarization, "order": 3}
+
+
+def _pml_strip(tmp_path):
+    path = pml_cases.strip_guide(
+        tmp_path / "strip.msh", 0.6, length=0.15, clad_h=0.2, core_h=0.1
+    )
+    return pml_cases.strip_model(path), pml_cases.STRIP_F, {}
+
+
+FD_CASES = {
+    "thick-conductor": lambda _: _guide_walls(
+        gfem.Conductor("walls", conductivity=5.8e7)
+    ),
+    "film-conductor": lambda _: _guide_walls(
+        gfem.Conductor("walls", conductivity=5.8e7, thickness=1e-7)
+    ),
+    "lossy-plates": lambda _: _lossy_plates(),
+    "absorbing-end-Ez": lambda _: _absorbing_end_beside_a_law("Ez", 0.0),
+    "absorbing-end-Hz-lossy": lambda _: _absorbing_end_beside_a_law("Hz", 5e9),
+    "pml-strip": _pml_strip,
+}
+
+
+@pytest.mark.parametrize("case", FD_CASES)
+def test_dispersion_is_the_difference_of_the_order_below(case, tmp_path):
+    model, f, options = FD_CASES[case](tmp_path)
+    polarization = options.pop("polarization", None)
+    grid = [f * (1 - DELTA), f, f * (1 + DELTA)]
+    result = gfem.solve(
+        model,
+        gfem.PortMode("p1", grid, polarization=polarization),
+        options=gfem.SolverOptions(**options),
+    )
+    assert np.asarray(result.solved).all()
+    step = 2 * (2 * math.pi * f * DELTA)
+    beta = np.asarray(result.gamma) / 1j
+    n_g, beta_2, beta_3 = (
+        np.asarray(v) for v in (result.n_g, result.beta_2, result.beta_3)
+    )
+    assert _relative(n_g[1], C0 * (beta[2] - beta[0]) / step) <= 1e-7
+    assert _relative(beta_2[1], (n_g[2] - n_g[0]) / (C0 * step)) <= 1e-6
+    assert _relative(beta_3[1], (beta_2[2] - beta_2[0]) / step) <= 2e-6
+
+
+# --- the dispersion parameter -------------------------------------------------------
+
+
+def _result(beta_2):
+    f = jnp.array([C0 / 1.55e-6])
+    return gfem.PortModeResult(
+        port="p1",
+        mode=1,
+        frequency=f,
+        gamma=jnp.array([1e6j]),
+        Z_PV=jnp.array([math.nan + 0j]),
+        residual=jnp.array([1e-14]),
+        solved=jnp.array([True]),
+        beta_2=beta_2,
+    )
+
+
+def test_the_dispersion_parameter_of_a_known_beta_2():
+    # the pair of the silicon slab reference at 1.55 um
+    result = _result(jnp.array([1874.25555506947e-27 + 0j]))
+    np.testing.assert_allclose(result.D, [-1469.48778932109e-6], rtol=1e-13)
+
+
+def test_there_is_no_dispersion_parameter_without_beta_2():
+    assert _result(None).D is None
+
+
+# --- the public result: reduced rows ------------------------------------------------
+#
+# A reduced row's dispersion comes from the derivative basis: the sweep's own
+# basis then the samples' mode derivatives. Against an exact solve at the same
+# frequency it agrees to the gates of exact solves against each other.
+
+SWEEP_GRID = np.linspace(10e9, 20e9, 50)
+
+
+@pytest.fixture(scope="module")
+def swept(slab_mesh):
+    model = gfem.Model(
+        slab_mesh,
+        materials={"slab": gfem.Material(eps_r=4.0), "air": gfem.Material()},
+        boundaries=[gfem.PEC("walls")],
+        ports=[gfem.WavePort("p1", "port1")],
+    )
+    return model, gfem.solve(model, gfem.PortMode("p1", SWEEP_GRID))
+
+
+def test_every_row_of_a_sweep_carries_its_dispersion(swept):
+    _, result = swept
+    solved = np.asarray(result.solved)
+    assert 2 < solved.sum() < len(SWEEP_GRID)
+    for rows in (result.n_g, result.beta_2, result.beta_3):
+        assert np.isfinite(np.asarray(rows)).all()
+
+
+def test_a_reduced_row_s_dispersion_matches_an_exact_solve(swept):
+    model, result = swept
+    solved = np.asarray(result.solved)
+    for i in np.flatnonzero(~solved)[::4]:
+        ref = gfem.solve(model, gfem.PortMode("p1", SWEEP_GRID[i]))
+        assert bool(np.asarray(ref.solved)[0])
+        got = (result.n_g[i], result.beta_2[i], result.beta_3[i])
+        want = (ref.n_g[0], ref.beta_2[0], ref.beta_3[0])
+        for value, gate, expected in zip(got, (1e-12, 1e-10, 1e-8), want, strict=True):
+            assert _relative(complex(value), complex(expected)) <= gate, SWEEP_GRID[i]
+
+
+HOMOGENEOUS_GRID = np.linspace(10e9, 15e9, 41)
+
+
+def _sweep_record(caplog):
+    (record,) = [
+        r for r in caplog.records if getattr(r, "fallback_solves", None) is not None
+    ]
+    return record
+
+
+@pytest.mark.parametrize("fill", ["air", "eps4"])
+def test_a_filled_guide_s_reduced_rows_need_no_fallback_solve(guide_mesh, fill, caplog):
+    # x' = 0 exactly, so the derivative equation's right-hand side is rounding
+    # of its terms: beta_2 and beta_3 are still those of the guide's own
+    # dispersion, not a small difference
+    material, _ = GUIDE_FILLS[fill]
+    model = gfem.Model(
+        guide_mesh,
+        materials={"air": material},
+        boundaries=[gfem.PEC("walls")],
+        ports=[gfem.WavePort("p1", "port1")],
+    )
+    caplog.set_level(logging.INFO, logger="gfem.solver")
+    result = gfem.solve(model, gfem.PortMode("p1", HOMOGENEOUS_GRID))
+    assert _sweep_record(caplog).fallback_solves == 0
+    solved = np.asarray(result.solved)
+    assert not solved.all()
+    for i in np.flatnonzero(~solved)[::6]:
+        ref = gfem.solve(model, gfem.PortMode("p1", HOMOGENEOUS_GRID[i]))
+        got = (result.n_g[i], result.beta_2[i], result.beta_3[i])
+        want = (ref.n_g[0], ref.beta_2[0], ref.beta_3[0])
+        for value, gate, expected in zip(got, (1e-12, 1e-10, 1e-8), want, strict=True):
+            assert _relative(complex(value), complex(expected)) <= gate, i
+
+
+def test_a_sweep_logs_its_fallback_solves_beside_its_exact_solves(
+    slab_mesh, monkeypatch, caplog
+):
+    space = _space(slab_mesh, "slab", 4.0, "air")
+    grid = np.linspace(10e9, 20e9, 20)
+    ports = [gfem.WavePort("p1", "port1")]
+    caplog.set_level(logging.INFO, logger="gfem.solver")
+    (plain,) = sweep.port_mode_sweep(
+        space, grid, [1], tolerance=1e-6, ports=ports, dispersive_modes=(0,)
+    )
+    before = _sweep_record(caplog)
+    assert before.fallback_solves == 0
+    caplog.clear()
+    # no row can reach a floor of 0: every reduced row falls back
+    monkeypatch.setattr(_Greedy, "_guard_floor", lambda self: np.zeros_like(self.floor))
+    sweep.port_mode_sweep(
+        space, grid, [1], tolerance=1e-6, ports=ports, dispersive_modes=(0,)
+    )
+    after = _sweep_record(caplog)
+    assert after.exact_solves == before.exact_solves
+    assert after.fallback_solves == (~np.asarray(plain.solved)).sum()
+    assert after.getMessage().endswith(
+        f"{after.exact_solves} exact solves, {after.rounds} rounds, "
+        f"{after.fallback_solves} fallback solves"
+    )
+
+
+def test_a_driven_sweep_builds_no_derivative_basis(slab_mesh, monkeypatch):
+    built = []
+    real = _Greedy._derivative_basis
+
+    def spy(self, extra):
+        built.append(self)
+        return real(self, extra)
+
+    monkeypatch.setattr(_Greedy, "_derivative_basis", spy)
+    model = gfem.Model(
+        slab_mesh,
+        materials={"slab": gfem.Material(eps_r=4.0), "air": gfem.Material()},
+        boundaries=[gfem.PEC("walls")],
+        ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")],
+    )
+    result = gfem.solve(
+        model, gfem.Driven(tuple(np.linspace(16e9, 20e9, 6)), excite="p1")
+    )
+    assert not np.asarray(result.port_modes["p1"].solved).all()
+    assert built == []
+
+
+# --- the derivative basis and its guard ----------------------------------------------
+
+
+# Both guard residuals are minima over the basis at the sweep's eigenvalue, on
+# scales the basis does not move, so a larger basis can only lower them: up to
+# the rounding of recomputing one on another QR factor, measured at most
+# 3.2e-9 relative and 1.1e-17 absolute on residuals of 1e-9 and above here.
+RELATIVE, ABSOLUTE = 1e-10, 1e-15
+
+
+def _run(slab_mesh, tolerance=1e-6):
+    greedy = _greedy(slab_mesh, dispersive_modes=(0,), tolerance=tolerance)
+    greedy.run()
+    return greedy
+
+
+def _not_raised(history):
+    """Each residual is at most the one before, up to rounding."""
+    history = np.array(history)
+    before, after = history[:-1], history[1:]
+    return (after <= before * (1 + RELATIVE) + ABSOLUTE).all()
+
+
+def _residuals(greedy, basis, rows, modes):
+    """Both guard residuals of each reduced row on ``basis``.
+
+    ``modes`` holds each row's mode on the previous basis, and takes this one's.
+    """
+    out = []
+    for i in rows:
+        row = basis.derivative_row(
+            greedy.space.pencil.taylor(greedy.k0[i]),
+            greedy.lam[0, i],
+            float(greedy.k0[i]),
+            greedy.coords_at(i, 0),
+            prior=modes.get(i),
+        )
+        modes[i] = row.y
+        out.append((row.eta, row.eta1))
+    return np.array(out)
+
+
+def test_enriching_the_derivative_basis_never_raises_a_row_s_residuals(slab_mesh):
+    # a loose tolerance keeps the residuals above rounding
+    greedy = _run(slab_mesh, tolerance=1e-3)
+    rows = np.flatnonzero(~greedy.solved)
+    space = greedy.space
+    # the sweep's basis alone, with the samples' mode derivatives, with an
+    # exact solve at a reduced row (its mode and mode derivative) besides
+    samples = [d.x1 for ds in greedy.derivatives.values() for d in ds]
+    j = int(rows[len(rows) // 2])
+    cand = greedy._solve(j)
+    derivative = greedy._mode_derivative(j, cand, 0, cand.factor)
+    chain, modes = [], {}
+    for added in ([], samples, [*samples, derivative.x, derivative.x1]):
+        basis = sweep._Reduced.on(space, greedy.reduced.v.copy())
+        if added:
+            basis.add(np.column_stack(added))
+        chain.append(_residuals(greedy, basis, rows, modes))
+    # on the sweep's basis alone the mode is no worse than the sweep's row
+    sweep_eta = greedy.residual[0, rows]
+    assert (chain[0][:, 0] <= sweep_eta * (1 + RELATIVE) + ABSOLUTE).all()
+    assert chain[1].max() < chain[0].max() * 1e-3  # the derivatives do help
+    assert _not_raised(chain)
+
+
+def test_a_row_past_its_guard_gets_an_exact_solve_for_its_derivative_alone(
+    slab_mesh, monkeypatch
+):
+    greedy = _run(slab_mesh, tolerance=1e-3)
+    rows = np.flatnonzero(~greedy.solved)
+    before = (greedy.lam.copy(), greedy.residual.copy(), greedy.solved.copy())
+    exact_solves = greedy.exact_solves
+    seen = {}
+    real = sweep._Reduced.derivative_row
+
+    def spy(self, coefficients, lam, k0, ref, *, prior=None):
+        row = real(self, coefficients, lam, k0, ref, prior=prior)
+        seen.setdefault(round(k0, 12), []).append((row.eta, row.eta1))
+        return row
+
+    monkeypatch.setattr(sweep._Reduced, "derivative_row", spy)
+    # no row can reach a floor of 0
+    monkeypatch.setattr(_Greedy, "_guard_floor", lambda self: np.zeros_like(self.floor))
+    greedy.dispersion_pass()
+    # the sweep itself is untouched, and a fallback solve is not a sample
+    np.testing.assert_array_equal(greedy.lam, before[0])
+    np.testing.assert_array_equal(greedy.residual, before[1])
+    np.testing.assert_array_equal(greedy.solved, before[2])
+    assert greedy.exact_solves == exact_solves
+    assert sorted(i for _, i in greedy.fallbacks) == rows.tolist()
+    assert np.isfinite(greedy.dispersion_rows(0)).all()
+    # Each fallback leaves every other row's residuals where they were or
+    # lower: never the cascade of a Galerkin solve, whose residuals grew by
+    # 10^2 to 10^5.
+    assert max(len(h) for h in seen.values()) > 2
+    for history in seen.values():
+        assert _not_raised(history)
+
+
+def test_a_reduced_row_that_fell_back_reports_its_exact_derivative(slab_mesh):
+    greedy = _run(slab_mesh)
+    ref = _run(slab_mesh).dispersion_rows(0)  # no pass yet: NaN on reduced rows
+    assert np.isnan(ref[:, ~greedy.solved]).all()
+    rows = np.flatnonzero(~greedy.solved)
+    greedy.dispersion_pass()
+    i = int(rows[len(rows) // 2])
+    exact = greedy._fallback(i, 0).dispersion(greedy.space.section.scale)
+    got = greedy.dispersion_rows(0)[:, i]
+    for value, gate, want in zip(got, (1e-12, 1e-10, 1e-8), exact, strict=True):
+        assert _relative(value, want) <= gate
+
+
+# --- the reduced rows beside the driven solve's port modes -------------------------
+
+
+@pytest.mark.bitwise
+def test_dispersion_leaves_a_shared_surface_s_port_modes_bit_identical():
+    mesh = gfem.Mesh.from_gmsh(DATA / "hybrid_waveguide.msh", length_unit="mm")
+    model = gfem.Model(
+        mesh,
+        materials={"block": gfem.Material(eps_r=6.0), "air": gfem.Material()},
+        boundaries=[gfem.PEC("walls")],
+        ports=[
+            gfem.WavePort(name, f"port{name[1]}", mode=int(name[-1]))
+            for name in ("p1_m1", "p1_m2", "p2_m1", "p2_m2")
+        ],
+    )
+    grid = tuple(np.linspace(16e9, 20e9, 9))
+    options = gfem.SolverOptions(order=3, linear_solver="direct", threads=1)
+    driven = gfem.solve(
+        model, gfem.Driven(grid, excite="p1_m1", keep_fields=True), options=options
+    )
+    for port in ("p1_m1", "p1_m2"):
+        result = gfem.solve(model, gfem.PortMode(port, grid), options=options)
+        mode = driven.port_modes[port]
+        assert not np.asarray(mode.solved).all()
+        for name in ("gamma", "residual", "solved"):
+            np.testing.assert_array_equal(getattr(result, name), getattr(mode, name))
+        np.testing.assert_array_equal(result.e_field._coords, mode.e_field._coords)
+        for rows in (result.n_g, result.beta_2, result.beta_3):
+            assert np.isfinite(np.asarray(rows)).all()

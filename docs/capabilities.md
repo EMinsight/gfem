@@ -12,8 +12,9 @@ v0.1.
   permittivity law, outside the law's
   {term}`unresolved band`), {py:obj}`gfem.Electrostatic` (the
   Maxwell capacitance matrix between named terminals) and {py:obj}`gfem.PortMode`
-  (the mode of a wave port's cross-section; a permittivity law in it where
-  $\mathrm{Re}\,\varepsilon > 0$). Eigenmode and uniform driven problems take a
+  (the mode of a wave port's cross-section, with its group index and
+  dispersion at every frequency, {doc}`recipes/waveguide-dispersion`; a
+  permittivity law in it where $\mathrm{Re}\,\varepsilon > 0$). Eigenmode and uniform driven problems take a
   Bloch wave vector (`wave_vector=`, rad/m) on a periodic model; a uniform
   driven sweep may keep the incidence angle fixed (`wave_vector_frequency`).
   {py:func}`gfem.band_diagram` solves an eigenmode problem along a
@@ -384,6 +385,14 @@ returning a wrong value:
   design. A voltage path is a fixed set of points: a design that moves a
   conductor at its end, or an interface along it, gives $Z_{PV}$ a kink.
   Details: {doc}`recipes/port-mode-gradient`.
+
+- **Group index and dispersion**: on `PortMode` results only (`None` on a
+  driven solve's port modes), and not differentiable: under `jax.grad` they
+  raise {py:obj}`gfem.NonDifferentiableError`, where the same result's
+  $\gamma$ and `n_eff` differentiate. Their error is the mesh's and the
+  section's truncation: $\beta_2$ needs far more cladding around a guide
+  than $n_\mathrm{eff}$, so converge it in the clearance
+  ({doc}`recipes/waveguide-dispersion`).
 
 - **2D models**: normal incidence and one polarization only. Eigenmode,
   electrostatic and thermal problems, lumped and Floquet ports, periodic

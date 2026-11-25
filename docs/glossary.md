@@ -75,6 +75,31 @@ Leaky mode
   wave number the same wave is a resonant mode with
   $\mathrm{Im}\,\omega \approx v_g \alpha$.
 
+Group index
+  $n_g = c\,\mathrm{d}\beta/\mathrm{d}\omega$ of a {term}`port mode`: a
+  pulse's envelope travels along the guide at $c/n_g$. It holds the
+  dispersion of the materials and of the guide's shape; on a lossless
+  section it is $c$ times the stored energy over the power, with the
+  {term}`energy permittivity` in law regions. Complex on a lossy or leaky
+  section, written $n_g' - in_g''$ like the effective index, with
+  $n_g' = c\,\mathrm{d}\beta/\mathrm{d}\omega$.
+
+Group-velocity dispersion
+  $\beta_2 = \mathrm{d}^2\beta/\mathrm{d}\omega^2$ of a {term}`port mode`, in
+  s²/m: how the delay per length changes with frequency. Normal where
+  $\beta_2 > 0$, anomalous where $\beta_2 < 0$. Complex on a lossy or leaky
+  section, with real part $\mathrm{d}^2\beta/\mathrm{d}\omega^2$. Short form
+  GVD.
+
+Dispersion parameter
+  $D = -(2\pi c/\lambda^2)\,\beta_2$, with $\lambda$ the vacuum wavelength,
+  in s/m² (1 ps/(nm km) is $10^{-6}$ s/m²): the change of delay per length
+  per wavelength. Positive is anomalous dispersion.
+
+Third-order dispersion
+  $\beta_3 = \mathrm{d}^3\beta/\mathrm{d}\omega^3$ of a {term}`port mode`, in
+  s³/m. Not the dispersion slope $\mathrm{d}D/\mathrm{d}\lambda$.
+
 Resonant mode
   A source-free field of the whole model, found by an
   {term}`eigenmode problem`: its complex angular frequency $\omega$ is found,
@@ -208,10 +233,12 @@ PML mode
   drop it.
 
 Clearance
-  The distance from a guide's core to a side {term}`perfectly matched layer`.
-  It sets how much the layer perturbs the guided mode: about
-  $10^{-2} e^{-2\gamma_t c}$ in $n_\text{eff}$, with $\gamma_t$ the mode's
-  transverse decay rate and $c$ the clearance.
+  The distance from a guide's core to the edge of its section: a side
+  {term}`perfectly matched layer`, or the section's outer wall. It sets how
+  much the edge perturbs the guided mode: about
+  $10^{-2} e^{-2\gamma_t c}$ in $n_\text{eff}$ at a layer, with $\gamma_t$ the
+  mode's transverse decay rate and $c$ the clearance, and far more in the
+  {term}`group-velocity dispersion`.
 
 Slab model
   A {term}`model` one element thick between PEC plates, whose field is normal to
