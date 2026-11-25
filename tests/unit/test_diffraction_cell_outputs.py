@@ -26,6 +26,28 @@ TOP, BOT = "z_max", "z_min"
 F0 = pc.F1_FREQUENCY
 #: Identities of exact arithmetic on S: round-off only (measured about 2e-16).
 EXACT = 1e-14
+EPS = float(np.finfo(float).eps)
+# jax.jit and eager evaluation of the same expression may round differently: XLA
+# fuses, reorders and contracts into fused multiply-adds, so each operation can
+# land one unit in the last place away. For a pure-JAX output built from S, an
+# entry that is a sum of n products of k factors of modulus at most one is then
+# off by at most about n * k * eps; the bounds below take four times that, for the
+# moduli and square roots around the sums.
+JIT_MARGIN = 4
+# |a S_TM + b S_TE|^2: two products of two factors, and the square doubles it.
+EFFICIENCY_JIT = JIT_MARGIN * 2 * (2 * 2) * EPS
+# A (J (x) J*) A^-1: sixteen products of four factors.
+MUELLER_JIT = JIT_MARGIN * (16 * 4) * EPS
+# A solve inside jax.jit assembles the operator from traced material values, so
+# its entries can differ from the eager ones in the last bit, and the direct
+# solve amplifies that by the operator's condition number. Every balance term is a
+# fraction of the unit incident power, so the bound is absolute on that scale (the
+# absorptance of this lossless cell is itself near zero). The jit-to-eager
+# difference measured in CI was 1.4e-14 (about 76 units in the last place of a
+# 0.83 reflectance); 1e-12 leaves a factor of about 70, while any real difference
+# (a dropped row, a wrong weight or sign) moves the balance by at least 3.5e-2,
+# F1's smallest reflectance.
+SOLVE_JIT_TOL = 1e-12
 #: |A| of the lossless F1 at oblique incidence on this coarse mesh at p = 2: the
 #: discretization's power defect, not round-off (1.2e-3 measured at 40°/30°,
 #: 8.1e-4 at 30° and 1.6 f0; 6.0e-7 on `F1_FINE_CELLS` at p = 3). At normal
@@ -260,7 +282,7 @@ def test_power_balance_under_jit_equals_eager(model):
 
     jitted, eager = jax.jit(balance)(pc.F1_EPS_SLAB), balance(pc.F1_EPS_SLAB)
     for x, y in zip(jax.tree.leaves(jitted), jax.tree.leaves(eager), strict=True):
-        np.testing.assert_allclose(x, y, rtol=0, atol=EXACT)
+        np.testing.assert_allclose(x, y, rtol=0, atol=SOLVE_JIT_TOL)
     assert jitted.incidence == eager.incidence
     np.testing.assert_array_equal(jitted.frequency, eager.frequency)
 
@@ -270,7 +292,9 @@ def test_a_result_entering_jit_serves_efficiencies_but_not_power_balance(normal,
         return dif.efficiencies(result, TOP, polarization="RCP", model=model)
 
     out = jax.jit(eff)(normal)
-    np.testing.assert_allclose(out.values, eff(normal).values, rtol=0, atol=EXACT)
+    np.testing.assert_allclose(
+        out.values, eff(normal).values, rtol=0, atol=EFFICIENCY_JIT
+    )
     assert out.rows == eff(normal).rows
 
     def bal(result):
@@ -867,13 +891,17 @@ def test_jones_is_a_jax_function_of_s_and_a_result_enters_jit(normal, model):
     def circ(result):
         return dif.jones(result, BOT, TOP, model=model).circular
 
-    np.testing.assert_allclose(jax.jit(circ)(normal), circ(normal), rtol=0, atol=EXACT)
+    # Each circular entry is a sum of four products of three factors of modulus
+    # at most one (U^H, S, U).
+    np.testing.assert_allclose(
+        jax.jit(circ)(normal), circ(normal), rtol=0, atol=JIT_MARGIN * (4 * 3) * EPS
+    )
 
     def mueller(result):
         return dif.jones(result, TOP, TOP, model=model).mueller
 
     np.testing.assert_allclose(
-        jax.jit(mueller)(normal), mueller(normal), rtol=0, atol=EXACT
+        jax.jit(mueller)(normal), mueller(normal), rtol=0, atol=MUELLER_JIT
     )
 
 
