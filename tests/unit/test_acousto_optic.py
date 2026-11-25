@@ -9,8 +9,11 @@ one mode solve, so it is exactly linear in the fields and in the tensors; the
 mode's own dependence is checked by re-solves.
 """
 
+import dataclasses
+
 import acousto_optic_cases as ao
 import electro_optic_cases as eo
+import finite_differences as fd
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -25,8 +28,8 @@ P_LN, R_LN = ao.P_LN, eo.R_LN
 X_CUT, N_E, N_O, N_OX = eo.X_CUT, eo.N_E, eo.N_O, eo.N_OX
 FREQUENCY = eo.FREQUENCY
 #: The slab mesh's edge-length factor: the shift's tests run on a coarse mesh,
-#: the closed form on a finer one.
-COARSE, FINE = 6.0, 3.0
+#: the closed form on a finer one, the gradients (exact on any mesh) on a rough one.
+COARSE, FINE, ROUGH = 6.0, 3.0, 12.0
 #: Strain along the lateral axis, V/m of lateral field, per volt.
 STRAIN, FIELD = 1e-3, 1e5
 #: Acoustic frequencies of the manufactured result, Hz (labels only).
@@ -49,6 +52,16 @@ def _film(axes=X_CUT, eps=eo.LN_OPTICAL, p=P_LN, r=R_LN):
         axes=axes,
         photoelastic_tensor=p,
         electro_optic_tensor=r,
+    )
+
+
+def _crystal(p=P_LN, r=R_LN, axes=X_CUT):
+    """The film as a `gfem.MaterialField`, whose tensors may be traced."""
+    return gfem.MaterialField(
+        eps_r=jnp.asarray(eo.LN_OPTICAL),
+        axes=axes,
+        photoelastic_tensor=jnp.asarray(p),
+        electro_optic_tensor=jnp.asarray(r),
     )
 
 
@@ -92,6 +105,12 @@ def coarse(tmp_path_factory):
 @pytest.fixture(scope="module")
 def fine(tmp_path_factory):
     return eo.layered_slab(tmp_path_factory.mktemp("slab") / "fine.msh", FINE)
+
+
+@pytest.fixture(scope="module")
+def rough(tmp_path_factory):
+    """The slab at twice the coarse edge length: a gradient's mesh, exact at any."""
+    return eo.layered_slab(tmp_path_factory.mktemp("slab") / "rough.msh", ROUGH)
 
 
 @pytest.fixture(scope="module")
@@ -419,8 +438,13 @@ def test_offset_moves_where_the_fields_are_read(
 
 
 @pytest.fixture(scope="module")
-def piezo(tmp_path_factory):
-    mesh = pc.mesh(tmp_path_factory.mktemp("idt") / "idt.msh", "lines")
+def idt(tmp_path_factory):
+    return pc.mesh(tmp_path_factory.mktemp("idt") / "idt.msh", "lines")
+
+
+@pytest.fixture(scope="module")
+def piezo(idt):
+    mesh = idt
     frequencies = [0.9e9, 0.95e9, 1.0e9]
     problem = pc.problem(frequencies, keep_fields=True)
     return gfem.solve(pc.model(mesh, "lines"), problem)
@@ -559,5 +583,180 @@ def test_the_optical_node_coordinates_raise_under_grad(model, acoustic):
         moved = gfem.mesh.Mesh(nodes, model.mesh._topology)
         return _shift(model.replace(mesh=moved), acoustic).delta_n_eff_per_volt.real
 
-    with pytest.raises(gfem.NonDifferentiableError, match="node coordinates"):
+    with pytest.raises(
+        gfem.NonDifferentiableError, match=r"node coordinates.*stop_gradient"
+    ):
         jax.jacrev(f)(jnp.asarray(model.mesh.nodes))
+
+
+def test_a_traced_optical_permittivity_raises_under_grad_with_the_stop_gradient_advice(
+    coarse, acoustic
+):
+    # the mode is held constant: its derivative in eps_r would be missing
+    def f(eps):
+        film = gfem.MaterialField(
+            eps_r=eps,
+            axes=X_CUT,
+            photoelastic_tensor=jnp.asarray(P_LN),
+            electro_optic_tensor=jnp.asarray(R_LN),
+        )
+        return _shift(_optical(coarse, film), acoustic).delta_n_eff_per_volt.real
+
+    with pytest.raises(gfem.NonDifferentiableError, match="acousto-optic shift"):
+        jax.jacrev(f)(jnp.asarray(eo.LN_OPTICAL))
+
+
+# --- gradients ---------------------------------------------------------------------
+
+# Every check differences a scalar objective of the shift with the fourth-order
+# central difference of `finite_differences` at its gate (rtol 1e-6). Its
+# truncation is h^4 J^(5)/30 and its round-off 1.5 delta/h, with delta the
+# relative noise of one evaluation of the objective; a step is chosen per check
+# so both sit well below the gate, and the measured errors are quoted.
+
+
+def _objective(delta):
+    """``sum_f |delta n_f|^2``: real, and it reads both parts of the phasor."""
+    return jnp.sum(jnp.abs(delta) ** 2)
+
+
+@pytest.mark.parametrize(
+    ("leaf", "shape", "scale"),
+    [("p", (6, 6), 0.03), ("r", (6, 3), 3e-12)],
+    ids=["photoelastic", "electro_optic"],
+)
+def test_a_tensor_gradient_matches_finite_differences(
+    rough, acoustic, leaf, shape, scale
+):
+    # The shift is exactly linear in each tensor, so |delta|^2 is quadratic in the
+    # perturbation and the fourth-order difference has no truncation (J^(5) = 0).
+    # What is left is the mode solve's round-off, 6e-14 relative (seen on 8
+    # threads), so the difference carries 1.5 * 6e-14 / h of it. The perturbation
+    # `scale` is ~20% of p13 and ~10% of r33: the objective moves by order 1 over
+    # a unit of h, so h = 1 puts the round-off at ~1e-13 against the gate of 1e-6.
+    # Measured relative errors: 2e-15 (p) and 1e-13 (r).
+    rng = np.random.default_rng(21)
+    base = {"p": np.asarray(P_LN), "r": np.asarray(R_LN)}
+
+    def objective(q):
+        given = {**base, leaf: base[leaf] + scale * q}
+        film = _crystal(p=given["p"], r=given["r"])
+        return _objective(_shift(_optical(rough, film), acoustic).delta_n_eff_per_volt)
+
+    fd.assert_gradient_matches(
+        objective, jnp.zeros(shape), fd.unit_directions(rng, shape, 1), step=1.0
+    )
+
+
+def test_the_forward_under_grad_equals_the_plain_forward(rough, acoustic):
+    # the same mode solve and the same reading, traced or not: only the order of
+    # the floating-point sums differs, and the eigen-solve's round-off with
+    # threads is 6e-14 relative (seen on 8 threads), so 1e-12
+    def objective(q):
+        film = _crystal(p=np.asarray(P_LN) + 0.03 * q)
+        return _objective(_shift(_optical(rough, film), acoustic).delta_n_eff_per_volt)
+
+    q = jnp.asarray(np.random.default_rng(4).standard_normal((6, 6)))
+    value, grad = jax.value_and_grad(objective)(q)
+    np.testing.assert_allclose(value, objective(q), rtol=1e-12, atol=0)
+    assert np.isfinite(np.asarray(grad)).all()
+    assert np.abs(np.asarray(grad)).max() > 0
+
+
+# a real solve on a coarse transducer section (exact gradients on any mesh), the
+# window under the surface as in the finite-phasors test above
+WINDOW = (0.0, -0.8e-6)
+
+
+@pytest.fixture(scope="module")
+def idt_rough(tmp_path_factory):
+    return pc.mesh(tmp_path_factory.mktemp("idt") / "rough.msh", "lines", maxh=2.4)
+
+
+@pytest.fixture(scope="module")
+def piezo_rough(idt_rough):
+    return gfem.solve(pc.model(idt_rough, "lines"), pc.problem(keep_fields=True))
+
+
+def _piezo_objective(mesh, optical, *, node_map=None, edit=None, q=None):
+    """``_objective`` of the shift of a one-frequency piezoelectric solve."""
+    if node_map is not None:
+        mesh = mesh.with_nodes(node_map(jnp.asarray(mesh.imported_nodes), q))
+    model = pc.model(mesh, "lines")
+    if edit is not None:
+        materials = dict(model.materials)
+        for region in ("ln", "ln_frame"):
+            field = gfem.MaterialField.uniform(region, materials[region])
+            materials[region] = edit(field, q)
+        model = gfem.Model(mesh, materials=materials, excluded={"mechanical": ["air"]})
+    acoustic = gfem.solve(model, pc.problem(keep_fields=True))
+    shift = _shift(optical, acoustic, offset=WINDOW)
+    return _objective(shift.delta_n_eff_per_volt)
+
+
+def test_the_offset_gradient_matches_finite_differences_in_both_components(
+    rough, piezo_rough
+):
+    # The fields are those of a real solve (order-2 elements): the strain is
+    # piecewise linear, so the objective is piecewise quadratic in the offset and
+    # the fourth-order difference has no truncation while no reading point crosses
+    # an element edge (a crossing would add the jump of the strain over the step).
+    # Nothing but the points moves, so the noise is the reading's own: 1e-16
+    # relative plus the rounding of a 1e-6 m coordinate, 1e-22 m. The unit of q is
+    # 1e-6 m and the step 1e-4 of it, 1e-10 m, 1e-4 of an element edge: the ~1e2
+    # points of the section cross an edge with probability ~1e-2 in all, and the
+    # meshes are fixed. The objective moves by ~1e-4 of itself over a step, so the
+    # round-off of the difference is 1.5e-16 / 1e-4 ~ 1e-12. Measured relative
+    # errors: 4e-12 (x), 4e-12 (y), 8e-13 (mixed).
+    unit = 1e-6
+    optical = _optical(rough, _film(axes=pc.AXES))
+
+    def objective(q):
+        shift = _shift(optical, piezo_rough, offset=jnp.asarray(WINDOW) + unit * q)
+        return _objective(shift.delta_n_eff_per_volt)
+
+    directions = [np.array([1.0, 0.0]), np.array([0.0, 1.0]), np.array([0.6, -0.8])]
+    fd.assert_gradient_matches(objective, jnp.zeros(2), directions, step=1e-4)
+
+    # and the forward under grad is the plain forward, at the same values
+    value, _ = jax.value_and_grad(objective)(jnp.zeros(2))
+    np.testing.assert_allclose(value, objective(jnp.zeros(2)), rtol=1e-12, atol=0)
+
+
+def _stretch(nodes, q):
+    return nodes.at[:, 0].set((1.0 + q[0]) * nodes[:, 0])
+
+
+def _c44(field, q):
+    """Stiffness with ``c44`` (and its twin ``c55``) raised by ``1e10 q`` Pa."""
+    bump = np.zeros((6, 6))
+    bump[3, 3] = bump[4, 4] = 1e10
+    return dataclasses.replace(field, stiffness=jnp.asarray(pc.C_LN) + bump * q[0])
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "step"),
+    [
+        ({"node_map": _stretch}, 1e-6),
+        ({"edit": _c44}, 1e-2),
+    ],
+)
+def test_an_acoustic_design_gradient_matches_finite_differences(
+    idt_rough, rough, kwargs, step
+):
+    # Through the solve's cotangents of the kept fields and the Eulerian reading at
+    # fixed optical points. Each evaluation is a direct solve of its own (see
+    # `finite_differences`) with ~1e-15 relative noise, so the difference carries
+    # 1.5e-15 / h of it. c44: the step is the piezoelectric gradient tests', 1e-2
+    # of a unit of 1e10 Pa (3% of c44), whose fourth-order truncation is ~1e-8.
+    # The stretch moves the acoustic nodes, so the elements under the fixed points,
+    # by at most 2 step * 4 um = 8e-12 m: the strain jumps across an element edge,
+    # so the step is kept to 1e-6 (a ~1e-5 chance for each of ~1e2 points to cross
+    # one), the truncation is ~1e-16 and the round-off ~1e-9 of the objective's own
+    # change over the step. Measured relative errors: 1e-9 (stretch), 1e-9 (c44).
+    optical = _optical(rough, _film(axes=pc.AXES))
+
+    def objective(q):
+        return _piezo_objective(idt_rough, optical, q=q, **kwargs)
+
+    fd.assert_gradient_matches(objective, jnp.zeros(1), [np.array([1.0])], step=step)
