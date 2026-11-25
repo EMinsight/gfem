@@ -27,6 +27,7 @@ import ngsolve as ngs
 import numpy as np
 
 from gfem._engine.mesh import EngineMesh
+from gfem._engine.runtime import serial_spaces
 from gfem._materials import (
     PROPERTIES,
     Blend,
@@ -410,7 +411,8 @@ def facet_space(
     """
     found = built.surface_spaces.get(is_complex)
     if found is None:
-        space = ngs.FacetFESpace(built.mesh, order=0, complex=is_complex)
+        with serial_spaces():
+            space = ngs.FacetFESpace(built.mesh, order=0, complex=is_complex)
         n = built.mesh.GetNE(ngs.BND)
         dofs = np.fromiter(
             (space.GetDofNrs(ngs.ElementId(ngs.BND, i))[0] for i in range(n)),

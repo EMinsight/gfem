@@ -15,6 +15,7 @@ import numpy as np
 
 from gfem._boundaries import PEC, Absorbing, Conductor, Impedance
 from gfem._engine.mesh import EngineMesh
+from gfem._engine.runtime import serial_spaces
 from gfem._periodic import pair_names
 from gfem.model import Model
 
@@ -84,15 +85,16 @@ def hcurl_space(
     periodicity), and are compressed away. Its DOF numbering is not the
     unpaired space's: map with the expansion P, never by index.
     """
-    space = ngs.HCurl(
-        built.mesh,
-        order=order,
-        type1=True,
-        complex=complex_valued,
-        definedon=em_region(model, built),
-        dirichlet=_bc_numbers(built, dirichlet),
-    )
-    return _compressed(space, periodic=periodic, phases=phases)
+    with serial_spaces():
+        space = ngs.HCurl(
+            built.mesh,
+            order=order,
+            type1=True,
+            complex=complex_valued,
+            definedon=em_region(model, built),
+            dirichlet=_bc_numbers(built, dirichlet),
+        )
+        return _compressed(space, periodic=periodic, phases=phases)
 
 
 def element_dofs(space: ngs.FESpace) -> np.ndarray:
@@ -213,14 +215,15 @@ def h1_space(
     complex, as does ``complex_valued`` (real by default). ``physics`` picks
     the solve domain (`em_region`; the electromagnetic one by default).
     """
-    space = ngs.H1(
-        built.mesh,
-        order=order,
-        complex=complex_valued or phases is not None,
-        definedon=em_region(model, built, physics),
-        dirichlet=_bc_numbers(built, dirichlet),
-    )
-    return _compressed(space, periodic=periodic, phases=phases)
+    with serial_spaces():
+        space = ngs.H1(
+            built.mesh,
+            order=order,
+            complex=complex_valued or phases is not None,
+            definedon=em_region(model, built, physics),
+            dirichlet=_bc_numbers(built, dirichlet),
+        )
+        return _compressed(space, periodic=periodic, phases=phases)
 
 
 def boundary_region(built: EngineMesh, surfaces: tuple[str, ...]) -> ngs.Region:

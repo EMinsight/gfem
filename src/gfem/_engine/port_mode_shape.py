@@ -59,6 +59,7 @@ import numpy as np
 from gfem._engine import quadrature
 from gfem._engine.port_mode import PortModeSpace
 from gfem._engine.port_mode_sensitivity import FormPair
+from gfem._engine.runtime import serial_spaces
 from gfem._port_section import PortSection
 
 __all__ = [
@@ -89,7 +90,8 @@ class ShapeForm:
         self.space = space
         self.mesh = space.mesh
         self._q = quadrature.degree(space.order)
-        self._w_space = ngs.VectorH1(self.mesh, order=1)
+        with serial_spaces():
+            self._w_space = ngs.VectorH1(self.mesh, order=1)
         self._w = self._w_space.TestFunction()
         self._form = ngs.LinearForm(self._w_space)
         self._empty = True

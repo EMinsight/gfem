@@ -51,6 +51,7 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.sparse import csgraph
 
+from gfem._engine.runtime import serial_spaces
 from gfem._linalg import KRYLOV_KINDS, report
 from gfem._linalg.base import free_mask
 from gfem._linalg.pieces import _positions
@@ -507,8 +508,13 @@ def _template(
     template.
     """
     mesh = base.mesh
-    spaces = [base, h1, *(ngs.NumberSpace(mesh, complex=True) for _ in range(floating))]
-    gauge_space = ngs.FESpace(spaces)
+    with serial_spaces():
+        spaces = [
+            base,
+            h1,
+            *(ngs.NumberSpace(mesh, complex=True) for _ in range(floating)),
+        ]
+        gauge_space = ngs.FESpace(spaces)
     trial, test = gauge_space.TnT()
     form = ngs.BilinearForm(gauge_space, symmetric=False)
     form += trial[0] * test[0] * ngs.dx

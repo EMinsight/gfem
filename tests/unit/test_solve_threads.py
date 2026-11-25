@@ -17,7 +17,7 @@ import pytest
 from isolated import isolated
 
 from gfem import _mpi
-from gfem._engine.runtime import solve_threads, task_manager
+from gfem._engine.runtime import serial_spaces, solve_threads, task_manager
 from gfem._linalg import blas
 
 
@@ -204,6 +204,31 @@ def test_an_explicit_threads_call_inside_a_callers_task_manager_keeps_its_count(
         assert ngs.GetNumThreads() == 3
     captured = capfd.readouterr()
     assert "can't change number of threads" not in captured.out + captured.err
+
+
+def test_spaces_built_in_a_solve_are_built_with_its_task_manager_stopped():
+    # an FE space colors its elements in a parallel loop that can write past
+    # an array when threaded, so a solve builds its spaces on one thread
+    with task_manager(3):
+        with serial_spaces():
+            assert ngs.GetNumThreads() == 1
+            with task_manager(2):  # a solve inside: its own TaskManager
+                assert ngs.GetNumThreads() == 2
+                with serial_spaces():
+                    assert ngs.GetNumThreads() == 1
+                assert ngs.GetNumThreads() == 2
+            assert ngs.GetNumThreads() == 1
+        assert ngs.GetNumThreads() == 3
+    with serial_spaces():
+        assert ngs.GetNumThreads() == 1
+    assert ngs.GetNumThreads() == 1
+
+
+@pytest.mark.usefixtures("ngsolve_threads")
+def test_spaces_inside_a_callers_task_manager_keep_its_threads():
+    ngs.SetNumThreads(3)
+    with ngs.TaskManager(), task_manager(None), serial_spaces():
+        assert ngs.GetNumThreads() == 3
 
 
 @pytest.mark.usefixtures("ngsolve_threads")
