@@ -23,6 +23,7 @@ from gfem._field import Field, FieldMap, ReducedFields
 from gfem._pytree import register_fields
 from gfem._sources import INCIDENT, Source
 from gfem._text import hertz, hertz_band
+from gfem.errors import NonDifferentiableError
 
 if TYPE_CHECKING:
     import skrf.network
@@ -699,13 +700,28 @@ class PortModeField:
     def _space(self) -> ModeSpace:
         return self._data()[0]
 
+    def _concrete(self) -> tuple[ModeSpace, np.ndarray, np.ndarray]:
+        """The data of a field that carries its basis and coordinates.
+
+        Raises:
+            NonDifferentiableError: The field is a traced vector, which holds
+                no basis or coordinates.
+        """
+        if self._vector is not None:
+            raise NonDifferentiableError(
+                "this port mode field is a traced vector inside jax.grad, jax.jit "
+                "or jax.vmap, with no basis or coordinates of its own: read it "
+                "with PortModeField.at, or solve outside the transformation."
+            )
+        return self._data()
+
     @property
     def _basis(self) -> np.ndarray:
-        return self._data()[1]
+        return self._concrete()[1]
 
     @property
     def _coords(self) -> np.ndarray:
-        return self._data()[2]
+        return self._concrete()[2]
 
     @property
     def _section(self) -> PortSection | LineSection:

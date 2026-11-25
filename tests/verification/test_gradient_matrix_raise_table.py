@@ -2888,7 +2888,7 @@ def _out_port_mode_field_at_nodes(_request):
         result = gfem.solve(model.replace(mesh=moved), gfem.PortMode("p1", 10e9))
         return jnp.real(result.e_field.at([20e-6, 5e-6, 0.0])[0])
 
-    jax.vmap(jax.grad(field))(jnp.asarray(model.mesh.nodes)[None])
+    jax.grad(field)(jnp.asarray(model.mesh.nodes))
 
 
 def _out_characteristic_impedance_of_a_traced_mode(_request):
