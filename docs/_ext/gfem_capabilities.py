@@ -477,6 +477,29 @@ RAISES_LABELS = {
         "Any result, with respect to node coordinates, when an `Absorbing` "
         "surface borders an anisotropic material"
     ),
+    "2D PortMode x law region at the line port": (
+        "A line port's `PortMode`, with respect to the parameters of a "
+        "permittivity law in a region at the port (the material field values "
+        "differentiate)"
+    ),
+    "port mode residual": (
+        "The backward error of a port mode (`PortModeResult.residual`), with "
+        "respect to anything (a diagnostic)"
+    ),
+    "port mode field at points x node coordinates": (
+        "A port mode's field at points (`PortModeField.at`), with respect to "
+        "node coordinates (`gamma`, `n_eff` and `Z_PV` differentiate)"
+    ),
+    "characteristic_impedance of a traced mode": (
+        "`characteristic_impedance` of a port mode inside `jax.grad` (`Z_PV` on "
+        "the result differentiates)"
+    ),
+    "electro-optic shift x optical permittivity": (
+        "`electro_optic_shift`, with respect to the optical model's "
+        "permittivity, loss tangent, permeability or conductivity (the shift "
+        "holds the mode constant; the tensor, the static permittivity, the "
+        "drive and the electrode gap differentiate)"
+    ),
     "driven x port mode residual at a port-face design": (
         "The `residual` of a wave port's mode in a driven result, with respect "
         "to a design a wave port's mode reads (the backward error of the mode "

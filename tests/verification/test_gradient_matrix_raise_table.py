@@ -2846,9 +2846,7 @@ def _out_line_port_mode_law_parameter(request):
     def objective(eps_inf):
         law = gfem.PermittivityLaw(
             eps_inf=eps_inf,
-            terms=[
-                gfem.Lorentz(delta_eps=1.0, resonance_frequency=200e9, damping=2e9)
-            ],
+            terms=[gfem.Lorentz(delta_eps=1.0, resonance_frequency=200e9, damping=2e9)],
         )
         model = gfem.Model(
             mesh,
@@ -2868,6 +2866,80 @@ def _out_line_port_mode_law_parameter(request):
         return jnp.imag(result.gamma[0])
 
     jax.grad(objective)(4.0)
+
+
+def _out_port_mode_residual(request):
+    # the backward error of a mode is a diagnostic: its cotangent raises
+    def residual(eps):
+        mode, _ = _plate_mode(eps)
+        return jnp.sum(mode.residual)
+
+    jax.make_jaxpr(jax.grad(residual))(4.0)
+
+
+def _out_port_mode_field_at_nodes(request):
+    # `PortModeField.at` reads fixed points: traced nodes are not available
+    _, model = _plate_mode(4.0)
+
+    def field(nodes):
+        moved = jax.tree_util.tree_unflatten(
+            jax.tree_util.tree_structure(model.mesh), [nodes]
+        )
+        result = gfem.solve(model.replace(mesh=moved), gfem.PortMode("p1", 10e9))
+        return jnp.real(result.e_field.at([20e-6, 5e-6, 0.0])[0])
+
+    jax.vmap(jax.grad(field))(jnp.asarray(model.mesh.nodes)[None])
+
+
+def _out_characteristic_impedance_of_a_traced_mode(request):
+    def impedance(eps):
+        mode, _ = _plate_mode(eps)
+        return jnp.real(
+            gfem.characteristic_impedance(mode, voltage_path=PORT_FACE_PATH)[0]
+        )
+
+    jax.grad(impedance)(4.0)
+
+
+def _out_electro_optic_shift_by_the_optical_eps(request):
+    # the mode is a constant of the shift
+    import electro_optic_cases as eo
+
+    path = request.getfixturevalue("tmp_path_factory").mktemp("eo") / "lchannel.msh"
+    mesh = eo.l_core(path, 0.5, 0.15)
+    static = gfem.Model(
+        mesh,
+        materials={
+            r: gfem.Material(eps_r=eo.LN_STATIC, axes=eo.X_CUT)
+            if r in ("core", "foot")
+            else gfem.Material(eps_r=3.9)
+            for r in mesh._region_names().values()
+        },
+    )
+    potential = gfem.solve(
+        static,
+        gfem.Electrostatic(terminals={"t": ["top"]}, ground=["bottom"]),
+        options=gfem.SolverOptions(order=2, linear_solver="direct"),
+    ).potential["t"]
+
+    def shift(eps):
+        crystal = gfem.MaterialField(
+            eps_r=eps, axes=eo.X_CUT, electro_optic_tensor=jnp.asarray(eo.R_LN)
+        )
+        model = gfem.Model(
+            mesh,
+            materials={
+                "clad": gfem.Material(eps_r=eo.N_OX**2),
+                "core": crystal,
+                "foot": crystal,
+            },
+            ports=[gfem.WavePort("p", "front")],
+        )
+        return gfem.electro_optic_shift(
+            model, potential, port="p", frequency=eo.FREQUENCY
+        ).delta_n_eff_per_volt
+
+    jax.grad(shift)(jnp.asarray(eo.LN_OPTICAL))
 
 
 def _out_driven_port_mode_residual(request):
@@ -4607,6 +4679,30 @@ OUT_OF_SCOPE = [
         _out_route_phase_by_the_window_nodes,
         gfem.NonDifferentiableError,
         r"mesh\.nodes.*thermo-optic shift holds the port mode",
+    ),
+    (
+        "port mode residual",
+        _out_port_mode_residual,
+        gfem.NonDifferentiableError,
+        r"'residual'.*diagnostic.*stop_gradient",
+    ),
+    (
+        "port mode field at points x node coordinates",
+        _out_port_mode_field_at_nodes,
+        gfem.NonDifferentiableError,
+        r"PortModeField\.at reads the mode at fixed",
+    ),
+    (
+        "characteristic_impedance of a traced mode",
+        _out_characteristic_impedance_of_a_traced_mode,
+        gfem.NonDifferentiableError,
+        "characteristic_impedance is not differentiable",
+    ),
+    (
+        "electro-optic shift x optical permittivity",
+        _out_electro_optic_shift_by_the_optical_eps,
+        gfem.NonDifferentiableError,
+        r"electro-optic shift holds the port mode constant",
     ),
 ]
 
