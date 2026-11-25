@@ -308,6 +308,10 @@ def test_the_electro_optic_part_equals_the_static_shift_of_the_matching_potentia
 # --- identities --------------------------------------------------------------------
 
 
+# Two shifts on separate mode solves differ by the eigen-solve's round-off, 6e-14
+# relative seen on 8 threads, so such comparisons use 1e-12.
+
+
 def test_the_shift_is_linear_in_the_tensors_and_the_fields(
     coarse, acoustic_mesh, acoustic, shift
 ):
@@ -316,7 +320,7 @@ def test_the_shift_is_linear_in_the_tensors_and_the_fields(
     )
     for name in ("photoelastic_per_volt", "electro_optic_per_volt"):
         np.testing.assert_allclose(
-            getattr(doubled, name), 2 * np.asarray(getattr(shift, name)), rtol=1e-13
+            getattr(doubled, name), 2 * np.asarray(getattr(shift, name)), rtol=1e-12
         )
     # twice the strain and half the field: the parts scale on their own
     strains, fields = _lateral(
@@ -329,12 +333,12 @@ def test_the_shift_is_linear_in_the_tensors_and_the_fields(
     np.testing.assert_allclose(
         twice.photoelastic_per_volt,
         2 * np.asarray(base.photoelastic_per_volt),
-        rtol=1e-13,
+        rtol=1e-12,
     )
     np.testing.assert_allclose(
         twice.electro_optic_per_volt,
         0.5 * np.asarray(base.electro_optic_per_volt),
-        rtol=1e-13,
+        rtol=1e-12,
     )
 
 
@@ -346,13 +350,13 @@ def test_no_photoelastic_tensor_or_a_zero_one_gives_no_photoelastic_part(
     for result in (eo_only, zeroed):
         np.testing.assert_array_equal(result.photoelastic_per_volt, 0)
         np.testing.assert_allclose(
-            result.electro_optic_per_volt, shift.electro_optic_per_volt, rtol=1e-13
+            result.electro_optic_per_volt, shift.electro_optic_per_volt, rtol=1e-12
         )
     # and a zero electro-optic tensor, or none, leaves the photoelastic part
     p_only = _shift(_optical(coarse, _film(r=None)), acoustic)
     np.testing.assert_array_equal(p_only.electro_optic_per_volt, 0)
     np.testing.assert_allclose(
-        p_only.photoelastic_per_volt, shift.photoelastic_per_volt, rtol=1e-13
+        p_only.photoelastic_per_volt, shift.photoelastic_per_volt, rtol=1e-12
     )
 
 
@@ -368,12 +372,12 @@ def test_a_tensor_only_needs_the_field_it_reads(coarse, acoustic_mesh):
     np.testing.assert_allclose(
         _shift(eo_only, no_u).delta_n_eff_per_volt,
         _shift(eo_only, full).delta_n_eff_per_volt,
-        rtol=1e-13,
+        rtol=1e-12,
     )
     np.testing.assert_allclose(
         _shift(p_only, no_v).delta_n_eff_per_volt,
         _shift(p_only, full).delta_n_eff_per_volt,
-        rtol=1e-13,
+        rtol=1e-12,
     )
 
 
@@ -434,8 +438,10 @@ def test_a_piezoelectric_solve_under_the_window_gives_finite_phasors(piezo, coar
     assert (np.abs(np.asarray(result.v_pi_l)) < np.inf).all()
     # one terminal: None and its name read the same fields
     named = _shift(_optical(coarse, film), piezo, offset=(0.0, -0.8e-6), terminal="hot")
-    np.testing.assert_array_equal(
-        named.delta_n_eff_per_volt, result.delta_n_eff_per_volt
+    # two mode solves of one model: the eigen-solve's round-off with threads
+    # (1e-13 seen on 8 threads), far below the shift's 1e-10 gate
+    np.testing.assert_allclose(
+        named.delta_n_eff_per_volt, result.delta_n_eff_per_volt, rtol=1e-10
     )
 
 
