@@ -1,4 +1,4 @@
-"""The effective-medium retrieval on FEM slabs: isotropic, anisotropic magnetic, gradient.
+"""The effective-medium retrieval on FEM slabs: isotropic, magnetic, gradient.
 
 F1 with ``eps_sub = 1`` (air / eps 4 slab / air; `periodic_cases.f1`), Floquet
 ports offset by ``F1_D`` onto the slab faces so the reference planes are the
@@ -34,6 +34,12 @@ def _ports():
     return [dataclasses.replace(p, offset=D) for p in pc.f1_ports()]
 
 
+def airy_on_the_slab(pol):
+    """Airy (S11, S21) of the slab between planes on its faces (offsets D)."""
+    layers = [(1.0, 0.0), (pc.F1_EPS_SLAB, pc.F1_H * pc.UM), (1.0, 0.0)]
+    return pc.airy(F0, 0.0, layers, pol)
+
+
 def _model(mesh, slab):
     return pc.f1(mesh, ports=_ports(), eps_sub=1.0).with_material("slab", slab)
 
@@ -66,7 +72,7 @@ def slab_s(eps, mu, k0d):
 
 
 def _jacobian_tolerance(s11, s21, k0d, branch, bound):
-    """2 x bound x (the l1 sum over (Re, Im) of S11, S21 of |d value / d x|), per output.
+    """2 x bound x the l1 sum over (Re, Im) of S11, S21 of |d value / d x|.
 
     ``bound`` is the documented |S - reference| per entry; the retrieved
     value's error is at most the Jacobian of `retrieve` at the reference S
@@ -98,12 +104,12 @@ def test_isotropic_slab_reads_eps_four_and_mu_one(mesh):
     result = _solve(model)
     # n k0 d = 3.77 rad > pi: the principal phase has wrapped, second sheet
     for pol in ("TE", "TM"):
-        r, t = pc.f1_airy(pol, eps_sub=1.0)
+        r, t = airy_on_the_slab(pol)
         s = result.s
         assert abs(complex(s[f"R_{pol}", f"R_{pol}"][0]) - r) <= pc.F1_S_TOL
         assert abs(complex(s[f"T_{pol}", f"R_{pol}"][0]) - t) <= pc.F1_S_TOL
     em = dif.effective_medium(result, TOP, BOT, model=model, branch=1)
-    s11, s21 = pc.f1_airy("TM", eps_sub=1.0)
+    s11, s21 = airy_on_the_slab("TM")
     tol_e, tol_m = _jacobian_tolerance(s11, s21, K0D, 1, pc.F1_S_TOL)
     assert np.all(np.abs(np.asarray(em.permittivity[0]) - 4.0) <= tol_e)
     assert np.all(np.abs(np.asarray(em.permeability[0]) - 1.0) <= tol_m)
@@ -119,7 +125,7 @@ COLUMNS = {0: (EPS_ANISO[0], MU_ANISO[1]), 1: (EPS_ANISO[1], MU_ANISO[0])}
 
 def _branch(n):
     """Phase sheet of n k0 d at one frequency: the principal phase wraps at pi."""
-    return int(math.floor((n.real * K0D + math.pi) / (2 * math.pi)))
+    return math.floor((n.real * K0D + math.pi) / (2 * math.pi))
 
 
 def test_anisotropic_magnetic_slab_reads_each_axis_and_each_field(mesh):
@@ -132,7 +138,8 @@ def test_anisotropic_magnetic_slab_reads_each_axis_and_each_field(mesh):
     assert len(branches) == 1  # one phase sheet for both columns
     (branch,) = branches
     # F1_S_TOL was measured on eps 4; the magnetic slab (n 1.73 and 1.90, other
-    # impedances) must meet the same bound or the bound is asserted here first
+    # impedances) is asserted against the same bound first (measured here:
+    # 1e-7 to 3e-7 per entry, so the bound is not loosened)
     for i in (0, 1):
         assert abs(refl[i, i] - closed[i][0]) <= pc.F1_S_TOL
         assert abs(trans[i, i] - closed[i][1]) <= pc.F1_S_TOL
@@ -143,3 +150,34 @@ def test_anisotropic_magnetic_slab_reads_each_axis_and_each_field(mesh):
         tol_e, tol_m = _jacobian_tolerance(*closed[i], K0D, branch, pc.F1_S_TOL)
         assert abs(eps[i] - COLUMNS[i][0]) <= tol_e
         assert abs(mu[mu_index] - COLUMNS[i][1]) <= tol_m
+
+
+#: The finite-difference step in the slab permittivity. The retrieved eps_11
+#: equals the slab permittivity up to the FEM error of S, so the objective is
+#: a straight line plus a smooth discretization term; its fifth derivative is
+#: set by the phase n k0 d (2 rad per unit of sqrt(eps), so about 0.5 rad per
+#: unit of eps), and the fourth-order truncation h^4 f^(5) / 30 is below
+#: 1e-8 at h = 0.05 (and 1e-6 would already be the gate). The round-off of a
+#: direct solve, about 1e-14 relative, amplified by the retrieval's
+#: conditioning (order 10 at this slab) and divided by h, is below 1e-11.
+#: Measured: gradient 0.9999988 (the FEM error of S), difference from the
+#: fourth-order quotient 1.7e-12, 1.4e-12, 1.0e-12 at h = 0.02, 0.05, 0.1.
+STEP = 0.05
+
+
+def test_gradient_of_the_retrieved_permittivity_matches_finite_differences(mesh):
+    n = len(mesh.elements("slab"))
+
+    def objective(eps):  # one scalar permittivity on every element of the slab
+        model = _model(mesh, gfem.MaterialField(eps_r=eps * jnp.ones(n)))
+        result = _solve(model)
+        em = dif.effective_medium(result, TOP, BOT, model=model, branch=1)
+        return jnp.real(em.permittivity[0, 0])
+
+    eps = jnp.asarray(pc.F1_EPS_SLAB)
+    grad = jax.grad(objective)(eps)
+    # d eps_11 / d eps_slab is 1 up to the FEM error of S
+    assert abs(float(grad) - 1.0) < 1e-3
+    assert_gradient_matches(
+        objective, eps, [np.asarray(1.0)], step=STEP, rel=1e-6, grad=grad
+    )
