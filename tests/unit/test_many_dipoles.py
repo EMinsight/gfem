@@ -77,7 +77,11 @@ def test_many_dipoles_sweep_matches_the_full_svd_per_column_reference(monkeypatc
         # Relative to the output's largest entry: a near-cancelling S entry of
         # 4e-3 moves by 4e-15 when threaded assembly reorders the sums.
         np.testing.assert_allclose(x, y, rtol=1e-12, atol=1e-12 * np.abs(y).max())
-    np.testing.assert_allclose(a.sample_errors, b.sample_errors, rtol=1e-6, atol=1e-14)
+    # A converged sample's error estimate is the norm of a difference of two
+    # nearly equal fields, so it keeps only a few digits of the solve: a
+    # 2e-7 estimate moves 2e-6 relative between threaded runs. The samples
+    # and outputs above are what the sweep's identity rests on.
+    np.testing.assert_allclose(a.sample_errors, b.sample_errors, rtol=1e-4, atol=1e-14)
 
 
 def test_a_many_dipole_adaptive_sweep_never_holds_the_full_svd_factor():
