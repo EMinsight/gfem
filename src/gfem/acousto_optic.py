@@ -560,7 +560,6 @@ def acousto_optic_shift(
     f = _frequency(frequency, _OWNER)
     shift = _offset(offset)
     faces, tets = _section(model, _wave_port(model, port))
-    _check_plane(model.mesh, faces, port)
     crystal = _crystal(model, port, tets)
     _check_optical_fixed(model)
     if is_traced(model.mesh.nodes):
@@ -571,6 +570,7 @@ def acousto_optic_shift(
             "in jax.lax.stop_gradient to use their value without their "
             "derivative."
         )
+    _check_plane(model.mesh, faces, port)
     owner = f"{_OWNER} (wave port {port!r})"
     rows = crystal.rows
     ip, ir = np.flatnonzero(crystal.has_p), np.flatnonzero(crystal.has_r)
