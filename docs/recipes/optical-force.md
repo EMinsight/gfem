@@ -60,7 +60,8 @@ def solve(eps):
         background=air,
     )
     problem = gfem.Driven(f, sources=[wave], keep_fields=True)
-    result = gfem.solve(model, problem, options=gfem.SolverOptions(order=3))
+    options = gfem.SolverOptions(order=3, linear_solver="direct")
+    result = gfem.solve(model, problem, options=options)
     return model, result
 
 
@@ -204,7 +205,7 @@ def force_per_power(gap):
         mode = gfem.solve(
             moved,
             gfem.PortMode("p", c / 1.55e-6),
-            options=gfem.SolverOptions(order=3),
+            options=gfem.SolverOptions(order=3, linear_solver="direct"),
         )
         return jnp.real(mode.n_eff[0])
 
@@ -248,8 +249,7 @@ print(f"d F_z / d eps = {float(d_force) / unit:.3f} I pi a^2 / c")
 d F_z / d eps = 1.243 I pi a^2 / c
 ```
 
-The gradient matches a fourth-order central difference of the solves
-(step 0.05) to $5\times10^{-6}$ in relative value. It is exact for the solved field: the force is a function of the
+The gradient agrees with a finite difference of the solves. It is exact for the solved field: the force is a function of the
 field coefficients, the node coordinates, the materials and, for an
 eigenmode, the frequency, and `jax.grad` carries the cotangent back through
 the solve. A design of the body's material (a {py:obj}`gfem.MaterialField`)
@@ -268,8 +268,11 @@ do not.
 - **One plain medium in the shell**: the stress shell is one homogeneous,
   isotropic, lossless medium. The body itself may be anything.
 - **Nothing special beside the body**: a port, an absorbing surface, a
-  perfectly matched layer, a periodic pair or a point dipole in or touching
-  the shell is refused.
+  perfectly matched layer or a point dipole in or touching the shell, and a
+  body node on a periodic pair, are refused.
+- **Sheets on the body or off it**: a sheet (a {py:obj}`gfem.Conductor` or
+  {py:obj}`gfem.Impedance`) lies wholly on the body, or off it; one that
+  touches the body without lying on it is refused.
 - **Total fields only**: of an incident-field column the total field is read,
   not its incident or scattered part.
 - **One process, no refinement**: a field across MPI ranks and an objective
