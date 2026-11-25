@@ -479,8 +479,12 @@ column = [
     (sm[row, "mirror TM"] + 1j * sm[row, "mirror TE"])[0] / np.sqrt(2)
     for row in ("mirror TM", "mirror TE")
 ]
-print(np.round(((column[0] + 1j * column[1]) / np.sqrt(2)).real, 4) + 0.0)  # right-handed out
-print(np.round(((column[0] - 1j * column[1]) / np.sqrt(2)).real, 4) + 0.0)  # left-handed out
+print(
+    np.round(((column[0] + 1j * column[1]) / np.sqrt(2)).real, 4) + 0.0
+)  # right-handed out
+print(
+    np.round(((column[0] - 1j * column[1]) / np.sqrt(2)).real, 4) + 0.0
+)  # left-handed out
 mirror_jones = gfem.diffraction.jones(closed, "top", "top", model=mirror)
 print(np.round(np.asarray(mirror_jones.circular[0]).real, 4) + 0.0)  # -P
 print(np.round(np.asarray(mirror_jones.mueller[0]), 4) + 0.0)  # diag(1, 1, -1, -1)
