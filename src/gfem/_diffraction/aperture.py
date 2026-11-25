@@ -209,7 +209,7 @@ def propagate(
     linear JAX operation on ``values``: `jax.jit`, `jax.grad` and `jax.vmap`
     work through it. Padding 2 keeps the focal spot of a lens within
     :math:`1.4\times10^{-4}` of the peak and the field across the footprint
-    within :math:`10^{-3}`; padding 3 gives :math:`4\times10^{-5}`.
+    within :math:`1.1\times10^{-3}`; padding 3 gives :math:`4\times10^{-5}`.
 
     Args:
         field: The field to propagate.

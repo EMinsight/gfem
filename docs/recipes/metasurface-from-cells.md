@@ -244,7 +244,7 @@ What to know about the two calls:
   (default 2) and the steepest components that would wrap around that window are
   dropped. Against the Rayleigh-Sommerfeld integral of the same samples, padding
   2 puts the focal spot of a lens within $1.4\times10^{-4}$ of the peak
-  amplitude and the field over the whole footprint within $10^{-3}$, from
+  amplitude and the field over the whole footprint within $1.1\times10^{-3}$, from
   numerical aperture 0.1 to 0.8; padding 3 gives $4\times10^{-5}$ at the focal
   spot. The Fresnel formula is not an alternative: it is wrong by 7 to 43 % in
   amplitude at numerical aperture 0.5 to 0.8.

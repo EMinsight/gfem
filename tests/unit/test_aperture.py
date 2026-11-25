@@ -273,6 +273,12 @@ def test_l3_lens_1d(na):
     ref = _rs1d(u0, x0, x0[sel], f, k)
     peak = np.max(np.abs(ref))
     assert np.max(np.abs(u[sel] - ref)) / peak < 2e-4
+    # the documented accuracy: the whole footprint within 1.1e-3 of the peak at
+    # padding 2 (1.0e-3 measured at NA 0.1), the focal spot within 4e-5 at padding 3
+    foot = _rs1d(u0, x0, x0, f, k)
+    assert np.max(np.abs(u - foot)) / np.max(np.abs(foot)) < 1.1e-3
+    wide = np.asarray(dif.propagate(field, f * UM, padding=3.0).values[0, 1])
+    assert np.max(np.abs(wide[sel] - ref)) / peak < 4e-5
 
 
 # --- L4: 2D lens --------------------------------------------------------------------
