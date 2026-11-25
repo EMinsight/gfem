@@ -22,6 +22,7 @@ orphan: true
 
 - {doc}`sheet-design`
 - {doc}`robust-optimization`
+- {doc}`tolerance-report`
 - {doc}`fabricable-layout`
 - {doc}`remesh-and-restart`
 

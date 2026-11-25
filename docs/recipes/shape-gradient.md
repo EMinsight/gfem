@@ -46,6 +46,9 @@ grad = jax.grad(reflection)(0.0)
   per reduced basis vector and operator term, whatever the number of
   frequencies.
 
+A scalar `morph(t)` moves every moving node by `t`: the surface's edge bias, the
+parameter of {doc}`tolerance-report`.
+
 The tutorial {doc}`../tutorials/shape` runs a whole gap-width optimization
 this way, accepting steps on `gfem.shape.quality`.
 
