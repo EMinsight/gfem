@@ -187,8 +187,8 @@ class SecondHarmonic:
         power: Any,
         *,
         period: Any = None,
-        duty_cycle: Any = 0.5,
-        order: Any = 1,
+        duty_cycle: Any = None,
+        order: Any = None,
     ) -> jax.Array:
         r"""The efficiency :math:`P_{2\omega}(L)/P_\omega(0)` in the undepleted pump.
 
@@ -222,9 +222,11 @@ class SecondHarmonic:
             period: The poling period :math:`\Lambda`, m, > 0; ``None``
                 for an unpoled guide.
             duty_cycle: The fraction :math:`D` of a period carrying
-                :math:`+d`, in [0, 1].
+                :math:`+d`, in [0, 1]; 0.5 when ``period`` is given and this
+                is not. Giving it without ``period`` raises.
             order: The quasi-phase-matching order :math:`m`, an integer
-                :math:`\ge 1`.
+                :math:`\ge 1`; 1 when ``period`` is given and this is not.
+                Giving it without ``period`` raises.
 
         Returns:
             The ratio, broadcast of ``length``, ``power``, ``period``,
@@ -232,14 +234,24 @@ class SecondHarmonic:
             Differentiable in every argument.
 
         Raises:
-            ValueError: A concrete argument is out of its range.
+            ValueError: A concrete argument is out of its range, or
+                ``duty_cycle`` or ``order`` is given without ``period``.
+            TypeError: A concrete argument is complex.
         """
+        if period is None and (duty_cycle is not None or order is not None):
+            raise ValueError(
+                "efficiency: duty_cycle and order apply to a poled guide: give "
+                "the period, or leave both out for an unpoled one."
+            )
+        duty_cycle = 0.5 if duty_cycle is None else duty_cycle
+        order = 1 if order is None else order
         _check_range("length", length, lo=0.0)
         _check_range("power", power, lo=0.0)
         if period is not None:
             _check_range("period", period, lo=0.0, strict=True)
         _check_range("duty_cycle", duty_cycle, lo=0.0, hi=1.0)
         if not is_traced(order):
+            _check_range("order", order, lo=1.0)
             m = np.asarray(order)
             if m.dtype.kind not in "iu" and not (
                 np.issubdtype(m.dtype, np.floating) and (m == np.round(m)).all()
@@ -247,7 +259,6 @@ class SecondHarmonic:
                 raise ValueError(
                     f"efficiency: order must be an integer >= 1, got {order!r}."
                 )
-            _check_range("order", order, lo=1.0)
         length, power, duty, order = (
             jnp.asarray(x, dtype=jnp.float64)
             for x in (length, power, duty_cycle, order)
@@ -264,8 +275,10 @@ class SecondHarmonic:
         alpha_h = jnp.real(self.harmonic_gamma)
         u = (alpha_h - 2 * alpha_p) * length / 2
         v = mismatch * length / 2
-        decay = jnp.exp(-(alpha_h + 2 * alpha_p) * length)
-        return gain * self.eta_norm * power * decay * length**2 * _sinhc_sinc(u, v)
+        half = (alpha_h + 2 * alpha_p) * length / 2
+        return (
+            gain * self.eta_norm * power * length**2 * _decayed_sinhc_sinc(u, v, half)
+        )
 
     def __repr__(self) -> str:
         n = int(np.shape(self.frequency)[-1])
@@ -303,6 +316,10 @@ def _check_range(
     """Raise unless a concrete ``value`` lies in the range (a tracer is skipped)."""
     if is_traced(value):
         return
+    if np.iscomplexobj(value):
+        raise TypeError(
+            f"efficiency: {name} must be real, got a complex value {value!r}."
+        )
     a = np.asarray(value, dtype=float)
     bad = (a <= lo) if strict else (a < lo)
     if hi is not None:
@@ -314,15 +331,20 @@ def _check_range(
         raise ValueError(f"efficiency: {name} must be {bound}, got {value!r}.")
 
 
-# :math:`c_k = 2^{2k-1} / (2k)!`, the coefficients of `_sinhc_sinc`'s series
+# :math:`c_k = 2^{2k-1} / (2k)!`, the coefficients of `_decayed_sinhc_sinc`'s series
 _SERIES = tuple(2.0 ** (2 * k - 1) / math.factorial(2 * k) for k in range(1, 10))
 #: u^2 + v^2 below which the series (truncated after k = 9, a relative 1e-17
 #: here) replaces the quotient, which loses all digits as both terms vanish
 _SERIES_BELOW = 0.25
 
 
-def _sinhc_sinc(u: Any, v: Any) -> Any:
-    r""":math:`(\sinh^2 u + \sin^2 v)/(u^2 + v^2)`, 1 and smooth at the origin.
+def _decayed_sinhc_sinc(u: Any, v: Any, half: Any) -> Any:
+    r""":math:`e^{-2h}(\sinh^2 u + \sin^2 v)/(u^2 + v^2)`, smooth at the origin.
+
+    :math:`h` is ``half``, :math:`\ge |u|` for a passive row. The quotient is
+    built as :math:`((e^{|u|-h} - e^{-|u|-h})/2)^2 + e^{-2h}\sin^2 v`, whose
+    exponents are all :math:`\le 0`: :math:`\sinh^2 u` alone overflows at
+    :math:`|u| \gtrsim 355` while the decay underflows, a NaN.
 
     With :math:`x = u^2`, :math:`y = v^2`, :math:`\sinh^2 u + \sin^2 v =
     \sum_k c_k (x^k - (-y)^k)` and each term divides by :math:`x + y`
@@ -338,8 +360,11 @@ def _sinhc_sinc(u: Any, v: Any) -> Any:
     # large arguments overflow in sinh: only the branch that is used is built
     su = jnp.where(small, 0.0, u)
     sv = jnp.where(small, 0.0, v)
-    quotient = (jnp.sinh(su) ** 2 + jnp.sin(sv) ** 2) / safe
-    return jnp.where(small, series, quotient)
+    decay = jnp.exp(-2 * half)
+    au = jnp.abs(su)
+    sinh_decayed = ((jnp.exp(au - half) - jnp.exp(-au - half)) / 2) ** 2
+    quotient = (sinh_decayed + decay * jnp.sin(sv) ** 2) / safe
+    return jnp.where(small, series * decay, quotient)
 
 
 # --- materials -------------------------------------------------------------------
@@ -478,9 +503,16 @@ def three_wave_coupling(
     e = _three_components(waves.field())
     d = waves.materials.d[:, None]
     omega = jnp.asarray(2 * np.pi * waves.frequency)
-    # P[b, c] = d : E_b E_c at every point, then the overlap with conj(E_a)
-    p = _chi2.contract(d[None, None], e[:, None], e[None, :])
-    t = jnp.einsum("aeqi,bceqi,eq->abc", jnp.conj(e), p, waves.weights)
+
+    @jax.checkpoint
+    def overlap(eb: jax.Array) -> jax.Array:
+        # P[c] = d : E_b E_c at every point, then the overlap with conj(E_a)
+        p = _chi2.contract(d, eb[None], e)
+        return jnp.einsum("aeqi,ceqi,eq->ac", jnp.conj(e), p, waves.weights)
+
+    # one wave b at a time: the point values of all (b, c) pairs at once would
+    # be (K, K, n_el, n_q, 3) complex
+    t = jnp.moveaxis(jax.lax.map(overlap, e), 0, 1)
     kappa = jnp.conj(omega[:, None, None] * _EPS0 / 4 * t)
     return ThreeWaveCoupling(
         port=waves.port,

@@ -233,3 +233,13 @@ def test_the_gradient_of_eta_norm_in_the_permittivity_matches_differences(
     assert_gradient_matches(
         lambda s: eta(s, 2), s0, [np.array(1.0)], step=1e-2, rel=1e-6
     )
+
+    # the real part of kappa itself (the phase of the overlap, not only its
+    # modulus), at order 2, differences as above
+    def kappa(s):
+        model = _line_model(line_mesh_path, eps_scale=s)
+        pump = _mode(model, F, 2, polarization="Ez")
+        harm = _mode(model, 2 * F, 2, polarization="Ez")
+        return jnp.real(gfem.second_harmonic(model, pump, harm).kappa[0]) / 0.5892
+
+    assert_gradient_matches(kappa, s0, [np.array(1.0)], step=1e-2, rel=1e-6)

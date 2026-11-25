@@ -23,7 +23,7 @@ from slab2d import write_slab
 import gfem
 from gfem import _chi2
 from gfem.errors import NonDifferentiableError
-from gfem.three_wave import _sinhc_sinc
+from gfem.three_wave import _decayed_sinhc_sinc
 
 DATA = Path(__file__).parent / "data"
 #: WR-90 (m)
@@ -120,13 +120,6 @@ def test_second_harmonic_kappa_is_the_coupling_entry_of_each_row(shg):
     # einsum): round-off, 1e-12 relative
     for i in range(2):
         assert c[2 + i, i, i] == pytest.approx(complex(sh.kappa[i]), rel=1e-12)
-    # the documented pair form, on one row
-    one, two = mode_of(model, F[:1]), mode_of(model, 2 * F[:1])
-    row = gfem.second_harmonic(model, one, two)
-    pair = gfem.three_wave_coupling(model, [one, two])
-    assert complex(pair.kappa[1, 0, 0]) == pytest.approx(
-        complex(row.kappa[0]), rel=1e-12
-    )
 
 
 def test_the_result_names_its_port_modes_and_frequencies(shg):
@@ -151,24 +144,6 @@ def test_the_coupling_is_exactly_linear_in_the_tensor_and_zero_off_its_entries(
     zero = gfem.second_harmonic(guide_model(guide_mesh, crystal(d=other)), pump, harm)
     # the discrete TE10 has a stray E_x of the mesh's size: 1.7e-9 of kappa measured
     np.testing.assert_allclose(zero.kappa, 0.0, atol=1e-7 * np.abs(sh.kappa).max())
-
-
-def test_waves_from_two_models_of_one_mesh_are_accepted_another_mesh_is_not(
-    guide_mesh, shg
-):
-    model, pump, _, sh = shg
-    # the harmonic solved on a model with another permittivity (a crystal's
-    # eps is one constant per frequency); the tensor is read from the model passed
-    other = guide_model(guide_mesh, crystal(n=1.52))
-    harm2 = mode_of(other, 2 * F)
-    mixed = gfem.second_harmonic(model, pump, harm2)
-    assert np.isfinite(np.asarray(mixed.kappa)).all()
-    assert not np.allclose(mixed.kappa, sh.kappa, rtol=1e-3)
-    assert gfem.three_wave_coupling(model, [pump, harm2]).kappa.shape == (4, 4, 4)
-    nodes = jnp.asarray(np.asarray(guide_mesh.imported_nodes) * 1.01)
-    mesh = jax.tree.unflatten(jax.tree.structure(guide_mesh), [nodes])
-    with pytest.raises(ValueError, match=r"not the one wave port 'p1'"):
-        gfem.second_harmonic(model.replace(mesh=mesh), pump, harm2)
 
 
 # --- frames, fields and blends -----------------------------------------------------
@@ -241,41 +216,7 @@ def test_the_gradient_in_the_tensor_is_exact_by_linearity(guide_mesh, shg):
     assert float(value) == pytest.approx(float(sh.kappa[0].real), rel=1e-13)
 
 
-def test_the_gradient_in_the_permittivity_matches_a_central_difference(guide_mesh):
-    f = np.array([8e9])
-
-    def objective(s):
-        field = gfem.MaterialField(
-            eps_r=s * N**2, second_order_nonlinear_tensor=_d_yyy()
-        )
-        model = guide_model(guide_mesh, field)
-        pump, harm = mode_of(model, f), mode_of(model, 2 * f)
-        return jnp.real(gfem.second_harmonic(model, pump, harm).kappa[0])
-
-    grad = float(jax.grad(objective)(1.0))
-    # kappa is smooth in the scale s; the central difference has truncation
-    # (h^2 / 6) f''' and round-off eps |f| / h from the modes' eigensolves, which
-    # measure 1e-12 relative: with h = 1e-3 both are below 1e-6 of f', and the
-    # gate is 1e-4 of it
-    h = 1e-3
-    fd = (float(objective(1 + h)) - float(objective(1 - h))) / (2 * h)
-    assert grad == pytest.approx(fd, rel=1e-4)
-
-
 # --- refusals ----------------------------------------------------------------------
-
-
-def test_the_pairing_of_the_two_results_is_checked(shg):
-    model, _, harm, _ = shg
-    one = mode_of(model, F[:1])
-    with pytest.raises(ValueError, match=r"pump has 1 rows but the harmonic 2"):
-        gfem.second_harmonic(model, one, harm)
-    detuned = mode_of(model, 2 * F[:1] * (1 + 1e-7))
-    with pytest.raises(ValueError, match=r"row 0 of the harmonic.*not twice"):
-        gfem.second_harmonic(model, one, detuned)
-    # inside the tolerance (a wavelength-to-frequency round trip) it is accepted
-    near = mode_of(model, 2 * F[:1] * (1 + 1e-10))
-    gfem.second_harmonic(model, one, near)
 
 
 def test_a_model_without_the_tensor_names_the_regions(guide_mesh, shg):
@@ -300,40 +241,15 @@ def test_a_result_without_a_field_or_a_non_result_is_a_type_error(shg):
         gfem.three_wave_coupling(model, "mode")  # ty: ignore[invalid-argument-type]
 
 
-def test_waves_of_different_ports_or_orders_are_refused(guide_mesh, shg):
-    model, pump, _, _ = shg
-    ports = gfem.Model(
-        guide_mesh,
-        materials=model.materials,
-        boundaries=model.boundaries,
-        ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")],
-    )
-    other = gfem.solve(ports, gfem.PortMode("p2", F), options=ORDER)
-    with pytest.raises(ValueError, match=r"share one port.*'p1'.*'p2'"):
-        gfem.three_wave_coupling(ports, [pump, other])
-    third = mode_of(model, F, order=gfem.SolverOptions(order=3))
-    with pytest.raises(ValueError, match=r"share one port, element order"):
-        gfem.three_wave_coupling(model, [pump, third])
-
-
-def test_traced_node_coordinates_raise_by_name(guide_mesh, shg):
-    model, _, _, _ = shg
-    nodes = np.array(guide_mesh.imported_nodes)
-
-    def objective(scale):
-        mesh = jax.tree.unflatten(
-            jax.tree.structure(guide_mesh), [jnp.asarray(nodes) * scale]
-        )
-        moved = model.replace(mesh=mesh)
-        f = np.array([8e9])
-        pump, harm = mode_of(moved, f), mode_of(moved, 2 * f)
-        return jnp.real(gfem.second_harmonic(moved, pump, harm).kappa[0])
-
-    with pytest.raises(NonDifferentiableError, match="second_harmonic"):
-        jax.grad(objective)(1.0)
-
-
 # --- the Ez line port ---------------------------------------------------------------
+
+
+SLAB_F = sc.c / 1.55e-6
+SLAB_ORDER = gfem.SolverOptions(order=3)
+
+
+def ez(model, f, order=SLAB_ORDER):
+    return mode_of(model, f, order, polarization="Ez")
 
 
 @pytest.fixture(scope="module")
@@ -348,11 +264,11 @@ def slab(tmp_path_factory):
 
     mesh = gfem.Mesh.from_gmsh(path, length_unit="um")
 
-    def build(d):
+    def build(d, n=3.476):
         return gfem.Model(
             mesh,
             materials={
-                "core": gfem.Material(eps_r=3.476**2, second_order_nonlinear_tensor=d),
+                "core": gfem.Material(eps_r=n**2, second_order_nonlinear_tensor=d),
                 "clad": gfem.Material(eps_r=1.444**2),
             },
             ports=[gfem.WavePort("p1", "port1", pec_edges=("outer",))],
@@ -361,14 +277,8 @@ def slab(tmp_path_factory):
     d = np.zeros((3, 6))
     d[2, 2] = 25e-12
     model = build(d)
-    options = gfem.SolverOptions(order=3)
-    f = sc.c / 1.55e-6
-    pump = gfem.solve(
-        model, gfem.PortMode("p1", [f], polarization="Ez"), options=options
-    )
-    harm = gfem.solve(
-        model, gfem.PortMode("p1", [2 * f], polarization="Ez"), options=options
-    )
+    pump = ez(model, [SLAB_F])
+    harm = ez(model, [2 * SLAB_F])
     return model, pump, harm, build
 
 
@@ -390,21 +300,117 @@ def test_an_ez_line_port_couples_through_d_zzz_only(slab):
 
 def test_an_hz_line_port_is_refused(slab):
     model, _, harm, _ = slab
-    f = sc.c / 1.55e-6
-    hz = gfem.solve(
-        model,
-        gfem.PortMode("p1", [f], polarization="Hz"),
-        options=gfem.SolverOptions(order=3),
-    )
+    hz = mode_of(model, [SLAB_F], SLAB_ORDER, polarization="Hz")
     with pytest.raises(NotImplementedError, match="Hz line port"):
         gfem.second_harmonic(model, hz, harm)
+
+
+def test_the_pair_form_of_one_row_is_the_row_of_the_second_harmonic(slab):
+    model, pump, harm, _ = slab
+    row = gfem.second_harmonic(model, pump, harm)
+    pair = gfem.three_wave_coupling(model, [pump, harm])
+    # one overlap summed in two orders (a row at a time against the wave map):
+    # round-off, 1e-12 relative
+    assert complex(pair.kappa[1, 0, 0]) == pytest.approx(
+        complex(row.kappa[0]), rel=1e-12
+    )
+
+
+def test_the_pairing_of_the_two_results_is_checked(slab):
+    model, pump, _, _ = slab
+    two = ez(model, [2 * SLAB_F, 2.2 * SLAB_F])
+    with pytest.raises(ValueError, match=r"pump has 1 rows but the harmonic 2"):
+        gfem.second_harmonic(model, pump, two)
+    detuned = ez(model, [2 * SLAB_F * (1 + 1e-7)])
+    with pytest.raises(ValueError, match=r"row 0 of the harmonic.*not twice"):
+        gfem.second_harmonic(model, pump, detuned)
+    # inside the tolerance (a wavelength-to-frequency round trip) it is accepted
+    near = ez(model, [2 * SLAB_F * (1 + 1e-10)])
+    gfem.second_harmonic(model, pump, near)
+
+
+def test_waves_from_two_models_of_one_mesh_are_accepted_another_mesh_is_not(slab):
+    model, pump, harm, build = slab
+    sh = gfem.second_harmonic(model, pump, harm)
+    # the harmonic solved on a model with another permittivity (a crystal's
+    # eps is one constant per frequency); the tensor is read from the model passed
+    other = build(model.materials["core"].second_order_nonlinear_tensor, n=3.5)
+    harm2 = ez(other, [2 * SLAB_F])
+    mixed = gfem.second_harmonic(model, pump, harm2)
+    assert np.isfinite(np.asarray(mixed.kappa)).all()
+    assert not np.allclose(mixed.kappa, sh.kappa, rtol=1e-3)
+    assert gfem.three_wave_coupling(model, [pump, harm2]).kappa.shape == (2, 2, 2)
+    nodes = jnp.asarray(np.asarray(model.mesh.imported_nodes) * 1.01)
+    mesh = jax.tree.unflatten(jax.tree.structure(model.mesh), [nodes])
+    with pytest.raises(ValueError, match=r"not the one wave port 'p1'"):
+        gfem.second_harmonic(model.replace(mesh=mesh), pump, harm2)
+
+
+def test_waves_of_different_ports_or_orders_are_refused(slab):
+    model, pump, _, _ = slab
+    ports = gfem.Model(
+        model.mesh,
+        materials=model.materials,
+        ports=[
+            gfem.WavePort("p1", "port1", pec_edges=("outer",)),
+            gfem.WavePort("p2", "port2", pec_edges=("outer",)),
+        ],
+    )
+    other = gfem.solve(
+        ports,
+        gfem.PortMode("p2", [SLAB_F], polarization="Ez"),
+        options=SLAB_ORDER,
+    )
+    with pytest.raises(ValueError, match=r"share one port.*'p1'.*'p2'"):
+        gfem.three_wave_coupling(ports, [pump, other])
+    third = ez(model, [SLAB_F], order=gfem.SolverOptions(order=2))
+    with pytest.raises(ValueError, match=r"share one port, element order"):
+        gfem.three_wave_coupling(model, [pump, third])
+
+
+def test_traced_node_coordinates_raise_by_name(slab):
+    model, _, _, _ = slab
+    nodes = np.array(model.mesh.imported_nodes)
+    low = gfem.SolverOptions(order=2)
+
+    def objective(scale):
+        mesh = jax.tree.unflatten(
+            jax.tree.structure(model.mesh), [jnp.asarray(nodes) * scale]
+        )
+        moved = model.replace(mesh=mesh)
+        pump, harm = (ez(moved, [k * SLAB_F], low) for k in (1, 2))
+        return jnp.real(gfem.second_harmonic(moved, pump, harm).kappa[0])
+
+    with pytest.raises(NonDifferentiableError, match="second_harmonic"):
+        jax.grad(objective)(1.0)
+
+
+def test_the_gradient_through_the_pair_form_matches_the_second_harmonic_row(slab):
+    model, pump, harm, build = slab
+    d = model.materials["core"].second_order_nonlinear_tensor
+
+    def via_pair(scale):
+        m = build(scale * d)
+        return jnp.real(gfem.three_wave_coupling(m, [pump, harm]).kappa[1, 0, 0])
+
+    def via_row(scale):
+        m = build(scale * d)
+        return jnp.real(gfem.second_harmonic(m, pump, harm).kappa[0])
+
+    g_pair, g_row = jax.grad(via_pair)(1.0), jax.grad(via_row)(1.0)
+    # both are linear in the tensor: the derivative is the value, to the
+    # round-off of one overlap, so each also equals the value
+    assert float(g_pair) == pytest.approx(float(via_pair(1.0)), rel=1e-12)
+    assert float(g_pair) == pytest.approx(float(g_row), rel=1e-12)
 
 
 def test_a_layer_grid_blend_carrying_the_tensor_is_refused(slab):
     model, _, _, _ = slab
     grid = gfem.design.LayerGrid(model.mesh, "core", pitch=0.05e-6)
     rho = grid.to_elements(np.ones(grid.shape))
-    with pytest.raises(ValueError, match=r"tensor|second_order_nonlinear_tensor"):
+    with pytest.raises(
+        ValueError, match=r"second_order_nonlinear_tensor, but a layer density"
+    ):
         gfem.MaterialField.interpolate(
             rho, model.materials["clad"], model.materials["core"]
         )
@@ -512,6 +518,54 @@ def test_it_is_finite_at_zero_mismatch_and_zero_loss_difference_with_its_gradien
     assert abs(float(g_db)) < 1e-20
 
 
+@pytest.mark.parametrize(("a_pump", "a_harm"), [(0.0, 1e4), (1e4, 0.0)])
+def test_a_large_loss_difference_stays_finite_with_its_gradient(a_pump, a_harm):
+    # |Delta alpha| L / 2 = 500 or 1000: sinh^2 alone overflows (above 355) while
+    # the decay underflows. There e^{-(a_h + 2 a_p) L} sinh^2(u) is 1/4 to
+    # e^{-1000} and sin^2 is damped to zero, so the value is
+    # kappa^2 P / 4 / ((Delta alpha / 2)^2 + (Delta beta / 2)^2) exactly to the
+    # round-off of the quotient
+    sh = gfem.SecondHarmonic(
+        port="p1",
+        modes=(1, 1),
+        frequency=np.array([2e14]),
+        kappa=jnp.array([1.0e3 + 0j]),
+        pump_gamma=jnp.array([a_pump + 1e7j]),
+        harmonic_gamma=jnp.array([a_harm + 1j * (2e7 + 1e3)]),
+    )
+    da, db = a_harm - 2 * a_pump, 1e3
+    want = 1e6 / 4 / ((da / 2) ** 2 + (db / 2) ** 2)
+    length = 0.1
+    assert float(sh.efficiency(length, 1.0)[0]) == pytest.approx(want, rel=1e-13)
+    g_len, g_pow = jax.grad(lambda x, y: sh.efficiency(x, y)[0], argnums=(0, 1))(
+        length, 1.0
+    )
+    # linear in the power; constant in the length up to e^{-1000}
+    assert float(g_pow) == pytest.approx(want, rel=1e-13)
+    assert abs(float(g_len)) < 1e-100
+
+
+def test_duty_cycle_and_order_default_with_a_period_and_are_refused_without():
+    sh = _rows()
+    same = sh.efficiency(1e-3, 1.0, period=1e-5)
+    explicit = sh.efficiency(1e-3, 1.0, period=1e-5, duty_cycle=0.5, order=1)
+    np.testing.assert_array_equal(same, explicit)
+    for kwargs in ({"duty_cycle": 0.3}, {"order": 1}, {"duty_cycle": 0.5, "order": 3}):
+        with pytest.raises(ValueError, match="give the period"):
+            sh.efficiency(1e-3, 1.0, **kwargs)
+
+
+def test_a_complex_argument_is_a_type_error_scalar_or_array():
+    sh = _rows()
+    for bad in (1e-3 + 0j, np.array([1e-3 + 0j, 2e-3])):
+        with pytest.raises(TypeError, match="length must be real"):
+            sh.efficiency(bad, 1.0)
+    with pytest.raises(TypeError, match="power must be real"):
+        sh.efficiency(1e-3, 1.0 + 0j)
+    with pytest.raises(TypeError, match="order must be real"):
+        sh.efficiency(1e-3, 1.0, period=1e-5, order=1 + 0j)
+
+
 def test_the_series_and_the_quotient_agree_where_they_meet():
     # r2 = u^2 + v^2 = 0.25: the series is truncated after k = 9, whose next
     # term is c_10 * 10 * 0.25^9 = 8e-17; the quotient's round-off is a few eps
@@ -519,8 +573,10 @@ def test_the_series_and_the_quotient_agree_where_they_meet():
         for r2 in (0.25 - 1e-9, 0.25 + 1e-9):
             u, v = np.sqrt(r2) * np.cos(angle), np.sqrt(r2) * np.sin(angle)
             direct = (np.sinh(u) ** 2 + np.sin(v) ** 2) / r2
-            assert float(_sinhc_sinc(u, v)) == pytest.approx(direct, rel=1e-14)
-    assert float(_sinhc_sinc(0.0, 0.0)) == 1.0
+            assert float(_decayed_sinhc_sinc(u, v, 0.0)) == pytest.approx(
+                direct, rel=1e-14
+            )
+    assert float(_decayed_sinhc_sinc(0.0, 0.0, 0.0)) == 1.0
 
 
 def test_it_broadcasts_against_the_rows_and_jits_with_the_result_as_an_argument():
