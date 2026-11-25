@@ -193,6 +193,12 @@ from gfem.thermo_optic import (  # noqa: E402
     route_phase,
     thermo_optic_shift,
 )
+from gfem.three_wave import (  # noqa: E402
+    SecondHarmonic,
+    ThreeWaveCoupling,
+    second_harmonic,
+    three_wave_coupling,
+)
 
 __version__ = _version("gfem")
 
@@ -292,6 +298,7 @@ __all__ = [
     "RegionNotFoundError",
     "RoutePhase",
     "SaxComponent",
+    "SecondHarmonic",
     "SheetField",
     "SkippedPortModeWarning",
     "SolveCacheWarning",
@@ -304,6 +311,7 @@ __all__ = [
     "SweepRankDeficientWarning",
     "ThermoOpticShift",
     "ThinLayerWarning",
+    "ThreeWaveCoupling",
     "TimeResponse",
     "ToleranceReport",
     "Trace",
@@ -355,10 +363,12 @@ __all__ = [
     "release_memory",
     "rise_time",
     "route_phase",
+    "second_harmonic",
     "shape",
     "solve",
     "strain",
     "thermo_optic_shift",
+    "three_wave_coupling",
     "time_constant",
     "tolerance_report",
     "wave_vector_path",
