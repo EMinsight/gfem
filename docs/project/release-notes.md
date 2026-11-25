@@ -28,6 +28,16 @@ Periodic cells:
   solve builds its operators from a per-mesh template instead of assembling
   them again.
 
+Piezoelectric:
+
+- **Acousto-optic shift.** Materials take a `photoelastic_tensor`, and
+  `gfem.acousto_optic_shift(model, acoustic, port=, frequency=)` gives the index
+  change per volt of a wave port's mode at every kept frequency of a
+  `gfem.PiezoelectricResult`, from one mode solve, as a complex phasor with its
+  photoelastic and electro-optic parts and `v_pi_l`. It differentiates under
+  `jax.grad` in the tensors, the acoustic inputs and `offset`
+  ({doc}`../tutorials/acousto-optic`, {doc}`../recipes/acousto-optic-shift`).
+
 Thermal:
 
 - **Thermal boundary values differentiate.** A fixed temperature, a

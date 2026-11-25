@@ -1026,6 +1026,35 @@ Tests: [unit checks](https://github.com/benvial/gfem/blob/main/tests/unit/test_p
 [closed forms](https://github.com/benvial/gfem/blob/main/tests/verification/test_piezoelectric.py),
 [gradients](https://github.com/benvial/gfem/blob/main/tests/unit/test_piezoelectric_gradients.py).
 
+(verification-acousto-optic)=
+## Acousto-optic shift
+
+The shift of a guided mode under an acoustic wave
+({py:obj}`gfem.acousto_optic_shift`) is checked against closed forms and
+against itself:
+
+- **Closed form.** A slab in a uniform strain gives the weighted sum of its
+  permittivity change exactly.
+- **A second solve.** A separate mode solve gives the same shift to the
+  eigen-solve's round-off.
+- **Frame invariance.** The same device with its crystal and sections turned
+  gives the same shift.
+- **The electro-optic part.** With a static potential as the field, the electro-optic
+  part equals {py:obj}`gfem.electro_optic_shift`.
+- **Gradients.** The gradients in the photoelastic and electro-optic tensors, the
+  offset, an acoustic node map and an acoustic material leaf match fourth-order
+  central differences.
+
+Observations, not checks. The tutorial's transducer at full size (20 signal and 19
+ground fingers, 40 grounded strips per side, assumed counts), with optical windows
+of 8 by 5 µm, gives a push-pull $V_\pi L$ of 0.48 V·cm per volt of incident wave at
+0.861 GHz and an effective index of 1.8401; the device measured 1.004 V·cm at
+0.842 GHz (Ni, Bhave and Xu, arXiv 2606.05337). The photoelastic and electro-optic
+parts have opposite signs, the second 0.30 of the first.
+
+Tests: [unit checks](https://github.com/benvial/gfem/blob/main/tests/unit/test_acousto_optic.py),
+[materials](https://github.com/benvial/gfem/blob/main/tests/unit/test_photoelastic_material.py).
+
 (verification-mesh-refinement)=
 ## Mesh refinement error estimates
 

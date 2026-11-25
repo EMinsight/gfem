@@ -29,6 +29,7 @@ from gfem._materials import (  # noqa: E402
     Lorentz,
     PermittivityLaw,
 )
+from gfem.acousto_optic import AcoustoOpticShift, acousto_optic_shift  # noqa: E402
 from gfem.bands import (  # noqa: E402
     BandDiagram,
     WaveVectorPath,
@@ -191,6 +192,7 @@ __all__ = [
     "PMC",
     "PML",
     "Absorbing",
+    "AcoustoOpticShift",
     "AntiBoundRootWarning",
     "Background",
     "BandDiagram",
@@ -301,6 +303,7 @@ __all__ = [
     "WavePort",
     "WaveVectorPath",
     "__version__",
+    "acousto_optic_shift",
     "band_diagram",
     "beam_coupling",
     "characteristic_impedance",

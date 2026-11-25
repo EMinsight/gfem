@@ -53,7 +53,12 @@ from gfem._engine import probe as _probe
 from gfem._engine.thermo_optic import ShiftWeightsRule
 from gfem.mesh import Mesh
 
-__all__ = ["ElectroOpticWeightsRule", "GradientProbe", "StaticFieldKernel"]
+__all__ = [
+    "AcoustoOpticWeightsRule",
+    "ElectroOpticWeightsRule",
+    "GradientProbe",
+    "StaticFieldKernel",
+]
 
 
 class ElectroOpticWeightsRule(ShiftWeightsRule):
@@ -76,6 +81,33 @@ class ElectroOpticWeightsRule(ShiftWeightsRule):
         del kinds
         return (
             f"gfem cannot differentiate the electro-optic shift's mode output "
+            f"{name!r} with respect to the optical model: the mode is a constant "
+            "of the shift. Wrap the input in jax.lax.stop_gradient to use its "
+            "value without its derivative."
+        )
+
+
+class AcoustoOpticWeightsRule(ElectroOpticWeightsRule):
+    """The port mode solve of an acousto-optic shift, with its own refusals."""
+
+    def unsupported_input(self, kind: tuple) -> str | None:
+        """Every input the port mode problem reads: the mode is held constant."""
+        del kind
+        return (
+            "an acousto-optic shift holds the port mode constant (first order in "
+            "the acoustic fields), and the mode's derivative with respect to the "
+            "optical model's permittivity, losses, permeability, node coordinates "
+            "or boundary values is not wired through the shift's weights in this "
+            "version (a frozen mode gives a wrong value). "
+            "Differentiate through the acoustic result, the photoelastic_tensor, "
+            "the electro_optic_tensor or the offset"
+        )
+
+    def nondifferentiable_output(self, name: str, kinds: Any = ()) -> str:
+        """The error message for a cotangent on output ``name``."""
+        del kinds
+        return (
+            f"gfem cannot differentiate the acousto-optic shift's mode output "
             f"{name!r} with respect to the optical model: the mode is a constant "
             "of the shift. Wrap the input in jax.lax.stop_gradient to use its "
             "value without its derivative."

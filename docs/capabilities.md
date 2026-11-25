@@ -142,6 +142,12 @@ v0.1.
   and push-pull) and `ElectrostaticResult.capacitance_per_length`. Materials
   take an `electro_optic_tensor` on explicit `axes`
   ({doc}`recipes/electro-optic-phase`).
+- **Acousto-optic shift**: {py:obj}`gfem.acousto_optic_shift` (a guided mode's
+  index and phase per volt on a transducer's terminal, as a complex phasor at
+  every kept frequency of a piezoelectric result, through a `photoelastic_tensor`
+  and an `electro_optic_tensor`; photoelastic and electro-optic parts, $V_\pi L$
+  per arm and push-pull; differentiable in the tensors, the acoustic inputs and
+  the windows' `offset`) ({doc}`recipes/acousto-optic-shift`).
 - **Broadband models and time responses**:
   `NetworkParameters.fit_rational` (a passive {term}`rational model` of S,
   written as a SPICE subcircuit or a Verilog-A module) and
