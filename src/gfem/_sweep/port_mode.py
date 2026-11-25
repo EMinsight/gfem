@@ -54,13 +54,10 @@ from jax.interpreters import partial_eval
 
 from gfem import _mpi, _pml, _progress
 from gfem._boundaries import (
-    Conductor,
     FloquetPort,
-    Impedance,
     Polarity,
     WavePort,
     lead_port,
-    sheet_of,
     wave_port_label,
     wave_port_surfaces,
 )
@@ -73,11 +70,7 @@ from gfem._engine.line_mode import LineModeSpace, ModeSpace, mode_space
 from gfem._engine.line_mode_sensitivity import line_integrated
 from gfem._engine.port_mode import PortModeSpace
 from gfem._engine.port_mode_normalization import normalize_rows
-from gfem._engine.port_mode_sensitivity import (
-    impedance_cotangents,
-    integrated,
-    owner_tetrahedra,
-)
+from gfem._engine.port_mode_sensitivity import section_inputs
 from gfem._engine.port_mode_shape import chain_to_nodes
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import Term, is_thermal_value
@@ -388,7 +381,13 @@ class PortModeRule:
             from gfem._engine.driven2d import _NO_GRADIENTS
 
             return None if kind[0] == "material" else _NO_GRADIENTS
-        return anisotropic_absorbing(self._model, lead_port(self._ports))
+        if kind[0] == "material":
+            return anisotropic_absorbing(
+                self._model, lead_port(self._ports), region=kind[1]
+            )
+        if kind[0] == "nodes":
+            return anisotropic_absorbing(self._model, lead_port(self._ports))
+        return None
 
     def nondifferentiable_output(self, name: str, kinds: Any = ()) -> str | None:
         """The error message for a cotangent on output ``name``, or ``None``.
@@ -541,18 +540,11 @@ class PortModeRule:
                 len(model.mesh.imported_nodes),
             )
         cot: Any = done.section
-        # a law's triangles take eps_inf through the law, not through the mass
-        if section.law_index is not None:
-            on_law = np.asarray(section.law_index) >= 0
-            cot.eps_tt[on_law] = 0
-            cot.eps_nn[on_law] = 0
-        owners = owner_tetrahedra(model, section)
-        n_tets = len(model.mesh.volume_elements)
-        out = [integrated(section, cot, owners, n_tets)]
-        explicit: dict[tuple, Any] = dict(done.laws)
-        for (g, name), value in impedance_cotangents(section, cot).items():
-            explicit[("boundary", _boundary_index(model, section, g), name)] = value
-        explicit |= _fill_cotangents(model, section, cot)
+        item, kinds = section_inputs(
+            model, section, cot, len(model.mesh.volume_elements)
+        )
+        out = [item]
+        explicit: dict[tuple, Any] = dict(done.laws) | kinds
         self._explicit = explicit
         return out
 
@@ -667,43 +659,6 @@ _AT_STAGED = (
     "points on the section; inside jax.jit the model's mesh is traced. Pass the "
     "model as a closed-over constant, or read the field outside jax.jit."
 )
-
-
-def _boundary_index(model: Model, section: PortSection, group: int) -> int:
-    """Index in ``model.boundaries`` of an impedance group's boundary."""
-    surface = section.impedance_terms[group][0].surface
-    for i, b in enumerate(model.boundaries):
-        if isinstance(b, (Conductor, Impedance)) and b.surface == surface:
-            return i
-    raise RuntimeError(f"No boundary on surface {surface!r}.")  # pragma: no cover
-
-
-def _fill_cotangents(model: Model, section: PortSection, cot: Any) -> dict[tuple, Any]:
-    """The gradient by each sheet field's fill, per face of its surface.
-
-    Each section impedance edge reads the fill of one face of the sheet's
-    surface along it (the last face listing the edge, as
-    `gfem._port_section._sheet_fill_by_edge`).
-    """
-    if section.impedance_fill is None or not len(section.impedance_edges):
-        return {}
-    mesh = model.mesh
-    used = np.unique(mesh.triangles[section.faces])
-    out: dict[tuple, Any] = {}
-    for g, (item, _) in enumerate(section.impedance_terms):
-        if sheet_of(item) is None:
-            continue
-        index = _boundary_index(model, section, g)
-        faces = mesh.elements(item.surface)
-        keys = np.sort(mesh.triangles[faces][:, [[0, 1], [1, 2], [2, 0]]], axis=2)
-        owner = {(int(a), int(b)): f for f, tri in enumerate(keys) for a, b in tri}
-        grad = out.setdefault(
-            ("boundary", index, "fill", "fill"), np.zeros(len(faces), complex)
-        )
-        for e in np.flatnonzero(section.impedance_group == g):
-            edge = np.sort(used[np.asarray(section.impedance_edges[e])])
-            grad[owner[int(edge[0]), int(edge[1])]] += cot.fill[e]
-    return out
 
 
 def _section_regions(model: Model, port: WavePort) -> set[str]:

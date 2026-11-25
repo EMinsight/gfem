@@ -54,7 +54,6 @@ import scipy.constants
 import scipy.sparse as sp
 
 from gfem import _mpi
-from gfem._boundaries import sheet_of, surfaces_of
 from gfem._engine.line_mode import LineModeSpace
 from gfem._engine.line_mode_sensitivity import line_integrated
 from gfem._engine.line_port_pass import LineFaceForms, line_face
@@ -69,17 +68,12 @@ from gfem._engine.port_mode_sensitivity import (
     FormPair,
     SectionCotangents,
     SectionKernel,
-    _isotropic,
-    edge_triangles,
-    impedance_cotangents,
-    integrated,
     law_cotangents,
-    owner_tetrahedra,
+    section_inputs,
 )
 from gfem._engine.port_mode_shape import ShapeForm, chain_to_nodes, voltage_eulerian
 from gfem._engine.sensitivity import Integrated
 from gfem._engine.wave_ports import PortSurfaceCoupling
-from gfem._port_section import _edge_keys
 from gfem._sweep.port_mode import _voltage_rule, _wavenumbers
 from gfem.errors import PortModeError
 
@@ -777,17 +771,10 @@ class PortPass:
                 report[tag] += chain_to_nodes(
                     section, mesh.triangles, cot, len(mesh.imported_nodes)
                 )
-            owners = owner_tetrahedra(self.model, section)
-            integrated_all.append(
-                integrated(section, _owned(total, section), owners, n_tets)
-            )
-            for k, v in laws.items():
+            item, kinds = section_inputs(self.model, section, total, n_tets)
+            integrated_all.append(item)
+            for k, v in [*laws.items(), *kinds.items()]:
                 explicit[k] = explicit.get(k, 0.0) + v
-            self._fills(section, total, explicit)
-            for (g, name), value in impedance_cotangents(section, total).items():
-                item = section.impedance_terms[g][0]
-                kind = ("boundary", _boundary_index(self.model, item), name)
-                explicit[kind] = explicit.get(kind, 0.0) + value
         for position, line in enumerate(self.lines):
             cot = line_face(
                 line.coupling,
@@ -969,31 +956,6 @@ class PortPass:
             state.append(_Mode(x, lam, gam, norm, reference))
         return ModeValues(field, gamma, voltage, phase), state
 
-    def _fills(
-        self, section: Any, total: SectionCotangents, explicit: dict[tuple, Any]
-    ) -> None:
-        """Add the sheet fills' cotangents, per face of each sheet surface."""
-        if not len(section.impedance_edges):
-            return
-        mesh = self.model.mesh
-        used = np.unique(mesh.triangles[section.faces])
-        for g, (item, _) in enumerate(section.impedance_terms):
-            index = _boundary_index(self.model, item)
-            sheet = sheet_of(item)
-            if sheet is None:
-                continue
-            (surface,) = surfaces_of(item)
-            faces = mesh.elements(surface)
-            keys = _edge_keys(mesh.triangles[faces])
-            owner = {(int(p), int(q)): k // 3 for k, (p, q) in enumerate(keys)}
-            kind = ("boundary", index, "fill", "fill")
-            bar = explicit.get(kind)
-            bar = np.zeros(len(faces), complex) if bar is None else bar
-            for e in np.flatnonzero(section.impedance_group == g):
-                p, q = sorted(int(v) for v in used[section.impedance_edges[e]])
-                bar[owner[p, q]] += total.fill[e]
-            explicit[kind] = bar
-
 
 @dataclasses.dataclass(eq=False)
 class _Context:
@@ -1037,42 +999,6 @@ def _sample_factor(space: PortModeSpace, frequency: float) -> Any:
     k0, _, shift = _wavenumbers(space.section, frequency)
     a, b = space.pencil.at(k0)
     return shift_invert_factor(a, b, shift)
-
-
-def _boundary_index(model: Model, item: Any) -> int:
-    """The index in ``model.boundaries`` of the boundary ``item`` stands for.
-
-    The section keeps the boundary objects of the model it was built from, which
-    a backward's rebuilt model does not hold: the match is the kind and surface.
-    """
-    return next(
-        i
-        for i, b in enumerate(model.boundaries)
-        if type(b) is type(item) and surfaces_of(b) == surfaces_of(item)
-    )
-
-
-def _owned(cot: SectionCotangents, section: Any) -> SectionCotangents:
-    r"""``cot`` as the 3D owners' materials read it.
-
-    Without the permittivity of the law regions' triangles: a law's
-    :math:`\varepsilon_\infty` goes through the law's own cotangents
-    (`law_cotangents`), the region has no ``eps_r`` leaf. Without the
-    admittance of an absorbing edge beside an anisotropic material, which has
-    no per-tetrahedron derivative: its owner's design is refused before the
-    solve (`DrivenRule.unsupported_input`), and a constant owner takes none.
-    """
-    out = dataclasses.replace(cot)
-    index = section.law_index
-    if index is not None and len(section.laws):
-        rows = np.asarray(index) >= 0
-        out.eps_tt = np.where(rows[:, None, None], 0.0, cot.eps_tt)
-        out.eps_nn = np.where(rows, 0.0, cot.eps_nn)
-    if len(cot.y_tau):
-        iso = _isotropic(section)[edge_triangles(section, section.absorbing_edges)]
-        out.y_tau = np.where(iso, cot.y_tau, 0.0)
-        out.y_n = np.where(iso, cot.y_n, 0.0)
-    return out
 
 
 def _pack(

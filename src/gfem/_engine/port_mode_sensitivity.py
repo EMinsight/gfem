@@ -41,6 +41,7 @@ import ngsolve as ngs
 import numpy as np
 import scipy.constants
 
+from gfem._boundaries import sheet_of, surfaces_of
 from gfem._engine import quadrature
 from gfem._engine.anisotropy import CROSS_N
 from gfem._engine.dispersion import d_eps
@@ -50,17 +51,20 @@ from gfem._engine.port_mode import (
 )
 from gfem._engine.port_mode_adjoint import scalar_cotangents
 from gfem._engine.sensitivity import Integrated
-from gfem._port_section import PortSection
+from gfem._port_section import PortSection, _edge_keys
 
 __all__ = [
     "FormPair",
     "SectionCotangents",
     "SectionKernel",
+    "boundary_index",
     "edge_triangles",
     "impedance_cotangents",
     "integrated",
     "law_cotangents",
+    "owned",
     "owner_tetrahedra",
+    "section_inputs",
 ]
 
 #: The forms `SectionKernel.explicit` differentiates.
@@ -595,3 +599,87 @@ def impedance_cotangents(
             slope = 1 / (scipy.constants.epsilon_0 * s)
         out[g, name] = float(np.real(bar * slope))
     return out
+
+
+def boundary_index(model: Any, item: Any) -> int:
+    """The index in ``model.boundaries`` of the boundary ``item`` stands for.
+
+    The section keeps the boundary objects of the model it was built from, which
+    a backward's rebuilt model does not hold: the match is the kind and surface.
+    """
+    return next(
+        i
+        for i, b in enumerate(model.boundaries)
+        if type(b) is type(item) and surfaces_of(b) == surfaces_of(item)
+    )
+
+
+def owned(cot: SectionCotangents, section: PortSection) -> SectionCotangents:
+    r"""``cot`` as the 3D owners' materials read it.
+
+    Without the permittivity of the law regions' triangles: a law's
+    :math:`\varepsilon_\infty` goes through the law's own cotangents
+    (`law_cotangents`), the region has no ``eps_r`` leaf. Without the
+    admittance of an absorbing edge beside an anisotropic material, which has
+    no per-tetrahedron derivative: its owner's design is refused before the
+    solve, and a constant owner takes none.
+    """
+    out = dataclasses.replace(cot)
+    index = section.law_index
+    if index is not None and len(section.laws):
+        rows = np.asarray(index) >= 0
+        out.eps_tt = np.where(rows[:, None, None], 0.0, cot.eps_tt)
+        out.eps_nn = np.where(rows, 0.0, cot.eps_nn)
+    if len(cot.y_tau):
+        iso = _isotropic(section)[edge_triangles(section, section.absorbing_edges)]
+        out.y_tau = np.where(iso, cot.y_tau, 0.0)
+        out.y_n = np.where(iso, cot.y_n, 0.0)
+    return out
+
+
+def fill_cotangents(
+    model: Any, section: PortSection, cot: SectionCotangents
+) -> dict[tuple, Any]:
+    """The gradient by each sheet field's fill, per face of its surface.
+
+    Each section impedance edge reads the fill of one face of the sheet's
+    surface along it (the last face listing the edge, as
+    `gfem._port_section._sheet_fill_by_edge`).
+    """
+    if section.impedance_fill is None or not len(section.impedance_edges):
+        return {}
+    mesh = model.mesh
+    used = np.unique(mesh.triangles[section.faces])
+    out: dict[tuple, Any] = {}
+    for g, (item, _) in enumerate(section.impedance_terms):
+        if sheet_of(item) is None:
+            continue
+        (surface,) = surfaces_of(item)
+        faces = mesh.elements(surface)
+        keys = _edge_keys(mesh.triangles[faces])
+        owner = {(int(p), int(q)): k // 3 for k, (p, q) in enumerate(keys)}
+        grad = out.setdefault(
+            ("boundary", boundary_index(model, item), "fill", "fill"),
+            np.zeros(len(faces), complex),
+        )
+        for e in np.flatnonzero(section.impedance_group == g):
+            p, q = sorted(int(v) for v in used[section.impedance_edges[e]])
+            grad[owner[p, q]] += cot.fill[e]
+    return out
+
+
+def section_inputs(
+    model: Any, section: PortSection, cot: SectionCotangents, n_tets: int
+) -> tuple[Integrated, dict[tuple, Any]]:
+    """A section's cotangents as owner integrals and cotangents by input kind.
+
+    The integrals are the 3D owners' (`integrated` of `owned`); the kinds are
+    the `Impedance` values and the sheet fills. A law's parameters are the
+    caller's (`law_cotangents`).
+    """
+    owners = owner_tetrahedra(model, section)
+    explicit: dict[tuple, Any] = fill_cotangents(model, section, cot)
+    for (g, name), value in impedance_cotangents(section, cot).items():
+        kind = ("boundary", boundary_index(model, section.impedance_terms[g][0]), name)
+        explicit[kind] = value
+    return integrated(section, owned(cot, section), owners, n_tets), explicit

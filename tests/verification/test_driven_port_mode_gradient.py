@@ -52,3 +52,30 @@ def test_driven_gamma_and_z_ref_differentiate_like_the_port_mode(tmp_path):
     np.testing.assert_allclose(
         by_driven, by_mode, rtol=0, atol=1e-10 * np.abs(np.asarray(by_mode)).max()
     )
+
+
+def test_a_constant_anisotropic_owner_at_an_absorbing_edge_spares_other_regions(
+    tmp_path,
+):
+    # the absorbing edge's admittance beside a constant anisotropic material has
+    # no leaf: it must not refuse the design of another region, in the port mode
+    # as in a driven solve
+    from finite_differences import assert_gradient_matches, unit_directions
+
+    mesh = wave_mesh(tmp_path)
+    model = face_line(mesh, "face_absorbing").with_material(
+        "hi", gfem.Material(eps_r=(2.0, 2.3, 2.6))
+    )
+    options = tight("direct", port_mode_tolerance=1e-12)
+    p = ramp(mesh, "lo", 3.5, 4.5)
+
+    def objective(q):
+        moved = model.with_material("lo", gfem.MaterialField(eps_r=q))
+        moved = moved.replace(mesh=jax.lax.stop_gradient(moved.mesh))
+        result = gfem.solve(moved, gfem.PortMode("p1", (24e9, 30e9)), options=options)
+        return jnp.sum(jnp.imag(result.gamma) + 0.3 * jnp.real(result.gamma)) / 100.0
+
+    assert np.abs(np.asarray(jax.grad(objective)(p))).max() > 0
+    assert_gradient_matches(
+        objective, p, unit_directions(np.random.default_rng(3), p.shape, 2), step=1e-3
+    )

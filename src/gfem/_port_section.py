@@ -421,12 +421,17 @@ def port_geometry(model: Model, port: WavePort) -> PortSection:
     )
 
 
-def anisotropic_absorbing(model: Model, port: WavePort) -> str | None:
+def anisotropic_absorbing(
+    model: Model, port: WavePort, region: str | None = None
+) -> str | None:
     """Why a port-face design is refused beside an absorbing edge, or ``None``.
 
     An anisotropic material (per-axis values or axes) owning a port-face
     triangle next to an absorbing port edge has no per-axis admittance
-    derivative in this version.
+    derivative in this version. With ``region``, only that region's design is
+    in question: it is refused if its material is an anisotropic
+    `MaterialField` that owns such a triangle (a constant anisotropic owner
+    has no leaf, so its admittance takes no cotangent).
     """
     mesh = model.mesh
     if mesh.dim == 2:
@@ -437,7 +442,14 @@ def anisotropic_absorbing(model: Model, port: WavePort) -> str | None:
         return None
     names = mesh._region_names()  # noqa: SLF001
     for t in plane.tets[owners]:
-        material = model.materials[names[int(mesh.tetrahedron_tags[t])]]
+        name = names[int(mesh.tetrahedron_tags[t])]
+        material = model.materials[name]
+        if region is not None and (
+            name != region
+            or not isinstance(material, MaterialField)
+            or material.axes is None
+        ):
+            continue
         if isinstance(material, MaterialField):
             aniso = material.axes is not None
         else:
