@@ -32,13 +32,17 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from typing import Any
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import scipy.constants
 
 from gfem._engine.port_mode_sensitivity import FormPair
 from gfem._sign import largest_entry
+
+if TYPE_CHECKING:
+    from gfem._engine.line_mode_sensitivity import LinePair
 
 #: Relative size of the gauge below which the quadrant gauge is replaced by
 #: the field's largest entry.
@@ -83,13 +87,14 @@ class NormalizationCotangents:
         gamma: ``(n,)`` the cotangent of each row's propagation constant.
         reference: The cotangent of the ``reference`` the first row was
             fixed against, or ``None``.
-        pairs: The cotangents on the forms the normalization reads.
+        pairs: The cotangents on the forms the normalization reads (a line
+            port's are `LinePair`).
     """
 
     y: np.ndarray
     gamma: np.ndarray
     reference: np.ndarray | None
-    pairs: list[FormPair]
+    pairs: Sequence[FormPair | LinePair]
 
 
 def normalize_rows(

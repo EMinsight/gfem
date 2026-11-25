@@ -31,7 +31,7 @@ import copy
 import dataclasses
 import math
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import ngsolve as ngs
 import numpy as np
@@ -250,7 +250,7 @@ def full_line_reduction(space: LineModeSpace) -> LineReduction:
 
 def line_normalize_vjp(  # noqa: PLR0915, PLR0917
     fields: LineReduction,
-    mass,
+    mass: Any,
     norm: Normalized,
     y: np.ndarray,
     gamma: np.ndarray,
@@ -334,4 +334,4 @@ def line_normalize_vjp(  # noqa: PLR0915, PLR0917
             pairs.append(LinePair(z0, zc, p_bar * c * gam * theta[0]))
         # the coordinates are the pencil vector itself
         y_bar[i] += zb0
-    return NormalizationCotangents(y_bar, gamma_bar, reference_bar, pairs)  # ty: ignore[invalid-argument-type]
+    return NormalizationCotangents(y_bar, gamma_bar, reference_bar, pairs)

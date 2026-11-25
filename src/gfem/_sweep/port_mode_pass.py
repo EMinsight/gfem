@@ -214,7 +214,7 @@ def mode_pass(  # noqa: PLR0912, PLR0915
                 volts=volts,
                 polarity=polarity,
             )
-        pairs_forms = pulled.pairs
+        pairs_forms = list(pulled.pairs)
         x_bar = pulled.y
         cg = cg + pulled.gamma
         if (
