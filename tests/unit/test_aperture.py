@@ -317,6 +317,14 @@ def test_l5_deflector(deg):
     spec = np.abs(np.fft.ifft(np.pad(u, (0, 3 * n * 7))))
     peak = np.degrees(np.arcsin(kx[np.argmax(spec)] / k))
     assert abs(peak - deg) < 0.01
+    # the propagated samples peak at the same angle, and the peak coefficient
+    # has gained the propagation phase exp(-i kz z)
+    got = np.fft.ifft(np.pad(np.asarray(out.values[0, 1]), (0, 3 * n * 7)))
+    assert abs(np.degrees(np.arcsin(kx[np.argmax(np.abs(got))] / k)) - deg) < 0.01
+    i = int(np.argmax(spec))
+    kz = np.sqrt(k**2 - kx[i] ** 2)
+    ratio = got[i] / np.fft.ifft(np.pad(u, (0, 3 * n * 7)))[i]
+    assert abs(ratio - np.exp(-1j * kz * z)) < 0.05
     # +z tan(theta): the sign pins the Floquet convention (exp(-i kx x))
     centroid = np.sum(x * inten) / np.sum(inten)
     assert centroid == pytest.approx(z * np.tan(th), rel=1e-3)
