@@ -401,8 +401,8 @@ def aperture_field(
     The approximation neglects the coupling between neighbouring cells. It
     holds where the parameter varies slowly over the aperture: the error
     grows with the phase step between neighbours, about 0.01 to 0.02 in
-    amplitude up to steps of :math:`40^\circ`, 0.1 at :math:`60^\circ`, and
-    it fails for steps of :math:`100^\circ` or more, such as the
+    amplitude up to steps of :math:`40^\circ`, 0.1 for a :math:`65^\circ` ramp
+    with one reset, and it fails for steps of :math:`100^\circ` or more, such as the
     :math:`2\pi` reset of a deflector's phase ramp. A uniform map is exact.
     Samples sit at the cell centres, not on a staircase of uniform patches:
     the sampled field is band-limited to :math:`|q_i| \le \pi/a_i`, and

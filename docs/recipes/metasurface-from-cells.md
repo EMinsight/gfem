@@ -371,7 +371,7 @@ the last column compares the strongest order's efficiency:
 
 - A uniform map is exact: it is the approximation's own closed form.
 - Up to neighbour steps of about 40° the amplitude of every order is within 0.01
-  to 0.02. At 60° it is off by 0.1 (a deflected order 13 % low); at 100° and
+  to 0.02. A 65° ramp with one reset is off by 0.1 (a deflected order 13 % low); at 100° and
   above the approximation fails, as it does at the $2\pi$ reset of a deflector's
   phase ramp, whose coupling is a known source of error.
 - A deflector with a steady phase step of 36° per cell (ten silicon nitride
