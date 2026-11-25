@@ -250,7 +250,7 @@ def cube(tmp_path_factory):
         gfem.Driven(pc.F0, sources=[wave], keep_fields=True),
         options=gfem.SolverOptions(order=2, linear_solver="direct"),
     )
-    return types.SimpleNamespace(mesh=mesh, model=model, result=result)
+    return types.SimpleNamespace(mesh=mesh, model=model, result=result, wave=wave)
 
 
 def test_a_plane_wave_pushes_a_lossless_cube_along_its_direction(cube):
@@ -541,12 +541,216 @@ def test_a_2d_mesh_is_refused_by_name(tmp_path):
         gfem.optical_force(field, "a", model=model)
 
 
-def test_a_traced_field_has_no_gradient_yet(cavity):
-    def objective(scale):
-        field = dataclasses.replace(
-            cavity.field, coefficients=scale * cavity.field.coefficients
+# --- gradients ---------------------------------------------------------------------
+
+
+def _wrench(field, model):
+    """Force then torque about the centroid, ``(6,)``."""
+    got = gfem.optical_force(field, "block", model=model)
+    return jnp.concatenate([got.force, got.torque])
+
+
+def _fd4(f, x, h):
+    """The five-point derivative of ``f`` at ``x`` with step ``h``."""
+    return (f(x - 2 * h) - 8 * f(x - h) + 8 * f(x + h) - f(x + 2 * h)) / (12 * h)
+
+
+def _check_design_gradient(solve, eps, h, rtol, components):
+    """``jax.vjp`` of a design's wrench against the five-point FD of two solves.
+
+    The derivative of ``f`` is ``f'(eps) = FD4 + h^4/30 f^(5) + O(round-off/h)``.
+    """
+    wrench, pull = jax.vjp(solve, eps)
+    fd = _fd4(lambda x: np.asarray(solve(x)), eps, h)
+    scale = np.abs(fd).max()
+    for k in components:
+        ct = jnp.zeros(6).at[k].set(1.0)
+        (grad,) = pull(ct)
+        assert abs(float(grad) - fd[k]) <= rtol * scale, (k, float(grad), fd[k])
+    return wrench
+
+
+def test_the_gradient_of_an_eigenmode_force_and_torque_in_the_body_permittivity(
+    cavity,
+):
+    n_block = len(cavity.mesh.elements("block"))
+
+    def solve(eps):
+        model = cavity.model.replace(
+            materials={
+                **cavity.model.materials,
+                "block": gfem.MaterialField(eps_r=eps * jnp.ones(n_block)),
+            }
         )
+        result = gfem.solve(
+            model, gfem.Eigenmode(target=TARGET, n_modes=1), options=OPTIONS
+        )
+        return _wrench(result.e_field(0), model)
+
+    # Truncation of the five-point derivative is h^4 f^(5) / 30 and the
+    # force varies on the scale of eps = 4, so f^(5) / f' ~ 4! / eps^4 and h =
+    # 0.05 leaves 2e-8; the round-off of an eigen solve (backward error
+    # eigen_tolerance = 1e-10 on the mode) over 12 h is 1e-9 at worst. Both are
+    # far below the gate; the probe measured 4.5e-10 at h = 1e-4. Without the
+    # frequency cotangent the gradient is 60 % off.
+    _check_design_gradient(solve, 4.0, 0.05, 1e-6, components=(0, 1, 2, 3, 4, 5))
+
+
+def test_the_gradient_of_a_driven_force_in_the_body_permittivity(cube):
+    n_scat = len(cube.mesh.elements("scat"))
+
+    def solve(eps):
+        model = cube.model.replace(
+            materials={
+                **cube.model.materials,
+                "scat": gfem.MaterialField(eps_r=eps * jnp.ones(n_scat)),
+            }
+        )
+        result = gfem.solve(
+            model,
+            gfem.Driven(pc.F0, sources=[cube.wave], keep_fields=True),
+            options=gfem.SolverOptions(order=2, linear_solver="direct"),
+        )
+        got = gfem.optical_force(result.e_field(pc.F0, "pw"), "scat", model=model)
+        return jnp.concatenate([got.force, got.torque])
+
+    # A direct solve is exact to round-off, so the five-point step is set by the
+    # truncation alone: h = 0.05 as above (the probe: 3.9e-8 at h = 1e-4).
+    # The force along the wave is the component that does not vanish by symmetry.
+    _check_design_gradient(solve, 4.0, 0.05, 1e-6, components=(2,))
+
+
+def _field_function(cavity, direction):
+    """``f(t)``: the force at the coefficients ``e + t direction``."""
+
+    def f(t):
+        field = dataclasses.replace(
+            cavity.field, coefficients=cavity.field.coefficients + t * direction
+        )
+        return _wrench(field, cavity.model)
+
+    return f
+
+
+def test_the_cotangent_of_the_coefficients_is_twice_the_conjugate_of_the_form(cavity):
+    e = np.asarray(cavity.field.coefficients)
+    rng = np.random.default_rng(0)
+    direction = rng.standard_normal(e.shape) + 1j * rng.standard_normal(e.shape)
+    direction *= np.linalg.norm(e) / np.linalg.norm(direction)
+    f = _field_function(cavity, jnp.asarray(direction))
+    _, pull = jax.vjp(
+        lambda c: _wrench(
+            dataclasses.replace(cavity.field, coefficients=c), cavity.model
+        ),
+        jnp.asarray(e),
+    )
+    # The wrench is a quadratic form of the coefficients, so the central
+    # difference over t = +-1 is its exact directional derivative; what remains
+    # is round-off of the form, a few eps times the cancellation between its curl
+    # and mass parts (the probe measured 3e-14, 1e-12 here).
+    exact = (np.asarray(f(1.0)) - np.asarray(f(-1.0))) / 2
+    for k in range(6):
+        (g,) = pull(jnp.zeros(6).at[k].set(1.0))
+        assert float(np.real(np.sum(np.asarray(g) * direction))) == pytest.approx(
+            exact[k], abs=1e-12 * np.abs(exact).max()
+        )
+
+
+def test_the_cotangent_of_the_frequency_is_minus_twice_the_curl_force_over_omega(
+    cavity,
+):
+    def f(s):
+        field = dataclasses.replace(cavity.field, omega=s * cavity.field.omega)
+        return _wrench(field, cavity.model)
+
+    # F(omega) = A / omega^2 + B at fixed coefficients: the five-point
+    # truncation is 12 (h / omega)^4 relative, 1.2e-7 at h = 0.01 omega, and
+    # the round-off over h is 1e-12.
+    _, pull = jax.vjp(f, 1.0)
+    fd = _fd4(lambda s: np.asarray(f(s)), 1.0, 1e-2)
+    for k in range(6):
+        (g,) = pull(jnp.zeros(6).at[k].set(1.0))
+        assert float(g) == pytest.approx(fd[k], abs=1e-6 * np.abs(fd).max())
+
+
+def test_the_wrench_maps_over_fields_and_compiles(cavity):
+    scales = jnp.asarray([1.0, 2.0, 0.5j])
+
+    def scaled(a):
+        field = dataclasses.replace(
+            cavity.field, coefficients=a * cavity.field.coefficients
+        )
+        return _wrench(field, cavity.model)
+
+    base = np.asarray(_wrench(cavity.field, cavity.model))
+    # a quadratic form: |a|^2 times the force, to the round-off of the form
+    np.testing.assert_allclose(
+        jax.vmap(scaled)(scales),
+        base * np.abs(np.asarray(scales))[:, None] ** 2,
+        rtol=1e-10,
+        atol=1e-10 * np.abs(base).max(),
+    )
+    np.testing.assert_allclose(
+        jax.jit(scaled)(2.0), 4 * base, rtol=1e-10, atol=1e-10 * np.abs(base).max()
+    )
+    np.testing.assert_allclose(
+        jax.jit(jax.grad(lambda a: scaled(a)[0]))(1.0),
+        2 * base[0],
+        rtol=1e-10,
+    )
+
+
+def test_the_node_coordinates_the_shell_material_and_a_reduced_field_raise_by_name(
+    cavity,
+):
+    x = jnp.asarray(cavity.mesh.nodes)
+
+    def moved(s):
+        model = cavity.model.replace(mesh=cavity.mesh.with_nodes(s * x))
+        return gfem.optical_force(cavity.field, "block", model=model).force[0]
+
+    with pytest.raises(gfem.NonDifferentiableError, match=r"model\.mesh\.nodes\)"):
+        jax.grad(moved)(1.0)
+
+    n_gas = len(cavity.mesh.elements("gas"))
+
+    def shell_eps(s):
+        model = cavity.model.replace(
+            materials={
+                **cavity.model.materials,
+                "gas": gfem.MaterialField(eps_r=s * jnp.ones(n_gas)),
+            }
+        )
+        return gfem.optical_force(cavity.field, "block", model=model).force[0]
+
+    with pytest.raises(
+        gfem.NonDifferentiableError, match=r"materials\['gas'\]\.eps_r.*stress shell"
+    ):
+        jax.grad(shell_eps)(1.0)
+
+    reduced = dataclasses.replace(cavity.field, _reduced=True)
+
+    def through(c):
+        field = dataclasses.replace(reduced, coefficients=c)
         return gfem.optical_force(field, "block", model=cavity.model).force[0]
 
-    with pytest.raises(gfem.NonDifferentiableError, match="no gradient yet"):
-        jax.grad(objective)(1.0)
+    with pytest.raises(gfem.NonDifferentiableError, match="adaptive sweep"):
+        jax.grad(through)(reduced.coefficients)
+
+
+def test_an_input_the_force_does_not_read_has_an_exact_zero_gradient(cavity):
+    n_block = len(cavity.mesh.elements("block"))
+
+    def thermal(s):
+        model = cavity.model.replace(
+            materials={
+                **cavity.model.materials,
+                "block": gfem.MaterialField(
+                    eps_r=4.0 * jnp.ones(n_block),
+                    thermal_conductivity=s * jnp.ones(n_block),
+                ),
+            }
+        )
+        return gfem.optical_force(cavity.field, "block", model=model).force[0]
+
+    assert float(jax.grad(thermal)(1.0)) == 0.0

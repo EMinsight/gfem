@@ -1056,6 +1056,12 @@ def optical_force(
     The torque is taken about ``origin``, by default the body's volume
     centroid.
 
+    The force and torque are differentiable in the field's coefficients and
+    frequency, hence in the body's material and in any design of the solve
+    that reaches the field (an eigenmode's frequency moves with the design).
+    The node coordinates and the medium of the shell are read without a
+    gradient: `jax.lax.stop_gradient` is the way out.
+
     The shell must be one homogeneous, isotropic, lossless medium
     (a `gfem.Material` with a real ``eps_r`` and ``mu_r``). The body itself
     may be anything, lossy, anisotropic, dispersive or a `gfem.MaterialField`.
@@ -1096,8 +1102,9 @@ def optical_force(
         NotImplementedError: A 2D model.
         gfem.DistributedUnsupportedError: A field across ranks.
         gfem.MeshRefinementUnsupportedError: Under the refinement recorder.
-        NonDifferentiableError: Inside `jax.grad`, `jax.jit` or `jax.vmap`
-            for now.
+        NonDifferentiableError: A differentiated input is the node
+            coordinates, the medium of a region in the shell, or the
+            coefficients of an adaptive sweep's field.
     """
     from gfem._field import Field
     from gfem._optical_force import evaluate

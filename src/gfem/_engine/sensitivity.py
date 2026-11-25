@@ -1294,6 +1294,42 @@ def _volume_shape(
     return out
 
 
+def _field_shape(
+    terms: Sequence[tuple[Term, complex]], pair: FieldPair, w: Any, elements: Any = None
+) -> np.ndarray:
+    """``Q_W e``: the shape form of `_volume_shape` as a vector on the pair's space.
+
+    The field ``e`` is the pair's right column and the test function ``v`` of
+    the pair's space stands in the left slot, so that for a pair
+    ``(conj(e), e)`` of lossless terms (real weights, which makes the form
+    real symmetric) ``Re(conj(e) . Q_W e)`` is `_volume_shape` assembled on
+    ``w``. ``w`` is a ``VectorH1`` order-1 grid function and the terms are
+    weighted (``theta_t scale**length_power``). A coefficient that varies in
+    position adds no moved-point part: the caller's elements are where it is
+    constant (the shell of a body, away from any stretch). The result is in the units of the form on the
+    mesh: divide by the length unit for a per metre value, as `_node_pass` does.
+
+    Returns:
+        The complex vector of the real and imaginary parts assembled apart.
+    """
+    gw = ngs.grad(w)
+    v = pair.space.TestFunction()
+    out = np.zeros(pair.space.ndof, complex)
+    for factor, fields in _parts(pair.space, pair.right):
+        form = ngs.LinearForm(pair.space)
+        for term, theta in terms:
+            assert theta.imag == 0  # noqa: S101 - the real symmetric form
+            rule = quadrature.dx if term.kind == "value" else quadrature.dx_derivatives
+            dx = rule(pair.order, definedon=pair.domain, definedonelements=elements)
+            # InnerProduct conjugates its second argument: the real grad W goes there
+            form += (
+                theta.real * ngs.InnerProduct(_transport(term, v, fields[0]), gw) * dx
+            )
+        form.Assemble()
+        out += factor * form.vec.FV().NumPy()
+    return out
+
+
 def _trace_shape(terms: Sequence[tuple[Term, complex]], pair: FieldPair, w: Any) -> Any:
     """The surface transport of the trace terms, on the pair's fields as they are.
 

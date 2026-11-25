@@ -31,16 +31,18 @@ import dataclasses
 import itertools
 from typing import TYPE_CHECKING
 
+import ngsolve as ngs
 import numpy as np
 import scipy.constants as const
 
 from gfem import _pml
 from gfem._boundaries import PEC, PMC, Absorbing, Periodic, surfaces_of
+from gfem._checks import is_traced
 from gfem._engine import probe
 from gfem._engine.domain import em_region
 from gfem._engine.driven import DrivenOperator, driven_operator, operator_terms
 from gfem._engine.power_flow import check_nodes, check_size, check_support
-from gfem._engine.sensitivity import Term, _node_pass
+from gfem._engine.sensitivity import Term, _field_shape, _node_pass
 from gfem._engine.sides import SideSpec, selection
 from gfem._engine.terms import _bits
 from gfem._materials import Material, _is_law
@@ -57,6 +59,7 @@ __all__ = [
     "build",
     "evaluate",
     "force_torque",
+    "pullback",
     "shell",
 ]
 
@@ -185,6 +188,10 @@ def _check_medium(model: Model, around: np.ndarray) -> None:
         if name not in model.materials or not around[mesh.elements(name)].any():
             continue
         material = model.materials[name]
+        if is_traced(material):
+            # a design leaf: the gradient refuses it by name, a value runs this
+            # check again on the host
+            continue
         why = _not_plain(material)
         if why is not None:
             raise ValueError(
@@ -417,13 +424,106 @@ def evaluate(
         The force ``(3,)``, N, and the torque about ``where.centroid``
         ``(3,)``, N m, before the wall rule (`Shell.valid`).
     """
+    weights = _weights(stress, omega)
+    return _moments(stress, model, where, e, omega=omega, weights=weights)
+
+
+def _weights(stress: Stress, omega: float) -> dict[str, complex]:
+    """The weight of each non-port piece of the shell's operator at ``omega``."""
+    return {
+        p.name: complex(p.theta(omega)) for p in stress.op.pieces if p.kind != "port"
+    }
+
+
+def _prefactor(stress: Stress, omega: float) -> float:
+    """``-1 / (4 mu_0 omega^2 s)``: the node pass to newtons."""
+    return -1 / (4 * const.mu_0 * omega**2 * stress.scale)
+
+
+def _moments(
+    stress: Stress,
+    model: Model,
+    where: Shell,
+    e: np.ndarray,
+    *,
+    omega: float,
+    weights: dict[str, complex],
+) -> tuple[np.ndarray, np.ndarray]:
+    """The force and torque of the node pass of the terms weighted by ``weights``."""
     op = stress.op
-    weights = {p.name: complex(p.theta(omega)) for p in op.pieces if p.kind != "port"}
     pair = op.pair(np.conj(e), e, weights=weights, domain=em_region(model, op.built))
-    g = _node_pass(model, [pair], stress.terms)
-    nodal = -g[where.nodes] / (4 * const.mu_0 * omega**2 * stress.scale)
+    nodal = _prefactor(stress, omega) * _node_pass(model, [pair], stress.terms)
+    nodal = nodal[where.nodes]
     arm = np.asarray(model.mesh.nodes)[where.nodes] - where.centroid
     return nodal.sum(axis=0), np.cross(arm, nodal).sum(axis=0)
+
+
+def pullback(
+    stress: Stress,
+    model: Model,
+    where: Shell,
+    e: np.ndarray,
+    *,
+    omega: float,
+    force: np.ndarray,
+    torque: np.ndarray,
+) -> tuple[np.ndarray, float]:
+    r"""The cotangents of the coefficients and of the frequency of `evaluate`.
+
+    With :math:`\bar F, \bar\tau` the cotangents of the force and the torque
+    (a NaN component of the force, which slides on a wall, makes the
+    gradients NaN when its cotangent is not zero), the weight field
+    :math:`W_n = \bar F + \bar\tau \times (x_n - c)` on the body's nodes
+    turns them into one scalar, :math:`\bar F \cdot F + \bar\tau \cdot \tau_c
+    = \kappa\, \mathrm{Re}(\bar e^\mathsf{T} Q_W e)` with :math:`\kappa` the
+    prefactor of the module and :math:`Q_W` the real symmetric form of the shell
+    (`_field_shape`). JAX's cotangent of the coefficients is
+    :math:`2 \kappa \overline{Q_W e}`.
+
+    The frequency enters through :math:`\theta_\mathrm{mass} = -(\omega s / c)^2`
+    only, so that :math:`\kappa \theta_\mathrm{mass}` does not depend on
+    :math:`\omega` and :math:`\partial F / \partial \omega_r = -2 F_\mathrm{curl} /
+    \omega_r`, with :math:`F_\mathrm{curl}` the node pass of the curl terms alone.
+    The cotangent is real, on the real part of :math:`\omega`.
+
+    Args:
+        stress: The shell's operator (`build`).
+        model: The model, at the node positions ``stress`` was built on.
+        where: The body and its shell.
+        e: The field's coefficients on the operator's space.
+        omega: The real part of the angular frequency, rad/s.
+        force: The cotangent of the force ``(3,)``, with the wall rule applied.
+        torque: The cotangent of the torque ``(3,)``.
+
+    Returns:
+        The cotangent of ``e`` (complex, JAX's convention) and of ``omega``.
+    """
+    stuck = np.concatenate([force[~where.valid[:3]], torque[~where.valid[3:]]])
+    if np.any(stuck != 0):
+        return np.full(e.shape, np.nan, complex), float("nan")
+    op = stress.op
+    built = op.built
+    weights = _weights(stress, omega)
+    x = np.asarray(model.mesh.nodes)
+    w = np.zeros_like(x)
+    w[where.nodes] = force + np.cross(torque, x[where.nodes] - where.centroid)
+    space = ngs.VectorH1(built.mesh, order=1)
+    wgf = ngs.GridFunction(space)
+    values = np.zeros((space.ndof // 3, 3))
+    values[: len(built.node_order)] = w[built.node_order]
+    wgf.vec.FV().NumPy()[:] = values.T.reshape(-1)
+    pair = op.pair(e, e, weights=weights, domain=em_region(model, built))
+    terms = [
+        (t, weights[t.name] * built.scale**t.length_power)
+        for t in stress.terms
+        if weights.get(t.name)
+    ]
+    q = _field_shape(terms, pair, wgf, stress.terms[0].elements) / built.scale
+    grad_e = 2 * _prefactor(stress, omega) * np.conj(q)
+    curl = {t.name: weights[t.name] for t in stress.terms if t.kind == "curl"}
+    f_curl, t_curl = _moments(stress, model, where, e, omega=omega, weights=curl)
+    grad_omega = -2 / omega * (force @ f_curl + torque @ t_curl)
+    return grad_e, float(grad_omega)
 
 
 def force_torque(
