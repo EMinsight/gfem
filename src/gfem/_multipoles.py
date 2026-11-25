@@ -525,13 +525,18 @@ register_fields(CurrentMoments, ("long_wavelength_dipole", "toroidal_dipole"))
 
 # --- the entry ----------------------------------------------------------------------
 
-#: The surfaces that belong to the scatterer when they lie inside the mesh: the
-#: ones a cross-section measurement counts, and a PMC face too, which a
-#: multipole expansion cannot take as a wall but reads as a magnetic sheet.
-_SCATTERER_SURFACES = (
-    *importlib.import_module("gfem._engine.cross_sections")._SCATTERER_SURFACES,  # noqa: SLF001
-    PMC,
-)
+
+@functools.cache
+def _scatterer_surfaces() -> tuple[type, ...]:
+    """The surfaces that belong to the scatterer when they lie inside the mesh.
+
+    The ones a cross-section measurement counts, and a PMC face too, which a
+    multipole expansion cannot take as a wall but reads as a magnetic sheet.
+    Read on first use: the cross-section engine imports NGSolve, which
+    importing gfem must not.
+    """
+    xs = importlib.import_module("gfem._engine.cross_sections")
+    return (*xs._SCATTERER_SURFACES, PMC)  # noqa: SLF001
 
 
 def _background(model: Model, entry: str = "multipoles") -> Background:
@@ -566,7 +571,7 @@ def _scatterer_radius(model: Model, origin: np.ndarray) -> float:
     neighbours = np.asarray(mesh.triangle_neighbours)
     triangles = np.asarray(mesh.triangles)
     for item in (*model.boundaries, *model.ports):
-        if not isinstance(item, _SCATTERER_SURFACES):
+        if not isinstance(item, _scatterer_surfaces()):
             continue
         for surface in surfaces_of(item):
             rows = mesh.elements(surface)
@@ -952,7 +957,7 @@ def _check_induced_current(model: Model, background: Background) -> None:
     mesh = model.mesh
     neighbours = np.asarray(mesh.triangle_neighbours)
     for item in (*model.boundaries, *model.ports):
-        if not isinstance(item, _SCATTERER_SURFACES):
+        if not isinstance(item, _scatterer_surfaces()):
             continue
         for surface in surfaces_of(item):
             # a face with one element beside it is a wall, not a sheet
