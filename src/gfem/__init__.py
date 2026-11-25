@@ -193,6 +193,8 @@ from gfem.thermo_optic import (  # noqa: E402
     thermo_optic_shift,
 )
 
+from gfem._tolerance import ToleranceReport, tolerance_report  # noqa: E402
+
 __version__ = _version("gfem")
 
 __all__ = [
@@ -304,6 +306,7 @@ __all__ = [
     "ThermoOpticShift",
     "ThinLayerWarning",
     "TimeResponse",
+    "ToleranceReport",
     "Trace",
     "TransientThermal",
     "TransientThermalResult",
@@ -358,5 +361,6 @@ __all__ = [
     "strain",
     "thermo_optic_shift",
     "time_constant",
+    "tolerance_report",
     "wave_vector_path",
 ]
