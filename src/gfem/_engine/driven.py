@@ -2638,13 +2638,6 @@ _WAVE_HOLDERS = {
             "(gfem.shape.boundary_morph(..., sliding_ports=...))."
         ),
     ),
-    "adaptive": (
-        "an adaptive sweep",
-        (
-            "A gfem.Driven solve on a uniform sweep differentiates a moved wave "
-            "port face (gfem.shape.boundary_morph(..., sliding_ports=...))."
-        ),
-    ),
     "bloch": (
         "a Bloch wave vector",
         (
@@ -2667,7 +2660,7 @@ def check_ports_held(model: Model, *, waves: str | None = "eigenmode") -> None:
     Shape gradients treat a lumped or Floquet port's geometry (its terms,
     excitation and voltage) as frozen: exact for every displacement that
     holds the ports. A wave port's face is held only where ``waves`` names
-    who holds it (``"eigenmode"``, ``"adaptive"`` or ``"bloch"``): the driven
+    who holds it (``"eigenmode"`` or ``"bloch"``): the driven
     port pass differentiates a moved face (``None``).
 
     Raises:
@@ -3332,13 +3325,12 @@ class PortDesign:
             return True
         return any(set(self.reading(k)) & set(ports) for k in wanted)
 
-    def check(self, kind: tuple, *, line: bool = False) -> None:
+    def check(self, kind: tuple) -> None:
         """Raise when input ``kind`` is one a wave port's mode reads.
 
         The eigenmode rule's refusal: its wave port term at a complex
         eigenfrequency holds the mode, so the mode's own derivative is
-        missing. With ``line``, a 2D model's line port, whose mode is a
-        constant of the solve.
+        missing.
 
         Raises:
             PortGeometryError: ``kind`` is the material, or a law parameter,
@@ -3348,16 +3340,10 @@ class PortDesign:
         ports = self.reading(kind)
         if not ports:
             return
-        who = "gfem" if line else "an Eigenmode solve"
-        why = (
-            "the port mode reads that and is a constant of the solve"
-            if line
-            else "the wave port's term at a complex eigenfrequency holds its mode"
-        )
+        who = "an Eigenmode solve"
+        why = "the wave port's term at a complex eigenfrequency holds its mode"
         keep = (
-            "Keep the design away from wave port faces"
-            if line
-            else "A gfem.Driven solve differentiates a design at a wave port face. "
+            "A gfem.Driven solve differentiates a design at a wave port face. "
             "For an eigenmode problem, keep the design away from wave port faces"
         )
         label = self._label(ports[0])

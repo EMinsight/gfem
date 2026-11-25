@@ -256,8 +256,9 @@ class PortModeRule:
     `jax.grad`, ``gamma`` (so ``n_eff``), ``Z_PV`` and the field (``field``,
     the full DOF vector of each frequency, read through
     `gfem.results.PortModeField.at`) differentiate with respect to the
-    material, law, sheet and `Impedance` inputs of the section
-    (`gfem._sweep.port_mode_pass`); ``residual`` raises
+    material, law, sheet and `Impedance` inputs of the section and the face's
+    node coordinates (`gfem._sweep.port_mode_pass`; not through ``at``; a line
+    port's mode differentiates material field values only); ``residual`` raises
     `gfem.NonDifferentiableError` and a thermal property gets an exact zero.
     """
 

@@ -1252,8 +1252,8 @@ class EigenmodeRule:
 
         Raises:
             PortGeometryError: ``kind`` is an input a wave port's mode reads,
-                as in the driven rule (`PortDesign.check`): the port mode is
-                a constant of the solve.
+                (`PortDesign.check`): the wave port's term at a complex
+                eigenfrequency holds the mode.
         """
         self.port_design.check(kind)
         if kind == ("nodes",):
