@@ -266,7 +266,10 @@ def test_a_solved_slab_reads_eps_four_and_mu_one_in_both_columns(solved, model):
     # retrieved value is that times the Jacobian of retrieve at the Airy S, with
     # a factor 2 for the two entries it reads. A swap eps <-> mu (the TM sign
     # question) or of the columns moves the value by 3 or more.
-    s11, s21 = pc.f1_airy("TM", eps_sub=1.0)
+    # the Airy slab between planes on its faces: the ports' offsets put the
+    # reference planes there, so the air layers have zero thickness
+    layers = [(1.0, 0.0), (pc.F1_EPS_SLAB, pc.F1_H * pc.UM), (1.0, 0.0)]
+    s11, s21 = pc.airy(F0, 0.0, layers, "TM")
     k0d = jnp.asarray([2 * math.pi * F0 / pc.C0 * pc.F1_H * pc.UM])
     x = _x_of(jnp.asarray([s11]), jnp.asarray([s21]))
 
