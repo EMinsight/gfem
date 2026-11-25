@@ -729,7 +729,9 @@ class PortPass:
         of the adjoint is raised on every rank, and only rank 0 returns terms.
         """
         mine = _mpi.rank(self.comm) == 0
-        arrays = _mpi.on_root(self.comm, self._compute, results=(PortModeError,))
+        arrays = _mpi.on_root(
+            self.comm, self._compute, results=(PortModeError,), broadcast=False
+        )
         if not mine:
             return PortResult([], {})
         return _unpack(arrays)
