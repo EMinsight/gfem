@@ -357,6 +357,24 @@ Hemispherical emissivity
   The $\cos\theta$-weighted mean of the {term}`emissivity` over every
   direction above a surface, $\frac1\pi\int e\cos\theta\,d\Omega$.
 
+Cell response
+  The S of a periodic cell's {term}`Floquet ports <Floquet port>` sampled
+  against one parameter of its meta-atom (a width, a radius) over frequency,
+  with the derivative of S with respect to the parameter, interpolated between
+  the samples (`gfem.diffraction.cell_response`).
+
+Aperture field
+  The tangential electric field on a metasurface's outgoing reference plane in
+  the {term}`locally periodic approximation`: one sample per cell, at its
+  centre, from the cell's {term}`Jones matrix` at its parameter
+  (`gfem.diffraction.aperture_field`).
+
+Locally periodic approximation
+  Treating each cell of a slowly varying surface as if it sat in an infinite
+  array of itself, so that it radiates one plane wave and the coupling to its
+  neighbours is neglected. The error grows with the phase step between
+  neighbouring cells.
+
 Dispersive cross-section
   A wave port's cross-section that contains a region with a
   {term}`permittivity law`. It is supported where $\mathrm{Re}\,\varepsilon(f) > 0$ throughout, at

@@ -568,6 +568,22 @@ one leaves towards $-\hat{\boldsymbol{\kappa}}$, so the absorptance of the incid
 $(\theta, \varphi)$ is the emissivity towards $(\theta, \varphi + \pi)$, and
 `gfem.diffraction.emissivity` labels its rows so.
 
+## Aperture fields
+
+`gfem.diffraction.aperture_field` samples a metasurface once per cell. The
+cells of an axis of $n_1$ cells sit at $x_j = (j - \tfrac{n_1-1}{2})\,a_1$, measured
+from the aperture centre along $\hat{\mathbf{e}}_1$ with the pitch $a_1$ of the
+lattice, and likewise along $\hat{\mathbf{e}}_2$; with an even count the centre falls
+between two samples. The values are power waves relative to the incident plane
+wave, as the entries of S are, so $|E|^2$ of a wave that leaves normally is its
+intensity relative to the incident one. The two components are those along
+$\hat{\mathbf{e}}_1$ (TM) and $\hat{\mathbf{e}}_2$ (TE), which are the Floquet
+references at normal incidence. `gfem.diffraction.propagate` multiplies each plane
+wave of the field by $e^{-ik_zd}$ for a distance $d$ into the half-space behind the
+surface, with $k_z = \sqrt{k^2 - q^2}$ where the wave propagates and
+$k_z = -i\sqrt{q^2 - k^2}$ where it is evanescent, so that evanescent waves decay
+under $e^{+i\omega t}$.
+
 ## Temperature and thermo-optic phase
 
 A thermal solve's temperatures are absolute, in kelvin, and its rise is the

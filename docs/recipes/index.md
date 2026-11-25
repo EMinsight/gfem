@@ -68,3 +68,4 @@ orphan: true
 
 - {doc}`diffraction-efficiency`
 - {doc}`emissivity`
+- {doc}`metasurface-from-cells`

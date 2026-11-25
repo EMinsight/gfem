@@ -114,6 +114,7 @@ recipes/multipoles
 
 recipes/diffraction-efficiency
 recipes/emissivity
+recipes/metasurface-from-cells
 ```
 
 ```{toctree}
