@@ -530,7 +530,10 @@ def cell_response(
     a wider range, mesh each sample (``make_cell`` builds the cell at ``p``
     and moves it by ``dp``): the table is then as smooth as the meshes are
     converged. The parameter may move the meta-atom only, not the lattice,
-    the half-spaces or the ports.
+    the half-spaces or the ports. ``make_cell`` is called once per sample to
+    read the cell's signature, then once per frequency for the solve, so
+    ``n_freq + 1`` times per sample: cache the mesh per ``p`` (for example
+    with `functools.cache`) when building it is expensive.
 
     Only the rows of the Floquet ports are kept, with their offsets: the
     phase of S is read at the ports' reference planes. With ``out=`` the

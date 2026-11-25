@@ -114,6 +114,11 @@ converged: two meshes of the same cell differ by their discretization error,
 which Hermite interpolation cannot remove. Converge the mesh to the accuracy
 you want from the table.
 
+`cell_response` calls `make_cell` once per sample to read the cell's signature
+and once more per frequency for each solve, so $n_f + 1$ times per sample.
+When meshing is the slow part, cache it per `p` (`functools.cache` on a
+function that returns the mesh) and let `make_cell` wrap the cached mesh.
+
 Then tabulate. Excite the polarization you will light the device with, in the
 specular order of the incident face, and declare both polarizations of the
 outgoing order (the ports above do):
