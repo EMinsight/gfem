@@ -372,3 +372,18 @@ def test_the_voltage_functional_on_the_free_dofs_reads_the_swept_voltage():
     for row, v in enumerate(voltage):
         stored = basis[space.free] @ coords[row]
         assert functional @ stored == pytest.approx(v, rel=1e-12)
+
+
+def test_a_bloch_wave_vector_holds_the_face_nodes_and_runs_no_node_pass(line):
+    # the faces are held under a Bloch wave vector: their nodes are not wanted
+    # inputs of the pass, whose face terms nothing there verifies
+    rule = _rule(line, gfem.Driven(frequency=FREQUENCIES))
+    system, ports = rule.system(line)
+    wanted = frozenset({("nodes",)})
+    free = port_pass.PortPass(rule, line, system, ports, wanted)
+    assert free.nodes
+    assert free.active
+    rule.problem = gfem.Driven(frequency=FREQUENCIES, wave_vector=(1.0, 0.0, 0.0))
+    held = port_pass.PortPass(rule, line, system, ports, wanted)
+    assert not held.nodes
+    assert not held.active

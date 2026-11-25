@@ -491,8 +491,11 @@ class PortPass:
         self.rule, self.model, self.network = rule, model, network
         self.comm = rule.comm
         self.wanted = wanted
-        #: Whether the node coordinates are wanted: every face's nodes are inputs.
-        self.nodes = wanted is None or ("nodes",) in wanted
+        #: Whether the node coordinates are wanted: every face's nodes are
+        #: inputs, unless the rule holds the faces (a Bloch wave vector).
+        self.nodes = (
+            wanted is None or ("nodes",) in wanted
+        ) and rule.wave_faces_held is None
         self.width = len(rule.excite)
         self.columns = list(network.columns)
         self.waves = {c.index: pos for pos, c in enumerate(network.waves)}
