@@ -2,7 +2,9 @@ name: CI
 # Every push and pull request runs the fast jobs. The slow ones (verification,
 # the tutorial notebooks: hours on a runner) run nightly and on demand
 # (`gh workflow run CI --ref main`); release.yml publishes a tag only after a run
-# of all of them passed on its commit.
+# of all of them passed on its commit. Push and pull-request runs also leave out
+# the tests marked `slow` (30 s or more in tests/durations.json), and run only
+# the test jobs their changed paths need (the `changes` job).
 on:
   pull_request:
   push:
@@ -38,11 +40,69 @@ concurrency:
   cancel-in-progress: true
 env:
   UV_VERSION: "0.13.1"
+  # nightly and on-demand runs: every test, and junit timings uploaded as
+  # durations-* artifacts, which tools/test_durations.py folds into
+  # tests/durations.json (the shard balance and the `slow` marker)
+  FULL_RUN: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+  UNIT_MARK: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'unit' || 'unit and not slow' }}
 jobs:
+  changes:
+    # Which test jobs this push or pull request needs (tools/ci_scope.py): none
+    # for the whitepaper and Markdown no test reads; only the unit tier on one
+    # runner for docs/ and README.md, which unit tests read (recipes, pages);
+    # every job otherwise. A push is compared with the last push whose CI run
+    # passed on its branch, not the push before it: that one's run may have been
+    # cancelled or failed. Scheduled and on-demand runs, and a diff that cannot
+    # be computed (no passed run yet, a force push), take every job.
+    name: change scope
+    if: inputs.tests == ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read  # the last passed push run
+    outputs:
+      scope: ${{ steps.scope.outputs.scope }}
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+    - name: Scope
+      id: scope
+      env:
+        EVENT: ${{ github.event_name }}
+        BRANCH: ${{ github.ref_name }}
+        SHA: ${{ github.sha }}
+        GH_TOKEN: ${{ github.token }}
+      # pull_request checks out the merge commit: its first parent is the base.
+      # --no-renames lists both sides of a move, so code moved under docs/ is
+      # still a code change.
+      run: |
+        case "$EVENT" in
+          push)
+            from=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow CI --branch "$BRANCH" \
+              --event push --status success --limit 1 --json headSha --jq '.[0].headSha // empty' || true)
+            to=$SHA ;;
+          pull_request) from=HEAD^1 to=HEAD ;;
+          *) from= to= ;;
+        esac
+        scope=scope=full
+        if [ -n "$from" ] && paths=$(git diff --no-renames --name-only "$from" "$to"); then
+          scope=$(printf '%s\n' "$paths" | python3 tools/ci_scope.py) || scope=scope=full
+        fi
+        echo "$scope" | tee -a "$GITHUB_OUTPUT"
+
   test:
     name: unit (${{ matrix.os }}, py${{ matrix.python }})
-    if: inputs.tests == ''
+    needs: changes
+    # Not skipped at job level, so the required checks carrying these names
+    # report on every run: a scope that does not need this entry gates its
+    # steps instead. A failed scope job leaves the scope empty: every step runs.
+    if: ${{ !cancelled() && inputs.tests == '' }}
     runs-on: ${{ matrix.os }}
+    env:
+      RUN_TIER: ${{ needs.changes.outputs.scope != 'none' && (needs.changes.outputs.scope != 'docs' || (matrix.os == 'ubuntu-latest' && matrix.python == '3.12')) }}
+      # a docs change runs the slow tests too: most of them check the recipes
+      TEST_MARK: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.scope == 'docs') && 'unit' || 'unit and not slow' }}
     strategy:
       fail-fast: false
       matrix:
@@ -52,28 +112,42 @@ jobs:
     steps:
     - uses: actions/checkout@v6
     - uses: astral-sh/setup-uv@v6
+      if: env.RUN_TIER == 'true'
       with:
         version: ${{ env.UV_VERSION }}
         python-version: ${{ matrix.python }}
         enable-cache: true
     - name: Install
+      if: env.RUN_TIER == 'true'
       # viz: Field.to_pyvista is unit-tested (no rendering, no display needed)
       run: uv sync --locked --extra viz
     - name: Ruff
+      if: env.RUN_TIER == 'true'
       run: uv run ruff check --no-fix .
     - name: Ruff format
+      if: env.RUN_TIER == 'true'
       run: uv run ruff format --check .
     - name: ty
       # Once, on Linux: the `ty: ignore`s match Linux's ngsolve stubs, which the
       # macOS and Windows wheels do not share.
-      if: matrix.os == 'ubuntu-latest'
+      if: env.RUN_TIER == 'true' && matrix.os == 'ubuntu-latest'
       run: uv run ty check src benchmarks
     - name: Unit tier
-      run: uv run pytest -m unit
+      if: env.RUN_TIER == 'true'
+      run: uv run pytest -m "${{ env.TEST_MARK }}" --junitxml=junit-unit.xml
+    - name: Durations
+      if: always() && env.RUN_TIER == 'true' && env.FULL_RUN == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: durations-unit-${{ matrix.os }}-py${{ matrix.python }}
+        path: junit-unit.xml
+        if-no-files-found: ignore
+        retention-days: 14
 
   verification:
-    # Serial, the tier takes over 3 h on one runner: split into shards, each
-    # running every 8th test (conftest.py's --shard), with and without MKL.
+    # Serial, the tier takes over 3 h on one runner: split into shards balanced
+    # by the recorded test durations (conftest.py's --shard, tests/durations.json),
+    # with and without MKL.
     name: verification (ubuntu, py3.12${{ matrix.extra && ', mkl' || '' }}, shard ${{ matrix.shard }}/8)
     if: inputs.tests == '' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
@@ -98,7 +172,15 @@ jobs:
         uv run python -c "from gfem._linalg import pardiso;
         assert pardiso.pardiso_available(), 'MKL PARDISO not found'"
     - name: Verification tier
-      run: uv run pytest -m verification -rs --shard ${{ matrix.shard }}/8
+      run: uv run pytest -m verification -rs --shard ${{ matrix.shard }}/8 --junitxml=junit-verification.xml
+    - name: Durations
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: durations-verification${{ matrix.extra && '-mkl' || '' }}-${{ matrix.shard }}
+        path: junit-verification.xml
+        if-no-files-found: ignore
+        retention-days: 14
 
   mkl:
     # The mkl extra: MKL PARDISO (the direct backend, BDDC's coarse problem).
@@ -106,7 +188,8 @@ jobs:
     # no macOS entry: there the extra installs nothing.
     # (its verification tier runs in the verification job)
     name: unit (${{ matrix.os }}, py3.12, mkl)
-    if: inputs.tests == ''
+    needs: changes
+    if: ${{ !cancelled() && inputs.tests == '' && needs.changes.outputs.scope != 'none' && needs.changes.outputs.scope != 'docs' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -138,14 +221,15 @@ jobs:
     - name: MKL tests
       run: uv run pytest -v -rs tests/unit/test_linalg_mkl.py
     - name: Unit tier
-      run: uv run pytest -m unit -rs
+      run: uv run pytest -m "${{ env.UNIT_MARK }}" -rs
 
   netlist:
     # The netlist group: the exported SPICE and Verilog-A models run in ngspice
     # (sedes) and VACASK, Verilog-A compiled by openvaf-r (vacask-bin). Test
     # only; elsewhere the netlist tests skip.
     name: netlists in circuit simulators (ubuntu, py3.12)
-    if: inputs.tests == ''
+    needs: changes
+    if: ${{ !cancelled() && inputs.tests == '' && needs.changes.outputs.scope != 'none' && needs.changes.outputs.scope != 'docs' }}
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
@@ -177,7 +261,8 @@ jobs:
     # PETSc stack, whose cold build is too long for every pull request: petsc.yml.
     # Pinned, not ubuntu-latest: apt's Open MPI 4.1.6 is MareNostrum 5's version.
     name: launched tests (ubuntu-24.04, py3.12, Open MPI)
-    if: inputs.tests == ''
+    needs: changes
+    if: ${{ !cancelled() && inputs.tests == '' && needs.changes.outputs.scope != 'none' && needs.changes.outputs.scope != 'docs' }}
     # The tier took 53 min on 8 cores, on Open MPI 5.0.11: a liveness bound, no gate.
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -203,7 +288,7 @@ jobs:
         assert size == 2 and vendor[0] == 'Open MPI', (size, vendor);
         print(vendor)"
     - name: Unit tier
-      run: uv run pytest -m unit
+      run: uv run pytest -m "${{ env.UNIT_MARK }}"
     - name: Launched tier
       # Without the MPI PETSc stack its cases skip, and BDDC's coarse is on rank 0.
       run: uv run pytest -m "mpi and not reference" -rs
@@ -254,7 +339,8 @@ jobs:
     # The floors pyproject.toml declares (JAX's, NumPy's...): the lock carries
     # the newest, so without this job nothing checks them.
     name: unit, lowest direct dependencies (ubuntu, py3.12)
-    if: inputs.tests == ''
+    needs: changes
+    if: ${{ !cancelled() && inputs.tests == '' && needs.changes.outputs.scope != 'none' && needs.changes.outputs.scope != 'docs' }}
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
@@ -268,14 +354,15 @@ jobs:
         uv sync --resolution lowest-direct
         git checkout -- uv.lock
     - name: Unit tier
-      run: uv run --no-sync pytest -m unit
+      run: uv run --no-sync pytest -m "${{ env.UNIT_MARK }}"
 
   sax-newest:
     # pip resolves gfem[sax] to the newest SAX, which caps JAX below 0.10; the
     # lock and the lowest job never see that pair. Runs the tests that touch
     # SAX or scikit-rf: add each new one to the list.
     name: unit, newest SAX as pip resolves it (ubuntu, py3.12)
-    if: inputs.tests == ''
+    needs: changes
+    if: ${{ !cancelled() && inputs.tests == '' && needs.changes.outputs.scope != 'none' && needs.changes.outputs.scope != 'docs' }}
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6

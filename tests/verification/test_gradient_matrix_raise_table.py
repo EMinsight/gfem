@@ -2331,17 +2331,52 @@ def test_the_heat_kernel_s_explicit_term(request, case):
 
 
 @pytest.fixture(scope="module")
-def cases(all_cases):
-    return {k: v for k, v in all_cases.items() if k not in PORT_FACE_NAMES}
+def dipole_cases(dipole_model):
+    return _dipole_cases(dipole_model)
 
 
-@pytest.fixture(scope="module")
-def port_face_cases(all_cases):
-    return {k: all_cases[k] for k in PORT_FACE_NAMES}
+#: The fixture that builds a case, for the cases a fixture builds several of: a
+#: case's item requests only that fixture, not every case of the table.
+CASE_GROUPS = {
+    "wave_cases": ("driven_wave", "driven_wave_shared"),
+    "dipole_cases": ("driven_dipole", "driven_magnetic_dipole"),
+    "driven_port_face_cases": (
+        "driven_wave_face",
+        "driven_wave_shared_face",
+        "driven_wave_face_sheet",
+        "driven_wave_face_law",
+    ),
+    "sheet_cases": ("driven_sheet", "eigenmode_sheet", "port_mode_sheet"),
+    "lumped_cases": (
+        "driven_lumped",
+        "driven_lumped_adaptive",
+        "eigenmode_lumped",
+        "electrostatic_lumped",
+        "port_mode_lumped",
+    ),
+    "driven_periodic_cases": (
+        "driven_periodic_plain",
+        "driven_periodic_law",
+        "driven_periodic_bloch",
+    ),
+    "driven_floquet_cases": ("driven_floquet_plain", "driven_floquet_bloch"),
+    "eigen_periodic_cases": ("eigenmode_periodic_plain", "eigenmode_periodic_bloch"),
+    "law_cases": (
+        "driven_law",
+        "driven_law_absorbing",
+        "driven_law_adaptive",
+        "driven_blend",
+    ),
+    "thermal_problem_cases": ("steady_thermal", "transient_thermal", "dc_conduction"),
+    "piezoelectric_case": ("piezoelectric",),
+    "eigen_pml_case": ("eigenmode_pml",),
+    "planewave_case": ("driven_planewave",),
+}
+#: These two fixtures return their one case itself, not a dict of cases.
+BARE_CASES = ("eigen_pml_case", "planewave_case")
 
 
-@pytest.fixture(scope="module")
-def all_cases(model, driven_model, eigen_model, wave_cases, request):
+def _port_model(*, law):
     mesh = gfem.Mesh.from_gmsh(DATA / "parallel_plate.msh", length_unit="um")
     path = ((20e-6, 0.0, 0.0), (20e-6, 10e-6, 0.0))
     port_model = gfem.Model(
@@ -2353,46 +2388,95 @@ def all_cases(model, driven_model, eigen_model, wave_cases, request):
             gfem.WavePort("p2", "port2"),
         ],
     )
-    return {
-        "electrostatic": (model, PROBLEMS["electrostatic"]),
-        "electrostatic_law": (
-            model.with_material("nitride", gfem.Material(eps_r=ELECTROSTATIC_LAW)),
-            PROBLEMS["electrostatic"],
+    if law:
+        port_model = port_model.with_material(
+            "fill", gfem.Material(eps_r=PORT_MODE_LAW)
+        )
+    return port_model, gfem.PortMode("p1", 10e9)
+
+
+def _fixture(request, name):
+    return request.getfixturevalue(name)
+
+
+#: The cases no group fixture builds: name -> builder(request).
+SINGLE_CASES = {
+    "electrostatic": lambda r: (_fixture(r, "model"), PROBLEMS["electrostatic"]),
+    "electrostatic_law": lambda r: (
+        _fixture(r, "model").with_material(
+            "nitride", gfem.Material(eps_r=ELECTROSTATIC_LAW)
         ),
-        "port_mode": (port_model, gfem.PortMode("p1", 10e9)),
-        "port_mode_law": (
-            port_model.with_material("fill", gfem.Material(eps_r=PORT_MODE_LAW)),
-            gfem.PortMode("p1", 10e9),
-        ),
-        "driven": (driven_model, gfem.Driven(frequency=5e9, keep_fields=True)),
-        "driven_adaptive": (driven_model, ADAPTIVE),
-        **wave_cases,
-        "eigenmode": (eigen_model, gfem.Eigenmode(target=17e9)),
-        "eigenmode_wave": (
-            request.getfixturevalue("eigen_wave_model"),
-            gfem.Eigenmode(target=EIGEN_WAVE_TARGET),
-        ),
-        "driven_pml": (
-            request.getfixturevalue("pml_model"),
-            gfem.Driven(frequency=pml_cases.F0),
-        ),
-        **_dipole_cases(request.getfixturevalue("dipole_model")),
-        "eigenmode_pml": request.getfixturevalue("eigen_pml_case"),
-        "driven_planewave": request.getfixturevalue("planewave_case"),
-        **request.getfixturevalue("driven_port_face_cases"),
-        **request.getfixturevalue("sheet_cases"),
-        **request.getfixturevalue("lumped_cases"),
-        **request.getfixturevalue("driven_periodic_cases"),
-        **request.getfixturevalue("driven_floquet_cases"),
-        **request.getfixturevalue("eigen_periodic_cases"),
-        **request.getfixturevalue("law_cases"),
-        "eigenmode_law": (
-            request.getfixturevalue("eigen_law_model"),
-            gfem.Eigenmode(target=17e9),
-        ),
-        **request.getfixturevalue("thermal_problem_cases"),
-        **request.getfixturevalue("piezoelectric_case"),
-    }
+        PROBLEMS["electrostatic"],
+    ),
+    "port_mode": lambda _: _port_model(law=False),
+    "port_mode_law": lambda _: _port_model(law=True),
+    "driven": lambda r: (
+        _fixture(r, "driven_model"),
+        gfem.Driven(frequency=5e9, keep_fields=True),
+    ),
+    "driven_adaptive": lambda r: (_fixture(r, "driven_model"), ADAPTIVE),
+    "eigenmode": lambda r: (
+        _fixture(r, "eigen_model"),
+        gfem.Eigenmode(target=17e9),
+    ),
+    "eigenmode_wave": lambda r: (
+        _fixture(r, "eigen_wave_model"),
+        gfem.Eigenmode(target=EIGEN_WAVE_TARGET),
+    ),
+    "driven_pml": lambda r: (
+        _fixture(r, "pml_model"),
+        gfem.Driven(frequency=pml_cases.F0),
+    ),
+    "eigenmode_law": lambda r: (
+        _fixture(r, "eigen_law_model"),
+        gfem.Eigenmode(target=17e9),
+    ),
+}
+GROUP_OF = {name: group for group, names in CASE_GROUPS.items() for name in names}
+CASE_NAMES = tuple(sorted({*SINGLE_CASES, *GROUP_OF}))
+
+
+def _case(request, name):
+    """The ``(model, problem)`` of one case, building only the fixtures it needs."""
+    if name in SINGLE_CASES:
+        return SINGLE_CASES[name](request)
+    group = request.getfixturevalue(GROUP_OF[name])
+    if GROUP_OF[name] in BARE_CASES:
+        return group
+    _check_group_keys(GROUP_OF[name], group)
+    return group[name]
+
+
+def _check_group_keys(fixture, built):
+    """A group fixture builds exactly the cases ``CASE_GROUPS`` lists for it.
+
+    A case a fixture builds that no entry lists would never be requested, so the
+    table would skip it without a word; one listed but not built would be a
+    KeyError far from the cause.
+    """
+    listed = set(CASE_GROUPS[fixture])
+    returned = set(built)
+    if returned != listed:
+        raise AssertionError(
+            f"group fixture {fixture!r} returns cases that differ from CASE_GROUPS: "
+            f"built but not listed {sorted(returned - listed)}, "
+            f"listed but not built {sorted(listed - returned)}"
+        )
+
+
+@pytest.fixture(scope="module")
+def all_cases(request):
+    return {name: _case(request, name) for name in CASE_NAMES}
+
+
+@pytest.fixture(scope="module")
+def cases(all_cases):
+    return {k: v for k, v in all_cases.items() if k not in PORT_FACE_NAMES}
+
+
+@pytest.fixture(scope="module")
+def port_face_cases(all_cases):
+    return {k: all_cases[k] for k in PORT_FACE_NAMES}
 
 
 #: Both modes of the hybrid line propagate (mode 2 from about 48 GHz). One
@@ -2460,6 +2544,34 @@ def _objective(model, problem, out_path, index):
     return objective, leaves[index]
 
 
+#: The raise table's cases, one test item each (their gradients solve per cell).
+RAISE_TABLE_NAMES = tuple(
+    sorted(
+        {c[0] for c in EXPECTED}
+        - set(MEASUREMENT_READS)
+        - set(HEAT_READS)
+        - set(PORT_FACE_NAMES)
+    )
+)
+
+
+#: The cases whose cells take over 15 minutes as one item: one item per result leaf.
+SPLIT_BY_LEAF = ("eigenmode_wave",)
+RAISE_TABLE_ITEMS = tuple(
+    (name, leaf)
+    for name in RAISE_TABLE_NAMES
+    for leaf in (
+        sorted({c[1] for c in EXPECTED if c[0] == name})
+        if name in SPLIT_BY_LEAF
+        else [None]
+    )
+)
+
+
+def test_the_raise_table_names_are_the_built_cases(cases):
+    assert set(RAISE_TABLE_NAMES) == set(cases)
+
+
 def test_every_cell_has_an_expected_outcome(cases):
     cells = {(p, o, k) for p, _, _, o, _, _, k in _cells(cases)}
     assert cells == {
@@ -2477,9 +2589,9 @@ def test_every_port_face_cell_has_an_expected_outcome(port_face_cases):
 
 
 @pytest.mark.parametrize("name", PORT_FACE_NAMES)
-def test_port_face_raise_table(port_face_cases, name):
+def test_port_face_raise_table(request, name):
     """The port mode's cases, one item each (their gradients solve a mode per cell)."""
-    only = {name: port_face_cases[name]}
+    only = {name: _case(request, name)}
     for _, model, problem, out_name, out_path, index, kind in _cells(only):
         expected = EXPECTED[(name, out_name, kind)]
         objective, x = _objective(model, problem, out_path, index)
@@ -2575,8 +2687,17 @@ def test_a_shift_keeps_refusing_the_optical_inputs_of_its_mode(rule):
 
 
 @pytest.mark.bitwise  # its low-Q lumped mode converges run to run only on one thread
-def test_raise_table(cases):
-    for name, model, problem, out_name, out_path, index, kind in _cells(cases):
+@pytest.mark.parametrize(
+    ("name", "leaf"),
+    RAISE_TABLE_ITEMS,
+    ids=[n if leaf is None else f"{n}-{leaf}" for n, leaf in RAISE_TABLE_ITEMS],
+)
+def test_raise_table(request, name, leaf):
+    """One case (a slow one, one result leaf) per item: it builds only its fixtures."""
+    only = {name: _case(request, name)}
+    for _, model, problem, out_name, out_path, index, kind in _cells(only):
+        if leaf is not None and out_name != leaf:
+            continue
         expected = EXPECTED[(name, out_name, kind)]
         objective, x = _objective(model, problem, out_path, index)
         cell = f"{name} {out_name} x {kind}"

@@ -22,8 +22,13 @@ A test marked ``bitwise`` compares direct solves to the last bit. PARDISO repeat
 its bits on any thread count; NGSolve's sparse Cholesky, the fallback without the
 mkl extra, only on one thread, so without PARDISO the test runs on one.
 
-``--shard i/n`` keeps every n-th selected test, from the i-th (0-based), so n CI
-jobs share a tier; tests are dealt one by one, so a long file spreads over them.
+``--shard i/n`` keeps the i-th (0-based) of n shards of the selected tests, so n CI
+jobs share a tier. Tests are dealt longest first to the least-loaded shard, by the
+seconds recorded in tests/durations.json (see tests/shards.py); a test the file
+does not know costs the median of the positive recorded times.
+
+A test whose recorded duration is `SLOW_SECONDS` or more, or that carries a hand
+``@pytest.mark.slow``, is marked ``slow``, so ``-m "not slow"`` leaves it out.
 """
 
 import os
@@ -31,10 +36,13 @@ import sys
 from pathlib import Path
 
 import pytest
+import shards
 
 TIERS = ("unit", "verification", "reference", "benchmark", "cuda", "mpi")
 TESTS_DIR = Path(__file__).parent
 REFERENCE_ENV = "GFEM_REFERENCE_DIR"
+DURATIONS_FILE = TESTS_DIR / "durations.json"
+SLOW_SECONDS = 30.0
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -42,7 +50,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--shard",
         default=None,
         metavar="I/N",
-        help="run every N-th selected test, from the I-th (0-based)",
+        help="run shard I (0-based) of N, balanced by tests/durations.json",
     )
 
 
@@ -56,8 +64,12 @@ class _Shard:
     def pytest_collection_modifyitems(
         self, config: pytest.Config, items: list[pytest.Item]
     ) -> None:
-        kept = items[self.index :: self.count]
-        dropped = [item for i, item in enumerate(items) if i % self.count != self.index]
+        costs = shards.costs_of(
+            [item.nodeid for item in items], shards.load(DURATIONS_FILE)
+        )
+        owner = shards.assign(costs, self.count)
+        kept = [item for item in items if owner[item.nodeid] == self.index]
+        dropped = [item for item in items if owner[item.nodeid] != self.index]
         if dropped:
             config.hook.pytest_deselected(items=dropped)
         items[:] = kept
@@ -78,8 +90,11 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Add the tier marker before pytest's `-m` deselection runs."""
+    """Add the tier and `slow` markers before pytest's `-m` deselection runs."""
+    recorded = shards.load(DURATIONS_FILE)
     for item in items:
+        if recorded.get(shards.junit_key(item.nodeid), 0.0) >= SLOW_SECONDS:
+            item.add_marker("slow")
         tier = item.path.relative_to(TESTS_DIR).parts[0]
         if tier not in TIERS:
             raise pytest.UsageError(
