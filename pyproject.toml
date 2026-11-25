@@ -135,6 +135,7 @@ markers = [
   "petsc: needs complex petsc4py built as the PETSc and SLEPc recipe describes; skipped without it (run alone with -m petsc)",
   "slepc: needs slepc4py on that PETSc; skipped without it",
   "netlist: runs the exported netlists in ngspice and VACASK; needs the netlist group (uv sync --group netlist), skipped without it",
+  "slow: recorded at 30 s or more in tests/durations.json, or marked by hand; push and pull-request CI runs leave it out",
   "bitwise: needs repeatable direct solves (last bits, tight convergence); one solve thread without PARDISO",
 ]
 pythonpath = ["tools", "tests", "."]  # "." imports the benchmarks package
