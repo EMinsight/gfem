@@ -297,18 +297,7 @@ class CellResponse:
                 f"CellResponse: p must be a scalar, got shape {np.shape(p)}; "
                 "evaluate several values with jax.vmap(response)."
             )
-        lo, hi = float(self.parameter[0]), float(self.parameter[-1])
-        if is_traced(p):
-            p = jnp.asarray(p, dtype=float)
-            outside = ~((p >= lo) & (p <= hi))
-            p = p + jnp.where(outside, jnp.nan, 0.0)
-        else:
-            check_range(self, p)
-            p = jnp.asarray(np.asarray(p, dtype=float))
-        if len(self.parameter) == 1:
-            values = self.values[0] + self.derivative[0] * (p - lo)
-        else:
-            values = _hermite(p, self.parameter, self.values, self.derivative)
+        values = interpolate(self, p, self.values, self.derivative)
         return NetworkParameters(
             values=values,
             z_ref=jnp.asarray(self.z_ref),
@@ -390,6 +379,29 @@ _codec.register(
     CellResponse,
     tag="CellResponse",
 )
+
+
+def interpolate(
+    response: CellResponse, p: ArrayLike, values: jax.Array, derivative: jax.Array
+) -> jax.Array:
+    """The Hermite interpolant of ``values`` (and ``derivative``) at a scalar ``p``.
+
+    ``values`` and ``derivative`` share the leading sample axis of
+    ``response.parameter`` and may be any slice of the response's arrays. A
+    concrete ``p`` outside the range raises, a traced one gives NaN.
+    """
+    xs = response.parameter
+    lo, hi = float(xs[0]), float(xs[-1])
+    if is_traced(p):
+        p = jnp.asarray(p, dtype=float)
+        outside = ~((p >= lo) & (p <= hi))
+        p = p + jnp.where(outside, jnp.nan, 0.0)
+    else:
+        check_range(response, p)
+        p = jnp.asarray(np.asarray(p, dtype=float))
+    if len(xs) == 1:
+        return values[0] + derivative[0] * (p - lo)
+    return _hermite(p, xs, values, derivative)
 
 
 def check_range(response: CellResponse, p: ArrayLike) -> None:

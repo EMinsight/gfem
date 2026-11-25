@@ -1,8 +1,13 @@
 """Aperture fields and their angular-spectrum propagation (analytic, no solve)."""
 
+import dataclasses
+import math
+import re
+
 import jax
 import jax.numpy as jnp
 import numpy as np
+import periodic_cases as pc
 import pytest
 from scipy.special import hankel2
 
@@ -341,3 +346,227 @@ def test_propagate_jit_grad_vmap():
     leaves, tree = jax.tree.flatten(base)
     assert len(leaves) == 1
     assert jax.tree.unflatten(tree, leaves).distance == 0.0
+
+
+# --- aperture_field: the locally periodic approximation ---------------------------
+
+SQ = np.sqrt(0.5)
+#: (polarization, incident face, incident Jones pair as seen in (TM, TE)).
+E_IN = [
+    ("TE", "z_min", (0, 1)),
+    ("TM", "z_min", (1, 0)),
+    ("RCP", "z_min", (SQ, -1j * SQ)),
+    ("LCP", "z_min", (SQ, 1j * SQ)),
+    ("RCP", "z_max", (SQ, 1j * SQ)),
+    ((0.6, 0.8j), "z_min", (0.6, 0.8j)),
+]
+
+
+@pytest.mark.parametrize(("pol", "face", "e_in"), E_IN)
+def test_l1_a_uniform_map_gives_the_jones_block_times_the_polarization(
+    pol, face, e_in
+):
+    r = pc.analytic_response()
+    cols = [0, 1] if face == "z_min" else [2, 3]
+    out = "z_max"
+    for shape in ((5,), (3, 4)):
+        p0 = 0.2731
+        f = dif.aperture_field(r, np.full(shape, p0), out, face, polarization=pol)
+        j = np.asarray(r(p0).values)[0][2:4][:, cols]
+        want = j @ np.asarray(e_in)
+        got = np.asarray(f.values)
+        assert got.shape == (1, 2, *shape)
+        np.testing.assert_allclose(
+            got, np.broadcast_to(want[None, :, *([None] * len(shape))], got.shape),
+            rtol=0, atol=1e-14,
+        )
+        assert f.index == 1.0
+        assert f.distance == 0.0
+        assert (f.y is None) == (len(shape) == 1)
+
+
+def test_l1_at_the_knots_the_field_is_the_stored_entries_and_the_amplitude_scales():
+    r = pc.analytic_response()
+    f = dif.aperture_field(r, r.parameter, "z_max", "z_min", polarization="TE")
+    want = np.asarray(r.values)[:, 0, 2:4, 1]  # (n_p, 2): air rows, sub TE
+    np.testing.assert_allclose(np.asarray(f.values)[0].T, want, rtol=0, atol=1e-15)
+    amp = np.exp(1j * np.arange(len(r.parameter)))
+    g = dif.aperture_field(
+        r, r.parameter, "z_max", "z_min", polarization="TE", amplitude=amp
+    )
+    np.testing.assert_allclose(
+        np.asarray(g.values), np.asarray(f.values) * amp, rtol=0, atol=1e-15
+    )
+    # a (n1, n2) map with an amplitude along one axis only
+    p2 = np.tile(r.parameter[:, None], (1, 3))
+    h = dif.aperture_field(
+        r, p2, "z_max", "z_min", polarization="TE", amplitude=amp[:, None]
+    )
+    np.testing.assert_allclose(
+        np.asarray(h.values)[0, :, :, 1], np.asarray(g.values)[0], atol=1e-15
+    )
+    # positions run from the aperture centre; the pitch is the lattice's
+    np.testing.assert_allclose(f.x, _centres(len(r.parameter), 0.5 * UM), atol=1e-18)
+    np.testing.assert_allclose(h.y, _centres(3, 0.16 * UM), atol=1e-18)
+
+
+def test_l1_a_reflection_reads_the_incident_face_block():
+    r = pc.analytic_response()
+    f = dif.aperture_field(
+        r, np.full(4, 0.31), "z_max", "z_max", polarization="TM"
+    )
+    want = np.asarray(r(0.31).values)[0][2:4, 2]
+    np.testing.assert_allclose(np.asarray(f.values)[0, :, 0], want, atol=1e-14)
+
+
+
+def _ap(r, **kw):
+    args = {"parameter": [0.3, 0.31], "outgoing": "z_max", "incident": "z_min"}
+    args |= {"polarization": "TE"} | kw
+    return dif.aperture_field(
+        r, args.pop("parameter"), args.pop("outgoing"), args.pop("incident"), **args
+    )
+
+
+def _lat(a2=(0.0, 0.16 * UM, 0.0), a1=(0.5 * UM, 0.0, 0.0)):
+    return {"z_min": (a1, a2), "z_max": (a1, a2)}
+
+
+def test_l6_the_aperture_messages():
+    r = pc.analytic_response()
+    with pytest.raises(TypeError, match=(
+        r"^aperture_field needs a gfem\.diffraction\.CellResponse, got str\.$"
+    )):
+        dif.aperture_field("x", [0.3], "z_max", "z_min", polarization="TE")
+    for shape in ((), (2, 2, 2), (0,), (2, 0)):
+        with pytest.raises(ValueError, match=(
+            r"^aperture_field: the parameter map must have one axis \(cells "
+            r"along ê1\) or two \(cells along ê1, ê2\), with at least one cell, "
+            rf"got shape {re.escape(str(shape))}\.$"
+        )):
+            _ap(r, parameter=np.full(shape, 0.3))
+    with pytest.raises(ValueError, match=(
+        r"^aperture_field: amplitude of shape \(3,\) does not broadcast to the "
+        r"parameter map's shape \(2,\)\.$"
+    )):
+        _ap(r, amplitude=np.ones(3))
+    with pytest.raises(ValueError, match=(
+        r"^aperture_field: 2 of 3 cells have a parameter outside the sampled "
+        r"range \[0\.2, 0\.4\] \(min 0\.1, max 0\.5\); the cell response does not "
+        r"extrapolate\. Map an unbounded design variable onto the range, e\.g\. "
+        r"lo \+ \(hi - lo\) \* jax\.nn\.sigmoid\(x\)\.$"
+    )):
+        _ap(r, parameter=[0.1, 0.3, 0.5])
+    with pytest.raises(ValueError, match=(
+        r"^aperture_field: the cell response was sampled at oblique incidence "
+        r"\(in-plane wave vector \(1e\+06, 0\) rad/m\); the aperture field "
+        r"assumes normal incidence, where every cell's TM and TE references are "
+        r"ê1 and ê2\.$"
+    )):
+        _ap(pc.analytic_response(wave_vector=(1e6, 0.0, 0.0)))
+    with pytest.raises(ValueError, match=(
+        r"^aperture_field: the lattice vectors of 'z_max' make 60°; the aperture "
+        r"places cells on a rectangular grid along ê1 and ê2\.$"
+    )):
+        hexagonal = _lat(a1=(0.16 * UM, 0.0, 0.0), a2=(0.08 * UM, 0.08 * math.sqrt(3) * UM, 0.0))
+        _ap(pc.analytic_response(lattice=hexagonal))
+    with pytest.raises(ValueError, match=(
+        r"^aperture_field: the cells diffract: order \(-1, 0\) propagates behind "
+        r"'z_max' at 299\.792 THz, so a cell does not send out one plane wave and the "
+        r"locally periodic approximation does not hold\. Keep the pitch below the "
+        r"wavelength in that half-space \(1e-06 m at 299\.792 THz\)\.$"
+    )):
+        _ap(pc.analytic_response(pitch=1.2 * UM, lattice=_lat(a1=(1.2 * UM, 0.0, 0.0))))
+    with pytest.raises(ValueError, match=(
+        r"^aperture_field: polarization='unpolarized' is an incoherent mean, "
+        r"not one field; build the aperture field for 'TE' and for 'TM', "
+        r"propagate both and average their intensities\.$"
+    )):
+        _ap(r, polarization="unpolarized")
+
+
+def test_l6_inherited_messages_name_aperture_field():
+    r = pc.analytic_response()
+    with pytest.raises(ValueError, match=(
+        r"^aperture_field: 'nope' carries no Floquet port of the result; its "
+        r"Floquet surfaces are 'z_min', 'z_max'\.$"
+    )):
+        _ap(r, outgoing="nope")
+    # M6, the aperture variant: the outgoing order needs both polarizations
+    ports = ("sub TM", "sub TE", "air TM")
+    one_row = dataclasses.replace(
+        r,
+        ports=ports,
+        values=r.values[:, :, :3],
+        derivative=r.derivative[:, :, :3],
+        z_ref=np.asarray(r.z_ref)[:, :3],
+        offsets={n: 0.3 * UM for n in ports},
+    )
+    with pytest.raises(ValueError, match=(
+        r"^aperture_field: no Floquet port reads order \(0, 0\) in TE on "
+        r"'z_max' \(an aperture field needs both polarizations of the outgoing "
+        r"order\)\. Add gfem\.FloquetPort\(name, 'z_max', order=\(0, 0\), "
+        r"polarization='TE'\) to the model\.$"
+    )):
+        _ap(one_row)
+    # M7: the incident column was not excited
+    sub_te = dataclasses.replace(
+        r, excited=("sub TE",), values=r.values[..., 1:2], derivative=r.derivative[..., 1:2]
+    )
+    _ap(sub_te)
+    with pytest.raises(ValueError, match=(
+        r"^aperture_field: Floquet port 'sub TM' \(order \(0, 0\), TM on 'z_min'\) "
+        r"was not excited, so S has no column for it\."
+    )):
+        _ap(sub_te, polarization="RCP")
+    # M8: the outgoing TM and TE ports read at two offsets
+    skew = pc.analytic_response(
+        offsets={"sub TM": 0.3 * UM, "sub TE": 0.3 * UM, "air TM": 0.35 * UM, "air TE": 0.3 * UM}
+    )
+    with pytest.raises(ValueError, match=(
+        r"^aperture_field: Floquet ports 'air TM' and 'air TE' read order "
+        r"\(0, 0\) on 'z_max' at different offsets"
+    )):
+        _ap(skew)
+    # M9: a bad polarization
+    with pytest.raises(ValueError, match=r"^aperture_field: polarization must be 'TE', 'TM'"):
+        _ap(r, polarization="diagonal")
+    # M10: a traced polarization pair
+    with pytest.raises(
+        gfem.NonDifferentiableError,
+        match=r"^aperture_field: polarization must be fixed numbers",
+    ):
+        jax.grad(
+            lambda a: jnp.sum(
+                jnp.abs(_ap(r, polarization=(a, 1.0 + 0j)).values)
+            )
+        )(1.0)
+
+
+def test_l6_a_traced_map_outside_the_range_is_nan_not_an_error():
+    r = pc.analytic_response()
+    p = jnp.array([0.25, 0.3, 0.5])
+
+    def field(q):
+        return _ap(r, parameter=q).values
+
+    for f in (jax.jit(field), lambda q: jax.vmap(field)(q[None])[0]):
+        out = np.asarray(f(p))
+        assert np.all(np.isfinite(out[..., :2]))
+        assert np.all(np.isnan(out[..., 2]))
+    g = jax.grad(lambda q: jnp.sum(jnp.abs(field(q))))(jnp.array([0.25, 0.5]))
+    assert np.isnan(np.asarray(g)[1])
+
+
+def test_l1_jit_and_vmap_over_designs_match_eager():
+    r = pc.analytic_response()
+    base = jnp.linspace(0.21, 0.39, 6)
+
+    def intensity(p):
+        return dif.propagate(_ap(r, parameter=p, polarization="RCP"), 3e-6).intensity[0, 2]
+
+    np.testing.assert_allclose(jax.jit(intensity)(base), intensity(base), rtol=1e-12)
+    batch = jnp.stack([base, base[::-1]])
+    np.testing.assert_allclose(
+        jax.vmap(intensity)(batch), [intensity(b) for b in batch], rtol=1e-12
+    )

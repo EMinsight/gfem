@@ -7,7 +7,7 @@ Floquet surface.
 
 from __future__ import annotations
 
-from gfem._diffraction.aperture import ApertureField, propagate
+from gfem._diffraction.aperture import ApertureField, aperture_field, propagate
 from gfem._diffraction.emissivity import (
     Emissivity,
     HemisphereRule,
@@ -37,6 +37,7 @@ __all__ = [
     "Jones",
     "PowerBalance",
     "angle_sweep",
+    "aperture_field",
     "cell_response",
     "efficiencies",
     "emissivity",

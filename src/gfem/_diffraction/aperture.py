@@ -4,15 +4,29 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 from gfem._checks import is_traced
+from gfem._diffraction.outputs import (
+    Cell,
+    _runs,
+    check_offsets,
+    check_surface,
+    incidence_of,
+    unitary,
+)
 from gfem._pytree import readonly, register_fields
+from gfem._text import hertz
 from gfem.errors import NonDifferentiableError
+
+if TYPE_CHECKING:
+    from numpy.typing import ArrayLike
+
+    from gfem._diffraction.response import CellResponse
 
 #: Vacuum speed of light in m/s.
 _C0 = 299792458.0
@@ -261,3 +275,274 @@ def _real(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return out if math.isfinite(out) else None
+
+
+# --- the aperture field of a cell response ---------------------------------------
+
+_WHO = "aperture_field"
+#: How far from a right angle (|cos|) the two lattice vectors may sit.
+_RECTANGULAR_ATOL = 1e-9
+
+
+def _check_lattice_rectangular(
+    response: CellResponse, outgoing: str
+) -> tuple[float, float]:
+    """The pitches along the two lattice vectors of ``outgoing``, or A6."""
+    a1, a2 = (np.asarray(v, dtype=float) for v in response.lattice[outgoing])
+    n1, n2 = float(np.linalg.norm(a1)), float(np.linalg.norm(a2))
+    cos = float(a1 @ a2) / (n1 * n2)
+    if abs(cos) > _RECTANGULAR_ATOL:
+        angle = math.degrees(math.acos(max(-1.0, min(1.0, cos))))
+        raise ValueError(
+            f"{_WHO}: the lattice vectors of {outgoing!r} make {angle:.6g}°; "
+            "the aperture places cells on a rectangular grid along ê1 and "
+            "ê2."
+        )
+    return n1, n2
+
+
+def _check_not_diffracting(
+    response: CellResponse, outgoing: str, index: float, pitches: tuple[float, float]
+) -> None:
+    """Raise A7 if a non-specular order propagates behind ``outgoing``."""
+    freqs = np.asarray(response.frequency, dtype=float)
+    k = 2 * np.pi * index * freqs / _C0
+    b = 2 * np.pi / np.asarray(pitches)
+    reach = int(np.ceil(np.max(k) / np.min(b))) + 1
+    found: dict[tuple[int, int], list[int]] = {}
+    for m in range(-reach, reach + 1):
+        for n in range(-reach, reach + 1):
+            if (m, n) == (0, 0):
+                continue
+            kappa = math.hypot(m * b[0], n * b[1])
+            idx = [i for i in range(len(freqs)) if kappa < k[i]]
+            if idx:
+                found[(m, n)] = idx
+    if not found:
+        return
+    order = min(found, key=lambda o: (abs(o[0]) + abs(o[1]), o))
+    fmax = float(np.max(freqs[found[order]]))
+    raise ValueError(
+        f"{_WHO}: the cells diffract: order {order} propagates behind "
+        f"{outgoing!r} at {_runs(found[order], freqs)}, so a cell does not send "
+        "out one plane wave and the locally periodic approximation does not "
+        "hold. Keep the pitch below the wavelength in that half-space "
+        f"({_C0 / (index * fmax):g} m at {hertz(fmax)})."
+    )
+
+
+def _outgoing_ports(cell: Cell, outgoing: str) -> list[str]:
+    """The (0, 0) TM and TE ports of ``outgoing`` (M5, M6, M8)."""
+    check_surface(cell, outgoing)
+    names = []
+    for pol in ("TM", "TE"):
+        name = cell.port(outgoing, (0, 0), pol)
+        if name is None:
+            raise ValueError(
+                f"{_WHO}: no Floquet port reads order (0, 0) in {pol} on "
+                f"{outgoing!r} (an aperture field needs both polarizations of "
+                f"the outgoing order). Add gfem.FloquetPort(name, {outgoing!r}, "
+                f"order=(0, 0), polarization={pol!r}) to the model."
+            )
+        names.append(name)
+    check_offsets(cell, outgoing, (0, 0))
+    return names
+
+
+def _check_range(response: CellResponse, parameter: np.ndarray) -> None:
+    """Raise A4 when a concrete parameter map leaves the sampled range."""
+    lo, hi = float(response.parameter[0]), float(response.parameter[-1])
+    outside = ~((parameter >= lo) & (parameter <= hi))
+    if np.any(outside):
+        raise ValueError(
+            f"{_WHO}: {int(outside.sum())} of {parameter.size} cells have a "
+            f"parameter outside the sampled range [{lo:g}, {hi:g}] (min "
+            f"{np.nanmin(parameter):g}, max {np.nanmax(parameter):g}); the cell "
+            "response does not extrapolate. Map an unbounded design variable "
+            "onto the range, e.g. lo + (hi - lo) * jax.nn.sigmoid(x)."
+        )
+
+
+def aperture_field(
+    response: CellResponse,
+    parameter: ArrayLike,
+    outgoing: str,
+    incident: str,
+    *,
+    polarization: Any,
+    amplitude: ArrayLike = 1.0,
+) -> ApertureField:
+    r"""The field a metasurface sends out, in the locally periodic approximation.
+
+    Each cell is replaced by the periodic array of itself and radiates the
+    one plane wave of the infinite array; the field behind the metasurface is
+    one sample per cell, at the cell's centre,
+
+    .. math::
+
+        \mathbf E_\text{out}(\mathbf x_j) = a_j\,J\big(p_j\big)\,
+        \mathbf e_\text{in},
+
+    with :math:`p_j` the meta-atom parameter of cell :math:`j`,
+    :math:`a_j` the complex envelope of the incident light, :math:`J(p)` the
+    :math:`2\times2` (TM, TE) block of the cell response between the
+    specular orders of ``incident`` and ``outgoing`` (the Jones matrix
+    `gfem.diffraction.jones` reads from a solve; the response interpolates it
+    at :math:`p_j`, as `CellResponse` does), and
+    :math:`\mathbf e_\text{in}` the incident polarization (circular states
+    through :math:`U_{h_\text{in}}`, as for `gfem.diffraction.jones`). At
+    normal incidence the TM and TE references are :math:`\hat e_1` and
+    :math:`\hat e_2` in every cell, so the two components are the tangential
+    components of the field and each obeys the scalar Helmholtz equation:
+    `propagate` carries them separately. Reflection (a reflectarray) is
+    ``outgoing == incident``; the field then propagates back into the
+    incident half-space.
+
+    The approximation neglects the coupling between neighbouring cells. It
+    holds where the parameter varies slowly over the aperture: the error
+    grows with the phase step between neighbours, about 0.01 to 0.02 in
+    amplitude up to steps of :math:`40^\circ`, 0.1 at :math:`60^\circ`, and
+    it fails for steps of :math:`100^\circ` or more, such as the
+    :math:`2\pi` reset of a deflector's phase ramp. A uniform map is exact.
+    Samples sit at the cell centres, not on a staircase of uniform patches:
+    the sampled field is band-limited to :math:`|q_i| \le \pi/a_i`, and
+    the sampling matches a full solve of a few cells better than the
+    staircase for resonant meta-atoms.
+
+    Cell :math:`j` of an axis of :math:`n` cells sits at
+    :math:`x_j = (j - \tfrac{n-1}{2})\,a`, measured from the aperture centre
+    (the lattice pitch :math:`a` is read from the response): with an even
+    count the centre falls between two samples. The field is on the reference
+    plane of the outgoing port (its offset, where the phase of S is read),
+    which is distance 0 of the result.
+
+    Args:
+        response: A `CellResponse` of a rectangular lattice at normal
+            incidence whose cells send out the specular order only.
+        parameter: The meta-atom parameter of each cell, in the units of
+            ``response.parameter``: shape ``(n1,)`` (a row of cells along
+            :math:`\hat e_1`, uniform along :math:`\hat e_2`: deflectors,
+            cylindrical lenses) or ``(n1, n2)`` (along :math:`\hat e_1`,
+            :math:`\hat e_2`, ``indexing="ij"``). Differentiable. A concrete
+            map outside the sampled range raises; a traced one (``jit``,
+            ``vmap``) gives NaN in the cells outside it.
+        outgoing: The Floquet surface the field leaves through.
+        incident: The Floquet surface the light enters through.
+        polarization: ``"TE"``, ``"TM"``, ``"RCP"``, ``"LCP"`` or a Jones
+            pair ``(a_TM, a_TE)``; a fixed value.
+        amplitude: Complex envelope of the incident light per cell
+            (Gaussian illumination, an aperture stop), broadcast to the shape
+            of ``parameter``. Differentiable.
+
+    Returns:
+        The `ApertureField`, ``values`` in the power-wave units of the
+        incident plane wave: :math:`|E|^2` of a normally leaving wave is the
+        intensity relative to the incident one.
+
+    Raises:
+        TypeError: ``response`` is not a `CellResponse`.
+        ValueError: ``parameter`` is not one or two axes of at least one cell,
+            ``amplitude`` does not broadcast to it, a concrete parameter lies
+            outside the sampled range, the response was sampled at oblique
+            incidence, its lattice is not rectangular, a non-specular order
+            propagates behind ``outgoing``, ``polarization`` is
+            ``"unpolarized"`` (an incoherent mean, not one field) or not
+            valid, or a Floquet port the block needs is missing, not excited
+            or at a different offset from its partner.
+        NonDifferentiableError: ``polarization`` is traced.
+    """
+    from gfem._diffraction.response import CellResponse, interpolate
+
+    if not isinstance(response, CellResponse):
+        raise TypeError(
+            "aperture_field needs a gfem.diffraction.CellResponse, got "
+            f"{type(response).__name__}."
+        )
+    if isinstance(polarization, str) and polarization == "unpolarized":
+        raise ValueError(
+            "aperture_field: polarization='unpolarized' is an incoherent mean, "
+            "not one field; build the aperture field for 'TE' and for 'TM', "
+            "propagate both and average their intensities."
+        )
+    shape = tuple(np.shape(parameter))
+    if len(shape) not in (1, 2) or 0 in shape:
+        raise ValueError(
+            "aperture_field: the parameter map must have one axis (cells along "
+            "ê1) or two (cells along ê1, ê2), with at least one "
+            f"cell, got shape {shape}."
+        )
+    try:
+        broadcast_ok = np.broadcast_shapes(np.shape(amplitude), shape) == shape
+    except ValueError:
+        broadcast_ok = False
+    if not broadcast_ok:
+        raise ValueError(
+            f"aperture_field: amplitude of shape {np.shape(amplitude)} does not "
+            f"broadcast to the parameter map's shape {shape}."
+        )
+    if response.wave_vector is not None and any(response.wave_vector[:2]):
+        kx, ky = response.wave_vector[:2]
+        raise ValueError(
+            "aperture_field: the cell response was sampled at oblique incidence "
+            f"(in-plane wave vector ({kx:g}, {ky:g}) rad/m); the aperture field "
+            "assumes normal incidence, where every cell's TM and TE references "
+            "are ê1 and ê2."
+        )
+    cell = Cell(
+        who=_WHO,
+        results=(_Labels(response.ports, response.excited),),
+        sequence=False,
+        model=None,
+        floquet=response.ports,
+        others=(),
+        info=dict(response.diffraction_orders),
+        offsets=dict(response.offsets),
+        _directions=dict(response.direction),
+    )
+    rows = _outgoing_ports(cell, outgoing)
+    pitches = _check_lattice_rectangular(response, outgoing)
+    index = float(response.diffraction_orders[rows[0]].index)
+    _check_not_diffracting(response, outgoing, index, pitches)
+    inc = incidence_of(cell, incident, polarization, (0, 0))
+    ((_, pair),) = inc.combos
+    cols = [pol for pol, a in zip(("TM", "TE"), pair, strict=True) if a != 0]
+    names = [cell.port(incident, (0, 0), pol) for pol in cols]
+    weights = jnp.asarray([pair[("TM", "TE").index(pol)] for pol in cols])
+    if not is_traced(parameter):
+        arr = np.asarray(parameter, dtype=float)
+        _check_range(response, arr)
+        parameter = arr
+    p = jnp.asarray(parameter, dtype=float)
+    # interpolate the entries the block reads only: 2 rows x the used columns
+    r = [response.ports.index(n) for n in rows]
+    c = [response.excited.index(n) for n in names]
+    values = response.values[:, :, r][:, :, :, c]
+    derivative = response.derivative[:, :, r][:, :, :, c]
+    per_cell = jax.vmap(lambda q: interpolate(response, q, values, derivative))(
+        p.ravel()
+    )
+    # (cells, n_freq, 2, n_columns) -> (cells, n_freq, 2)
+    field = jnp.einsum("cfrk,k->cfr", per_cell, weights)
+    field = jnp.moveaxis(field, 0, -1).reshape(field.shape[1], 2, *shape)
+    field = field * jnp.broadcast_to(jnp.asarray(amplitude), shape)
+    axes = [(np.arange(n) - (n - 1) / 2) * a for n, a in zip(shape, pitches, strict=False)]
+    return ApertureField(
+        field,
+        response.frequency,
+        axes[0],
+        axes[1] if len(shape) == 2 else None,
+        index,
+        0.0,
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class _Labels:
+    """The port labels of a cell response, shaped as a result's ``s``."""
+
+    ports: tuple[str, ...]
+    excited: tuple[str, ...]
+
+    @property
+    def s(self) -> _Labels:
+        return self

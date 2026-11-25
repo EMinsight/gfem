@@ -1493,3 +1493,64 @@ def ridge_width_map(morph) -> np.ndarray:
     u = np.zeros_like(x)
     u[:, 0] = 0.5 * np.sign(np.round(x[:, 0] - RIDGE_PITCH / 2, 9)) * on_wall
     return np.einsum("ij,ij->i", u, n)
+
+
+# --- an analytic cell response: smooth S(p), no solve -----------------------------
+
+ANALYTIC_PORTS = ("sub TM", "sub TE", "air TM", "air TE")
+
+
+def analytic_response(
+    grid=None, *, pitch: float = 0.5 * UM, seed: int = 7, **over
+) -> "gfem.diffraction.CellResponse":
+    r"""A cell response of a smooth analytic :math:`S(p)` and its exact derivative.
+
+    Four Floquet ports (TM and TE of the specular order on ``z_min``, "sub",
+    and ``z_max``, "air", both lit at 1 um in vacuum, so only the specular
+    order propagates), every one excited, ``S_ij(p) = a_ij exp(i w_ij p)``
+    with seeded amplitudes and rates. ``grid`` defaults to 9 samples on
+    [0.2, 0.4]; ``over`` replaces any constructor argument.
+    """
+    import gfem.diffraction as dif
+
+    grid = np.linspace(0.2, 0.4, 9) if grid is None else np.asarray(grid, float)
+    rng = np.random.default_rng(seed)
+    n = len(ANALYTIC_PORTS)
+    amp = rng.uniform(0.1, 0.9, (n, n)) * np.exp(1j * rng.uniform(0, 6, (n, n)))
+    rate = rng.uniform(-9.0, 9.0, (n, n))
+    freq = np.array([C0 / 1.0e-6])
+    val = np.stack([amp * np.exp(1j * rate * p) for p in grid])[:, None]
+    der = np.stack([1j * rate * amp * np.exp(1j * rate * p) for p in grid])[:, None]
+    orders = {
+        name: gfem.DiffractionOrderResult(
+            port=name,
+            frequency=freq,
+            order=(0, 0),
+            polarization=name.split()[1],
+            surface="z_min" if name.startswith("sub") else "z_max",
+            index=1.0,
+            wave_vector=np.zeros((1, 3)),
+            gamma=2j * np.pi / 1.0e-6 * np.ones(1),
+            propagating=np.ones(1, bool),
+            theta=np.zeros(1),
+            phi=np.zeros(1),
+        )
+        for name in ANALYTIC_PORTS
+    }
+    lat = ((pitch, 0.0, 0.0), (0.0, 0.16 * UM, 0.0))
+    kw = {
+        "parameter": grid,
+        "frequency": freq,
+        "values": val,
+        "derivative": der,
+        "z_ref": np.ones((1, n)),
+        "ports": ANALYTIC_PORTS,
+        "excited": ANALYTIC_PORTS,
+        "diffraction_orders": orders,
+        "lattice": {"z_min": lat, "z_max": lat},
+        "direction": {"z_min": -1, "z_max": 1},
+        "wave_vector": None,
+        "offsets": {n_: 0.3 * UM for n_ in ANALYTIC_PORTS},
+    }
+    kw.update(over)
+    return dif.CellResponse(**kw)
