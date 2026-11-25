@@ -446,3 +446,186 @@ def test_the_result_is_a_pytree_with_gamma_as_its_only_leaf(filled):
     doubled = jax.tree.map(lambda x: 2 * x, kn)
     np.testing.assert_allclose(doubled.gamma_nl, 2 * kn.gamma_nl, rtol=1e-15)
     assert math.isfinite(float(jnp.abs(doubled.gamma_nl[0])))
+
+
+# --- the coupling tensor ---------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def waves(guide_mesh):
+    """Signal, pump and idler of one mode on the filled guide, TPA 0."""
+    model = guide_model(guide_mesh, gfem.Material(eps_r=N**2, nonlinear_index=N2))
+    f = np.array([7.5e9, 8e9, 8.5e9])
+    mode = mode_of(model, f)
+    return model, mode, gfem.kerr_coupling(model, mode)
+
+
+def test_the_tensor_names_its_waves_and_has_one_entry_per_tuple(waves):
+    _, _, tensor = waves
+    assert tensor.port == "p1"
+    assert tensor.waves == ((1, 7.5e9), (1, 8e9), (1, 8.5e9))
+    assert tensor.gamma_nl.shape == (3, 3, 3, 3)
+    assert tensor.gamma_nl.dtype == jnp.complex128
+
+
+def test_four_wave_mixing_follows_the_indices_of_its_waves(waves):
+    # the homogeneous fill's discrete shape is the same at every frequency and
+    # E_j scales as n_j^(-1/2) at 1 W: gamma_sppi / gamma_ssss =
+    # n_s^2 / (n_p sqrt(n_s n_i)); round-off over a few operations is 1e-15,
+    # the gate 1e-10 leaves margin for solver noise in the indices
+    _, mode, tensor = waves
+    n = np.asarray(mode.n_eff).real
+    g = np.asarray(tensor.gamma_nl)
+    s, p, i = 0, 1, 2
+    expected = n[s] ** 2 / (n[p] * np.sqrt(n[s] * n[i]))
+    assert g[s, p, p, i] / g[s, s, s, s] == pytest.approx(expected, rel=1e-10)
+
+
+def test_the_diagonal_is_the_nonlinear_coefficient_of_each_row(waves):
+    model, mode, tensor = waves
+    kn = gfem.kerr_nonlinearity(model, mode)
+    diagonal = np.asarray(tensor.gamma_nl)[range(3), range(3), range(3), range(3)]
+    # two sums of the same terms in a different order: round-off, 1e-16
+    np.testing.assert_allclose(diagonal, kn.gamma_nl, rtol=1e-13)
+
+
+def test_the_tensor_is_symmetric_in_its_two_amplitudes_and_conserves_energy(waves):
+    _, mode, tensor = waves
+    g = np.asarray(tensor.gamma_nl)
+    omega = 2 * np.pi * np.asarray(mode.frequency)
+    scale = np.abs(g).max()
+    # gamma_abcd = gamma_acbd: the product of A_b and A_c is symmetric
+    np.testing.assert_allclose(g, g.transpose(0, 2, 1, 3), rtol=0, atol=1e-13 * scale)
+    # the energy identity gamma_abcd / omega_a = conj(gamma_badc) / omega_b holds
+    # for the real chi of a lossless fill; round-off of a few operations, 1e-16
+    left = g / omega[:, None, None, None]
+    right = np.conj(g.transpose(1, 0, 3, 2)) / omega[None, :, None, None]
+    np.testing.assert_allclose(left, right, rtol=0, atol=1e-13 * scale / omega.min())
+
+
+def test_a_mode_twice_gives_every_entry_the_nonlinear_coefficient(filled):
+    model, mode, kn = filled
+    tensor = gfem.kerr_coupling(model, [mode, mode])
+    g = np.asarray(tensor.gamma_nl)
+    assert g.shape == (2, 2, 2, 2)
+    np.testing.assert_allclose(g, complex(kn.gamma_nl[0]), rtol=1e-13)
+    # the cross-phase sum of the amplitude equation counts the other wave twice
+    assert g[0, 0, 1, 1] + g[0, 1, 0, 1] == pytest.approx(
+        2 * complex(kn.gamma_nl[0]), rel=1e-13
+    )
+
+
+def test_a_single_row_gives_one_wave(filled):
+    model, mode, kn = filled
+    tensor = gfem.kerr_coupling(model, mode)
+    assert tensor.gamma_nl.shape == (1, 1, 1, 1)
+    assert complex(tensor.gamma_nl[0, 0, 0, 0]) == pytest.approx(
+        complex(kn.gamma_nl[0]), rel=1e-13
+    )
+
+
+def test_two_photon_absorption_enters_with_the_frequency_of_the_equation(guide_mesh):
+    # chi_a = 4/3 n^2 c eps0 (n2 - i beta c / (2 omega_a)): the ratio of the
+    # imaginary to the real part of the entries of wave a is the diagonal's
+    model = guide_model(
+        guide_mesh,
+        gfem.Material(eps_r=N**2, nonlinear_index=N2, two_photon_absorption=TPA),
+    )
+    f = np.array([7.5e9, 8.5e9])
+    tensor = np.asarray(gfem.kerr_coupling(model, mode_of(model, f)).gamma_nl)
+    ratio = tensor.imag / tensor.real
+    for a in range(2):
+        assert ratio[a] == pytest.approx(TPA / (2 * k0_of(f[a]) * N2), rel=1e-12)
+
+
+@pytest.fixture(scope="module")
+def cross_phase(guide_mesh):
+    """TE10 and TE01 of the filled guide at 12 GHz, order 3."""
+    model = guide_model(guide_mesh, gfem.Material(eps_r=N**2, nonlinear_index=N2))
+    order = gfem.SolverOptions(order=3)
+    modes = [mode_of(model, [12e9], order=order, mode=k) for k in (1, 3)]
+    return model, modes, gfem.kerr_coupling(model, modes)
+
+
+def test_cross_phase_of_te10_by_te01_is_four_ninths_of_its_self_phase(cross_phase):
+    _, modes, tensor = cross_phase
+    n_m, n_n = (float(np.real(m.n_eff[0])) for m in modes)
+    g = np.asarray(tensor.gamma_nl)
+    m, n = 0, 1
+    ratio = (g[m, m, n, n] + g[m, n, m, n]) / g[m, m, m, m]
+    # the modes' fields are the guide's TE10 and TE01 up to the mesh error of
+    # their shapes: 5.8e-4, 1.4e-5 and 4.5e-8 measured at orders 2, 3 and 4;
+    # the gate is 3.5 times the order-3 error
+    assert ratio.real == pytest.approx(4 / 9 * n_m / n_n, rel=5e-5)
+    # real fields in the gauge: the two orderings of the conjugated pair agree
+    assert g[m, n, n, m] == pytest.approx(g[m, m, n, n], rel=1e-14)
+
+
+def test_waves_of_different_ports_or_orders_are_refused(guide_mesh, filled):
+    model, mode, _ = filled
+    ports = gfem.Model(
+        guide_mesh,
+        materials=model.materials,
+        boundaries=model.boundaries,
+        ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")],
+    )
+    other = gfem.solve(ports, gfem.PortMode("p2", [F]), options=ORDER)
+    with pytest.raises(ValueError, match=r"share one port.*'p1'.*'p2'"):
+        gfem.kerr_coupling(ports, [mode, other])
+    third = mode_of(model, [F], order=gfem.SolverOptions(order=3))
+    with pytest.raises(ValueError, match=r"share one port, element order"):
+        gfem.kerr_coupling(model, [mode, third])
+
+
+def test_the_coupling_refuses_what_the_coefficient_refuses(filled, slab):
+    model, mode, _ = filled
+    with pytest.raises(TypeError, match="PortModeResult"):
+        gfem.kerr_coupling(model, "mode")  # ty: ignore[invalid-argument-type]
+    with pytest.raises(TypeError, match="PortModeResult"):
+        gfem.kerr_coupling(model, [])
+    with pytest.raises(TypeError, match=r"gfem\.PortMode"):
+        gfem.kerr_coupling(model, [dataclasses.replace(mode, e_field=None)])
+    bare = guide_model(model.mesh, gfem.Material(eps_r=N**2))
+    with pytest.raises(ValueError, match=r"wave port 'p1'"):
+        gfem.kerr_coupling(bare, mode)
+    slab_model, _ = slab
+    hz = mode_of(slab_model, sc.c / 1.55e-6, polarization="Hz")
+    with pytest.raises(NotImplementedError, match="Hz line port"):
+        gfem.kerr_coupling(slab_model, hz)
+
+
+def test_the_coupling_is_linear_in_the_nonlinear_index(guide_mesh):
+    f = np.array([7.5e9, 8.5e9])
+
+    def entry(n2):
+        model = _field_model(guide_mesh, jnp.asarray(N**2), n2, jnp.asarray(0.0))
+        tensor = gfem.kerr_coupling(model, mode_of(model, f))
+        return jnp.real(tensor.gamma_nl[0, 1, 1, 0])
+
+    value, slope = jax.value_and_grad(entry)(jnp.asarray(N2))
+    # exact: every term of the integral carries chi once
+    assert float(slope) == pytest.approx(float(value) / N2, rel=1e-12)
+
+
+def test_the_repr_gives_the_waves_and_a_short_form_under_a_trace(guide_mesh, waves):
+    _, _, tensor = waves
+    assert repr(tensor).startswith("KerrCoupling(port 'p1', 3 waves, |gamma_nl| up to ")
+    seen = []
+
+    def objective(n2):
+        model = _field_model(guide_mesh, jnp.asarray(N**2), n2, jnp.asarray(0.0))
+        result = gfem.kerr_coupling(model, mode_of(model, [F]))
+        seen.append(repr(result))
+        return jnp.real(result.gamma_nl[0, 0, 0, 0])
+
+    jax.grad(objective)(jnp.asarray(N2))
+    assert seen == ["KerrCoupling(port 'p1', 1 waves)"]
+
+
+def test_the_tensor_is_a_pytree_with_gamma_as_its_only_leaf(waves):
+    _, _, tensor = waves
+    leaves, tree = jax.tree.flatten(tensor)
+    assert len(leaves) == 1
+    again = jax.tree.unflatten(tree, leaves)
+    assert (again.port, again.waves) == (tensor.port, tensor.waves)
+    np.testing.assert_array_equal(again.gamma_nl, tensor.gamma_nl)
