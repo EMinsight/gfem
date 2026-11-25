@@ -165,7 +165,9 @@ def test_joint_yield_of_independent_quantities_is_the_product():
     assert abs(r.joint_yield - exact) <= 4 * standard_error(exact)
     assert r.joint_yield_error == pytest.approx(standard_error(r.joint_yield), rel=1e-9)
     lower, upper = r.joint_yield_bounds
-    assert lower == pytest.approx(max(0.0, 1 - (1 - r.yields["u"]) - (1 - r.yields["v"])))
+    assert lower == pytest.approx(
+        max(0.0, 1 - (1 - r.yields["u"]) - (1 - r.yields["v"]))
+    )
     assert upper == pytest.approx(min(r.yields["u"], r.yields["v"]))
     assert lower <= exact <= upper
 
@@ -325,7 +327,9 @@ def test_a_parameter_the_function_does_not_read_is_named():
     r = gfem.tolerance_report(
         partial, {"a": 1.0, "z": 2.0}, tolerance={"a": 0.1, "z": 0.1}
     )
-    assert "z has no effect on any quantity: check that the function reads it." in str(r)
+    assert "z has no effect on any quantity: check that the function reads it." in str(
+        r
+    )
     held = gfem.tolerance_report(
         partial, {"a": 1.0, "z": 2.0}, tolerance={"a": 0.1, "z": 0.0}
     )
@@ -396,7 +400,9 @@ def test_markdown_is_pipe_tables():
 
 def test_repr_is_one_line():
     r = report(specs={"a": (8.5, None), "b": (None, 0.0)})
-    assert repr(r).startswith("ToleranceReport(2 quantities, 2 parameters, joint yield ")
+    assert repr(r).startswith(
+        "ToleranceReport(2 quantities, 2 parameters, joint yield "
+    )
     assert "\n" not in repr(r)
     assert repr(report()) == "ToleranceReport(2 quantities, 2 parameters)"
 
@@ -443,7 +449,7 @@ def test_a_traced_nominal_raises_type_error():
     ("kwargs", "match"),
     [
         ({"quantities": lambda p: {"v": jnp.ones(3) * p["x"]}}, "'v'.*one name per"),
-        ({"quantities": lambda p: {}}, "no quantity"),
+        ({"quantities": lambda _: {}}, "no quantity"),
         ({"nominal": {"x": jnp.ones(2), "y": 2.0}}, "scalar.*FabricationModel"),
         ({"nominal": {"x": float("nan"), "y": 2.0}}, "finite"),
         ({"tolerance": {"x": 0.3}}, "keys.*'y'"),
@@ -507,7 +513,7 @@ def test_a_singular_correlation_is_allowed():
     [float("nan"), float("inf")],
 )
 def test_a_non_finite_quantity_names_the_quantity(value):
-    with pytest.raises(ValueError, match="'a'.*finite"):
+    with pytest.raises(ValueError, match=r"'a'.*finite"):
         gfem.tolerance_report(
             lambda p: {"a": p["x"] * value}, {"x": 1.0}, tolerance={"x": 0.1}
         )
@@ -518,7 +524,7 @@ def test_a_non_finite_check_value_names_the_quantity_and_the_parameter():
         # finite and smooth at the nominal point, infinite at the +tolerance corner
         return {"q": 1.0 / (p["p"] - 1.1)}
 
-    with pytest.raises(ValueError, match="'q'.*'p'.*finite"):
+    with pytest.raises(ValueError, match=r"'q'.*'p'.*finite"):
         gfem.tolerance_report(edge, {"p": 1.0}, tolerance={"p": 0.1})
 
 
@@ -601,4 +607,8 @@ def test_the_jacobian_of_a_real_solve_matches_central_differences(tmp_path):
         coarse = (values(x0 + h * e) - values(x0 - h * e)) / (2 * h)
         fine = (values(x0 + h / 2 * e) - values(x0 - h / 2 * e)) / h
         bound = np.abs(coarse - fine) + 4 * 1e-13 / (h / 2)
-        assert (np.abs(r.jacobian[:, j] - fine) <= bound).all(), (name, r.jacobian[:, j], fine)
+        assert (np.abs(r.jacobian[:, j] - fine) <= bound).all(), (
+            name,
+            r.jacobian[:, j],
+            fine,
+        )

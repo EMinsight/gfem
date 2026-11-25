@@ -29,6 +29,7 @@ from gfem._materials import (  # noqa: E402
     Lorentz,
     PermittivityLaw,
 )
+from gfem._tolerance import ToleranceReport, tolerance_report  # noqa: E402
 from gfem.acousto_optic import AcoustoOpticShift, acousto_optic_shift  # noqa: E402
 from gfem.bands import (  # noqa: E402
     BandDiagram,
@@ -192,8 +193,6 @@ from gfem.thermo_optic import (  # noqa: E402
     route_phase,
     thermo_optic_shift,
 )
-
-from gfem._tolerance import ToleranceReport, tolerance_report  # noqa: E402
 
 __version__ = _version("gfem")
 

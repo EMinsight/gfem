@@ -26,6 +26,7 @@ from gfem._checks import is_traced
 __all__ = ["ToleranceReport", "tolerance_report"]
 
 _OWNER = "tolerance_report"
+_SIGMA = "\u03c3"
 
 # The joint yield is a Monte Carlo on the linear model with 2**18 samples, in
 # chunks of 2**16, from a generator seeded with 0: a report is reproducible.
@@ -132,22 +133,22 @@ class ToleranceReport:
         return self._render(markdown=True)
 
     def __repr__(self) -> str:
-        head = (
-            f"ToleranceReport({_count(len(self.quantities), 'quantity', 'quantities')}, "
-            f"{_count(len(self.parameters), 'parameter', 'parameters')}"
-        )
+        head = f"ToleranceReport({self._sizes()}"
         if self.joint_yield is None:
             return head + ")"
         return f"{head}, joint yield {_percent(self.joint_yield)})"
 
     # --- rendering ---------------------------------------------------------------
 
-    def _render(self, *, markdown: bool) -> str:
-        blocks: list[list[str]] = []
-        title = (
-            f"Tolerance report: {_count(len(self.quantities), 'quantity', 'quantities')}, "
+    def _sizes(self) -> str:
+        return (
+            f"{_count(len(self.quantities), 'quantity', 'quantities')}, "
             f"{_count(len(self.parameters), 'parameter', 'parameters')}"
         )
+
+    def _render(self, *, markdown: bool) -> str:
+        blocks: list[list[str]] = []
+        title = f"Tolerance report: {self._sizes()}"
         if self.correlation_share is None:
             who = "parameters independent."
         else:
@@ -183,7 +184,7 @@ class ToleranceReport:
 
     def _quantity_block(self, markdown: bool) -> list[str]:
         has_specs = bool(self.specs)
-        header = ["Quantity", "nominal", "±3σ", "worst case"]
+        header = ["Quantity", "nominal", f"±3{_SIGMA}", "worst case"]
         if has_specs:
             header += ["spec", "yield", "Cpk"]
         rows = []
@@ -215,17 +216,18 @@ class ToleranceReport:
         if self.joint_yield is not None:
             if len(self.yields) > 1:
                 low, high = self.joint_yield_bounds  # ty: ignore[not-iterable]
+                error = 100 * (self.joint_yield_error or 0.0)
                 tail = (
-                    f"{_percent(self.joint_yield)} ± "
-                    f"{100 * self.joint_yield_error:.2f} % (Monte Carlo on the "
-                    f"linear model; bounds {_percent(low)} to {_percent(high)})"
+                    f"{_percent(self.joint_yield)} ± {error:.2f} % (Monte Carlo on "
+                    f"the linear model; bounds {_percent(low)} to {_percent(high)})"
                 )
             else:
                 tail = f"{_percent(self.joint_yield)} (exact on the linear model)"
             lines += ["", f"All specs: {tail}"] if markdown else [f"All specs: {tail}"]
         if any(self._starred(name) for name in self.specs):
             lines.append(
-                "* the spec limit lies beyond ±3σ, where the linear model was not checked."
+                f"* the spec limit lies beyond ±3{_SIGMA}, where the linear model "
+                "was not checked."
             )
         return lines
 
@@ -288,15 +290,18 @@ class ToleranceReport:
             for name in self.nonlinear:
                 row = self.quantities.index(name)
                 col = int(np.argmax(error[row]))
+                worst = self.checked[col]
                 limit = 3 * _NONLINEAR * self.std[name]
                 lines.append(
-                    f"{name}: nonlinear within ±{_g(self.tolerance[self.checked[col]], 4)} "
-                    f"of {self.checked[col]} (linear error {_g(error[row, col], 2)} > "
+                    f"{name}: nonlinear within ±{_g(self.tolerance[worst], 4)} "
+                    f"of {worst} (linear error {_g(error[row, col], 2)} > "
                     f"{_g(limit, 2)}); its yield is not reliable."
                 )
         else:
-            lines.append(head + ", within a tenth of ±3σ for every quantity.")
-        shifts = ", ".join(f"{name} {self.mean_shift[name]:+.2g}" for name in self.quantities)
+            lines.append(head + f", within a tenth of ±3{_SIGMA} for every quantity.")
+        shifts = ", ".join(
+            f"{name} {self.mean_shift[name]:+.2g}" for name in self.quantities
+        )
         lines.append(f"Mean shift: {shifts}.")
         return lines
 
@@ -349,7 +354,9 @@ def _parameters(
 ) -> tuple[tuple[str, ...], np.ndarray, np.ndarray]:
     """The parameter names, nominal values and tolerances, as validated arrays."""
     if not isinstance(nominal, Mapping) or not nominal:
-        msg = f"{_OWNER}: nominal must be a non-empty mapping of parameter name to value."
+        msg = (
+            f"{_OWNER}: nominal must be a non-empty mapping of parameter name to value."
+        )
         raise TypeError(msg)
     if not isinstance(tolerance, Mapping):
         msg = f"{_OWNER}: tolerance must be a mapping of parameter name to ±t."
@@ -425,7 +432,10 @@ def _specs(
         if low is not None and high is not None and not low < high:
             msg = f"{_OWNER}: the spec of {name!r} needs low < high, got {window!r}."
             raise ValueError(msg)
-        out[name] = (None if low is None else float(low), None if high is None else float(high))
+        out[name] = (
+            None if low is None else float(low),
+            None if high is None else float(high),
+        )
     return out
 
 
@@ -436,11 +446,11 @@ def _correlation(
     if not correlation:
         return None
     pairs: dict[frozenset[str], float] = {}
-    for key, rho in correlation.items():
+    for key, value in correlation.items():
         try:
             a, b = key
         except (TypeError, ValueError):
-            msg = f"{_OWNER}: a correlation key is a pair of parameter names, got {key!r}."
+            msg = f"{_OWNER}: a correlation key is two parameter names, got {key!r}."
             raise ValueError(msg) from None
         for name in (a, b):
             if name not in names:
@@ -452,7 +462,7 @@ def _correlation(
         if a == b:
             msg = f"{_OWNER}: correlation pairs {a!r} with itself."
             raise ValueError(msg)
-        rho = float(rho)
+        rho = float(value)
         if not -1 <= rho <= 1:
             msg = (
                 f"{_OWNER}: the correlation of {a!r} and {b!r} must be in [-1, 1], "
@@ -561,6 +571,7 @@ def _cpk(f: float, s: float, low: float | None, high: float | None) -> float:
 
 
 def _joint(
+    *,
     f0: np.ndarray,
     jac: np.ndarray,
     sigma: np.ndarray,
@@ -584,6 +595,81 @@ def _joint(
     return inside / _SAMPLES
 
 
+def _yields(  # noqa: PLR0917
+    windows: Mapping[str, tuple[float | None, float | None]],
+    qnames: tuple[str, ...],
+    f0: np.ndarray,
+    s: np.ndarray,
+    jac: np.ndarray,
+    sigma: np.ndarray,
+    r: np.ndarray | None,
+) -> tuple[
+    dict[str, float],
+    dict[str, float],
+    float | None,
+    float | None,
+    tuple[float, float] | None,
+]:
+    """The yield and margin of each spec, the joint yield, its error and bounds."""
+    yields = {}
+    cpk = {}
+    for name, (low, high) in windows.items():
+        i = qnames.index(name)
+        yields[name] = _yield(f0[i], s[i], low, high)
+        cpk[name] = _cpk(f0[i], s[i], low, high)
+    if not yields:
+        return yields, cpk, None, None, None
+    ys = list(yields.values())
+    bounds = (max(0.0, 1.0 - sum(1.0 - y for y in ys)), min(ys))
+    if len(ys) == 1:
+        return yields, cpk, ys[0], 0.0, bounds
+    rows = [qnames.index(name) for name in windows]
+    low = np.array([-math.inf if w[0] is None else w[0] for w in windows.values()])
+    high = np.array([math.inf if w[1] is None else w[1] for w in windows.values()])
+    joint = _joint(f0=f0[rows], jac=jac[rows], sigma=sigma, r=r, low=low, high=high)
+    return yields, cpk, joint, math.sqrt(joint * (1 - joint) / _SAMPLES), bounds
+
+
+def _linearity(  # noqa: PLR0917
+    quantities: Callable[[dict[str, jax.Array]], Mapping[str, jax.Array]],
+    names: tuple[str, ...],
+    qnames: tuple[str, ...],
+    x0: np.ndarray,
+    t: np.ndarray,
+    f0: np.ndarray,
+    jac: np.ndarray,
+    share: np.ndarray,
+    count: int,
+) -> tuple[list[int], np.ndarray, np.ndarray]:
+    r"""The checked parameters, their linear errors and the mean shift.
+
+    The parameters are ranked by their summed variance share, held ones out;
+    each of the first ``count`` is evaluated at :math:`p_j \pm t_j`.
+    """
+    sigma = t / 3
+    ranked = [j for j in np.argsort(-share.sum(axis=0), kind="stable") if t[j] > 0]
+    chosen = ranked[:count]
+    linear_error = np.zeros((len(qnames), len(chosen)))
+    shift = np.zeros(len(qnames))
+    for c, j in enumerate(chosen):
+        for sign in (1.0, -1.0):
+            x = x0.copy()
+            x[j] += sign * t[j]
+            q, f = _evaluate(quantities, names, x)
+            if q != qnames:
+                msg = (
+                    f"{_OWNER}: quantities returned different names at "
+                    f"{names[j]!r} ± tolerance."
+                )
+                raise ValueError(msg)
+            _finite_values(qnames, f, f"at parameter {names[j]!r} = {x[j]:g}")
+            linear_error[:, c] = np.maximum(
+                linear_error[:, c], np.abs(f - f0 - sign * jac[:, j] * t[j])
+            )
+            shift += 0.5 * (f - f0) * sigma[j] ** 2 / t[j] ** 2
+    return chosen, linear_error, shift
+
+
 def tolerance_report(
     quantities: Callable[[dict[str, jax.Array]], Mapping[str, jax.Array]],
     nominal: Mapping[str, float],
@@ -593,7 +679,7 @@ def tolerance_report(
     correlation: Mapping[tuple[str, str], float] | None = None,
     check_linearity: int = 1,
 ) -> ToleranceReport:
-    r"""The linearized spread, per-parameter effects and fabrication yield of named quantities.
+    r"""The linearized spread, per-parameter effects and yield of named quantities.
 
     ``quantities`` is a JAX function of a dict of named real scalars (the
     parameters) returning a dict of named real scalars (the quantities); gfem
@@ -702,45 +788,13 @@ def tolerance_report(
         correlation_share = {q: float(rest[i]) for i, q in enumerate(qnames)}
     reach = (np.abs(jac) * t).sum(axis=1)
 
-    yields = {}
-    cpk = {}
-    for name, (low, high) in spec_windows.items():
-        i = qnames.index(name)
-        yields[name] = _yield(f0[i], s[i], low, high)
-        cpk[name] = _cpk(f0[i], s[i], low, high)
+    yields, cpk, joint, error, bounds = _yields(
+        spec_windows, qnames, f0, s, jac, sigma, r
+    )
 
-    joint = error = bounds = None
-    if yields:
-        ys = list(yields.values())
-        bounds = (max(0.0, 1.0 - sum(1.0 - y for y in ys)), min(ys))
-        if len(ys) == 1:
-            joint, error = ys[0], 0.0
-        else:
-            rows = [qnames.index(name) for name in spec_windows]
-            low = np.array([-math.inf if w[0] is None else w[0] for w in spec_windows.values()])
-            high = np.array([math.inf if w[1] is None else w[1] for w in spec_windows.values()])
-            joint = _joint(f0[rows], jac[rows], sigma, r, low, high)
-            error = math.sqrt(joint * (1 - joint) / _SAMPLES)
-
-    # The check: parameters ranked by their summed variance share, held ones out.
-    score = share.sum(axis=0)
-    ranked = [j for j in np.argsort(-score, kind="stable") if t[j] > 0]
-    chosen = ranked[:check_linearity]
-    linear_error = np.zeros((m, len(chosen)))
-    shift = np.zeros(m)
-    for c, j in enumerate(chosen):
-        for sign in (1.0, -1.0):
-            x = x0.copy()
-            x[j] += sign * t[j]
-            q, f = _evaluate(quantities, names, x)
-            if q != qnames:
-                msg = f"{_OWNER}: quantities returned different names at {names[j]!r} ± tolerance."
-                raise ValueError(msg)
-            _finite_values(qnames, f, f"at parameter {names[j]!r} = {x[j]:g}")
-            linear_error[:, c] = np.maximum(
-                linear_error[:, c], np.abs(f - f0 - sign * jac[:, j] * t[j])
-            )
-            shift += 0.5 * (f - f0) * sigma[j] ** 2 / t[j] ** 2
+    chosen, linear_error, shift = _linearity(
+        quantities, names, qnames, x0, t, f0, jac, share, check_linearity
+    )
     mean_shift = {q: float(shift[i]) for i, q in enumerate(qnames)} if chosen else {}
     flagged = (
         (linear_error > 3 * _NONLINEAR * s[:, None]).any(axis=1)
