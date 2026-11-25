@@ -32,6 +32,7 @@ import scipy.constants
 from gfem._materials import Material, MaterialField, PermittivityLaw
 from gfem._mode_overlap import (
     _COLUMNS,
+    _Waves,  # noqa: F401  (the tests build one)
     _cached_columns,
     _columns,
     _elements,
