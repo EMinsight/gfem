@@ -174,7 +174,7 @@ class _OpticalForceKernel(RoleKernel):
             self._cached = (key, (where, stress))
         where, stress = self._cached[1]
         e = np.asarray(values["coefficients"])
-        of.check_size(e, stress.op, self.order)
+        engine("power_flow").check_size(e, stress.op, self.order)
         return where, stress, model, e
 
     def forward(self, values: dict[str, np.ndarray]) -> dict[str, np.ndarray]:

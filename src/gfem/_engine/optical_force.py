@@ -41,7 +41,7 @@ from gfem._checks import is_traced
 from gfem._engine import probe
 from gfem._engine.domain import em_region
 from gfem._engine.driven import DrivenOperator, driven_operator, operator_terms
-from gfem._engine.power_flow import check_nodes, check_size, check_support
+from gfem._engine.power_flow import check_nodes, check_support
 from gfem._engine.sensitivity import Term, _field_shape, _node_pass
 from gfem._engine.sides import SideSpec, selection
 from gfem._engine.terms import _bits
@@ -53,12 +53,10 @@ if TYPE_CHECKING:
     from gfem.model import Model
 
 __all__ = [
-    "WALL_TOLERANCE",
     "Shell",
     "Stress",
     "build",
     "evaluate",
-    "force_torque",
     "pullback",
     "shell",
 ]
@@ -188,9 +186,10 @@ def _check_medium(model: Model, around: np.ndarray) -> None:
         if name not in model.materials or not around[mesh.elements(name)].any():
             continue
         material = model.materials[name]
-        if is_traced(material):
+        if isinstance(material, Material) and is_traced(material):
             # a design leaf: the gradient refuses it by name, a value runs this
-            # check again on the host
+            # check again on the host. A gfem.MaterialField is refused here
+            # whatever transformation traces it (the host kernel would fail)
             continue
         why = _not_plain(material)
         if why is not None:
@@ -516,7 +515,10 @@ def pullback(
     terms = [
         (t, weights[t.name] * built.scale**t.length_power)
         for t in stress.terms
-        if weights.get(t.name)
+        # a conducting body's mass piece has an imaginary weight, but lives
+        # on the body's elements, away from the lossless shell where the
+        # form is read: only the real weights have a part there
+        if weights.get(t.name) and weights[t.name].imag == 0
     ]
     q = _field_shape(terms, pair, wgf, stress.terms[0].elements) / built.scale
     grad_e = 2 * _prefactor(stress, omega) * np.conj(q)
@@ -524,28 +526,3 @@ def pullback(
     f_curl, t_curl = _moments(stress, model, where, e, omega=omega, weights=curl)
     grad_omega = -2 / omega * (force @ f_curl + torque @ t_curl)
     return grad_e, float(grad_omega)
-
-
-def force_torque(
-    field: Field, body: SideSpec, model: Model
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """The force, the torque about the centroid, and the centroid of a body.
-
-    The components that slide along a wall are NaN (`Shell.valid`).
-
-    Raises:
-        RegionNotFoundError: A named region does not exist.
-        ValueError: The body or the field does not fit (see
-            `gfem.optical_force`).
-    """
-    where = shell(field, body, model)
-    stress = build(field, model, where, stretch=_pml.field_stretch(model, field))
-    e = np.asarray(field.coefficients)
-    check_size(e, stress.op, field.order)
-    omega = float(np.asarray(field.omega).real)
-    force, torque = evaluate(stress, model, where, e, omega)
-    return (
-        np.where(where.valid[:3], force, np.nan),
-        np.where(where.valid[3:], torque, np.nan),
-        where.centroid,
-    )
