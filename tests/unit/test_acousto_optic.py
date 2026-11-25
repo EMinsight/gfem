@@ -615,6 +615,27 @@ def test_a_traced_optical_permittivity_raises_under_grad_with_the_stop_gradient_
 # so both sit well below the gate, and the measured errors are quoted.
 
 
+def _assert_gradient_matches(objective, p, directions, *, step):
+    """``grad . d`` equals the fourth-order central difference along each ``d``.
+
+    The comparison of `finite_differences`, without its dropping of the solver's
+    guesses and pooled factors before each evaluation: the objectives here hold
+    no iterative or factor-reusing solve (the mode is a direct eigen-solve and
+    the acoustic result is given), and dropping them would rebuild the mode's
+    assembly at each of the evaluations for nothing.
+    """
+    grad = jax.grad(objective)(p)
+    for i, d in enumerate(directions):
+        samples = [float(objective(p + k * step * d)) for k in (-2, -1, 1, 2)]
+        want = (8 * (samples[2] - samples[1]) - (samples[3] - samples[0])) / (12 * step)
+        got = float(jnp.sum(grad * d))
+        error = abs(got - want) / abs(want)
+        assert error < fd.RTOL, (
+            f"direction {i}: gradient {got:.12e} vs difference {want:.12e} "
+            f"(relative error {error:.2e}, step {step:g})"
+        )
+
+
 def _objective(delta):
     """``sum_f |delta n_f|^2``: real, and it reads both parts of the phasor."""
     return jnp.sum(jnp.abs(delta) ** 2)
@@ -643,8 +664,8 @@ def test_a_tensor_gradient_matches_finite_differences(
         film = _crystal(p=given["p"], r=given["r"])
         return _objective(_shift(_optical(rough, film), acoustic).delta_n_eff_per_volt)
 
-    fd.assert_gradient_matches(
-        objective, jnp.zeros(shape), fd.unit_directions(rng, shape, 1), step=1.0
+    _assert_gradient_matches(
+        objective, jnp.zeros(shape), fd.unit_directions(rng, shape, 2), step=1.0
     )
 
 
@@ -716,7 +737,7 @@ def test_the_offset_gradient_matches_finite_differences_in_both_components(
         return _objective(shift.delta_n_eff_per_volt)
 
     directions = [np.array([1.0, 0.0]), np.array([0.0, 1.0]), np.array([0.6, -0.8])]
-    fd.assert_gradient_matches(objective, jnp.zeros(2), directions, step=1e-4)
+    _assert_gradient_matches(objective, jnp.zeros(2), directions, step=1e-4)
 
     # and the forward under grad is the plain forward, at the same values
     value, _ = jax.value_and_grad(objective)(jnp.zeros(2))
