@@ -190,8 +190,8 @@ differences of exact solves and against the sweep's own exact solves:
   near DC, $\beta_2$ is limited by noise of about $10^{-3}$ relative.
 - **Results.** $D$ follows from $\beta_2$; a driven solve's port modes carry
   none; the values survive saving, loading, `to_xarray` and `jax.jit`, and
-  `jax.grad` through them raises. On two MPI ranks they agree with one
-  process.
+  `jax.grad` through them raises while `gamma` of the same result
+  differentiates. On two MPI ranks they agree with one process.
 
 Two comparisons are observations, not checks, and live on
 {doc}`recipes/waveguide-dispersion`: a 450 × 220 nm silicon wire's group

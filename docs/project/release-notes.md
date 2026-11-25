@@ -181,8 +181,9 @@ Port modes:
   conductors, lossy and leaky sections and perfectly matched layers. They
   are complex like `n_eff`, with the derivatives of $\beta$ as their real
   parts. `to_xarray` carries them. They are not differentiable:
-  `jax.grad` through them raises `gfem.NonDifferentiableError`, as through
-  the port mode. A driven solve's `port_modes` carry `None`.
+  `jax.grad` through them raises `gfem.NonDifferentiableError`, while
+  `gamma` and `n_eff` of the same result differentiate. A driven solve's
+  `port_modes` carry `None`.
 
 - **Behaviour changes.** A `PortMode` solve takes about 15-30 % longer.
   Its result's repr adds the range of the group index, and the result has
@@ -526,7 +527,8 @@ Wave ports:
   ({doc}`../recipes/port-mode-gradient`).
 - **Port modes differentiate.** A `gfem.PortMode` result's `gamma`,
   `n_eff`, `Z_PV` and field (`e_field.at`) differentiate with respect to
-  the same inputs; `residual` raises `gfem.NonDifferentiableError`.
+  the same inputs; `residual`, and the group index and dispersion (`n_g`,
+  `beta_2`, `beta_3`, `D`), raise `gfem.NonDifferentiableError`.
 - **Sliding ports.** `gfem.shape.boundary_morph(..., sliding_ports=...)`
   lets the faces of the named wave ports slide in their plane, so a shape
   design reaches the port.

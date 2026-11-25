@@ -205,9 +205,10 @@ zero dispersion at 417 nm, 631 nm
   strongly normal.
 - Each call meshes and solves one width; the search costs one solve per
   step. Search another wavelength or the height the same way.
-- $D$ has no gradient with respect to the width, or to any input: the port
-  mode problem is not differentiable. Search with a root finder or an
-  optimizer that does not need one.
+- $D$ has no gradient with respect to the width, or to any input: the group
+  index and dispersion are not differentiable, though the mode's $\gamma$ is
+  ({doc}`port-mode-gradient`). Search with a root finder or an optimizer
+  that does not need one.
 
 ## Check your results
 
@@ -270,9 +271,11 @@ zero dispersion at 417 nm, 631 nm
 
 ## Limits
 
-- No gradients: `n_g`, `beta_2`, `beta_3` and `D` under `jax.grad` with
-  respect to the section's materials raise `gfem.NonDifferentiableError`, as
-  `gamma` does. Search widths and heights with a root finder, as above.
+- No gradients: `n_g`, `beta_2`, `beta_3` and `D` under `jax.grad` raise
+  `gfem.NonDifferentiableError`, with respect to any input the mode reads,
+  while `gamma` and `n_eff` of the same result differentiate
+  ({doc}`port-mode-gradient`). Search widths and heights with a root
+  finder, as above.
 - On a driven solve's `port_modes` they are `None`: solve `gfem.PortMode`
   on the same grid.
 - A mode whose neighbour has the same effective index is refused, as for

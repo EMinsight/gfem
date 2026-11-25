@@ -388,9 +388,10 @@ returning a wrong value:
 
 - **Group index and dispersion**: on `PortMode` results only (`None` on a
   driven solve's port modes), and not differentiable: under `jax.grad` they
-  raise like the port mode. Their error is the mesh's and the section's
-  truncation: $\beta_2$ needs far more cladding around a guide than
-  $n_\mathrm{eff}$, so converge it in the clearance
+  raise {py:obj}`gfem.NonDifferentiableError`, where the same result's
+  $\gamma$ and `n_eff` differentiate. Their error is the mesh's and the
+  section's truncation: $\beta_2$ needs far more cladding around a guide
+  than $n_\mathrm{eff}$, so converge it in the clearance
   ({doc}`recipes/waveguide-dispersion`).
 
 - **2D models**: normal incidence and one polarization only. Eigenmode,

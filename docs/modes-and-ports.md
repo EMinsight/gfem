@@ -103,6 +103,10 @@ those of that section. A small imaginary part it adds on a lossless guide
 hints at the layer's load, but understates the error. The calculation, and
 its checks: {doc}`recipes/waveguide-dispersion`.
 
+These derivatives have no gradient: under `jax.grad` they raise
+{py:obj}`gfem.NonDifferentiableError`, while $\gamma$ of the same result
+follows a design at the port's face ({doc}`recipes/port-mode-gradient`).
+
 ## Resonant modes: closed and open
 
 An {term}`eigenmode problem` finds the frequencies at which a source-free field
