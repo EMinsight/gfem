@@ -11,6 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from gfem._checks import is_traced
+from gfem._diffraction._polarization import JONES_ORDER
 from gfem._diffraction.outputs import (
     Cell,
     _runs,
@@ -335,7 +336,7 @@ def _outgoing_ports(cell: Cell, outgoing: str) -> list[str]:
     """The (0, 0) TM and TE ports of ``outgoing``."""
     check_surface(cell, outgoing)
     names = []
-    for pol in ("TM", "TE"):
+    for pol in JONES_ORDER:
         name = cell.port(outgoing, (0, 0), pol)
         if name is None:
             raise ValueError(
@@ -505,9 +506,9 @@ def aperture_field(
     _check_not_diffracting(response, outgoing, index, pitches)
     inc = incidence_of(cell, incident, polarization, (0, 0))
     ((_, pair),) = inc.combos
-    cols = [pol for pol, a in zip(("TM", "TE"), pair, strict=True) if a != 0]
+    cols = [pol for pol, a in zip(JONES_ORDER, pair, strict=True) if a != 0]
     names = [cell.port(incident, (0, 0), pol) for pol in cols]
-    weights = jnp.asarray([pair[("TM", "TE").index(pol)] for pol in cols])
+    weights = jnp.asarray([pair[JONES_ORDER.index(pol)] for pol in cols])
     if not is_traced(parameter):
         arr = np.asarray(parameter, dtype=float)
         _check_range(response, arr)

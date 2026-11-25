@@ -19,6 +19,7 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.special import roots_jacobi
 
+from gfem._diffraction._polarization import POLARIZATIONS
 from gfem._diffraction.outputs import balance_of
 from gfem._diffraction.sweep import AngleSweepResult
 from gfem._pytree import register_fields
@@ -34,7 +35,6 @@ __all__ = [
     "hemispherical_emissivity",
 ]
 
-_POLARIZATIONS = ("TE", "TM", "RCP", "LCP", "unpolarized")
 #: Absolute tolerance, rad, between a sweep's incidences and a rule's nodes.
 _NODE_TOL = 1e-12
 
@@ -200,7 +200,7 @@ def _check_sweep(sweep: Any, who: str) -> None:
 
 
 def _check_polarization(polarization: Any, who: str) -> None:
-    if isinstance(polarization, str) and polarization in _POLARIZATIONS:
+    if isinstance(polarization, str) and polarization in POLARIZATIONS:
         return
     if isinstance(polarization, (tuple, list)) and len(polarization) == 2:
         raise ValueError(

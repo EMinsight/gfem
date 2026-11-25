@@ -18,6 +18,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from gfem._checks import check_fixed, is_traced
+from gfem._diffraction._polarization import JONES_ORDER, POLARIZATIONS
 from gfem._pytree import register_fields
 from gfem._text import hertz, hertz_band
 from gfem.errors import NonDifferentiableError
@@ -39,7 +40,6 @@ __all__ = [
     "power_balance",
 ]
 
-_NAMED = ("TE", "TM", "RCP", "LCP", "unpolarized")
 _SQRT_HALF = math.sqrt(0.5)
 #: Stokes analyser $A$, applied to $b \otimes b^*$ of the $(b_\theta, b_\phi)$ pair.
 _STOKES = np.asarray([[1, 0, 0, 1], [1, 0, 0, -1], [0, 1, 1, 0], [0, -1j, 1j, 0]])
@@ -509,12 +509,12 @@ def _combos(
     if label == "TM":
         return ((1.0, (one, 0j)),), ("TM",), False
     if label == "unpolarized":
-        return ((0.5, (0j, one)), (0.5, (one, 0j))), ("TM", "TE"), False
+        return ((0.5, (0j, one)), (0.5, (one, 0j))), JONES_ORDER, False
     if label in ("RCP", "LCP"):
         u = unitary(h_in)
         c = 0 if label == "RCP" else 1
-        return ((1.0, (complex(u[0, c]), complex(u[1, c]))),), ("TM", "TE"), True
-    return ((1.0, label),), ("TM", "TE"), True
+        return ((1.0, (complex(u[0, c]), complex(u[1, c]))),), JONES_ORDER, True
+    return ((1.0, label),), JONES_ORDER, True
 
 
 def incidence_of(
@@ -540,7 +540,7 @@ def incidence_of(
             "(gfem.diffraction.jones(...).values) with your own JAX vector."
         )
     if isinstance(polarization, str):
-        if polarization not in _NAMED:
+        if polarization not in POLARIZATIONS:
             raise ValueError(
                 f"{who}: polarization must be 'TE', 'TM', 'RCP', 'LCP', "
                 f"'unpolarized' or a Jones pair (a_TM, a_TE), got {polarization!r}."
@@ -592,7 +592,7 @@ def check_surface(cell: Cell, surface: str) -> None:
 
 def check_offsets(cell: Cell, surface: str, order: tuple[int, int]) -> None:
     """Raise unless an order's TM and TE ports share one offset."""
-    a, b = (cell.port(surface, order, p) for p in ("TM", "TE"))
+    a, b = (cell.port(surface, order, p) for p in JONES_ORDER)
     if a is None or b is None:
         return
     da, db = cell.offsets.get(a, 0.0), cell.offsets.get(b, 0.0)
@@ -773,7 +773,7 @@ def efficiencies(
             (cell.info[n].surface, cell.info[n].order) for n in cell.floquet
         )
         for s, o in groups:
-            for pol in ("TM", "TE"):
+            for pol in JONES_ORDER:
                 if cell.port(s, o, pol) is None:
                     raise ValueError(
                         f"{who}: no Floquet port reads order {o} in {pol} on "
@@ -1116,7 +1116,7 @@ def jones(
         ("in", incident, incident_order),
     ):
         names[side] = []
-        for pol in ("TM", "TE"):
+        for pol in JONES_ORDER:
             name = cell.port(surface, o, pol)
             if name is None:
                 raise ValueError(
