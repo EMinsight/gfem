@@ -12,11 +12,12 @@ import dataclasses
 import math
 import warnings
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import periodic_cases as pc
 import pytest
 import scipy.constants as const
-import structured_meshes as sm
 
 import gfem
 
@@ -84,54 +85,23 @@ def test_bddc_gmres_agrees_with_direct(f1_mesh, f1_result):
 
 # --- a bare interface and a closed cell -------------------------------------------
 
-N_GLASS = 1.5
-#: The glass and air layers' thickness, um: each Floquet face that far from
-#: the interface.
-D = 0.25
-
-
-def _interface_mesh(directory):
-    """Glass below z = D, air above, 0.4 x 0.4 um, 3 cells per layer."""
-    lateral = np.linspace(0.0, pc.F1_A, 3)
-    z = np.linspace(0.0, 2 * D, 7)
-    cell = sm.periodic_cell(
-        (lateral, lateral, z),
-        lambda c: "glass" if c[2] < D else "air",
-        paired="xy",
-    )
-    path = sm.write_msh22(directory / "interface.msh", cell)
-    return gfem.Mesh.from_gmsh(path, length_unit="um")
-
-
-def _interface_model(mesh, ports, boundaries=()):
-    return gfem.Model(
-        mesh,
-        materials={"glass": gfem.Material(eps_r=N_GLASS**2), "air": gfem.Material()},
-        boundaries=[
-            gfem.Periodic(("x_min", "x_max")),
-            gfem.Periodic(("y_min", "y_max")),
-            *boundaries,
-        ],
-        ports=ports,
-    )
-
 
 @pytest.mark.parametrize("pol", ["TE", "TM"])
 def test_a_bare_glass_air_interface_reflects_n_minus_1_over_n_plus_1(tmp_path, pol):
     ports = [
-        gfem.FloquetPort("glass", "z_min", polarization=pol, offset=D * 1e-6),
-        gfem.FloquetPort("air", "z_max", polarization=pol, offset=D * 1e-6),
+        gfem.FloquetPort("glass", "z_min", polarization=pol, offset=pc.D * 1e-6),
+        gfem.FloquetPort("air", "z_max", polarization=pol, offset=pc.D * 1e-6),
     ]
-    model = _interface_model(_interface_mesh(tmp_path), ports)
+    model = pc.interface_model(pc.interface_mesh(tmp_path), ports)
     options = gfem.SolverOptions(order=3, threads=2)
     s = gfem.solve(
         model, gfem.Driven([pc.F1_FREQUENCY], excite=["glass"]), options=options
     ).s
     # tangential E at the interface: r = (n - 1)/(n + 1) seen from the glass,
     # t = 1 + r, times sqrt(Z_glass / Z_air) = sqrt(1 / n) in power waves
-    r = (N_GLASS - 1) / (N_GLASS + 1)
+    r = (pc.N_GLASS - 1) / (pc.N_GLASS + 1)
     assert abs(complex(s["glass", "glass"][0]) - r) <= 1e-3
-    assert abs(complex(s["air", "glass"][0]) - (1 + r) / math.sqrt(N_GLASS)) <= 1e-3
+    assert abs(complex(s["air", "glass"][0]) - (1 + r) / math.sqrt(pc.N_GLASS)) <= 1e-3
 
 
 def test_a_new_half_space_medium_on_the_same_mesh_rebuilds_the_floquet_ports(
@@ -140,10 +110,10 @@ def test_a_new_half_space_medium_on_the_same_mesh_rebuilds_the_floquet_ports(
     # one discretization keeps the port couplings across solves: the second
     # solve must read the air below, not the glass the first one kept
     ports = [
-        gfem.FloquetPort("glass", "z_min", polarization="TE", offset=D * 1e-6),
-        gfem.FloquetPort("air", "z_max", polarization="TE", offset=D * 1e-6),
+        gfem.FloquetPort("glass", "z_min", polarization="TE", offset=pc.D * 1e-6),
+        gfem.FloquetPort("air", "z_max", polarization="TE", offset=pc.D * 1e-6),
     ]
-    glassy = _interface_model(_interface_mesh(tmp_path), ports)
+    glassy = pc.interface_model(pc.interface_mesh(tmp_path), ports)
     problem = gfem.Driven([pc.F1_FREQUENCY], excite=["glass"])
     gfem.solve(glassy, problem, options=P2)
     result = gfem.solve(
@@ -159,8 +129,8 @@ def test_a_cell_closed_by_pec_reflects_all_power(tmp_path):
     ports = [
         gfem.FloquetPort(f"R_{pol}", "z_max", polarization=pol) for pol in ("TE", "TM")
     ]
-    model = _interface_model(
-        _interface_mesh(tmp_path), ports, boundaries=[gfem.PEC("z_min")]
+    model = pc.interface_model(
+        pc.interface_mesh(tmp_path), ports, boundaries=[gfem.PEC("z_min")]
     )
     options = gfem.SolverOptions(order=3, threads=2)
     s = gfem.solve(model, gfem.Driven([pc.F1_FREQUENCY]), options=options).s
@@ -275,11 +245,56 @@ def test_a_propagating_order_without_a_port_warns_per_surface(f2_mesh):
     assert len(messages) == 2
     for message, surface in zip(messages, ("z_max", "z_min"), strict=True):
         assert message == (
-            f"Propagating order(s) (-1, 0), (1, 0) on {surface!r} at 299.792 THz "
+            "Propagating order(s) (-1, 0) TE and TM, (1, 0) TE and TM on "
+            f"{surface!r} at 299.792 THz "
             "carry power that S does not report (they are absorbed, not "
             "reflected); add gfem.FloquetPort(..., order=..., polarization=...) "
             "to read them, or filter UnrequestedOrderWarning."
         )
+
+
+def test_a_declared_order_missing_one_polarization_warns(f1_mesh):
+    ports = [p for p in pc.f1_ports() if p.name != "T_TM"]
+    problem = gfem.Driven([pc.F1_FREQUENCY], excite=["R_TE"])
+    with pytest.warns(gfem.UnrequestedOrderWarning) as caught:
+        gfem.solve(pc.f1(f1_mesh, ports), problem, options=P2)
+    messages = [
+        str(w.message) for w in caught if w.category is gfem.UnrequestedOrderWarning
+    ]
+    assert len(messages) == 1
+    assert messages[0] == (
+        "Propagating order(s) (0, 0) TM on 'z_min' at 299.792 THz carry power "
+        "that S does not report (they are absorbed, not reflected); add "
+        "gfem.FloquetPort(..., order=..., polarization=...) to read them, or "
+        "filter UnrequestedOrderWarning."
+    )
+
+
+def test_diffraction_orders_are_concrete_under_jit(f1_mesh):
+    model = pc.f1(f1_mesh)
+    problem = gfem.Driven([pc.F1_FREQUENCY], excite=["R_TE"])
+    seen = {}
+
+    def loss(eps):
+        slab = gfem.MaterialField.uniform("slab", gfem.Material(eps_r=4.0))
+        slab = dataclasses.replace(slab, eps_r=eps * jnp.ones_like(slab.eps_r))
+        result = gfem.solve(model.with_material("slab", slab), problem, options=P2)
+        order = result.diffraction_orders["R_TE"]
+        for name in (
+            "frequency",
+            "wave_vector",
+            "gamma",
+            "propagating",
+            "theta",
+            "phi",
+        ):
+            seen[name] = getattr(order, name)
+        return jnp.sum(jnp.abs(result.s.values) ** 2)
+
+    jax.jit(loss)(4.0)
+    for name, value in seen.items():
+        assert isinstance(value, np.ndarray), name
+    assert seen["propagating"].tolist() == [True]
 
 
 def test_declaring_every_propagating_order_does_not_warn(f2_mesh, recwarn):
@@ -662,7 +677,7 @@ def test_tm_plus_i_te_is_right_handed_from_the_top_and_left_from_the_bottom(
         for side, face in (("top", "z_max"), ("bottom", "z_min"))
         for pol in ("TE", "TM")
     ]
-    mesh = _interface_mesh(tmp_path)
+    mesh = pc.interface_mesh(tmp_path)
     empty = gfem.Model(
         mesh,
         materials={"glass": gfem.Material(), "air": gfem.Material()},
@@ -676,7 +691,7 @@ def test_tm_plus_i_te_is_right_handed_from_the_top_and_left_from_the_bottom(
     f = pc.F1_FREQUENCY
     problem = gfem.Driven([f], excite=[f"{side}_TE", f"{side}_TM"], keep_fields=f)
     result = gfem.solve(empty, problem, options=gfem.SolverOptions(order=3, threads=2))
-    point = np.array([[0.5 * pc.F1_A, 0.5 * pc.F1_A, D]]) * 1e-6
+    point = np.array([[0.5 * pc.F1_A, 0.5 * pc.F1_A, pc.D]]) * 1e-6
 
     def incident(pol):
         return np.asarray(result.e_field(f, excite=f"{side}_{pol}").at(point))[0]

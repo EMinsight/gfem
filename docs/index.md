@@ -27,6 +27,7 @@ tutorials/bend3d
 tutorials/metal-bend
 tutorials/metagrating
 tutorials/photonic-crystal
+tutorials/metalens
 tutorials/nanosphere
 tutorials/meta-atom
 tutorials/grating
@@ -106,6 +107,15 @@ recipes/cross-sections
 recipes/point-dipoles
 recipes/far-field
 recipes/multipoles
+```
+
+```{toctree}
+:hidden:
+:caption: Periodic surfaces
+
+recipes/diffraction-efficiency
+recipes/emissivity
+recipes/metasurface-from-cells
 ```
 
 ```{toctree}

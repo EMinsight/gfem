@@ -50,6 +50,19 @@ and "right", wrapped in 1/3 um of perfectly matched layer (volume "pml") on
 every side, six cells per um. A strip in the plane x = 0.5 between them,
 0.5 < y < 2/3: its feed "feed" (1/2 < z < 2/3) and its arms "wire" (the rest
 of 1/6 < z < 5/6), a strip dipole two thirds of a wavelength long at 1 um.
+
+``metalens_cell.msh`` (um): one period of a row of silicon nitride ridges on
+glass, lines along y: x in [0, 0.3], y in [0, 0.16], z in [0, 1.55]. Volumes
+"glass" (z < 0.2), "ridge" (0.075 < x < 0.225, 0.2 < z < 1.3) and "air".
+Surfaces "bottom" (z = 0) and "top" (z = 1.55), the periodic faces "x_min" /
+"x_max" and "y_min" / "y_max", the ridge's walls "sidewall", the plane
+"base" (z = 0.2, under the ridge and the air beside it) and the ridge's top
+"ridge_top"; the last two are named so that a boundary morph of "sidewall"
+keeps those planes where they are. Cells of 0.0375 um across and 0.05 um
+high, two along y.
+
+``metalens_supercell.msh`` (um): ten of those cells side by side, x in
+[0, 3], with the same names and ridges of the same width.
 """
 
 import itertools
@@ -255,6 +268,61 @@ def antenna_box():
     return sm.structured(edges, volume, surface)
 
 
+METALENS_PITCH, METALENS_WIDTH, METALENS_Y = 0.3, 0.15, 0.16
+METALENS_GLASS, METALENS_HEIGHT, METALENS_AIR = 0.2, 1.1, 0.25
+
+
+def _metalens(cells):
+    """``cells`` ridges of the metalens cell side by side, as `structured` returns."""
+    a, w = METALENS_PITCH, METALENS_WIDTH
+    glass, height = METALENS_GLASS, METALENS_HEIGHT
+    one = np.concatenate(
+        [
+            np.linspace(0, a / 2 - w / 2, 3),
+            np.linspace(a / 2 - w / 2, a / 2 + w / 2, 5)[1:],
+            np.linspace(a / 2 + w / 2, a, 3)[1:],
+        ]
+    )
+    ex = np.concatenate([one] + [j * a + one[1:] for j in range(1, cells)])
+    ez = np.concatenate(
+        [
+            np.linspace(0, glass, 5),
+            np.linspace(glass, glass + height, 23)[1:],
+            np.linspace(glass + height, glass + height + METALENS_AIR, 6)[1:],
+        ]
+    )
+    edges = (ex, np.linspace(0, METALENS_Y, 3), ez)
+    lengths = (cells * a, METALENS_Y, ez[-1])
+    eps = 1e-9
+
+    def volume(c):
+        j = min(int(c[0] // a), cells - 1)
+        in_ridge = abs(c[0] - (j + 0.5) * a) < w / 2 and c[2] < glass + height
+        return "glass" if c[2] < glass else ("ridge" if in_ridge else "air")
+
+    def surface(c):
+        for axis, length in enumerate(lengths):
+            if abs(c[axis]) < eps:
+                return ("x_min", "y_min", "bottom")[axis]
+            if abs(c[axis] - length) < eps:
+                return ("x_max", "y_max", "top")[axis]
+        if abs(c[2] - glass) < eps:
+            return "base"
+        return "ridge_top" if abs(c[2] - glass - height) < eps else "sidewall"
+
+    return sm.structured(edges, volume, surface)
+
+
+def metalens_cell():
+    """One ridge of the metalens, as `structured_meshes.structured` returns it."""
+    return _metalens(1)
+
+
+def metalens_supercell():
+    """Ten ridges side by side, as `structured_meshes.structured` returns it."""
+    return _metalens(10)
+
+
 def write(out: Path) -> list[Path]:
     """Write every tutorial mesh into the directory ``out``; return the files."""
     out.mkdir(parents=True, exist_ok=True)
@@ -269,6 +337,8 @@ def write(out: Path) -> list[Path]:
         sm.write_msh22(out / "bend2d_7um.msh", sm.z0_face(bend(half=3.5))),
         sm.write_msh22(out / "pml_line.msh", pml_line()),
         sm.write_msh22(out / "antenna_box.msh", antenna_box()),
+        sm.write_msh22(out / "metalens_cell.msh", metalens_cell()),
+        sm.write_msh22(out / "metalens_supercell.msh", metalens_supercell()),
     ]
 
 

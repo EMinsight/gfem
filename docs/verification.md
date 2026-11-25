@@ -297,6 +297,91 @@ Tests: [Floquet ports](https://github.com/benvial/gfem/blob/main/tests/verificat
 [identities](https://github.com/benvial/gfem/blob/main/tests/unit/test_floquet_driven.py),
 [orders](https://github.com/benvial/gfem/blob/main/tests/unit/test_floquet_orders.py).
 
+## Periodic surfaces
+
+The workflow built on Floquet ports (cell outputs, angle sweeps, emissivity,
+cell responses, aperture fields) is checked against closed forms and exact
+identities, on cells small enough to solve in seconds. No frozen data is
+added beyond the grating's RCWA reference.
+
+- **Cell outputs.** On the slab cells of the Floquet ports, the Jones matrix
+  from the bottom to the top face and the reflection Jones matrix of the top
+  face match the Airy entries at normal, conical and Brewster incidence
+  (about $10^{-6}$ in the entries), with vanishing cross-polarized entries,
+  and the efficiencies are the squared moduli. A uniaxial slab with its optic
+  axis in the plane, a wave plate with a Fabry-Perot amplitude mismatch,
+  matches the per-axis Airy form rotated by the axis angle to about
+  $10^{-7}$, in Jones, circular and Mueller form. The Mueller matrix is also
+  compared with the one measured from Stokes vectors for horizontal,
+  vertical, diagonal and circular inputs, 45° light on the wave plate
+  turns into the closed-form mix of right- and left-handed light from either
+  face, and the Pancharatnam-Berry phase of the cross-handed entry grows as
+  $+2\psi$ from the top face and $-2\psi$ from the bottom. A PEC mirror gives
+  $\mathrm{diag}(1,1,-1,-1)$ and an empty cell the identity. The power
+  balance (reflectance, transmittance, absorptance and the power coupled to
+  lumped or wave ports of a fed cell) adds to 1 to rounding for every
+  polarization, and refuses a cell with an unreported propagating order.
+- **Angle sweeps.** One sweep over normal, oblique and conical incidences of
+  the slab gives, for each member, the Airy Jones matrix at its own wave
+  vector, with the unpolarized efficiencies independent of the azimuth where
+  the cell is symmetric. On the lamellar grating, the efficiencies of every
+  order at normal incidence, at 20° and at conical incidence match the RCWA
+  solution, planar incidence leaves the cross-polarized specular entry at
+  $10^{-5}$ and conical incidence does not. A failed member leaves the
+  earlier ones in the cache, so a rerun resumes.
+- **Emissivity.** A lossy slab on a PEC wall has the emissivity
+  $1 - |r|^2$ of the PEC-terminated Airy form, at normal and oblique
+  incidence. On a lossy slab between air and glass, the emissivity at each
+  node of the hemispherical rule matches $1 - |r|^2 - |t|^2$, and the
+  hemispherical emissivity matches the weighted sum of the closed form on the
+  same nodes to about $10^{-5}$; the rule itself, with eight polar nodes,
+  reproduces the exact integral of that slab to about $10^{-5}$. The quadrature rule integrates
+  powers of the cosine exactly and reproduces the unfolded rule on a
+  symmetric integrand. Kirchhoff's law is checked on a grating without mirror
+  symmetry: the power missing from the row of an outgoing wave equals, to
+  rounding, the absorptance of the wave arriving from the opposite azimuth,
+  while the absorptances at the two azimuths differ, so the label is
+  discriminated.
+- **Cell response.** A response tabulated from a smooth analytic function
+  reproduces it to rounding, equals the stored values and derivatives at the
+  samples and is differentiable across them. On a dielectric ridge cell
+  with a morphed mesh, Hermite interpolation of the stored value and
+  derivative matches solves at held-out widths to a few $10^{-4}$, and the
+  error falls close to the fourth power of the sample spacing (a fitted order
+  of about 3.9 between five and nine samples).
+- **Propagation and the locally periodic approximation.** Plane waves
+  advance by $e^{-ik_z d}$ in the propagating band and decay in the
+  evanescent one. The focus of a one- and a two-dimensional lens matches the
+  stationary-phase closed form and the Rayleigh-Sommerfeld sum of the
+  samples to about $10^{-4}$, and a blazed deflector sends its energy to the
+  grating-equation angle, with its centroid at $z\tan\theta$. Against a
+  supercell solve of a ridge cell varied across eight periods, every
+  transmitted order of the approximation is within a few percent of the full
+  solution, with the sign of the negative orders fixed, and a supercell of
+  four identical ridges reproduces the single cell to rounding.
+- **Gradients.** The gradient of a figure of merit built from the cell
+  outputs (circular efficiencies, the unpolarized absorptance, a circular
+  Jones entry, a Mueller entry and the power of an order that does not
+  propagate) with respect to the permittivity of each element of the lamellar
+  grating at conical incidence matches high-order central differences, and
+  the same under `jax.jit`. The emissivity of an angle sweep is checked the
+  same way, the stored derivative of a cell response against fourth-order
+  differences of its values, and the aperture field and its propagation
+  through the design map, the envelope and the stored values and
+  derivatives.
+
+Gradients with respect to the incidence angle are not provided and raise
+({doc}`capabilities`). All of these run on every change to gfem.
+
+Tests: [cell outputs](https://github.com/benvial/gfem/blob/main/tests/verification/test_diffraction_cell_outputs.py),
+[angle sweeps](https://github.com/benvial/gfem/blob/main/tests/verification/test_angle_sweep.py),
+[emissivity](https://github.com/benvial/gfem/blob/main/tests/verification/test_emissivity.py),
+[cell response](https://github.com/benvial/gfem/blob/main/tests/verification/test_cell_response.py),
+[supercell](https://github.com/benvial/gfem/blob/main/tests/verification/test_lpa_supercell.py),
+[gradients](https://github.com/benvial/gfem/blob/main/tests/verification/test_diffraction_gradient.py),
+[identities](https://github.com/benvial/gfem/blob/main/tests/unit/test_diffraction_cell_outputs.py),
+[propagation](https://github.com/benvial/gfem/blob/main/tests/unit/test_aperture.py).
+
 ## Perfectly matched layers
 
 Each case ends a guide or a cell with a layer backed by a wall and compares

@@ -22,7 +22,7 @@ from gfem._boundaries import first_wave_port
 from gfem._checks import is_staging, is_traced
 from gfem._domain import physics_of
 from gfem._dual_supply import _adjoint_ports, _excited
-from gfem._floquet import floquet_ports
+from gfem._floquet import floquet_ports_in
 from gfem._sources import INCIDENT
 from gfem._text import hertz
 from gfem.errors import MeshRefinementUnsupportedError, NonDifferentiableError
@@ -346,7 +346,7 @@ def _check_problem(model: Model, problem: Any) -> None:
             "uniform sweep at a few frequencies of the band, then sweep "
             "adaptively on refinement.model.",
         )
-    if floquet_ports(model.ports):
+    if floquet_ports_in(model.ports):
         raise MeshRefinementUnsupportedError(
             "floquet port",
             "Mesh refinement has no path for a Floquet port: refining one side "
@@ -832,7 +832,7 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
     if model.pml is not None and isinstance(result, (DrivenResult, EigenmodeResult)):
         # the electrostatic estimator reads the background the solve sees
         raise _pml.refuse_estimate(f"gfem.{type(estimator).__name__}", model.pml)
-    if floquet_ports(model.ports):
+    if floquet_ports_in(model.ports):
         raise MeshRefinementUnsupportedError(
             "floquet port",
             f"gfem.{type(estimator).__name__} has no path for a Floquet port: its "

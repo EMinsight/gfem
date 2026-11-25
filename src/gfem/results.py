@@ -845,10 +845,13 @@ class DiffractionOrderResult:
     r"""The diffraction order of a Floquet port over frequency.
 
     Constants of the solve, read off the lattice and the medium behind the
-    Floquet surface: not differentiable. Plane waves follow
-    :math:`e^{+i\omega t}`; the order leaves the cell into the half-space as
-    :math:`e^{-\gamma s}`, :math:`s` the distance from the face (see
-    `gfem.conventions`).
+    Floquet surface: not differentiable. The arrays are NumPy constants when the
+    solve runs inside a JAX transformation (concrete inside ``jit``, ``grad``
+    and ``vmap``); they are traced if the result itself enters ``jit`` or
+    ``vmap`` as an argument.
+    Plane waves follow :math:`e^{+i\omega t}`; the order leaves the cell into
+    the half-space as :math:`e^{-\gamma s}`, :math:`s` the distance from the
+    face (see `gfem.conventions`).
 
     Attributes:
         port: The Floquet port's name.
@@ -874,16 +877,16 @@ class DiffractionOrderResult:
     """
 
     port: str
-    frequency: jax.Array
+    frequency: np.ndarray
     order: tuple[int, int]
     polarization: str
     surface: str
     index: float
-    wave_vector: jax.Array
-    gamma: jax.Array
-    propagating: jax.Array
-    theta: jax.Array
-    phi: jax.Array
+    wave_vector: np.ndarray
+    gamma: np.ndarray
+    propagating: np.ndarray
+    theta: np.ndarray
+    phi: np.ndarray
 
     def __post_init__(self) -> None:
         """Hold the order as two ints."""

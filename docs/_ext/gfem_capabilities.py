@@ -443,6 +443,16 @@ RAISES_LABELS = {
         '`Driven` with Floquet ports on `linear_solver="petsc"`'
     ),
     "eigenmode x Floquet port": "`Eigenmode` on a model with Floquet ports",
+    "diffraction outputs x incident polarization": (
+        "`gfem.diffraction` efficiencies, power balances, Jones matrices and "
+        "aperture fields, with respect to the incident polarization (a constant "
+        "of the measurement; to optimize it, combine the columns of a Jones "
+        "matrix with your own vector)"
+    ),
+    "angle_sweep under a traced angle": (
+        "`gfem.diffraction.angle_sweep`, with respect to the incidence angles "
+        "(each incidence is a constant of its solve)"
+    ),
     "driven x material of a Floquet port's half-space": (
         "Driven S-parameters, with respect to the material of the half-space "
         "behind a Floquet port (it fixes the diffraction orders)"
@@ -450,6 +460,16 @@ RAISES_LABELS = {
     "driven x nodes of a Floquet port surface": (
         "Driven S-parameters, with respect to node coordinates on a Floquet "
         "port's surface"
+    ),
+    "cell_response x the cell's own design": (
+        "`gfem.diffraction.cell_response`, with respect to the cell's own design "
+        "or its sample parameters (a cell response tabulates fixed cells; "
+        "differentiating it in the design would need second derivatives of the "
+        "solve)"
+    ),
+    "propagate x distance": (
+        "`gfem.diffraction.propagate`, with respect to the propagation distance "
+        "or the padding (the transfer function is built once, outside the trace)"
     ),
     "Model.bloch_wave_vector under a traced angle": (
         "`Model.bloch_wave_vector`, with respect to the incidence angles (the "

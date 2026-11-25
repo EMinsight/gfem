@@ -327,6 +327,54 @@ Rayleigh anomaly
   ($|\boldsymbol{\kappa}|$ equal to the medium's wavenumber), changing from evanescent to
   propagating. Efficiencies change steeply there.
 
+Jones matrix
+  The $2\times2$ block of a cell's S between one outgoing and one incoming
+  {term}`diffraction order`, with rows and columns in (TM, TE). Its entries
+  are power-wave ratios, so $|J_{ij}|^2$ is a {term}`diffraction efficiency`.
+  At normal incidence it is the usual Jones matrix in the cell's own axes.
+
+Absorptance
+  The fraction of the incident power a cell dissipates: one minus the
+  reflected, transmitted and port-coupled fractions. It is defined when every
+  propagating {term}`diffraction order` has a {term}`Floquet port`.
+
+Angle sweep
+  A list of incidence directions on one {term}`Floquet surface`, each solved
+  over the same frequencies with the same ports, so that its results stack
+  over direction and frequency (`gfem.diffraction.angle_sweep`).
+
+Conical incidence
+  Oblique incidence whose plane is not perpendicular to a one-dimensional
+  grating's lines, so the {term}`diffraction orders <Diffraction order>`
+  leave on a cone and TE and TM couple.
+
+Emissivity
+  The fraction of the blackbody radiance a surface emits toward a direction,
+  in one polarization, at one frequency. By Kirchhoff's law it is the
+  {term}`absorptance` of the wave arriving from that direction.
+
+Hemispherical emissivity
+  The $\cos\theta$-weighted mean of the {term}`emissivity` over every
+  direction above a surface, $\frac1\pi\int e\cos\theta\,d\Omega$.
+
+Cell response
+  The S of a periodic cell's {term}`Floquet ports <Floquet port>` sampled
+  against one parameter of its meta-atom (a width, a radius) over frequency,
+  with the derivative of S with respect to the parameter, interpolated between
+  the samples (`gfem.diffraction.cell_response`).
+
+Aperture field
+  The tangential electric field on a metasurface's outgoing reference plane in
+  the {term}`locally periodic approximation`: one sample per cell, at its
+  centre, from the cell's {term}`Jones matrix` at its parameter
+  (`gfem.diffraction.aperture_field`).
+
+Locally periodic approximation
+  Treating each cell of a slowly varying surface as if it sat in an infinite
+  array of itself, so that it radiates one plane wave and the coupling to its
+  neighbours is neglected. The error grows with the phase step between
+  neighbouring cells.
+
 Dispersive cross-section
   A wave port's cross-section that contains a region with a
   {term}`permittivity law`. It is supported where $\mathrm{Re}\,\varepsilon(f) > 0$ throughout, at

@@ -2443,6 +2443,38 @@ def _out_floquet_port_offset(_request):
     jax.grad(objective)(1e-7)
 
 
+def _out_propagate_distance(_request):
+    # the transfer function is built once, outside the trace (raised by propagate)
+    from gfem import diffraction as dif
+
+    x = (np.arange(8) - 3.5) * 0.5e-6
+    values = np.ones((1, 2, 8), dtype=complex)
+    field = dif.ApertureField(values, [3e14], x, None, 1.0, 0.0)
+    jax.grad(lambda d: dif.propagate(field, d).intensity.sum())(1e-5)
+
+
+def _out_cell_response_design(request):
+    # a cell response tabulates fixed cells: raised before any solve
+    from gfem import diffraction as dif
+
+    mesh = pc.ridge_mesh(request.getfixturevalue("tmp_path"))
+
+    def objective(eps):
+        def make_cell(_p, _dp):
+            model = pc.ridge(mesh)
+            n = len(mesh.elements("atom"))
+            return model.with_material(
+                "atom", gfem.MaterialField(eps_r=eps * jnp.ones(n))
+            )
+
+        response = dif.cell_response(
+            make_cell, [0.25], frequency=[pc.RIDGE_FREQUENCY], excite=["sub TE"]
+        )
+        return jnp.sum(response.values.real)
+
+    jax.grad(objective)(5.0)
+
+
 def _out_bloch_wave_vector_angle(request):
     # the incidence of a Floquet port is a constant of the solve
     edges = (np.linspace(0, 1, 3), np.linspace(0, 1, 3), np.linspace(0, 1, 3))
@@ -3264,6 +3296,36 @@ def _out_floquet_petsc(request):
     jax.grad(_floquet_slab_objective(model, problem, options))(pc.F1_EPS_SLAB)
 
 
+def _out_diffraction_polarization(request):
+    # the incident polarization is a constant of the measurement
+    from gfem import diffraction as dif
+
+    model, problem = request.getfixturevalue("driven_floquet_cases")[
+        "driven_floquet_plain"
+    ]
+    options = gfem.SolverOptions(order=2, threads=2, linear_solver="direct")
+    result = gfem.solve(model, problem, options=options)
+
+    def objective(a):
+        eff = dif.efficiencies(result, "z_max", polarization=(a, 1j), model=model)
+        return eff.values.sum()
+
+    jax.make_jaxpr(jax.grad(objective))(1.0)
+
+
+def _out_angle_sweep_traced_angle(request):
+    # each incidence is a constant of its solve: refused before any solve
+    from gfem import diffraction as dif
+
+    model, _ = request.getfixturevalue("driven_floquet_cases")["driven_floquet_plain"]
+
+    def objective(t):
+        sweep = dif.angle_sweep(model, [pc.F1_FREQUENCY], surface="z_max", theta=t)
+        return sweep[0].s.values.real.sum()
+
+    jax.grad(objective)(0.3)
+
+
 def _out_eigenmode_floquet_port(request):
     # an order's propagation constant at a complex frequency: refused
     model = request.getfixturevalue("floquet_cell")
@@ -4064,6 +4126,12 @@ OUT_OF_SCOPE = [
         HOST,
         r"PortGeometryError: FloquetPort 'R_TE': 1 node\(s\) of its surface 'z_max'",
     ),
+    (
+        "propagate x distance",
+        _out_propagate_distance,
+        gfem.NonDifferentiableError,
+        r"propagate: distance and padding must be fixed numbers",
+    ),
     # Floquet path rows
     (
         "Floquet driven x adaptive sweep",
@@ -4082,6 +4150,24 @@ OUT_OF_SCOPE = [
         _out_eigenmode_floquet_port,
         NotImplementedError,
         r"Eigenmode does not support Floquet port 'R_TE'",
+    ),
+    (
+        "cell_response x the cell's own design",
+        _out_cell_response_design,
+        gfem.NonDifferentiableError,
+        r"cell_response: the cell's design is traced by JAX.*second derivatives",
+    ),
+    (
+        "diffraction outputs x incident polarization",
+        _out_diffraction_polarization,
+        gfem.NonDifferentiableError,
+        r"efficiencies: polarization must be fixed numbers",
+    ),
+    (
+        "angle_sweep under a traced angle",
+        _out_angle_sweep_traced_angle,
+        gfem.NonDifferentiableError,
+        r"angle_sweep: theta and phi must be fixed numbers",
     ),
     # periodic eigenmode rows
     (

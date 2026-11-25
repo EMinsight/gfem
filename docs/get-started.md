@@ -154,6 +154,9 @@ program, because every gfem solve needs it.
   {doc}`photonic crystal <tutorials/photonic-crystal>` tutorial computes the
   band diagram of a square lattice of alumina rods: its band gap, how fast
   light crosses it, and where more permittivity would widen the gap. The
+  {doc}`metalens <tutorials/metalens>` tutorial tabulates how a silicon nitride
+  ridge transmits light against its width and builds from that table a lens
+  that focuses green and red light on one line. The
   {doc}`nanosphere <tutorials/nanosphere>` tutorial puts a point dipole
   beside a silicon and a gold sphere: its Purcell factor, the share of its
   power the gold quenches, and where its light goes. The

@@ -157,7 +157,7 @@ def test_a_flat_interface_reflects_n1_minus_n2_over_their_sum_in_both_polarizati
 def test_an_order_that_does_not_propagate_reads_zero_and_has_no_reference_impedance(
     ran,
 ):
-    (example,) = [e for e in ran if e.section == "Floquet ports"][2:3]
+    (example,) = [e for e in ran if e.section == "Floquet ports"][3:4]
     lines = example.printed.splitlines()
     kx, ky, kz = dp.numbers(lines[0])
     assert (kx, ky, kz) == pytest.approx((-2 * np.pi / 2.0234e-6, 0, 0), rel=1e-4)
@@ -170,7 +170,7 @@ def test_an_order_that_does_not_propagate_reads_zero_and_has_no_reference_impeda
 
 
 def test_an_empty_cell_delays_the_phase_by_its_thickness(ran):
-    s_re, s_im, airy_re, airy_im = _floquet(ran, 3)
+    s_re, s_im, airy_re, airy_im = _floquet(ran, 4)
     assert complex(airy_re, airy_im) == pytest.approx(
         np.exp(-2j * np.pi * 1.7 / 3.1), rel=1e-12
     )
@@ -303,3 +303,90 @@ def test_a_reflection_arrives_at_a_positive_time(ran, page):
         "{term}`harmonic grid`",
     ):
         assert text in section, text
+
+
+# -- Cell outputs: Jones, circular and Mueller on the page's small cells
+
+
+def _outputs(ran) -> list:
+    return [e for e in ran if e.section == "Floquet ports"]
+
+
+def test_the_interface_transmits_the_power_the_reflection_leaves_in_the_jones_block(
+    ran,
+):
+    tm_re, tm_im, te_re, te_im, expected = dp.numbers(_outputs(ran)[2].printed)
+    r = (1.444 - 1) / (1.444 + 1)
+    assert expected == pytest.approx(np.sqrt(1 - r**2), rel=1e-12)
+    # power-wave entries, diagonal in (TM, TE), within the coarse mesh of the
+    # tabulated S
+    assert complex(tm_re, tm_im) == pytest.approx(expected, abs=1e-4)
+    assert complex(te_re, te_im) == pytest.approx(expected, abs=1e-4)
+
+
+def _mirror(ran) -> np.ndarray:
+    (example,) = [e for e in _outputs(ran) if "mirror_jones" in e.code]
+    return dp.numbers(example.printed)
+
+
+def test_the_documented_top_face_combination_is_the_rcp_column_of_circular(ran):
+    """(S_TM + i S_TE)/sqrt2 through U_+1^dagger is the first column of .circular."""
+    right, left, *circular = _mirror(ran)
+    assert (right, left) == pytest.approx((0.0, -1.0), abs=1e-4)
+    # the same column of the circular matrix: right-handed out, then left-handed
+    assert (circular[0], circular[2]) == pytest.approx((right, left), abs=1e-4)
+
+
+def test_a_mirror_swaps_handedness_with_a_minus_sign_and_has_the_polarimetry_mueller(
+    ran,
+):
+    numbers = _mirror(ran)
+    minus_p = np.array([[0.0, -1.0], [-1.0, 0.0]])
+    np.testing.assert_allclose(numbers[2:6].reshape(2, 2), minus_p, atol=1e-4)
+    np.testing.assert_allclose(
+        numbers[6:].reshape(4, 4), np.diag([1.0, 1.0, -1.0, -1.0]), atol=1e-4
+    )
+
+
+def test_an_empty_cell_keeps_handedness_and_its_mueller_matrix_is_the_identity(ran):
+    (example,) = [e for e in _outputs(ran) if "free_jones" in e.code]
+    numbers = dp.numbers(example.printed)
+    np.testing.assert_allclose(numbers[:4].reshape(2, 2), np.eye(2), atol=1e-4)
+    np.testing.assert_allclose(numbers[4:].reshape(4, 4), np.eye(4), atol=1e-4)
+
+
+def test_the_page_states_the_cell_output_conventions(page):
+    text = " ".join(dp._prose(dp.section(page, "Floquet ports")).split())
+    for expected in (
+        "**Jones matrices.**",
+        "ordered (TM, TE)",
+        "nothing flips on reflection",
+        r"U_h = \frac{1}{\sqrt2}\begin{pmatrix}1 & 1\\ -ih & ih\end{pmatrix}",
+        "a mirror therefore swaps the handedness",
+        "**Stokes and Mueller.**",
+        r"M = A\,(J_w \otimes J_w^*)\,A^{-1}",
+        r"\mathrm{diag}(1, 1, -1, -1)",
+        "at $-\\psi$",
+        "slow axis along $\\hat{\\mathbf{e}}_1$",
+        "**Normal incidence in a conical scan.**",
+        "**Emission direction.**",
+        r"$(\theta, \varphi + \pi)$",
+    ):
+        assert expected.lower() in text.lower(), expected
+
+
+def test_incident_fields_gives_the_downward_rcp_phase(page):
+    text = " ".join(dp.section(page, "Incident fields").split())
+    assert (
+        r"So for a wave going down the Floquet circular unit vector "
+        r"$(\hat{\mathbf{E}}_\mathrm{TM} + i\hat{\mathbf{E}}_\mathrm{TE})/\sqrt2$ "
+        r"of the "
+        r"RCP column is $-(\hat{\boldsymbol\theta} - i\hat{\boldsymbol\phi})/\sqrt2$: "
+        r'the same right-handed wave as `"RCP"`, with the opposite phase.'
+    ) in text
+
+
+def test_the_page_names_no_solver_or_vendor_it_must_not(page):
+    lowered = page.lower()
+    for word in ("palace", "flexcompute", "tidy3d"):
+        assert word not in lowered

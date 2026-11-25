@@ -13,7 +13,9 @@ face absorb every order at any angle, so the cell needs no absorber or PML.
 The {doc}`metagrating tutorial <../tutorials/metagrating>` designs a grating
 this way. This page covers the other tasks: oblique incidence, a fixed angle
 across a band, TM and circular polarization, a fed cell, and the checks of a
-Floquet model.
+Floquet model. Efficiencies grouped by order, the power balance, Jones and
+Mueller matrices and angle sweeps have helpers in `gfem.diffraction`
+({doc}`diffraction-efficiency`).
 
 ## A slab under a plane wave
 
@@ -122,6 +124,9 @@ incident = "R+0,+0 TE"
 efficiency = {name: abs(result.s[name, incident][0]) ** 2 for name in result.s.ports}
 ```
 
+- `gfem.diffraction.floquet_ports(model, face, f)` declares this list for one
+  face: a TE and a TM port of every propagating order, named `"top (0, 0) TE"`
+  and so on.
 - The sign of $m$ follows $\mathbf{a}_1$: order +1 leans along $+\mathbf{b}_1$. Swapping the faces of
   the first pair flips $\mathbf{a}_1$, and the same diffracted wave becomes order −1.
 - `result.diffraction_orders[name]` describes each port's order at every
@@ -184,6 +189,8 @@ sweep = gfem.solve(grating.replace(ports=ports), fixed, options=options)
 - Each frequency of a fixed-angle sweep builds its own Bloch space and
   factorization, so it costs more per frequency than a sweep at one k.
 - Only the uniform sweep takes a wave vector, fixed angle included.
+- To solve several angles, pass them to `gfem.diffraction.angle_sweep`
+  ({doc}`diffraction-efficiency`).
 
 ## Polarization
 
@@ -191,8 +198,10 @@ TE (s) and TM (p) are relative to each order's own plane of incidence: TE
 along $\hat{\mathbf{e}}_3 \times \hat{\boldsymbol{\kappa}}$, normal to it, and TM along $\hat{\boldsymbol{\kappa}}$, in it. At normal incidence
 $\hat{\boldsymbol{\kappa}}$ is $\hat{\mathbf{e}}_1$, the direction of the first pair's translation: on a cell paired
 along x then y, TE is E along +y and TM is E along +x. gfem has no circular
-port and no helper: combine the columns of the TE and TM ports of one order.
-Excite both ports of the incident order, then, for incidence from the top
+port: circular light is a combination of the TE and TM columns of one order.
+`gfem.diffraction.jones(...).circular` and `polarization="RCP"` in
+`gfem.diffraction.efficiencies` do it for you ({doc}`diffraction-efficiency`);
+by hand: excite both ports of the incident order, then, for incidence from the top
 face (the face whose outward normal is $\hat{\mathbf{e}}_3$, incidence along $-\hat{\mathbf{e}}_3$), IEEE
 right-handed circular incidence is $(S_{:,\mathrm{TM}} + i S_{:,\mathrm{TE}}) / \sqrt{2}$:
 
@@ -294,6 +303,8 @@ active_reflection = scan["feed", "feed"][0]
   propagating order on both faces, in both polarizations, add up to 1 in
   each excited column. The defect counts the orders you did not declare
   (and the warning names them), the mesh and any loss together.
+  `gfem.diffraction.power_balance` adds them up, and refuses a cell where a
+  propagating order or polarization has no port.
 - **Reciprocity with the order labels.** A reversed wave has the opposite
   in-plane wave vector: order $(m, n)$ maps to $(-m, -n)$, and the TE and TM
   references flip sign with it. With $\sigma = -1$ for an order with $\boldsymbol{\kappa} \neq 0$ and $+1$
@@ -337,10 +348,13 @@ How gfem itself is checked with Floquet ports: {doc}`../verification`.
   Floquet face or `offset` ({py:obj}`gfem.NonDifferentiableError` or
   {py:obj}`gfem.PortGeometryError`).
 - **Ports.** A {py:obj}`gfem.WavePort` still may not touch a paired face.
-  No circular-polarization port or helper.
+  No circular-polarization port: circular entries are a change of basis of S
+  ({doc}`diffraction-efficiency`).
 
 ## Next
 
-{doc}`../tutorials/metagrating`, {doc}`periodic-cell`,
+{doc}`diffraction-efficiency`, {doc}`emissivity`,
+{doc}`metasurface-from-cells`, {doc}`../tutorials/metagrating`, {doc}`../tutorials/metalens`,
+{doc}`periodic-cell`,
 {py:obj}`gfem.FloquetPort`, {py:obj}`gfem.conventions`,
 {doc}`s-parameter-gradient`, {doc}`../capabilities`.
