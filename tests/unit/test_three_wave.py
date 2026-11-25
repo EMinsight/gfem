@@ -368,17 +368,15 @@ def test_waves_of_different_ports_or_orders_are_refused(slab):
         gfem.three_wave_coupling(model, [pump, third])
 
 
-def test_traced_node_coordinates_raise_by_name(slab):
-    model, _, _, _ = slab
-    nodes = np.array(model.mesh.imported_nodes)
-    low = gfem.SolverOptions(order=2)
+def test_traced_node_coordinates_raise_by_name(guide_mesh, shg):
+    model, pump, harm, _ = shg
+    nodes = np.array(guide_mesh.imported_nodes)
 
     def objective(scale):
         mesh = jax.tree.unflatten(
-            jax.tree.structure(model.mesh), [jnp.asarray(nodes) * scale]
+            jax.tree.structure(guide_mesh), [jnp.asarray(nodes) * scale]
         )
         moved = model.replace(mesh=mesh)
-        pump, harm = (ez(moved, [k * SLAB_F], low) for k in (1, 2))
         return jnp.real(gfem.second_harmonic(moved, pump, harm).kappa[0])
 
     with pytest.raises(NonDifferentiableError, match="second_harmonic"):
@@ -387,7 +385,7 @@ def test_traced_node_coordinates_raise_by_name(slab):
 
 def test_the_gradient_through_the_pair_form_matches_the_second_harmonic_row(slab):
     model, pump, harm, build = slab
-    d = model.materials["core"].second_order_nonlinear_tensor
+    d = np.asarray(model.materials["core"].second_order_nonlinear_tensor)
 
     def via_pair(scale):
         m = build(scale * d)
