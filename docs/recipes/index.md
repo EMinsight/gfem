@@ -73,5 +73,6 @@ orphan: true
 ## Periodic surfaces
 
 - {doc}`diffraction-efficiency`
+- {doc}`effective-medium`
 - {doc}`emissivity`
 - {doc}`metasurface-from-cells`

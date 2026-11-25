@@ -121,6 +121,7 @@ recipes/multipoles
 :caption: Periodic surfaces
 
 recipes/diffraction-efficiency
+recipes/effective-medium
 recipes/emissivity
 recipes/metasurface-from-cells
 ```

@@ -36,6 +36,10 @@ Jobs and files:
 
 Periodic cells:
 
+- **Effective medium of a slab.** `gfem.diffraction.effective_medium` retrieves
+  the diagonal permittivity and permeability of a slab of a periodic cell from
+  its reflection and transmission at normal incidence, differentiable under
+  `jax.grad` ({doc}`../recipes/effective-medium`).
 - **Band diagrams.** `gfem.wave_vector_path` gives the Bloch wave vectors along
   straight segments between high-symmetry points: named points for the line,
   square, rectangular, hexagonal and simple cubic lattices, and
