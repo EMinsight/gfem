@@ -25,7 +25,6 @@ import math
 from collections.abc import Sequence
 
 import numpy as np
-import scipy.optimize
 import scipy.sparse as sp
 
 from gfem._eigen.velocity import GROUP_RTOL, groups
@@ -118,9 +117,12 @@ def connect(
         ``(link, by_overlap)``, one entry per current mode: the previous mode
         it continues (-1 for none) and whether the overlap decided it.
     """
+    # Imported here: `import gfem` leaves scipy.optimize unloaded.
+    from scipy.optimize import linear_sum_assignment
+
     n_prev, n_cur = overlap.shape
     qualified = np.where(overlap >= CONTINUES, overlap**2, 0.0)
-    rows, cols = scipy.optimize.linear_sum_assignment(-qualified)
+    rows, cols = linear_sum_assignment(-qualified)
     link = np.full(n_cur, -1, dtype=int)
     by_overlap = np.zeros(n_cur, dtype=bool)
     for i, j in zip(rows, cols, strict=True):
