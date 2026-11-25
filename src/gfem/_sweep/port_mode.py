@@ -483,7 +483,7 @@ class PortModeRule:
                 tolerance=self.options.port_mode_tolerance,
                 ports=ports,
                 pairs=keep,
-                dispersive_modes=(ports.index(self.port),),
+                dispersive_modes=(self._index,),
             )
         sweep = sweeps[self._index]
         field = sweep.coords @ sweep.basis.T
