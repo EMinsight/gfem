@@ -156,8 +156,9 @@ def mode_pass(  # noqa: PLR0912, PLR0915
     shape = ShapeForm(space) if nodes and planar else None
     points = len(space.section.points) if shape is not None else 0
     shape_points = np.zeros((points, 2))
-    if needs:
-        # polish the reduced rows: the derivative is the exact mode's
+    if needs or np.any(cg):
+        # polish the reduced rows: the derivative is the exact mode's, also
+        # for a gamma cotangent alone (the Hellmann-Feynman term reads the pair)
         for i in range(n):
             if solved_s[i]:
                 continue
@@ -165,6 +166,7 @@ def mode_pass(  # noqa: PLR0912, PLR0915
             lam_r[i], x[i] = polish(
                 a, b, lam_r[i], x[i], factor=factor_of(i), rtol=POLISH_RTOL, who=who
             )
+    if needs:
         # the normalization on the whole free-DOF vector: a cotangent on the
         # field points anywhere in the space, not only along the reduced basis
         line = isinstance(space, LineModeSpace)

@@ -79,3 +79,35 @@ def test_a_constant_anisotropic_owner_at_an_absorbing_edge_spares_other_regions(
     assert_gradient_matches(
         objective, p, unit_directions(np.random.default_rng(3), p.shape, 2), step=1e-3
     )
+
+
+def test_a_gamma_cotangent_alone_polishes_a_reduced_row_as_the_driven_route_does(
+    tmp_path,
+):
+    # a row the sweep did not solve exactly takes the Newton polish before the
+    # Hellmann-Feynman term, whatever the cotangent: at the default tolerance
+    # the unpolished Ritz pair would differ from the driven pass's
+    mesh = wave_mesh(tmp_path)
+    model = face_line(mesh, "face_lossy")
+    band = tuple(np.linspace(21e9, 30e9, 7))
+    options = tight("direct")
+    p = ramp(mesh, "lo", 3.5, 4.5)
+
+    def designed(q):
+        moved = model.with_material("lo", gfem.MaterialField(eps_r=q))
+        return moved.replace(mesh=jax.lax.stop_gradient(moved.mesh))
+
+    def driven(q):
+        result = gfem.solve(designed(q), gfem.Driven(band), options=options)
+        return jnp.sum(jnp.imag(result.port_modes["p1"].gamma))
+
+    def port_mode(q):
+        result = gfem.solve(designed(q), gfem.PortMode("p1", band), options=options)
+        return jnp.sum(jnp.imag(result.gamma))
+
+    solved = gfem.solve(designed(p), gfem.PortMode("p1", band), options=options).solved
+    assert not np.asarray(solved).all()
+    by_driven, by_mode = jax.grad(driven)(p), jax.grad(port_mode)(p)
+    np.testing.assert_allclose(
+        by_mode, by_driven, rtol=0, atol=1e-9 * np.abs(np.asarray(by_driven)).max()
+    )
