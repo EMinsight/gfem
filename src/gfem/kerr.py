@@ -21,6 +21,7 @@ respect to the section's materials (not the node coordinates).
 from __future__ import annotations
 
 import dataclasses
+import weakref
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -33,6 +34,7 @@ import scipy.sparse as sp
 
 from gfem._checks import is_traced
 from gfem._materials import Material, MaterialField, PermittivityLaw
+from gfem._pml import layer_tetrahedra
 from gfem._pytree import register_fields
 from gfem.errors import NonDifferentiableError
 from gfem.results import PortModeResult
@@ -172,16 +174,21 @@ def _range(a: np.ndarray) -> str:
 class _Columns:
     """The mode field at the points of a degree-4p rule, per element of the section.
 
-    ``dofs (n_el, k)`` are the DOF numbers of each element (padded with 0) and
-    ``weights (n_el, n_q, n_c, k)`` real, so that component ``c`` at point
-    ``q`` of element ``e`` is ``weights[e, q, c] @ x[dofs[e]]`` (``n_c`` = 3
-    for ``(E_u, E_v, E_n)`` of a planar port, 1 for the scalar of a line
-    port). ``measure (n_el, n_q)`` is the weight of each point in m² (m on a
-    line). Elements are in the order of the section's triangles (segments).
+    ``dofs (n_el, k)`` are the DOF numbers of each element's tangential
+    (Nedelec) part, ``weights (n_el, n_q, n_c, k)`` real, so that component
+    ``c`` at point ``q`` of element ``e`` is ``weights[e, q, c] @ x[dofs[e]]``
+    (``n_c`` = 2 for ``(E_u, E_v)`` of a planar port, 1 for the scalar of a
+    line port). A planar port's normal component ``E_n`` lives on the other
+    DOFs of the element: ``normal_dofs (n_el, k_n)`` and ``normal_weights
+    (n_el, n_q, k_n)``, ``None`` on a line. Both are jax arrays, put on the
+    device once. ``measure (n_el, n_q)`` is the weight of each point in m² (m
+    on a line). Elements are in the order of the section's triangles (segments).
     """
 
-    dofs: np.ndarray
-    weights: np.ndarray
+    dofs: jax.Array
+    weights: jax.Array
+    normal_dofs: jax.Array | None
+    normal_weights: jax.Array | None
     measure: np.ndarray
 
 
@@ -302,7 +309,21 @@ def _columns(space: Any, raised: int = 0) -> _Columns:
         order = np.empty(n_el, int)
         order[np.asarray(space.element_segment)] = np.arange(n_el)
         dofs, weights, measure = dofs[order], weights[order], measure[order]
-    cache[raised] = _Columns(dofs, weights, measure)
+    if planar:
+        # the tangential and the normal component read disjoint slots of the
+        # element: keep each its own, without the zeros of the other
+        on_t = (weights[:, :, :2] != 0).any(axis=(0, 1, 2))
+        on_n = (weights[:, :, 2] != 0).any(axis=(0, 1))
+        cols = _Columns(
+            jnp.asarray(dofs[:, on_t]),
+            jnp.asarray(weights[:, :, :2][..., on_t]),
+            jnp.asarray(dofs[:, on_n]),
+            jnp.asarray(weights[:, :, 2][..., on_n]),
+            measure,
+        )
+    else:
+        cols = _Columns(jnp.asarray(dofs), jnp.asarray(weights), None, None, measure)
+    cache[raised] = cols
     return cache[raised]
 
 
@@ -383,8 +404,9 @@ def _kerr_materials(
     Raises:
         ValueError: No element outside a perfectly matched layer carries a
             Kerr property.
-        NotImplementedError: A region carrying one is anisotropic or a density
-            blend without a per-element permittivity.
+        NotImplementedError: A region carrying one is anisotropic, a density
+            blend without a per-element permittivity, or a layer-grid design
+            blending a Kerr property.
     """
     mesh = model.mesh
     cells, tags = _elements(model, section)
@@ -398,6 +420,17 @@ def _kerr_materials(
         region = names[int(tag)]
         material = model.materials[region]
         given = {n: getattr(material, n) for n in _PROPERTIES}
+        ends = getattr(material, "blend_ends", None)
+        if ends is not None and ends.pixels is not None:
+            named = [n for n, _, _ in ends.others if n in _PROPERTIES]
+            if named:
+                raise NotImplementedError(
+                    f"{owner}: region {region!r} of wave port {port!r}'s section is "
+                    f"a layer-grid design that blends {named[0]!r}: a Kerr "
+                    "property is not a per-element value there in this version. "
+                    "Give the elements beside the port a region of their own with "
+                    "a constant gfem.Material."
+                )
         if all(v is None for v in given.values()):
             continue
         if _anisotropic(material):
@@ -420,8 +453,9 @@ def _kerr_materials(
                 material, pos, frequency, port=port, region=region, owner=owner
             )
         )
-    layer = getattr(section, "layer", None)
-    keep = np.ones(n_el, bool) if layer is None else ~np.asarray(layer, bool)
+    # from the mesh, as the section of a traced field has no layer to read
+    layer = layer_tetrahedra(mesh, model.pml) if len(section.normal) == 3 else None
+    keep = np.ones(n_el, bool) if layer is None else ~layer[cells]
     if not (carries & keep).any():
         regions = ", ".join(repr(names[int(t)]) for t in np.unique(tags))
         raise ValueError(
@@ -454,14 +488,19 @@ class _Waves:
         """``(n_el, n_q)`` quadrature weights, m² (m), zero on a layer."""
         return jnp.asarray(self.columns.measure * self.kerr.keep[:, None])
 
+    def row(self, vector: jax.Array) -> jax.Array:
+        """``(n_el, n_q, n_c)`` the mode of one DOF vector, in the global frame."""
+        cols = self.columns
+        e = jnp.einsum("eqck,ek->eqc", cols.weights, vector[cols.dofs])
+        if cols.normal_weights is None:
+            return e
+        e_n = jnp.einsum("eqk,ek->eq", cols.normal_weights, vector[cols.normal_dofs])
+        full = jnp.concatenate([e, e_n[..., None]], axis=-1)
+        return full @ jnp.asarray(self.section.frame)
+
     def field(self) -> jax.Array:
         """``(n_wave, n_el, n_q, n_c)`` the mode at 1 W in the global frame."""
-        cols = self.columns
-        picked = self.vectors[:, cols.dofs]
-        e = jnp.einsum("eqck,fek->feqc", jnp.asarray(cols.weights), picked)
-        if len(self.section.normal) == 3:
-            e = e @ jnp.asarray(self.section.frame)
-        return e
+        return jax.lax.map(self.row, self.vectors)
 
 
 def _vector(field: Any) -> jax.Array:
@@ -486,7 +525,8 @@ def _waves(model: Model, modes: Any, owner: str) -> _Waves:
         TypeError: An entry is not a `gfem.PortModeResult`, or has no electric
             field.
         NotImplementedError: An Hz line port.
-        ValueError: The results are of different ports or discretizations.
+        ValueError: The results are of different ports or discretizations, or
+            the model is not the one they were solved on.
         NonDifferentiableError: The node coordinates are traced.
     """
     from gfem.model import Model
@@ -546,16 +586,65 @@ def _waves(model: Model, modes: Any, owner: str) -> _Waves:
         int(r.mode) for r, n in zip(results, counts, strict=True) for _ in range(n)
     )
     vectors = jnp.concatenate([_vector(r.e_field) for r in results], axis=0)
+    _check_model(model, section, results[0].port, owner)
+    kerr = _kerr_materials(model, section, frequency, results[0].port, owner)
+    columns = _cached_columns(model, section, results[0].port, first)
+    return _Waves(results[0].port, modes_of, frequency, vectors, section, columns, kerr)
+
+
+def _check_model(model: Model, section: Any, port: str, owner: str) -> None:
+    """Refuse a model whose port is not the section the mode was solved on.
+
+    The section is rebuilt from the model's mesh and port; a mode of another
+    mesh (or of moved nodes) would be read at the wrong elements.
+    """
+    from gfem._line_section import line_section
+    from gfem._port_section import port_geometry
+
+    planar = len(section.normal) == 3
     try:
-        kerr = _kerr_materials(model, section, frequency, results[0].port, owner)
-    except IndexError as err:
+        if planar:
+            other = port_geometry(model, section.port)
+        else:
+            other = line_section(model, section.port, geometry=True)
+        same = (
+            other.scale == section.scale
+            and _same_section(other, section)
+            and (
+                not planar
+                or np.array_equal(np.asarray(other.faces), np.asarray(section.faces))
+            )
+        )
+    except (ValueError, KeyError, IndexError, AttributeError):
+        same = False
+    if not same:
         raise ValueError(
-            f"{owner}: the model is not the one wave port {results[0].port!r}'s "
-            "mode was solved on."
-        ) from err
-    return _Waves(
-        results[0].port, modes_of, frequency, vectors, section, _columns(first), kerr
-    )
+            f"{owner}: the model is not the one wave port {port!r}'s mode was "
+            "solved on: its mesh gives another cross-section."
+        )
+
+
+#: Columns of the sections already read, per mesh topology then ``(port, order)``,
+#: with the section they were built on: a traced result rebuilds its space at
+#: every call, and the columns cost a few NGSolve assemblies.
+_COLUMNS: weakref.WeakKeyDictionary[Any, dict[tuple, tuple[Any, _Columns]]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _cached_columns(model: Model, section: Any, port: str, space: Any) -> _Columns:
+    store = _COLUMNS.setdefault(model.mesh._topology, {})  # noqa: SLF001
+    key = (port, space.order)
+    hit = store.get(key)
+    if (
+        hit is not None
+        and hit[0].scale == section.scale
+        and _same_section(hit[0], section)
+    ):
+        return hit[1]
+    columns = _columns(space)
+    store[key] = (section, columns)
+    return columns
 
 
 # --- public functions ------------------------------------------------------------
@@ -614,12 +703,19 @@ def kerr_nonlinearity(model: Model, mode: PortModeResult) -> KerrNonlinearity:
             "(gfem.kerr_coupling takes several)."
         )
     waves = _waves(model, mode, owner)
-    e = waves.field()
-    re, im = jnp.real(e), jnp.imag(e)
-    e2 = jnp.sum(re * re + im * im, axis=-1)
-    ee = jnp.sum(e * e, axis=-1)
-    quartic = 2 * e2 * e2 + jnp.real(ee) ** 2 + jnp.imag(ee) ** 2
-    per_element = jnp.sum(waves.weights * quartic, axis=-1)  # (n_wave, n_el)
+    weights = waves.weights
+
+    @jax.checkpoint
+    def integral(vector: jax.Array) -> jax.Array:
+        e = waves.row(vector)
+        re, im = jnp.real(e), jnp.imag(e)
+        e2 = jnp.sum(re * re + im * im, axis=-1)
+        ee = jnp.sum(e * e, axis=-1)
+        quartic = 2 * e2 * e2 + jnp.real(ee) ** 2 + jnp.imag(ee) ** 2
+        return jnp.sum(weights * quartic, axis=-1)
+
+    # one row at a time: the point values of a row are (n_el, n_q, 3) complex
+    per_element = jax.lax.map(integral, waves.vectors)  # (n_wave, n_el)
     k0 = jnp.asarray(2 * np.pi * waves.frequency / _C)[:, None]
     kerr = waves.kerr
     # conjugate of n2 - i beta / (2 k0): the e^{-i omega t} convention

@@ -201,8 +201,16 @@ def test_gamma_differentiates_in_the_permittivity_and_the_two_coefficients(
 
 @pytest.fixture(scope="module")
 def strip(tmp_path_factory):
+    # a coarse strip with a wide cladding: the layer holds under 0.1 of the mode's
+    # energy (no LayerClearanceWarning) and the solve takes seconds
     path = pml_cases.strip_guide(
-        tmp_path_factory.mktemp("strip") / "strip.msh", 0.4, quarter=False, length=0.15
+        tmp_path_factory.mktemp("strip") / "strip.msh",
+        0.8,
+        quarter=False,
+        length=0.15,
+        core_h=0.2,
+        clad_h=0.3,
+        thickness=0.5,
     )
     model = pml_cases.strip_model(path)
     materials = dict(model.materials)
@@ -232,6 +240,53 @@ def test_a_property_only_on_the_layer_is_refused(strip):
     materials["pml"] = dataclasses.replace(materials["pml"], nonlinear_index=1e-17)
     with pytest.raises(ValueError, match=r"wave port 'p1'.*layer"):
         gfem.kerr_nonlinearity(model.replace(materials=materials), mode)
+
+
+def _read_from_the_mesh(model, mode):
+    """``mode`` as a solve traced by JAX returns it: the DOF vector alone.
+
+    The space is then located from the mesh (`port_geometry`), whose section
+    has no layer; the values are the same concrete ones.
+    """
+    from gfem._engine.port_mode import PortModeSpace
+    from gfem._port_section import port_geometry
+    from gfem.results import PortModeField
+
+    space = mode.e_field._space
+    section = port_geometry(model, space.section.port)
+    field = PortModeField._on_vector(
+        mode.port,
+        lambda: PortModeSpace(section, space.order, geometry=True),
+        kerr._vector(mode.e_field),
+    )
+    return dataclasses.replace(mode, e_field=field)
+
+
+def test_a_traced_field_skips_the_layer_as_a_concrete_one_does(strip):
+    model, mode = strip
+    materials = dict(model.materials)
+    materials["pml"] = dataclasses.replace(materials["pml"], nonlinear_index=1e-16)
+    on_layer = model.replace(materials=materials)
+    eager = complex(gfem.kerr_nonlinearity(on_layer, mode).gamma_nl[0])
+    traced = _read_from_the_mesh(on_layer, mode)
+    assert traced.e_field._space.section.layer is None
+    got = complex(gfem.kerr_nonlinearity(on_layer, traced).gamma_nl[0])
+    # the same vector, columns and sum of the same terms: round-off of the
+    # reordered sum (1e-15), the gate 1e-12; counting the layer's triangles
+    # changed the value by 9e-3
+    assert got == pytest.approx(eager, rel=1e-12)
+
+
+def test_a_property_only_on_the_layer_is_refused_under_a_trace_too(strip):
+    model, mode = strip
+    materials = {
+        name: dataclasses.replace(m, nonlinear_index=None)
+        for name, m in model.materials.items()
+    }
+    materials["pml"] = dataclasses.replace(materials["pml"], nonlinear_index=1e-17)
+    only = model.replace(materials=materials)
+    with pytest.raises(ValueError, match=r"wave port 'p1'.*layer"):
+        gfem.kerr_nonlinearity(only, _read_from_the_mesh(only, mode))
 
 
 # --- the columns -----------------------------------------------------------------
@@ -280,7 +335,10 @@ def test_the_planar_columns_are_the_field_at_the_rule_points(filled, raised):
     )
     got = np.asarray(waves.field())[0]
     expected = np.asarray(field.at(points.reshape(-1, 3)))[0].reshape(got.shape)
-    # point values of a polynomial field through two paths: round-off only
+    # point values of a polynomial field through two paths: each is a sum of at
+    # most 45 products of O(1) weights and DOFs, so round-off is about 45 eps
+    # = 1e-14 of the largest value, measured 1.3e-15; the gate 1e-12 keeps the
+    # margin of a platform's BLAS and FMA ordering
     np.testing.assert_allclose(
         got, expected, rtol=0, atol=1e-12 * np.abs(expected).max()
     )
@@ -291,11 +349,33 @@ def test_the_planar_columns_are_the_field_at_the_rule_points(filled, raised):
 def test_the_integral_is_exact_at_the_rule_degree(filled, monkeypatch):
     model, mode, kn = filled
     original = kerr._columns
+    # the columns of the default rule are kept per mesh: start from none
+    monkeypatch.setattr(kerr, "_COLUMNS", type(kerr._COLUMNS)())
     monkeypatch.setattr(kerr, "_columns", lambda space: original(space, 2))
     higher = gfem.kerr_nonlinearity(model, mode)
     # degree 4p is exact for a degree-p field and a material constant per
     # element: the two rules differ by summation order only (1e-16 relative)
     np.testing.assert_allclose(higher.gamma_nl, kn.gamma_nl, rtol=1e-13)
+
+
+def test_a_traced_result_reads_the_columns_of_its_section_once(guide_mesh, monkeypatch):
+    # every traced result rebuilds its space; the columns are kept per mesh
+    monkeypatch.setattr(kerr, "_COLUMNS", type(kerr._COLUMNS)())
+    built = []
+    original = kerr._columns
+    monkeypatch.setattr(
+        kerr, "_columns", lambda space: built.append(space) or original(space)
+    )
+
+    def objective(n2):
+        model = _field_model(guide_mesh, jnp.asarray(N**2), n2, jnp.asarray(0.0))
+        return jnp.real(gfem.kerr_nonlinearity(model, mode_of(model, [F])).gamma_nl[0])
+
+    first = jax.grad(objective)(jnp.asarray(N2))
+    second = jax.grad(objective)(jnp.asarray(N2 * 2))
+    assert len(built) == 1
+    # linear in n2: the gradient is the coefficient per unit n2, whatever n2
+    assert float(second) == pytest.approx(float(first), rel=1e-12)
 
 
 @pytest.fixture(scope="module")
@@ -334,6 +414,8 @@ def test_the_line_columns_are_the_field_at_the_rule_points(slab, raised):
     )
     got = np.asarray(waves.field())[0, ..., 0]
     expected = np.asarray(field.at(points.reshape(-1, 2)))[0].reshape(got.shape)
+    # as the planar columns: a sum of at most 4 (order 3) products per point,
+    # round-off about 1e-15 of the largest value (measured 6e-16), gate 1e-12
     np.testing.assert_allclose(
         got, expected, rtol=0, atol=1e-12 * np.abs(expected).max()
     )
@@ -378,6 +460,36 @@ def test_an_anisotropic_region_with_a_property_is_refused(tmp_path):
     refused = materials(dataclasses.replace(aniso, nonlinear_index=2.6e-20))
     with pytest.raises(NotImplementedError, match=r"region 'clad'.*anisotropic"):
         gfem.kerr_nonlinearity(refused, mode)
+
+
+def test_a_layer_grid_design_blending_a_kerr_property_is_refused(slab):
+    # the solve refuses a layer grid in a port mode problem, so the mode is the
+    # slab's and the model is the same mesh with the core as a pixel design
+    model, mode = slab
+    mesh = model.mesh
+    grid = gfem.design.LayerGrid(mesh, "core", pitch=0.05e-6)
+    rho = grid.to_elements(np.ones(grid.shape))
+    clad = model.materials["clad"]
+    core = gfem.MaterialField.interpolate(rho, clad, model.materials["core"])
+    assert core.blend_ends.pixels is not None
+    assert "nonlinear_index" in [n for n, _, _ in core.blend_ends.others]
+    pixels = model.replace(materials={"core": core, "clad": clad})
+    with pytest.raises(
+        NotImplementedError, match=r"region 'core'.*layer-grid.*'nonlinear_index'"
+    ):
+        gfem.kerr_nonlinearity(pixels, mode)
+
+
+def test_a_model_of_another_mesh_or_dimension_is_refused(guide_mesh, filled, slab):
+    model, mode, _ = filled
+    nodes = jnp.asarray(np.asarray(guide_mesh.imported_nodes) * 1.01)
+    mesh = jax.tree.unflatten(jax.tree.structure(guide_mesh), [nodes])
+    with pytest.raises(ValueError, match=r"not the one wave port 'p1'"):
+        gfem.kerr_nonlinearity(model.replace(mesh=mesh), mode)
+    with pytest.raises(ValueError, match=r"not the one wave port 'p1'"):
+        gfem.kerr_nonlinearity(slab[0], mode)
+    with pytest.raises(ValueError, match=r"not the one wave port 'p1'"):
+        gfem.kerr_nonlinearity(model, slab[1])
 
 
 def test_an_hz_line_port_is_refused(slab):
@@ -508,6 +620,9 @@ def test_a_mode_twice_gives_every_entry_the_nonlinear_coefficient(filled):
     tensor = gfem.kerr_coupling(model, [mode, mode])
     g = np.asarray(tensor.gamma_nl)
     assert g.shape == (2, 2, 2, 2)
+    # every entry sums the same terms as the diagonal in another order: a few
+    # eps per partial sum over the 1e3 points, 2 log2(n) eps = 2e-15 at worst,
+    # measured 6e-16; the gate 1e-13 leaves 50 times that
     np.testing.assert_allclose(g, complex(kn.gamma_nl[0]), rtol=1e-13)
     # the cross-phase sum of the amplitude equation counts the other wave twice
     assert g[0, 0, 1, 1] + g[0, 1, 0, 1] == pytest.approx(
@@ -519,6 +634,8 @@ def test_a_single_row_gives_one_wave(filled):
     model, mode, kn = filled
     tensor = gfem.kerr_coupling(model, mode)
     assert tensor.gamma_nl.shape == (1, 1, 1, 1)
+    # the diagonal entry sums the same terms in another order: measured 3e-16,
+    # the gate 1e-13 as for the doubled mode
     assert complex(tensor.gamma_nl[0, 0, 0, 0]) == pytest.approx(
         complex(kn.gamma_nl[0]), rel=1e-13
     )
