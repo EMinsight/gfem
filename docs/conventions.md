@@ -831,6 +831,34 @@ field is strongest. The {py:obj}`gfem.conventions` module, "Electro-optic
 shift", gives the formulas, and {doc}`recipes/electro-optic-phase` the
 whole calculation.
 
+## Photoelastic tensor
+
+A crystal's `photoelastic_tensor` is the contracted tensor $p^E_{IJ}$, a
+dimensionless 6 × 6 array: rows and columns $xx, yy, zz, yz, xz, xy$, in the
+frame of the material's `axes` (a right-handed set), with the engineering shear
+strain, so that the strain $S$ changes the inverse permittivity by
+$\Delta(\varepsilon_r^{-1})_I = \sum_J p_{IJ} S_J$. It is rotated into the
+model's frame like a stiffness, $M p M^\mathsf{T}$, and is not assumed
+symmetric. It is the tensor at constant electric field: the piezoelectric field
+of the wave acts through the clamped electro-optic tensor $r^S$, and a free
+$r^T$ would count the strain twice. The optical material carries it; a material
+with a stiffness or a piezoelectric tensor refuses it.
+
+{py:obj}`gfem.acousto_optic_shift` turns the strain and field of a
+piezoelectric result into the permittivity change
+$\Delta\varepsilon_r = -\varepsilon_r (p S + r E)\varepsilon_r$, and weighs it
+with a mode solved once. **The shift is a phasor.** With the terminal driven at
+$\mathrm{Re}(V e^{i\Omega t})$, gfem's $e^{+i\omega t}$, the effective index
+is $n_\mathrm{eff} + \mathrm{Re}(\delta n\,V e^{i\Omega t})$ to first order,
+$\delta n$ the complex `delta_n_eff_per_volt` of the acoustic frequency
+$\Omega/2\pi$. A push-pull pair has
+$V_\pi L = \lambda / (2\,|\delta n_a - \delta n_b|)$ per volt on the fingers;
+per volt of an incident wave on a source impedance $Z_0$ it is that times
+$|(Z_L + Z_0)/(2Z)|$, with $Z = 1/(W Y')$ and $Z_L = Z + R_s$. Only the
+photoelastic and electro-optic terms are counted, not the moving boundaries or
+the crystal's rotation. {doc}`recipes/acousto-optic-shift` has the whole
+calculation.
+
 ## Piezoelectric problems
 
 A {py:class}`gfem.Piezoelectric` problem solves linear piezoelectricity on a

@@ -1455,6 +1455,21 @@ Push-pull
   {term}`electro-optic shifts <electro-optic shift>` have opposite signs and
   the arms' phase difference is the difference of the two.
 
+Photoelastic tensor
+  The tensor $p$ of a crystal's photoelastic effect, contracted as a 6 × 6
+  array $p_{IJ}$ (`photoelastic_tensor`, dimensionless, at constant electric
+  field): rows and columns $xx, yy, zz, yz, xz, xy$ in the frame of the
+  material's right-handed `axes`, with the {term}`engineering strain`, so that
+  $\Delta(\varepsilon_r^{-1})_I = p_{IJ} S_J$. It belongs to the optical
+  crystal, not to one with a stiffness.
+
+Acousto-optic shift
+  The change of a guided mode's effective index caused by an acoustic wave,
+  through the {term}`photoelastic tensor` (the strain) and the
+  {term}`electro-optic tensor` (the piezoelectric field), to first order and
+  per volt on one terminal, as a complex phasor at each acoustic frequency
+  ({py:obj}`gfem.acousto_optic_shift`).
+
 Voltage-length product
   $V_\pi L = \lambda / (2\,|\partial n_\mathrm{eff}/\partial V|)$, the drive
   times the electrode length that turns the phase by $\pi$: per arm, or for a

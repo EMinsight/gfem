@@ -35,6 +35,7 @@ tutorials/heater
 tutorials/heater3d
 tutorials/modulator
 tutorials/transducer
+tutorials/acousto-optic
 ```
 
 ```{toctree}
@@ -85,6 +86,7 @@ recipes/heater-temperature
 recipes/electromagnetic-heating
 recipes/thermo-optic-phase
 recipes/electro-optic-phase
+recipes/acousto-optic-shift
 recipes/piezoelectric-admittance
 recipes/thermal-step-response
 recipes/shared-port-surface
