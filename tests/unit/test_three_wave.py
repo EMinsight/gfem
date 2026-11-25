@@ -384,15 +384,22 @@ def test_traced_node_coordinates_raise_by_name(guide_mesh, shg):
 
 
 def test_the_gradient_through_the_pair_form_matches_the_second_harmonic_row(slab):
-    model, pump, harm, build = slab
+    model, pump, harm, _ = slab
     d = np.asarray(model.materials["core"].second_order_nonlinear_tensor)
 
+    def build(scale):
+        # a field, not a material, carries a traced tensor
+        field = gfem.MaterialField(
+            eps_r=3.476**2, second_order_nonlinear_tensor=scale * d
+        )
+        return model.replace(materials={**model.materials, "core": field})
+
     def via_pair(scale):
-        m = build(scale * d)
+        m = build(scale)
         return jnp.real(gfem.three_wave_coupling(m, [pump, harm]).kappa[1, 0, 0])
 
     def via_row(scale):
-        m = build(scale * d)
+        m = build(scale)
         return jnp.real(gfem.second_harmonic(m, pump, harm).kappa[0])
 
     g_pair, g_row = jax.grad(via_pair)(1.0), jax.grad(via_row)(1.0)
