@@ -113,7 +113,7 @@ def test_the_supercell_matches_the_locally_periodic_approximation(
 ):
     rows = _supercell(tmp_path, widths)
     assert 0 in rows
-    assert len(rows) >= 2 * len(widths) - 1
+    assert sorted(rows) == list(range(1 - len(widths) // 2, len(widths) // 2))
     worst = max(
         abs(s - _prediction(response, widths, m, theta))
         for m, (s, theta) in rows.items()
