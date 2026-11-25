@@ -64,13 +64,28 @@ def test_an_unknown_physics_key_lists_the_known_keys(mesh):
         _model(mesh).excluded_from("optics")
 
 
+def test_the_mechanical_key_excludes_volumes_from_the_solid(mesh):
+    model = _model(mesh, excluded={"em": (METAL,), "mechanical": ["air"]})
+    assert model.excluded_from("mechanical") == ("air",)
+    assert model.excluded_from("thermal") == ()
+    assert "excluded (mechanical): air entity" in repr(model)
+    assert model.replace(materials={"sub": SI, "air": AIR}).excluded_from(
+        "mechanical"
+    ) == ("air",)
+    assert _model(mesh).excluded_from("mechanical") == ()
+    with pytest.raises(ValueError, match=r"'dc_conduction', 'mechanical'"):
+        _model(mesh, excluded={"solid": ("air",)})
+
+
 def test_an_em_excluded_heater_may_carry_a_material(mesh):
     model = _model(mesh, excluded=("sub",))
     assert model.materials["sub"] is SI
 
 
 def test_a_material_on_a_region_excluded_everywhere_raises(mesh):
-    everywhere = {"em": ("sub",), "thermal": ("sub",), "dc_conduction": ("sub",)}
+    everywhere = dict.fromkeys(
+        ("em", "thermal", "dc_conduction", "mechanical"), ("sub",)
+    )
     with pytest.raises(ValueError, match="'sub' is excluded from every"):
         _model(mesh, excluded=everywhere)
     model = _model(mesh, excluded=everywhere, materials={"air": AIR})
@@ -88,7 +103,9 @@ def test_every_volume_excluded_raises_only_when_every_physics_is_empty(mesh):
         _model(
             mesh,
             materials={},
-            excluded=dict.fromkeys(("em", "thermal", "dc_conduction"), ("sub", "air")),
+            excluded=dict.fromkeys(
+                ("em", "thermal", "dc_conduction", "mechanical"), ("sub", "air")
+            ),
         )
 
 
@@ -306,6 +323,34 @@ def test_the_mapping_round_trips(mesh, tmp_path):
     assert back.excluded_from("em") == (METAL,)
     assert back.excluded_from("thermal") == ("air",)
     assert back.boundaries == model.boundaries
+
+
+def test_the_mechanical_key_round_trips_and_older_mappings_read_without_it(
+    mesh, tmp_path
+):
+    model = _model(mesh, excluded={"em": (METAL,), "mechanical": ("air",)})
+    doc = _job_doc(model, tmp_path / "job.json")
+    assert doc["job"]["model"]["excluded"]["mechanical"] == ["air"]
+    back = gfem.Job.from_json(tmp_path / "job.json").model
+    assert back.excluded_from("mechanical") == ("air",)
+    assert back.excluded_from("em") == (METAL,)
+    # a mapping without a mechanical exclusion is written as an older gfem
+    # wrote it, and such a file reads with none
+    older = _job_doc(_model(mesh, excluded={"thermal": ("air",)}), tmp_path / "t.json")
+    assert set(older["job"]["model"]["excluded"]) == {
+        "$type",
+        "em",
+        "thermal",
+        "dc_conduction",
+    }
+    assert (
+        gfem.Job.from_json(tmp_path / "t.json").model.excluded_from("mechanical") == ()
+    )
+    # a mechanical exclusion alone writes the mapping
+    alone = _job_doc(
+        _model(mesh, excluded={"mechanical": ("air",)}), tmp_path / "m.json"
+    )
+    assert alone["job"]["model"]["excluded"]["$type"] == "Excluded"
 
 
 def test_an_em_only_job_is_written_as_before(mesh, tmp_path):

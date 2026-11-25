@@ -22,7 +22,8 @@ v0.1.
   {term}`line ports <Line port>`, PEC, PMC and first- or second-order absorbing
   lines, materials (permittivity laws included), material fields and
   layer-grid designs, with their gradients. Powers and fields are per metre
-  along z, and S equals the slab's ({doc}`recipes/2d-models`).
+  along z, and S equals the slab's ({doc}`recipes/2d-models`). Piezoelectric
+  problems also solve on 2D meshes (below).
 - **Ports**: {py:obj}`gfem.LumpedPort` on one or several surfaces driven together,
   and {py:obj}`gfem.WavePort` on an exterior surface, fed by its port mode;
   several wave ports on one surface each request a different mode of it,
@@ -127,6 +128,15 @@ v0.1.
   `NetworkParameters.step_response` / `impulse_response` (TDR, TDT and the
   {term}`impedance profile`, differentiable; the fit is not)
   ({doc}`recipes/rational-model`, {doc}`recipes/time-responses`).
+- **Piezoelectric problems**: {py:obj}`gfem.Piezoelectric` (the admittance per
+  length between electrodes of a 2D section of piezoelectric, elastic and
+  dielectric regions over a list of frequencies, the clamped capacitance, and
+  the displacement and potential fields; any stiffness and piezoelectric tensor
+  on explicit `axes`, mechanical loss through a quality factor, graded
+  {term}`damping frames <damping frame>` as absorbing edges, meshed or line
+  electrodes), `PiezoelectricResult.network_parameters` (S-parameters and
+  Touchstone for an aperture and a series resistance) and
+  {py:obj}`gfem.strain` ({doc}`recipes/piezoelectric-admittance`).
 
 ## Solvers
 
@@ -207,6 +217,13 @@ every input its model function builds from its settings, so one `jax.grad` of
 a SAX circuit reaches gfem's inputs and SAX's analytic models together. With
 respect to the circuit's wavelength or frequency it is the derivative of the
 band's interpolation ({doc}`recipes/sax-circuit`).
+The piezoelectric problem differentiates its admittance per length, its
+clamped capacitance and readings of its fields with respect to the stiffness,
+piezoelectric tensor, permittivity, mass density and mechanical quality
+factor of every element, and the mesh's nodes through a node map of your own
+({py:meth}`gfem.Mesh.with_nodes`), each checked against finite differences;
+its frequencies, terminals, clamped lines and damping frame raise
+({doc}`recipes/piezoelectric-gradient`).
 
 How each mark is checked: {doc}`verification`.
 
@@ -319,8 +336,10 @@ returning a wrong value:
   materials, PMLs, the adaptive sweep, the iterative and GPU solvers, several
   processes, measurements other than `Field.at`, mesh refinement and node
   gradients raise `NotImplementedError` and name the alternative, most often
-  the {term}`slab model`. In Hz a design blend takes constant permittivities
-  only. Details: {doc}`recipes/2d-models`.
+  the {term}`slab model`; a piezoelectric problem takes anisotropic materials,
+  and node gradients through a node map of your own
+  ({doc}`recipes/piezoelectric-admittance`). In Hz a design blend takes
+  constant permittivities only. Details: {doc}`recipes/2d-models`.
 - **Dispersive materials**: a permittivity law is isotropic, and
   `mu_r` does not disperse; give an anisotropic or magnetic material constant
   values per band. A metal in a wave port's cross-section raises: keep it off
@@ -358,6 +377,13 @@ returning a wrong value:
   the electrodes, so their absorption is absent. No gradient goes through the
   mode: the ridge's shape or width takes a difference over remeshes. Details:
   {doc}`recipes/electro-optic-phase`, {doc}`recipes/electro-optic-gradient`.
+- **Piezoelectric problems**: 2D sections only (a tetrahedral or slab mesh
+  raises); one process and the direct solver (sparse Cholesky); no periodic
+  cells, no PML (damping frames instead), and `gfem.Absorbing` on a solid's edge
+  raises; dielectric loss is not read; frequencies, terminals, clamped lines and
+  damping frames are not differentiable; node gradients come through a node map
+  of your own (no 2D boundary morph). Details:
+  {doc}`recipes/piezoelectric-admittance`.
 - **Layer patterns**: width and spacing only (no minimum area), and a pre-check, not
   foundry sign-off; one flat GDS cell; layer grids only (no free-form 3D
   designs); length-scale constraints validated up to a rule of $1.25R$ and a

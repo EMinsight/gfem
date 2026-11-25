@@ -61,6 +61,7 @@ from gfem._boundaries import (
     wave_port_surfaces,
 )
 from gfem._checks import is_traced
+from gfem._dim2 import refuse_anisotropic
 from gfem._engine import dispersion
 from gfem._engine.line_mode import ModeSpace, mode_space
 from gfem._engine.port_mode import PortModeSpace
@@ -229,6 +230,7 @@ class PortModeRule:
         """
         if not isinstance(problem, PortMode):
             raise TypeError(f"Expected gfem.PortMode, got {problem!r}.")
+        refuse_anisotropic(model)
         self.problem = problem
         self.options = options
         self.comm = comm

@@ -33,6 +33,9 @@ GRID = {
     "eigenmode": (V, V, V, V),
     "electrostatic": (V, Z, R, V),
     "port_mode": (R, R, R, R),
+    # the piezoelectric section: principal permittivities and a pitch map are
+    # verified; it reads no conductivity, and a sheet field needs a slab
+    "piezoelectric": (V, Z, R, V),
     "driven_periodic_plain": (V, V, V, V),
     "driven_periodic_bloch": (V, V, V, V),
     "eigenmode_periodic_plain": (V, V, V, V),
@@ -118,7 +121,9 @@ def test_principal_value_cells_fold_into_their_property_column(derived):
     for row in derived["rows"]:
         for cell in row["cells"]:
             key = (row["key"], cell["column"])
-            if key in both:
+            if key == ("piezoelectric", "eps_r"):
+                assert cell["forms_text"] == "principal values only", key
+            elif key in both:
                 assert cell["forms"] == ["isotropic", "principal values"], key
                 assert cell["forms_text"] == "isotropic and principal values", key
             else:
@@ -372,7 +377,7 @@ def _derive(data, cells=None, expected=None, out_of_scope=None):
 
 
 def test_unchanged_data_derives(data):
-    assert len(_derive(data)["rows"]) == 20
+    assert len(_derive(data)["rows"]) == 21
 
 
 def test_a_new_problem_in_the_cells_fails(data):

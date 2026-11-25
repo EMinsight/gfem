@@ -752,6 +752,49 @@ Tests: [unit checks](https://github.com/benvial/gfem/blob/main/tests/unit/test_e
 [closed forms and re-solves](https://github.com/benvial/gfem/blob/main/tests/verification/test_electro_optic.py),
 [node gradients](https://github.com/benvial/gfem/blob/main/tests/verification/test_electro_optic_gradient.py).
 
+## Piezoelectric problems
+
+The piezoelectric problem is checked against closed forms of plates, against
+identities that hold exactly in the discrete problem, and against finite
+differences. Each check runs on every change to gfem.
+
+- **Plates.** A plate of a hexagonal crystal between two electrodes, with free
+  side edges, gives the closed-form admittance of the thickness-extensional and
+  the thickness-shear resonator, with and without loss, from far below to just
+  above resonance. The shear plate's displacement and engineering strain at
+  points match their closed forms, which checks the strain's Voigt order and
+  the per-volt normalization.
+- **A finger array.** The capacitance a finger pair adds to a long array of line
+  electrodes matches the closed form of a periodic array.
+- **A damping frame.** The reflection of a plane wave at normal incidence from a
+  frame of four wavelengths or more follows its design rule within a factor of
+  two ({py:class}`gfem.DampingFrame`).
+- **Identities.** The power a transducer takes is the power its losses dissipate.
+  Without the piezoelectric tensor the admittance is that of the clamped
+  capacitance. Without loss it is purely reactive. It is reciprocal and passive,
+  and each row sums to zero when every electrode is a terminal. A section turned
+  in its plane, with its crystal axes turned with it, gives the same admittance.
+- **Gradients.** The gradients with respect to every material property, and with
+  respect to the nodes through pitch, stretch, finger-thickness and local maps,
+  with line and with meshed electrodes, match fourth-order central differences.
+  So do readings of the displacement and strain at points.
+- **Material tensors.** The rotated stiffness and piezoelectric tensor give
+  lithium niobate's bulk wave speeds along the rotated axis.
+
+Observations, not checks. The transducer of the {doc}`tutorial
+<tutorials/transducer>` at full size (20 signal and 19 ground fingers, 40
+grounded strips per side, assumed counts), 1.14 M unknowns on 32 cores, gives
+$Z = 41.5 + 0.7i$ Ω at 0.8597 GHz and an S11 dip of about −38 dB near
+0.8596 GHz; the device measured −34.3 dB near 0.84 GHz (Ni, Bhave and Xu,
+arXiv 2606.05337), about 2 % lower in frequency. Its gradient costs one pass
+over the nodes, about a fifth of one frequency's factorization.
+
+Tests: [unit checks](https://github.com/benvial/gfem/blob/main/tests/unit/test_piezoelectric.py),
+[materials](https://github.com/benvial/gfem/blob/main/tests/unit/test_piezoelectric_material.py),
+[network parameters and strain](https://github.com/benvial/gfem/blob/main/tests/unit/test_piezoelectric_network.py),
+[closed forms](https://github.com/benvial/gfem/blob/main/tests/verification/test_piezoelectric.py),
+[gradients](https://github.com/benvial/gfem/blob/main/tests/unit/test_piezoelectric_gradients.py).
+
 (verification-mesh-refinement)=
 ## Mesh refinement error estimates
 

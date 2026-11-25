@@ -66,8 +66,9 @@ inputs the rule itself cannot differentiate, and ``terms(model, *, nodes)``
 (its operator as the kernel sees it, a list of
 `gfem._engine.sensitivity.Term`: one per piece of a driven or eigenmode
 operator, or the electrostatic form; ``nodes`` when the node coordinates
-are wanted) and ``lumped_terms(model)`` (the pieces that move with a
-lumped value). Host
+are wanted), ``lumped_terms(model)`` (the pieces that move with a
+lumped value) and ``tensors(model, wanted)`` (a rule whose material leaves
+are tensors in a rotated frame: `gfem._engine.sensitivity.Tensors`). Host
 calls get the model and a shallow copy of the rule whose ``problem`` holds
 the call's concrete values, so a rule reads problem values from
 ``self.problem`` and never sees a tracer there.
@@ -557,6 +558,9 @@ def _local_cotangents(
                 else None,
                 lumped=(lambda: rule.lumped_terms(model))
                 if hasattr(rule, "lumped_terms")
+                else None,
+                tensors=(lambda: rule.tensors(model, wanted))
+                if hasattr(rule, "tensors")
                 else None,
                 comm=comm,
             )

@@ -518,6 +518,72 @@ each arm's ``delta_n_eff_per_volt``. Solve the mode on an optical window
 that reaches the electrodes' inner edges: the shift weighs the mode's tail
 there.
 
+Piezoelectric problems
+----------------------
+A `gfem.Piezoelectric` problem solves linear piezoelectricity on a 2D
+section: the :math:`(x, y)` plane, :math:`\partial_z = 0`, and three
+displacement components :math:`u_x, u_y, u_z`. With :math:`e^{+i\omega t}`,
+
+.. math::
+
+    \nabla\cdot T = -\omega^2 \rho\, u, \qquad \nabla\cdot D = 0, \qquad
+    T = c^E S - e^{\mathsf T} E, \qquad D = e S + \varepsilon^S E,
+    \qquad E = -\nabla\varphi.
+
+The stiffness ``stiffness`` is :math:`c^E` (Pa, 6 x 6, at constant field), the
+``piezoelectric_tensor`` is :math:`e` (C/m^2, 3 x 6, the stress constants, not
+the strain constants :math:`d`) and ``eps_r`` is :math:`\varepsilon^S /
+\varepsilon_0` (at constant strain), all in the frame whose axes are the rows
+of the material's ``axes`` (right-handed), rotated into the model's frame.
+
+- Voigt order is :math:`xx, yy, zz, yz, xz, xy` with engineering shear (twice
+  the tensor components): :math:`S = (\partial_x u_x,\ \partial_y u_y,\ 0,\
+  \partial_y u_z,\ \partial_x u_z,\ \partial_y u_x + \partial_x u_y)`.
+  `gfem.strain` returns this :math:`S` per volt.
+- Loss is a complex stiffness under :math:`e^{+i\omega t}`,
+  :math:`c^E (1 + i(1/Q_m + \eta r^2))`, with :math:`Q_m` the material's
+  ``mechanical_quality_factor``, and :math:`\eta r^2` a `gfem.DampingFrame`'s
+  (:math:`r` the normalised depth into the frame, :math:`\eta` its
+  ``loss_factor``). Its imaginary part is positive: the power dissipated per
+  volume, :math:`\tfrac{\omega}{2}\, S^* \mathrm{Im}(c)\, S`, is non-negative
+  when :math:`\mathrm{Im}\,c \ge 0`. A permittivity's loss has the opposite
+  sign, :math:`\varepsilon_r (1 - i\tan\delta)`, because there the dissipation
+  is :math:`\tfrac{\omega}{2}\,\mathrm{Im}(-\varepsilon)|E|^2` (see "Time
+  dependence").
+- A damping frame of thickness :math:`L` in a medium of wavelength
+  :math:`\lambda` reflects a plane wave at normal incidence by
+  :math:`|R| \approx e^{-2\pi\eta (L/\lambda)/3}`, down to a floor of about
+  :math:`3.4\times10^{-3}\,\eta\,(\lambda/L)^2`: four wavelengths at the
+  default :math:`\eta = 1.2` give :math:`|R| < 10^{-3}`.
+
+Every extensive result is per metre along :math:`z`. For each terminal :math:`j`
+in turn the potential is 1 V on it and 0 V on every other terminal and the
+ground; ``admittance_per_length`` is :math:`Y'_{ij}(f) = i\omega q'_i` in S/m,
+the current into terminal :math:`i` per volt on terminal :math:`j` per metre
+(:math:`q'` the charge per length), indexed ``[frequency, i, j]``: the response
+first, the excitation second. ``clamped_capacitance_per_length`` is
+:math:`C_0'` in F/m, the Maxwell matrix of the potential alone with
+:math:`\varepsilon^S` and no displacement; it is not the low-frequency limit
+of :math:`Y'/i\omega`, the free capacitance, which is larger by :math:`1 + K^2`.
+
+`PiezoelectricResult.network_parameters` scales to an aperture :math:`W` and
+puts the series resistances :math:`R = \mathrm{diag}(R_s)` in the leads:
+
+.. math::
+
+    Y = W Y', \qquad Y_t = Y (I + R Y)^{-1},
+
+and S is that of :math:`Y_t` on the reference impedances, as pseudo-waves
+(see "Network parameters"; 50 Ω by default). For one terminal on a real :math:`Z_0`,
+:math:`S_{11} = (Z_L - Z_0)/(Z_L + Z_0)` with :math:`Z_L = 1/Y + R_s`.
+
+The displacement and potential fields and the strain are per volt across the
+terminal, after :math:`R_s`. A device fed by an incident wave :math:`V_\mathrm{inc}`
+on :math:`Z_0` has, across its one terminal, :math:`V_\mathrm{IDT} =
+V_\mathrm{inc}\, 2 Z_\mathrm{IDT}/(Z_L + Z_0)`, with :math:`Z_\mathrm{IDT} =
+1/Y` and :math:`Z_L = Z_\mathrm{IDT} + R_s`. A quantity per terminal volt is
+referred to the incident wave by that factor.
+
 Incident fields
 ---------------
 A `gfem.PlaneWave` or `gfem.GaussianBeam` travels along

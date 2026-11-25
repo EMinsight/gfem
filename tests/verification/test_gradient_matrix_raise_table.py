@@ -24,6 +24,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import periodic_cases as pc
+import piezo_cases as pz
 import pml_cases
 import pytest
 import structured_meshes as sm
@@ -59,7 +60,17 @@ ALL_PROPERTIES = {
     "mass_density": 2200.0,
     "specific_heat": 700.0,
     "thermo_optic_coefficient": 1.0e-5,
+    # a solid's constants, unread by every problem below
+    "stiffness": gfem.isotropic_stiffness(72e9, 0.17),
+    "piezoelectric_tensor": np.arange(1.0, 19.0).reshape(3, 6) / 10,
+    "mechanical_quality_factor": 500.0,
 }
+
+
+def _ramped(values, ramp):
+    """``values`` per element, each scaled by ``ramp`` (tensors as a whole)."""
+    return {k: np.multiply.outer(ramp, v) for k, v in values.items()}
+
 
 # (problem name, result leaf, input kind) -> outcome. Input kinds name the
 # model leaf: ("nodes",) or ("material", <region>, <property>).
@@ -80,6 +91,17 @@ EXPECTED = {
         "electrostatic",
         "capacitance",
         ("material", "oxide", "thermo_optic_coefficient"),
+    ): ZERO,
+    ("electrostatic", "capacitance", ("material", "oxide", "stiffness")): ZERO,
+    (
+        "electrostatic",
+        "capacitance",
+        ("material", "oxide", "piezoelectric_tensor"),
+    ): ZERO,
+    (
+        "electrostatic",
+        "capacitance",
+        ("material", "oxide", "mechanical_quality_factor"),
     ): ZERO,
 }
 # Terminal potentials: their coefficients differentiate like the capacitance;
@@ -954,6 +976,44 @@ EXPECTED |= {
     for kind in [*THERMAL_KINDS, *_PROBLEM_KINDS[name]]
 }
 
+# The piezoelectric problem on the film's field: the admittance, the kept
+# displacement and potential read the nodes and five properties (the clamped
+# capacitance only the permittivity), a kept field's mesh passes the nodes
+# through, and its frequency is a constant. Every other property is unread.
+PIEZO_KINDS = [("nodes",), *(("material", "ln", p) for p in ALL_PROPERTIES)]
+_PZ_MECHANICS = {
+    ("material", "ln", p)
+    for p in (
+        "eps_r",
+        "stiffness",
+        "piezoelectric_tensor",
+        "mass_density",
+        "mechanical_quality_factor",
+    )
+}
+_PZ_FIELDS = {("nodes",), *_PZ_MECHANICS}
+PIEZO_READS = {
+    "admittance_per_length": _PZ_FIELDS,
+    "clamped_capacitance_per_length": {("nodes",), ("material", "ln", "eps_r")},
+    **{
+        f"displacement_fields.0.{axis}.{leaf}": reads
+        for axis in "xyz"
+        for leaf, reads in (
+            ("coefficients", _PZ_FIELDS),
+            ("mesh.nodes", {("nodes",)}),
+            ("omega", set()),
+        )
+    },
+    "potential_fields.0.coefficients": _PZ_FIELDS,
+    "potential_fields.0.mesh.nodes": {("nodes",)},
+    "potential_fields.0.omega": set(),
+}
+EXPECTED |= {
+    ("piezoelectric", out, kind): GRADIENT if kind in reads else ZERO
+    for out, reads in PIEZO_READS.items()
+    for kind in PIEZO_KINDS
+}
+
 
 # The thermo-optic shift and the route phase: measurement
 # rows, as the power flow's are, in the optical model's leaves and the
@@ -1069,7 +1129,7 @@ def _field(mesh, region, **overrides):
     n = len(mesh.elements(region))
     ramp = np.linspace(1.0, 1.5, n)
     values = ALL_PROPERTIES | overrides
-    return gfem.MaterialField(**{k: v * ramp for k, v in values.items()})
+    return gfem.MaterialField(**_ramped(values, ramp))
 
 
 @pytest.fixture(scope="module")
@@ -1561,6 +1621,36 @@ def thermal_problem_cases(sheet_mesh):
 
 
 @pytest.fixture(scope="module")
+def piezoelectric_case(tmp_path_factory):
+    """The transducer section of the piezoelectric tests: lines on lithium niobate.
+
+    The film is a field holding every material property (its tensors scaled
+    per element, on the crystal's axes, the unread ones given arbitrary
+    values); its damping frame is a constant material beside it. The mesh is
+    the coarsest the layout allows (the electrode edges, not ``maxh``, set its
+    size): the table counts one adjoint solve per cell, so a cell's cost is the
+    section's.
+    """
+    mesh = pz.mesh(
+        tmp_path_factory.mktemp("piezoelectric") / "idt.msh", "lines", maxh=2.5
+    )
+    ramp = np.linspace(1.0, 1.5, len(mesh.elements("ln")))
+    values = ALL_PROPERTIES | {
+        "eps_r": np.array(pz.EPS_LN),
+        "mu_r": np.ones(3),
+        "tan_delta": np.full(3, 0.01),
+        "conductivity": np.full(3, 2.0),
+        "stiffness": pz.C_LN,
+        "piezoelectric_tensor": pz.E_LN,
+        "mass_density": pz.RHO_LN,
+        "mechanical_quality_factor": pz.QM,
+    }
+    film = gfem.MaterialField(**_ramped(values, ramp), axes=pz.AXES)
+    model = pz.model(mesh, "lines").with_material("ln", film)
+    return {"piezoelectric": (model, pz.problem(keep_fields=True))}
+
+
+@pytest.fixture(scope="module")
 def measurement_cases(tmp_path_factory):
     """The thermo-optic shift on a section, the route phase through a 3D block.
 
@@ -1587,7 +1677,7 @@ def measurement_cases(tmp_path_factory):
         "conductivity": 0.0,
         "thermo_optic_coefficient": 1.86e-4,
     }
-    core = gfem.MaterialField(**{k: v * ramp for k, v in values.items()})
+    core = gfem.MaterialField(**_ramped(values, ramp))
     clad = gfem.Material(
         eps_r=2.085,
         thermal_conductivity=1.38,
@@ -2013,6 +2103,7 @@ def cases(model, driven_model, eigen_model, wave_cases, request):
             gfem.Eigenmode(target=17e9),
         ),
         **request.getfixturevalue("thermal_problem_cases"),
+        **request.getfixturevalue("piezoelectric_case"),
     }
 
 
@@ -2119,6 +2210,16 @@ def _out_electrostatic_sheet(request):
     model = _sheet_model(mesh, [])
     problem = gfem.Electrostatic(terminals={"top": "plate2"}, ground="plate1")
     jax.grad(lambda m: gfem.solve(m, problem).capacitance[0, 0])(model)
+
+
+def _out_piezoelectric_sheet(request):
+    # a partly filled sheet needs the slab: a 2D mesh refuses it when the
+    # model is built, and a piezoelectric section is always 2D
+    model = request.getfixturevalue("piezoelectric_case")["piezoelectric"][0]
+    fill = gfem.SheetField(
+        fill=np.linspace(0.2, 0.9, len(model.mesh.elements("bottom")))
+    )
+    model.replace(boundaries=[gfem.Conductor("bottom", 100.0, 1e-6, fill=fill)])
 
 
 def _sheet_fill_objective(model, problem):
@@ -3411,6 +3512,12 @@ OUT_OF_SCOPE = [
         _out_electrostatic_sheet,
         NotImplementedError,
         "sheet field",
+    ),
+    (
+        "piezoelectric x sheet fill",
+        _out_piezoelectric_sheet,
+        NotImplementedError,
+        "SheetField.*2D mesh",
     ),
     (
         "driven x fill of a sheet beside a wave port",

@@ -119,6 +119,12 @@ ROWS = {
         "Electrostatic", "capacitance", recipe="recipes/capacitance-gradient"
     ),
     "port_mode": Row("Port mode problem", "2D, wave-port modes"),
+    "piezoelectric": Row(
+        "Piezoelectric",
+        "admittance and clamped capacitance, 2D",
+        recipe="recipes/piezoelectric-gradient",
+        front=False,
+    ),
     # periodic models: one path per row, so each row lists its own solvers
     # and sweeps (Capabilities page only)
     "driven_periodic_plain": Row(
@@ -239,6 +245,7 @@ PROBLEMS = {
     "eigenmode_participation": Problem("eigenmode_participation", "participation"),
     "eigenmode_field": Problem("eigenmode_field", "e_fields.0.coefficients"),
     "electrostatic": Problem("electrostatic", "capacitance"),
+    "piezoelectric": Problem("piezoelectric", "admittance_per_length"),
     "port_mode": Problem("port_mode", "gamma"),
     "port_mode_sheet": Problem("port_mode", "gamma"),
     "driven_lumped": Problem("driven", "s.values", "lumped"),
@@ -355,11 +362,16 @@ MATERIAL_PROPERTIES = {
     "mass_density": None,
     "specific_heat": None,
     "thermo_optic_coefficient": None,
+    # a solid's constants: exact zeros of every problem in the raise table
+    "stiffness": None,
+    "piezoelectric_tensor": None,
+    "mechanical_quality_factor": None,
 }
 SOLVERS = {"direct": "direct solver", "bddc_gmres": "BDDC + GMRES"}
 # OUT_OF_SCOPE rows the grid needs (by their label): the row's cell raises.
 GRID_LABELS = {
     "electrostatic x sheet fill": ("electrostatic", "fill"),
+    "piezoelectric x sheet fill": ("piezoelectric", "fill"),
     "eigenmode mode field x node coordinates": ("eigenmode_field", "nodes"),
     # the shape-gradient refusal of the thermal and conduction forms
     "steady_thermal x node coordinates": ("steady_thermal", "nodes"),

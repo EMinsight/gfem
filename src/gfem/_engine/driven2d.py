@@ -70,6 +70,7 @@ import scipy.constants as const
 from gfem import _mpi, _timing
 from gfem._adjoint import adjoint_tolerance
 from gfem._boundaries import PEC, PMC, Absorbing, WavePort
+from gfem._dim2 import refuse_anisotropic
 from gfem._domain import h1_unknowns
 from gfem._engine import dispersion, points, quadrature, terms
 from gfem._engine.cache import default_retain_memory, discretization
@@ -158,6 +159,7 @@ class Driven2DRule(DrivenRule):
         self.orders: dict = {}
         #: No perfectly matched layer: a 2D model refuses one.
         self.stretch = self.pml = None
+        refuse_anisotropic(model)
         _check_lines(model, self.polarization)
         _check_materials(model, self.polarization)
         #: The layer grids of two constant ends, whose pixels Hz differentiates.

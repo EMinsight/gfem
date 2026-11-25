@@ -128,6 +128,14 @@ whose pairs would otherwise hold every step's fields) returns their
 per-element integrals as `Integrated`, which the material pass adds to its
 own integrals of each term.
 
+A rule whose material inputs are tensors in a rotated frame (a solid's
+stiffness and piezoelectric tensor, read in the crystal's frame) gives
+`Tensors` instead of terms for its material leaves: the **tensor pass**
+integrates **moment blocks** of each pair, the lab-frame products of strains,
+potential gradients and displacements per element (`MomentBlock`), and the
+rule's own contraction maps them, with the pair's weights, to the cotangent
+of each leaf (through the transpose of the frame rotation).
+
 Adding a problem type means giving its rule a ``terms`` hook (its operator
 as `Term` values, with their derivatives) and a row of `PROPERTIES`, not a
 code path.
@@ -178,6 +186,8 @@ __all__ = [
     "FieldPair",
     "Integrated",
     "LoadField",
+    "MomentBlock",
+    "Tensors",
     "Term",
     "element_integrals",
     "energy_term",
@@ -385,6 +395,17 @@ PROPERTIES: dict[str, frozenset[str]] = {
     "transient_thermal": frozenset(
         {"thermal_conductivity", "mass_density", "specific_heat"}
     ),
+    # the stiffness, coupling, dielectric and mass pieces of a piezoelectric
+    # section, with the loss 1 / Q_m (the tensor pass)
+    "piezoelectric": frozenset(
+        {
+            "stiffness",
+            "piezoelectric_tensor",
+            "eps_r",
+            "mass_density",
+            "mechanical_quality_factor",
+        }
+    ),
 }
 
 
@@ -413,6 +434,46 @@ class FieldPair:
     weights: Mapping[str, complex]
     order: int
     domain: ngs.Region
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class MomentBlock:
+    """Per-element integrals of bilinear products of a pair's two fields.
+
+    Attributes:
+        name: The block's key in the moments `Tensors.contract` reads.
+        size: Number of entries.
+        entries: ``(left, right) -> CF`` of ``size`` components, bilinear in
+            the two fields of the pair's space (NGSolve grid functions).
+        domain: The NGSolve region the block is integrated on.
+        terms: The weight names (`FieldPair.weights`) the block serves: a pair
+            whose weights are all zero for them skips the block.
+    """
+
+    name: str
+    size: int
+    entries: Callable[[Any, Any], Any]
+    domain: ngs.Region
+    terms: tuple[str, ...]
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class Tensors:
+    """A rule's material leaves as moments contracted on the host.
+
+    Attributes:
+        blocks: The moment blocks the wanted leaves need.
+        contract: ``(weights, moments) -> {kind: values}``: one pair's weights
+            and its integrals by block name, ``(n_tetrahedra, size)`` (a
+            skipped block is missing), to each wanted leaf's cotangent over the
+            region's elements (mesh order), complex; linear in the moments, so
+            the pass sums it over pairs.
+    """
+
+    blocks: Sequence[MomentBlock]
+    contract: Callable[
+        [Mapping[str, complex], Mapping[str, np.ndarray]], dict[Hashable, np.ndarray]
+    ]
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -506,7 +567,7 @@ def energy_term(
 
 
 #: Operator families whose rules' terms the node pass reads.
-SHAPE_FORMS = frozenset({"electrostatic", "driven", "eigenmode"})
+SHAPE_FORMS = frozenset({"electrostatic", "driven", "eigenmode", "piezoelectric"})
 #: Operator families whose pairs carry the sheet pieces' weights (by name).
 SHEET_FORMS = frozenset({"driven", "eigenmode"})
 #: Operator families whose pairs carry the lumped pieces' weights (by name).
@@ -940,6 +1001,54 @@ def _moment_pass(
     return out * built.scale**length_power
 
 
+def _moments(
+    built: Any, pair: FieldPair, blocks: Sequence[MomentBlock]
+) -> dict[str, np.ndarray]:
+    r"""Each block's :math:`\sum_k \int \mathrm{entries}(l_k, r_k)` per tetrahedron."""
+    blocks = [b for b in blocks if any(pair.weights.get(t, 0) != 0 for t in b.terms)]
+    total = sum(b.size for b in blocks)
+    if not total:
+        return {}
+    p0 = ngs.L2(built.mesh, order=0, complex=True)
+    space = p0 if total == 1 else ngs.FESpace([p0] * total)
+    tests = [space.TestFunction()] if total == 1 else list(space.TestFunction())
+    form = ngs.LinearForm(space)
+    start = 0
+    for block in blocks:
+        m = _pair_integrand(block.entries, pair)
+        parts = [m[i] * tests[start + i] for i in range(block.size)]
+        form += sum(parts[1:], parts[0]) * quadrature.dx(
+            pair.order, definedon=block.domain
+        )
+        start += block.size
+    form.Assemble()
+    values = _rows(total, p0.ndof)(form)
+    out = {}
+    start = 0
+    for block in blocks:
+        each = np.zeros((len(built.cell_order), block.size), dtype=complex)
+        each[built.cell_order] = values[start : start + block.size].T
+        out[block.name] = each
+        start += block.size
+    return out
+
+
+def _tensor_pass(
+    model: Model,
+    pairs: list[FieldPair],
+    tensors: Tensors,
+    comm: Any = None,
+) -> dict[Hashable, np.ndarray]:
+    """The cotangent of each tensor leaf: moments per pair, contracted, summed."""
+    built = discretization(model.mesh, model._periodic, comm).built  # noqa: SLF001
+    out: dict[Hashable, np.ndarray] = {}
+    for pair in _chunks(pairs):
+        moments = _moments(built, pair, tensors.blocks)
+        for kind, value in tensors.contract(pair.weights, moments).items():
+            out[kind] = out[kind] + value if kind in out else value
+    return out
+
+
 def _sheet_pass(
     model: Model,
     pairs: list[FieldPair],
@@ -1269,9 +1378,11 @@ def _surface_shape(
 def _node_pass(
     model: Model, pairs: list[FieldPair], terms: Sequence[Term], comm: Any = None
 ) -> np.ndarray:
-    """``sum_pairs sum_t theta_t d a_t(left, right) / dX``, (n_nodes, 3), per m.
+    """``sum_pairs sum_t theta_t d a_t(left, right) / dX``, (n_nodes, dim), per m.
 
-    The form holds a load: a rank's part at each of its vertices, shared ones too.
+    A 2D mesh gives only ``"surface"`` terms, whose ``DiffShape`` carries the
+    whole transport. The form holds a load: a rank's part at each of its
+    vertices, shared ones too.
     """
     built = discretization(model.mesh, model._periodic, comm).built  # noqa: SLF001
     n_nodes = len(model.mesh.imported_nodes)
@@ -1305,12 +1416,13 @@ def _node_pass(
             if part is not None:
                 form += part
                 empty = False
-    out = np.zeros((n_nodes, 3))
+    dim = model.mesh.dim
+    out = np.zeros((n_nodes, dim))
     if empty:
         return out
     form.Assemble()
     # a rank with no elements has no vertices: its count is not to be inferred
-    values = form.vec.FV().NumPy().reshape(3, space.ndof // 3).T
+    values = form.vec.FV().NumPy().reshape(dim, space.ndof // dim).T
     np.add.at(out, built.node_order, values[: len(built.node_order)])
     # per metre: the engine mesh is in file units of `scale` metres
     return out / built.scale
@@ -1324,6 +1436,7 @@ def sensitivity(  # noqa: PLR0912
     form: str,
     terms: Callable[[bool], Sequence[Term]] | None = None,
     lumped: Callable[[], Sequence[Term]] | None = None,
+    tensors: Callable[[], Tensors] | None = None,
     comm: Any = None,
 ) -> dict[Hashable, np.ndarray]:
     """The cotangent of every wanted design input, from the rule's pairs.
@@ -1341,6 +1454,8 @@ def sensitivity(  # noqa: PLR0912
             coordinates are.
         lumped: ``lumped()`` returns the lumped pass's terms (`Term.lumped`),
             called once when a lumped value is wanted.
+        tensors: ``tensors()`` returns the rule's `Tensors`, called once when a
+            material leaf is wanted; it replaces the terms' material pass.
         comm: The resolved communicator, which names the pairs' discretization. The
             passes are local: under ranks each result holds this rank's elements in
             global zeros, and the caller sums over ranks.
@@ -1376,6 +1491,11 @@ def sensitivity(  # noqa: PLR0912
         out[FACE_LOAD_KIND] = _face_load_pass(model, loads, comm)
     # a load form's other problem leaves are the rule's explicit terms
     wants = {k for k in wants if k[0] != "problem"}  # ty: ignore[not-subscriptable]
+    if tensors is not None:
+        tensor_kinds = {k for k in wants if k[0] == "material"}  # ty: ignore[not-subscriptable]
+        if tensor_kinds:
+            out |= _tensor_pass(model, pairs, tensors(), comm)
+        wants = wants - tensor_kinds
     if not wants:
         return out
     if terms is None:  # pragma: no cover - rule bug

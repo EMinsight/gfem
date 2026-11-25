@@ -81,6 +81,7 @@ from gfem.measurements import (  # noqa: E402
     power_flow,
     purcell_factor,
     region_mean,
+    strain,
 )
 from gfem.mesh import Mesh, Region  # noqa: E402
 from gfem.model import (  # noqa: E402
@@ -105,9 +106,11 @@ from gfem.model import (  # noqa: E402
     WavePort,
     enclosed_by,
     fit_permittivity,
+    isotropic_stiffness,
 )
 from gfem.options import SolverOptions  # noqa: E402
 from gfem.problems import (  # noqa: E402
+    DampingFrame,
     DCConduction,
     Driven,
     Eigenmode,
@@ -116,6 +119,7 @@ from gfem.problems import (  # noqa: E402
     GaussianBeam,
     IncidentField,
     MagneticDipole,
+    Piezoelectric,
     PlaneWave,
     PortMode,
     SteadyThermal,
@@ -138,6 +142,7 @@ from gfem.results import (  # noqa: E402
     ElectrostaticResult,
     Field,
     NetworkParameters,
+    PiezoelectricResult,
     PortModeField,
     PortModeResult,
     SteadyThermalResult,
@@ -174,6 +179,7 @@ __all__ = [
     "CrossSections",
     "DCConduction",
     "DCConductionResult",
+    "DampingFrame",
     "Debye",
     "DegenerateModeError",
     "DeviceMemoryWarning",
@@ -232,6 +238,8 @@ __all__ = [
     "PermittivityFit",
     "PermittivityFitWarning",
     "PermittivityLaw",
+    "Piezoelectric",
+    "PiezoelectricResult",
     "PlaneWave",
     "PortGeometryError",
     "PortMode",
@@ -287,6 +295,7 @@ __all__ = [
     "heat_flow",
     "heat_flow_per_length",
     "interface_participation",
+    "isotropic_stiffness",
     "joule_heating",
     "load_result",
     "log",
@@ -301,6 +310,7 @@ __all__ = [
     "route_phase",
     "shape",
     "solve",
+    "strain",
     "thermo_optic_shift",
     "time_constant",
 ]

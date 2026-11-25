@@ -166,7 +166,10 @@ program, because every gfem solve needs it.
   electromagnetic loss. The
   {doc}`modulator <tutorials/modulator>` tutorial computes the voltage a
   lithium niobate push-pull modulator needs for a $\pi$ phase shift, and
-  co-designs its electrode gap and ridge width.
+  co-designs its electrode gap and ridge width. The
+  {doc}`transducer <tutorials/transducer>` tutorial launches the shear plate
+  wave of a thin lithium niobate film with interdigital fingers: the admittance
+  they present, the strain that reaches two waveguide arms and in which phase.
 - {doc}`recipes/solve-a-device` takes this line further: a band of
   frequencies, real metals, its resonances and their Q, its capacitance.
 - {doc}`recipes/prepare-a-mesh` builds the mesh of your own device in gmsh.

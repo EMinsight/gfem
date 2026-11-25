@@ -30,10 +30,12 @@ from gfem._sources import (
     PlaneWave,
     Source,
 )
+from gfem._text import hertz_band
 from gfem.thermal import HeatSource, Trace, _check_finite
 
 __all__ = [
     "DCConduction",
+    "DampingFrame",
     "Driven",
     "Eigenmode",
     "ElectricDipole",
@@ -41,6 +43,7 @@ __all__ = [
     "GaussianBeam",
     "IncidentField",
     "MagneticDipole",
+    "Piezoelectric",
     "PlaneWave",
     "PortMode",
     "Source",
@@ -1151,17 +1154,20 @@ def _check_polarization(problem: Any, dim: int) -> None:
         )
 
 
-def _kept(value: Any, frequencies: tuple[float, ...]) -> bool | tuple[float, ...]:
+def _kept(
+    value: Any, frequencies: tuple[float, ...], owner: str = "Driven"
+) -> bool | tuple[float, ...]:
     if isinstance(value, (bool, np.bool_)):
         return bool(value)
-    check_fixed(value, "Driven.keep_fields must be fixed frequencies")
+    check_fixed(value, f"{owner}.keep_fields must be fixed frequencies")
     try:
         wanted = np.asarray(value, dtype=float).reshape(-1)
     except (TypeError, ValueError):
         raise TypeError(
-            f"Driven.keep_fields takes True, False or frequencies in Hz, got {value!r}."
+            f"{owner}.keep_fields takes True, False or frequencies in Hz, got "
+            f"{value!r}."
         ) from None
-    kept = set(_on_grid(wanted, frequencies, "keep_fields"))
+    kept = set(_on_grid(wanted, frequencies, "keep_fields", owner))
     return tuple(frequencies[i] for i in sorted(kept))
 
 
@@ -1191,7 +1197,10 @@ def _samples(
 
 
 def _on_grid(
-    wanted: np.ndarray, frequencies: tuple[float, ...], what: str
+    wanted: np.ndarray,
+    frequencies: tuple[float, ...],
+    what: str,
+    owner: str = "Driven",
 ) -> list[int]:
     """Index in ``frequencies`` of each of ``wanted`` (1e-9 relative)."""
     grid = np.asarray(frequencies)
@@ -1205,7 +1214,7 @@ def _on_grid(
                 else f"{len(grid)} frequencies, {grid.min():g} to {grid.max():g}"
             )
             raise ValueError(
-                f"Driven.{what} frequency {f:g} Hz is not one of the "
+                f"{owner}.{what} frequency {f:g} Hz is not one of the "
                 f"problem's frequencies ({listed} Hz)."
             )
         out.append(int(match[0]))
@@ -1368,3 +1377,256 @@ class Eigenmode:
 
 
 jax.tree_util.register_static(Eigenmode)
+
+
+_FRAME_FIXED = (
+    "The loss factor of a damping frame is fixed: give a plain number, outside "
+    "the transformed function."
+)
+
+
+@dataclasses.dataclass(frozen=True, init=False)
+class DampingFrame:
+    r"""The regions that absorb the acoustic waves leaving a piezoelectric section.
+
+    Pass one as ``gfem.Piezoelectric(..., damping_frame=...)``, naming every
+    frame region. Each region keeps its layer's material in ``materials``
+    (the lithium niobate frame region holds the lithium niobate): the frame
+    multiplies its stiffness by :math:`1 + i\eta r^2`, added to the
+    material's own :math:`1/Q_m`, so that the stiffness is
+
+    .. math::
+
+        c\left(1 + i\left(\frac{1}{Q_m} + \eta\, r^2\right)\right),
+
+    with :math:`r` the normalised depth into the frame and :math:`\eta` the
+    ``loss_factor``. Only the stiffness is damped, not the piezoelectric
+    coupling or the permittivity.
+
+    The geometry is read from the imported mesh, as `gfem.PML` reads its
+    own: the interior box is the bounding box of the mechanical-domain
+    triangles outside the frame regions. A frame triangle beyond one of the
+    box's edges has :math:`r` = the distance past the edge over the frame's
+    extent on that side; in a corner the depths add as :math:`r_x^2 + r_y^2`.
+    Mesh the frame as rectangles around the interior box, every region on one
+    side ending on one straight line. The depth follows the material
+    points when the nodes move.
+
+    For a plane wave at normal incidence, a frame of thickness :math:`L` in
+    a medium with wavelength :math:`\lambda` reflects
+    :math:`|R| \approx e^{-2\pi\eta (L/\lambda)/3}` down to a floor of about
+    :math:`3.4\times10^{-3}\,\eta\,(\lambda/L)^2`: a larger :math:`\eta`
+    lowers the decay term but raises the floor. The default is the best
+    choice from four wavelengths on (about :math:`4\lambda` for
+    :math:`|R| < 10^{-3}`); :math:`\eta = 2` is best for a frame of three
+    wavelengths.
+
+    Attributes:
+        regions: The frame's area region names, a string or a sequence of
+            strings.
+        loss_factor: :math:`\eta`, the loss factor added at the frame's outer
+            edge, finite and > 0.
+
+    Raises:
+        TypeError: ``regions`` is not a name or a sequence of names.
+        ValueError: No region, a region listed twice, or a loss factor that
+            is not finite and > 0.
+        NonDifferentiableError: The loss factor is traced by JAX.
+    """
+
+    regions: tuple[str, ...]
+    loss_factor: float
+
+    def __init__(self, regions: Any, *, loss_factor: float = 1.2) -> None:
+        """Validate and normalize (see the class docstring)."""
+        names = (regions,) if isinstance(regions, str) else regions
+        try:
+            names = tuple(names)
+        except TypeError:
+            names = ()
+        if not names or not all(isinstance(n, str) for n in names):
+            raise TypeError(
+                "DampingFrame: regions must be area region names (a string or a "
+                f"non-empty sequence of strings), got {regions!r}."
+            )
+        for name in names:
+            if names.count(name) > 1:
+                raise ValueError(f"DampingFrame: region {name!r} is listed twice.")
+        eta = static_float(loss_factor, "DampingFrame.loss_factor", _FRAME_FIXED)
+        if eta <= 0:
+            raise ValueError(
+                f"DampingFrame.loss_factor must be > 0, got {eta!r}; the default "
+                "1.2 absorbs well from four wavelengths of frame."
+            )
+        object.__setattr__(self, "regions", names)
+        object.__setattr__(self, "loss_factor", eta)
+
+    def __repr__(self) -> str:
+        return f"DampingFrame({list(self.regions)}, loss_factor={self.loss_factor:g})"
+
+
+jax.tree_util.register_static(DampingFrame)
+
+
+@dataclasses.dataclass(frozen=True, init=False)
+class Piezoelectric:
+    r"""The admittance of piezoelectric electrodes on a 2D section, over frequency.
+
+    Solves linear piezoelectricity in the stress-charge form on a native 2D
+    mesh (`gfem.Mesh.from_gmsh` of a triangle-only file), for fields that do
+    not vary along :math:`z`. With :math:`e^{+i\omega t}`, the displacement
+    :math:`u` (three components) on the mechanical domain and the potential
+    :math:`\varphi` on the electromagnetic one solve
+
+    .. math::
+
+        \nabla\cdot T = -\omega^2 \rho\, u, \quad
+        \nabla\cdot D = 0, \quad
+        T = \hat c\, S - e^T E, \quad D = e\, S + \varepsilon^S E,
+
+    with :math:`S` the strain, :math:`E = -\nabla\varphi` and the loss
+    :math:`\hat c = c\,(1 + i/Q_m)` of each material's
+    ``mechanical_quality_factor`` (plus a `DampingFrame`'s). The materials are
+    the model's: ``stiffness`` :math:`c^E`, ``piezoelectric_tensor`` :math:`e`,
+    ``eps_r`` :math:`\varepsilon^S/\varepsilon_0`, ``mass_density``
+    :math:`\rho`. Every region of the mechanical domain (every volume not in
+    ``excluded["mechanical"]``) needs a stiffness and a density.
+
+    For each terminal in turn, the potential is 1 V on that terminal and 0 V
+    on every other terminal and on the ground; every other line is
+    traction-free and charge-free, except the ``clamped`` lines
+    (:math:`u = 0`). The result holds the admittance matrix per metre along
+    :math:`z`, :math:`Y'_{ij}(f)`, the current into terminal :math:`i` per
+    volt on terminal :math:`j`, from the reaction of the system weighted by
+    the terminal's lifting, and the clamped capacitance :math:`C'_0` of the
+    potential alone with :math:`\varepsilon^S` and :math:`u = 0`. The
+    device's admittance is :math:`Y'` times the aperture.
+
+    An electrode is a terminal naming a line (a zero-thickness electrode, or
+    the shell of a metal excluded from the electromagnetic domain) or an area
+    (a meshed electrode that carries displacement and mass, with the
+    potential fixed on the whole metal). An area must stay in the
+    electromagnetic domain. The handle's electrical model is the model's:
+    exclude it from ``"em"`` (no potential in it), keep it as a dielectric, or
+    name it in ``ground``. A line that is not named is a free surface; a
+    `gfem.PEC` line that is not a terminal is grounded. A `gfem.Absorbing`
+    line bordering the mechanical domain raises: absorb acoustic waves with a
+    `DampingFrame`.
+
+    Each frequency is one sparse Cholesky factorization shared by every
+    terminal, whatever ``SolverOptions.linear_solver`` says of the direct
+    solver: on a long strip section it uses half the memory of the
+    alternatives. ``SolverOptions.order`` is the order of all four unknowns
+    (default 2).
+
+    Example:
+        A transducer with a signal electrode against grounded ones, over a
+        band::
+
+            problem = gfem.Piezoelectric(
+                np.linspace(0.85e9, 0.87e9, 41),
+                terminals={"signal": "Al_signal"},
+                ground=["Al_ground"],
+                clamped="bottom",
+                damping_frame=gfem.DampingFrame(["LN_frame", "Si_frame"]),
+            )
+
+    Args:
+        frequency: One frequency or a sequence of distinct frequencies, Hz.
+        terminals: Terminal name -> its line or area name or names, in
+            admittance-matrix order. A list of names makes one terminal per
+            name.
+        ground: The line or area names held at 0 V.
+        clamped: The line names where the displacement is zero; each must
+            border the mechanical domain.
+        damping_frame: A `DampingFrame` naming the absorbing edge regions, or
+            ``None``.
+        keep_fields: ``True`` keeps the displacement and potential of every
+            terminal at every frequency, a list of frequencies those of the
+            listed ones, ``False`` (default) none. Each kept (frequency,
+            terminal) holds four complex fields: mind the memory.
+
+    Raises:
+        TypeError: A name is not a string, or ``damping_frame`` is not a
+            `DampingFrame`.
+        ValueError: No terminal, a surface in two terminals or in a terminal
+            and the ground, a bad frequency, or a ``keep_fields`` frequency
+            that is not in ``frequency``.
+        NonDifferentiableError: A frequency is traced by JAX.
+
+    `gfem.solve` raises `NotImplementedError` on a 3D or slab mesh, with
+    ``linear_solver="petsc"``, with ``frequency_workers`` above 1 and under
+    ``comm``; `ValueError` for an area terminal outside the electromagnetic
+    domain; `gfem.MissingMaterialPropertyError` for a region of the
+    mechanical domain without a stiffness or density.
+    """
+
+    frequency: tuple[float, ...]
+    terminals: tuple[tuple[str, tuple[str, ...]], ...]
+    ground: tuple[str, ...]
+    clamped: tuple[str, ...]
+    damping_frame: DampingFrame | None
+    keep_fields: bool | tuple[float, ...]
+    _rule_2d: ClassVar[str] = "gfem._engine.piezoelectric:PiezoelectricRule"
+    #: Moved nodes solve (a node map is this problem's design input).
+    _moves_nodes_2d: ClassVar[bool] = True
+
+    def __init__(
+        self,
+        frequency: Any,
+        *,
+        terminals: Mapping[str, str | list[str] | tuple[str, ...]] | list[str],
+        ground: str | list[str] | tuple[str, ...] = (),
+        clamped: str | list[str] | tuple[str, ...] = (),
+        damping_frame: DampingFrame | None = None,
+        keep_fields: bool | float | Sequence[float] = False,
+    ) -> None:
+        """Validate and normalize (see the class docstring)."""
+        frequencies = _frequencies(frequency, "Piezoelectric")
+        items, grounded = _terminals(terminals, ground, "Piezoelectric")
+        fixed = _surfaces(clamped, "clamped") if clamped else ()
+        if damping_frame is not None and not isinstance(damping_frame, DampingFrame):
+            raise TypeError(
+                "Piezoelectric.damping_frame must be a gfem.DampingFrame or None, "
+                f"got {type(damping_frame).__name__}; write "
+                'damping_frame=gfem.DampingFrame(["LN_frame"]).'
+            )
+        object.__setattr__(self, "frequency", frequencies)
+        object.__setattr__(self, "terminals", tuple(items))
+        object.__setattr__(self, "ground", tuple(dict.fromkeys(grounded)))
+        object.__setattr__(self, "clamped", tuple(dict.fromkeys(fixed)))
+        object.__setattr__(self, "damping_frame", damping_frame)
+        object.__setattr__(
+            self, "keep_fields", _kept(keep_fields, frequencies, "Piezoelectric")
+        )
+
+    @property
+    def terminal_names(self) -> tuple[str, ...]:
+        """Terminal names, in admittance-matrix order."""
+        return tuple(name for name, _ in self.terminals)
+
+    @property
+    def kept_frequencies(self) -> tuple[float, ...]:
+        """The frequencies whose fields are kept, in ``frequency`` order."""
+        if self.keep_fields is True:
+            return self.frequency
+        if self.keep_fields is False:
+            return ()
+        return self.keep_fields
+
+    def __repr__(self) -> str:
+        n = len(self.frequency)
+        band = hertz_band(min(self.frequency), max(self.frequency), 4)
+        what = f"{n} frequencies {band}" if n > 1 else band
+        terms = ", ".join(f"{k!r}: {list(v)}" for k, v in self.terminals)
+        parts = [what, f"terminals={{{terms}}}"]
+        if self.ground:
+            parts.append(f"ground={list(self.ground)}")
+        if self.clamped:
+            parts.append(f"clamped={list(self.clamped)}")
+        if self.damping_frame is not None:
+            parts.append(f"damping_frame={self.damping_frame!r}")
+        return f"Piezoelectric({', '.join(parts)})"
+
+
+jax.tree_util.register_static(Piezoelectric)

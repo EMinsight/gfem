@@ -94,10 +94,12 @@ from gfem.mesh import (
 from gfem.model import EnclosedBy, Model
 from gfem.options import SolverOptions
 from gfem.problems import (
+    DampingFrame,
     DCConduction,
     Driven,
     Eigenmode,
     Electrostatic,
+    Piezoelectric,
     PortMode,
     SteadyThermal,
     TransientThermal,
@@ -110,6 +112,7 @@ from gfem.results import (
     ElectrostaticResult,
     Field,
     NetworkParameters,
+    PiezoelectricResult,
     PortModeField,
     PortModeResult,
     ReducedFields,
@@ -159,7 +162,10 @@ class Job:
     def __post_init__(self) -> None:
         if not isinstance(self.model, Model):
             raise TypeError(f"Job needs a gfem.Model, got {type(self.model).__name__}.")
-        if not isinstance(getattr(type(self.problem), "_rule", None), str):
+        kind = type(self.problem)
+        if not any(
+            isinstance(getattr(kind, a, None), str) for a in ("_rule", "_rule_2d")
+        ):
             raise TypeError(
                 "Job needs a problem type such as gfem.Electrostatic(...), got "
                 f"{type(self.problem).__name__}."
@@ -717,21 +723,24 @@ def _mesh_from_args(args: dict[str, Any], context: _codec.Context) -> Mesh:
 class _Excluded:
     """A model's ``excluded=`` mapping as written (tag ``Excluded``).
 
-    Only a model that excludes volumes from thermal or DC conduction problems
-    writes it; an electromagnetic-only model writes its list, as before. Being
-    a tagged object, it stops an older gfem at the unknown type by name.
+    Only a model that excludes volumes from thermal, DC conduction or
+    mechanical problems writes it; an electromagnetic-only model writes its
+    list, as before. Being a tagged object, it stops an older gfem at the
+    unknown type by name. An empty mechanical entry is left out, so a file
+    without one is written as before; reading one, it defaults to empty.
     """
 
     em: tuple
     thermal: tuple
     dc_conduction: tuple
+    mechanical: tuple = ()
 
 
 def _excluded_args(model: Model) -> tuple | _Excluded:
-    em, thermal, dc = (model.excluded_from(k) for k in _Excluded.__dataclass_fields__)
-    if not thermal and not dc:
+    em, *others = (model.excluded_from(k) for k in _Excluded.__dataclass_fields__)
+    if not any(others):
         return em
-    return _Excluded(em, thermal, dc)
+    return _Excluded(em, *others)
 
 
 def _model_args(model: Model, _: _codec.Context) -> dict[str, Any]:
@@ -756,6 +765,17 @@ def _terminal_args(
     problem: Electrostatic | DCConduction, _: _codec.Context
 ) -> dict[str, Any]:
     return {"terminals": dict(problem.terminals), "ground": problem.ground}
+
+
+def _piezoelectric_args(problem: Piezoelectric, _: _codec.Context) -> dict[str, Any]:
+    return {
+        "frequency": problem.frequency,
+        "terminals": dict(problem.terminals),
+        "ground": problem.ground,
+        "clamped": problem.clamped,
+        "damping_frame": problem.damping_frame,
+        "keep_fields": problem.keep_fields,
+    }
 
 
 #: A transient's arguments: its waveform is written as the pytree holds it,
@@ -920,8 +940,9 @@ _codec.register(
 _codec.register(
     _Excluded,
     tag="Excluded",
+    to_args=_unset_omitted(_Excluded, mechanical=()),
     from_args=lambda a, _: dict(a),
-    names=("em", "thermal", "dc_conduction"),
+    names=("em", "thermal", "dc_conduction", "mechanical"),
 )
 _codec.register(
     EnclosedBy,
@@ -945,9 +966,15 @@ def _renamed_density_from_args(cls: type) -> _codec.FromArgs:
 for _cls in (Material, MaterialField):
     _codec.register(
         _cls,
-        # no electro-optic tensor: written as an older gfem wrote it, so the
-        # file and its solve key are unchanged
-        to_args=_unset_omitted(_cls, electro_optic_tensor=None),
+        # no electro-optic tensor and no solid: written as an older gfem
+        # wrote it, so the file and its solve key are unchanged
+        to_args=_unset_omitted(
+            _cls,
+            electro_optic_tensor=None,
+            stiffness=None,
+            piezoelectric_tensor=None,
+            mechanical_quality_factor=None,
+        ),
         from_args=_renamed_density_from_args(_cls),
         # "density": the mass density as gfem 0.1 wrote it (a read alias)
         names=[f.name for f in dataclasses.fields(_cls) if f.init] + ["density"],
@@ -1066,6 +1093,9 @@ _codec.register(
     # "sigma": the scalar conductivity of sections saved by 0.1.0
     names=[f.name for f in dataclasses.fields(PortSection) if f.init] + ["sigma"],
 )
+_codec.register(Piezoelectric, to_args=_piezoelectric_args)
+_codec.register(DampingFrame)
+_codec.register(PiezoelectricResult)
 _codec.register(Electrostatic, to_args=_terminal_args)
 _codec.register(DCConduction, to_args=_terminal_args)
 _codec.register(

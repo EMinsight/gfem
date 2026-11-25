@@ -14,6 +14,7 @@ import meshio
 import numpy as np
 
 from gfem import _mpi
+from gfem._checks import is_traced
 from gfem._pytree import readonly
 from gfem.errors import RegionNotFoundError
 
@@ -671,6 +672,65 @@ class Mesh:
                 path, length_unit, comm, section=True, thickness=thickness
             )
         return cls(jnp.asarray(topology.imported_nodes), topology)
+
+    def with_nodes(self, nodes) -> Mesh:
+        """This mesh with its nodes at new coordinates.
+
+        The moved mesh has the same elements, regions, length unit and
+        `imported_nodes`; only `nodes` change. It applies a node map, a
+        JAX function of your design parameters that returns node
+        coordinates: `jax.grad` of an objective of a solve on the moved mesh
+        reaches ``nodes``, and from there the map's parameters, as for a
+        `gfem.shape.BoundaryMorph`.
+
+        Concrete coordinates are checked over the whole mesh: an inverted
+        element raises, and one below a quarter of its imported quality
+        warns (`gfem.shape.quality`). Traced coordinates (under `jax.jit` or
+        `jax.grad`) stay traced, and the solve checks the elements it solves
+        on.
+
+        Args:
+            nodes: The node coordinates in metres, shape ``(n_nodes, dim)``
+                as `nodes`, NumPy or JAX.
+
+        Returns:
+            The moved mesh.
+
+        Raises:
+            ValueError: ``nodes`` has another shape than `nodes` (also under
+                tracing), or a coordinate is not finite.
+            TypeError: ``nodes`` is complex.
+            MeshQualityError: An element is inverted or flat.
+
+        Example:
+            A mesh stretched by 1 % along x::
+
+                moved = mesh.with_nodes(mesh.nodes * jnp.array([1.01, 1.0, 1.0]))
+                model = model.replace(mesh=moved)
+        """
+        from gfem.shape import _check_quality  # gfem.shape imports this module
+
+        if jnp.iscomplexobj(nodes):
+            raise TypeError(
+                "Mesh.with_nodes takes real node coordinates, and these are "
+                f"complex ({jnp.result_type(nodes)})."
+            )
+        nodes = jnp.asarray(nodes, dtype=jnp.float64)
+        if nodes.shape != self.imported_nodes.shape:
+            raise ValueError(
+                f"Mesh.with_nodes got nodes of shape {nodes.shape}, and this "
+                f"mesh has {self.imported_nodes.shape}: one row of {self.dim} "
+                "coordinates per node."
+            )
+        moved = Mesh(nodes, self._topology)
+        if not is_traced(nodes):
+            if not np.isfinite(np.asarray(nodes)).all():
+                raise ValueError(
+                    "Mesh.with_nodes got node coordinates that are not finite "
+                    "(NaN or infinite)."
+                )
+            _check_quality(moved, stacklevel=2)
+        return moved
 
     def __repr__(self) -> str:
         section = self.section_thickness

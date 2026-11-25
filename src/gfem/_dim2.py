@@ -9,7 +9,7 @@ deletes its entry.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -96,9 +96,33 @@ _ITEMS: tuple[tuple[Callable[[Any], bool], Callable[[Any], str], str], ...] = (
 )
 
 
+def refuse_anisotropic(model: Model) -> None:
+    """Raise for an anisotropic material of a 2D model an EM rule is about to read.
+
+    The 2D electromagnetic rules (`gfem.Driven`, `gfem.PortMode`) solve a
+    scalar field with one value per property; a piezoelectric solve reads the
+    tensors itself, so it does not call this.
+
+    Raises:
+        NotImplementedError: A region's material is anisotropic.
+    """
+    if model.mesh.dim != 2:
+        return
+    for region, material in model.materials.items():
+        if isinstance(material, Material) and not material.isotropic:
+            raise _refusal(
+                f"The anisotropic material of {region!r}",
+                f"Give it one value per property, or {SLAB}.",
+            )
+        if isinstance(material, MaterialField) and material.axes is not None:
+            raise _refusal(
+                f"The anisotropic material field of {region!r}",
+                f"Build the field without axes, or {SLAB}.",
+            )
+
+
 def refuse_model(
     mesh: Mesh,
-    materials: Any,
     items: tuple[Any, ...],
     excluded: tuple[tuple[Any, ...], ...],
     pml: Any = None,
@@ -107,7 +131,6 @@ def refuse_model(
 
     Args:
         mesh: The model's mesh.
-        materials: The user's ``materials=``.
         items: The boundaries and ports.
         excluded: The ``excluded=`` entries of each physics.
         pml: The user's ``pml=``.
@@ -135,19 +158,6 @@ def refuse_model(
                     "Name the enclosed areas as regions of their own and exclude "
                     "them by name: excluded=('name', ...).",
                 )
-    if not isinstance(materials, Mapping):
-        return
-    for region, material in materials.items():
-        if isinstance(material, Material) and not material.isotropic:
-            raise _refusal(
-                f"The anisotropic material of {region!r}",
-                f"Give it one value per property, or {SLAB}.",
-            )
-        if isinstance(material, MaterialField) and material.axes is not None:
-            raise _refusal(
-                f"The anisotropic material field of {region!r}",
-                f"Build the field without axes, or {SLAB}.",
-            )
 
 
 #: Problem types with no 2D solve, by class name. A `PortMode` solves the mode
@@ -202,7 +212,7 @@ def refuse_solve(model: Model, problem: Any, options: SolverOptions, comm: Any) 
             'The adaptive sweep (sweep="adaptive")',
             'Solve every frequency with sweep="uniform".',
         )
-    if _moved(model.mesh):
+    if _moved(model.mesh) and not getattr(problem, "_moves_nodes_2d", False):
         raise _refusal("A mesh whose nodes moved from the imported ones", _GEOMETRY)
     name = type(problem).__name__
     if name in _PROBLEMS:
@@ -227,7 +237,6 @@ _ENTRIES = {
     "refine_mesh": f"Refine the mesh in gmsh and read it again. {_GEOMETRY}",
     "error_estimate": f"Refine the mesh in gmsh and read it again. {_GEOMETRY}",
     "boundary_morph": _GEOMETRY,
-    "quality": f"Check the element quality in gmsh. {_GEOMETRY}",
     "helmholtz_filter": "Filter the pixels of a LayerGrid instead: "
     "helmholtz_filter(grid, radius=...).",
 }

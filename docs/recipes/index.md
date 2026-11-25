@@ -15,6 +15,7 @@ orphan: true
 - {doc}`adaptive-sweep-gradient`
 - {doc}`thermal-gradient`
 - {doc}`electro-optic-gradient`
+- {doc}`piezoelectric-gradient`
 
 ## Designs
 
@@ -41,6 +42,7 @@ orphan: true
 - {doc}`electromagnetic-heating`
 - {doc}`thermo-optic-phase`
 - {doc}`electro-optic-phase`
+- {doc}`piezoelectric-admittance`
 - {doc}`thermal-step-response`
 - {doc}`shared-port-surface`
 - {doc}`measurements`
