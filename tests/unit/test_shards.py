@@ -22,6 +22,14 @@ def test_junit_key_class_and_param_ids():
     assert shards.junit_key(nodeid) == "tests.verification.test_b.TestC::test_g[a-1/2]"
 
 
+def test_junit_key_param_id_with_double_colon():
+    nodeid = "tests/a/test_b.py::TestC::test_g[x::y/z-1]"
+    assert shards.junit_key(nodeid) == "tests.a.test_b.TestC::test_g[x::y/z-1]"
+    assert shards.junit_key("tests/a/test_b.py::test_g[p::q]") == (
+        "tests.a.test_b::test_g[p::q]"
+    )
+
+
 def test_assign_covers_every_test_once_and_is_deterministic():
     costs = {f"t{i}": float(i % 7) for i in range(50)}
     first = shards.assign(costs, 4)
@@ -46,6 +54,17 @@ def test_unknown_tests_cost_the_median():
     known = {"m.a::f": 1.0, "m.a::g": 3.0, "m.a::h": 100.0}
     costs = shards.costs_of(["m/a.py::f", "m/a.py::new"], known)
     assert costs == {"m/a.py::f": 1.0, "m/a.py::new": 3.0}
+
+
+def test_default_ignores_recorded_zeros():
+    known = {f"m.a::z{i}": 0.0 for i in range(8)} | {"m.a::p": 2.0, "m.a::q": 4.0}
+    assert shards.costs_of(["m/a.py::new"], known) == {"m/a.py::new": 3.0}
+    assert shards.costs_of(["m/a.py::new"], {"m.a::z": 0.0}) == {"m/a.py::new": 1.0}
+
+
+def test_zero_cost_tests_spread_evenly():
+    owner = shards.assign({f"t{i:02d}": 0.0 for i in range(20)}, 4)
+    assert sorted(list(owner.values()).count(s) for s in range(4)) == [5] * 4
 
 
 def test_no_file_costs_one_second(tmp_path):

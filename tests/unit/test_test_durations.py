@@ -3,6 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import test_durations as td
 
 TOOL = Path(td.__file__)
@@ -87,3 +88,25 @@ def test_cli_junit_writes_sorted_file(tmp_path):
         out.read_text(encoding="utf-8")
         == json.dumps(data, indent=0, sort_keys=True) + "\n"
     )
+
+
+def test_failed_download_names_the_run(tmp_path, monkeypatch):
+    def fail(cmd, **_):
+        raise subprocess.CalledProcessError(1, cmd, stderr="no valid artifacts found")
+
+    monkeypatch.setattr(td.subprocess, "run", fail)
+    with pytest.raises(SystemExit, match="run 4242"):
+        td._download("4242", tmp_path)
+
+
+def test_latest_run_is_any_completed_one(monkeypatch):
+    seen = []
+
+    def fake(*args):
+        seen.append(args)
+        return "77\n"
+
+    monkeypatch.setattr(td, "_gh", fake)
+    assert td._latest_scheduled_run() == "77"
+    assert "completed" in seen[0]
+    assert "success" not in seen[0]

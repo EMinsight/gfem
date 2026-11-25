@@ -9,7 +9,7 @@ From junit files already on disk::
 
     python tools/test_durations.py --junit unit-a.xml unit-b.xml
 
-From a CI run (default: the latest successful ``schedule`` run of ``CI``),
+From a CI run (default: the latest completed ``schedule`` run of ``CI``),
 downloading its ``durations-*`` artifacts with the ``gh`` CLI::
 
     python tools/test_durations.py
@@ -59,17 +59,26 @@ def _gh(*args: str) -> str:
 def _latest_scheduled_run() -> str:
     out = _gh(
         "run", "list", "--workflow", "CI", "--event", "schedule",
-        "--status", "success", "--limit", "1", "--json", "databaseId",
+        "--status", "completed", "--limit", "1", "--json", "databaseId",
         "--jq", ".[0].databaseId",
     )  # fmt: skip
     run = out.strip()
+    # A nightly with one flaky failure is never "success", yet it uploads its
+    # durations artifacts (if: always()), so any completed run will do.
     if not run or run == "null":
-        raise SystemExit("no successful scheduled CI run found; pass --run ID")
+        raise SystemExit("no completed scheduled CI run found; pass --run ID")
     return run
 
 
 def _download(run: str, tmp: Path) -> list[Path]:
-    _gh("run", "download", run, "-p", "durations-*", "-D", str(tmp))
+    try:
+        _gh("run", "download", run, "-p", "durations-*", "-D", str(tmp))
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or "").strip()
+        raise SystemExit(
+            f"could not download the durations-* artifacts of run {run} "
+            f"(expired, or none uploaded?): {detail}"
+        ) from error
     found = sorted(tmp.rglob("*.xml"))
     if not found:
         raise SystemExit(f"run {run} has no durations-* junit files")

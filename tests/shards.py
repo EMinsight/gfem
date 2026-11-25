@@ -19,11 +19,13 @@ def junit_key(nodeid: str) -> str:
 
     Follows pytest's junit naming: the path loses ``.py`` and ``/`` becomes ``.``,
     class names join the module with ``.``, and the last part (function with its
-    parameter id) is the name.
+    parameter id) is the name. The parameter id is split off first, as pytest does,
+    so a ``::`` or ``/`` inside it stays in the name.
     """
-    names = nodeid.split("::")
+    base, bracket, params = nodeid.partition("[")
+    names = base.split("::")
     names[0] = re.sub(r"\.py$", "", names[0].replace("/", "."))
-    return ".".join(names[:-1]) + "::" + names[-1]
+    return ".".join(names[:-1]) + "::" + names[-1] + bracket + params
 
 
 def load(path: Path | str) -> dict[str, float]:
@@ -38,21 +40,27 @@ def assign(costs: dict[str, float], n: int) -> dict[str, int]:
     """Shard of each test: longest first onto the least-loaded shard.
 
     Tests are taken in the order ``(-cost, nodeid)`` and a tie between shards goes
-    to the lowest index, so the result depends only on ``costs`` and ``n``.
+    to the one with fewer tests, then to the lowest index, so tests of zero cost
+    spread over the shards and the result depends only on ``costs`` and ``n``.
     """
     load_by_shard = [0.0] * n
+    count = [0] * n
     owner: dict[str, int] = {}
     for nodeid in sorted(costs, key=lambda i: (-costs[i], i)):
-        shard = min(range(n), key=lambda s: (load_by_shard[s], s))
+        shard = min(range(n), key=lambda s: (load_by_shard[s], count[s], s))
         load_by_shard[shard] += costs[nodeid]
+        count[shard] += 1
         owner[nodeid] = shard
     return owner
 
 
 def costs_of(nodeids: list[str], known: dict[str, float]) -> dict[str, float]:
-    """Cost of each node id: its recorded seconds, else the file's median.
+    """Cost of each node id: its recorded seconds, else the median of the positive ones.
 
-    With no recorded duration at all, an unknown test costs one second.
+    Recorded zeros (tests under the 0.1 s rounding) are left out of the median, or
+    it would be zero and every unknown test would cost nothing. With no positive
+    recorded duration at all, an unknown test costs one second.
     """
-    default = statistics.median(known.values()) if known else DEFAULT_SECONDS
+    positive = [v for v in known.values() if v > 0]
+    default = statistics.median(positive) if positive else DEFAULT_SECONDS
     return {nodeid: known.get(junit_key(nodeid), default) for nodeid in nodeids}
