@@ -28,6 +28,7 @@ tutorials/metal-bend
 tutorials/metagrating
 tutorials/photonic-crystal
 tutorials/nanosphere
+tutorials/meta-atom
 tutorials/grating
 tutorials/heater
 tutorials/heater3d
@@ -104,6 +105,7 @@ recipes/incident-fields
 recipes/cross-sections
 recipes/point-dipoles
 recipes/far-field
+recipes/multipoles
 ```
 
 ```{toctree}

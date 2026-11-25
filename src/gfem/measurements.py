@@ -32,6 +32,10 @@ result reloaded with `gfem.load_result`.
 - `far_field`: the far-field amplitude of a port, dipole or incident-field
   column on a grid of directions, with the IEEE 145 radiation outputs
   (`FarField`).
+- `multipoles`: the spherical multipoles of the field an incident wave
+  scatters, from the far field of the scattered field (`Multipoles`).
+- `current_moments`: the long-wavelength electric dipole and the toroidal
+  dipole of the induced current in a scatterer (`CurrentMoments`).
 - `beam_coupling`: the amplitude a field couples into an incoming beam
   (a fiber), by reciprocity the S-parameter between the beam and a port.
 
@@ -67,6 +71,12 @@ from gfem._checks import check_fixed, is_traced
 from gfem._dim2 import entry_refusal, refuse_entry
 from gfem._far_field import FarField, far_field
 from gfem._materials import Material, _is_law, field_principal_values
+from gfem._multipoles import (
+    CurrentMoments,
+    Multipoles,
+    current_moments,
+    multipoles,
+)
 from gfem._purcell import purcell_factor
 from gfem._pytree import register_fields
 from gfem._truncation import truncation
@@ -87,11 +97,14 @@ if TYPE_CHECKING:
 __all__ = [
     "INTERFACE_KINDS",
     "CrossSections",
+    "CurrentMoments",
     "FarField",
     "InterfaceParticipation",
+    "Multipoles",
     "beam_coupling",
     "characteristic_impedance",
     "cross_sections",
+    "current_moments",
     "dissipated_power",
     "electric_energy",
     "element_mean",
@@ -99,6 +112,7 @@ __all__ = [
     "heat_flow",
     "heat_flow_per_length",
     "interface_participation",
+    "multipoles",
     "power_flow",
     "purcell_factor",
     "region_mean",
@@ -1529,7 +1543,11 @@ def _column_kind(result: DrivenResult, name: str) -> str | None:
 
 
 def _intensity(
-    source: Any, intensity: Any, frequencies: Sequence[float], background: Any
+    source: Any,
+    intensity: Any,
+    frequencies: Sequence[float],
+    background: Any,
+    entry: str = "cross_sections",
 ) -> np.ndarray:
     """The intensity of ``source`` per kept frequency, W/m² (see `cross_sections`).
 
@@ -1544,13 +1562,13 @@ def _intensity(
     if own is None:
         if intensity is None:
             raise ValueError(
-                f"cross_sections of the {type(source).__name__} {source.name!r} needs "
+                f"{entry} of the {type(source).__name__} {source.name!r} needs "
                 "intensity= (W/m², a number or one per kept frequency): gfem "
                 "cannot tell the intensity of a field it only evaluates."
             )
         if is_traced(intensity):
             raise NonDifferentiableError(
-                "cross_sections' intensity is static: wrap it in "
+                f"{entry}' intensity is static: wrap it in "
                 "jax.lax.stop_gradient or pass a number."
             )
         values = (
@@ -1560,13 +1578,13 @@ def _intensity(
         )
         if values is None or not (np.isfinite(values).all() and (values > 0).all()):
             raise ValueError(
-                "cross_sections' intensity must be a positive finite number or "
+                f"{entry}' intensity must be a positive finite number or "
                 f"{n} of them (one per kept frequency), W/m², got {intensity!r}."
             )
         return values
     if intensity is not None:
         raise ValueError(
-            f"cross_sections takes intensity= for an IncidentField only: the "
+            f"{entry} takes intensity= for an IncidentField only: the "
             f"intensity of the {type(source).__name__} {source.name!r} is its "
             "own (see gfem.cross_sections)."
         )

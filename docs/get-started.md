@@ -157,6 +157,8 @@ program, because every gfem solve needs it.
   {doc}`nanosphere <tutorials/nanosphere>` tutorial puts a point dipole
   beside a silicon and a gold sphere: its Purcell factor, the share of its
   power the gold quenches, and where its light goes. The
+  {doc}`meta-atom <tutorials/meta-atom>` tutorial places a high-index
+  material in a small cube to scatter the strongest magnetic dipole. The
   {doc}`grating coupler <tutorials/grating>` tutorial shapes the trenches of
   a silicon grating so that more of a guide's light reaches a fiber above it.
   The

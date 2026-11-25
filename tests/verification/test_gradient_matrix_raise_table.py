@@ -2842,6 +2842,121 @@ def _out_cross_sections_in_the_node_coordinates(request):
     jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
 
 
+def _multipoles_cube(request):
+    model, problem = request.getfixturevalue("planewave_case")
+    return model, gfem.solve(model, problem, options=gfem.SolverOptions(order=1))
+
+
+def _out_multipoles_in_the_node_coordinates(request):
+    # the scattered field subtracts the incident interpolant: the solve of the
+    # incident column refuses the nodes first
+    model, problem = request.getfixturevalue("planewave_case")
+
+    def objective(nodes):
+        mesh = jax.tree_util.tree_unflatten(
+            jax.tree_util.tree_structure(model.mesh), [nodes]
+        )
+        moved = model.replace(mesh=mesh)
+        result = gfem.solve(moved, problem)
+        return gfem.multipoles(result, "w", model=moved).scattering[0]
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
+
+
+def _out_multipoles_in_the_node_coordinates_at_fixed_coefficients(request):
+    # the kernel's node pass would drop the incident interpolant's term: the
+    # entry refuses traced nodes before reading the field
+    model, result = _multipoles_cube(request)
+
+    def objective(x):
+        leaves, treedef = jax.tree_util.tree_flatten_with_path(result)
+        moved = [
+            x if jax.tree_util.keystr(p).endswith("mesh.nodes") else v
+            for p, v in leaves
+        ]
+        mesh = jax.tree_util.tree_unflatten(
+            jax.tree_util.tree_structure(model.mesh), [x]
+        )
+        return gfem.multipoles(
+            jax.tree_util.tree_unflatten(treedef, moved),
+            "w",
+            model=model.replace(mesh=mesh),
+        ).scattering[0]
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
+
+
+def _out_multipoles_of_a_design_in_the_truncation_layer(request):
+    # a slab at the cube's +x end touches the layer: the multipoles read its
+    # elements through the far-field layer, so its material cannot be
+    # differentiated there
+    def volume(c):
+        if c[0] > 0.75 and ((c > 0) & (c < 1)).all():
+            return "slab"
+        return "air" if ((c > 0) & (c < 1)).all() else "pml"
+
+    path = pml_cases.box(
+        request.getfixturevalue("tmp_path") / "slab.msh",
+        ("-x", "+x", "-y", "+y", "-z", "+z"),
+        thickness=0.25,
+        cells=4,
+        volume=volume,
+    )
+    mesh = gfem.Mesh.from_gmsh(path)
+    model = gfem.Model(
+        mesh,
+        materials={
+            "air": gfem.Material(),
+            "pml": gfem.Material(),
+            "slab": _field(mesh, "slab"),
+        },
+        pml=gfem.PML("pml"),
+        background=gfem.Material(),
+    )
+    wave = gfem.IncidentField("w", _cut_off_wave)
+    problem = gfem.Driven(frequency=pml_cases.F0, sources=wave, keep_fields=True)
+    result = gfem.solve(model, problem, options=gfem.SolverOptions(order=1))
+
+    def objective(e):
+        m = model.with_material("slab", gfem.MaterialField(eps_r=e))
+        return gfem.multipoles(result, "w", model=m, intensity=1.0).scattering[0]
+
+    jax.make_jaxpr(jax.grad(objective))(model.materials["slab"].eps_r)
+
+
+def _out_multipoles_of_a_traced_origin(request):
+    model, result = _multipoles_cube(request)
+
+    def objective(origin):
+        return gfem.multipoles(result, "w", model=model, origin=origin).scattering[0]
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.full(3, 0.5e-6))
+
+
+def _out_multipoles_of_a_traced_intensity(request):
+    model, _ = request.getfixturevalue("planewave_case")
+    wave = gfem.IncidentField("w", _down_wave)
+    problem = gfem.Driven(frequency=pml_cases.F0, sources=wave, keep_fields=True)
+    result = gfem.solve(model, problem, options=gfem.SolverOptions(order=1))
+
+    def objective(intensity):
+        return gfem.multipoles(
+            result, "w", model=model, intensity=intensity
+        ).scattering[0]
+
+    jax.make_jaxpr(jax.grad(objective))(1.0)
+
+
+def _out_current_moments_of_a_traced_design(request):
+    model, result = _multipoles_cube(request)
+
+    def objective(e):
+        m = model.with_material("scat", gfem.MaterialField(eps_r=e))
+        return jnp.abs(gfem.current_moments(result, "w", model=m).toroidal_dipole).sum()
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.materials["scat"].eps_r))
+
+
 def _out_power_flow_of_a_reduced_field(request):
     # an adaptive sweep's basis holds no adjoint of the power
     model = request.getfixturevalue("wave_model")
@@ -3817,6 +3932,42 @@ OUT_OF_SCOPE = [
         _out_cross_sections_in_the_node_coordinates,
         gfem.NonDifferentiableError,
         r"incident field 'w' enters the load.*node coordinates",
+    ),
+    (
+        "multipoles x node coordinates",
+        _out_multipoles_in_the_node_coordinates,
+        gfem.NonDifferentiableError,
+        r"incident field 'w' enters the load.*node coordinates",
+    ),
+    (
+        "multipoles x node coordinates at fixed coefficients",
+        _out_multipoles_in_the_node_coordinates_at_fixed_coefficients,
+        gfem.NonDifferentiableError,
+        r"multipoles needs fixed node coordinates.*stop_gradient",
+    ),
+    (
+        "multipoles x design in the truncation layer",
+        _out_multipoles_of_a_design_in_the_truncation_layer,
+        gfem.NonDifferentiableError,
+        r"multipoles.*truncation layer",
+    ),
+    (
+        "multipoles x traced origin",
+        _out_multipoles_of_a_traced_origin,
+        gfem.NonDifferentiableError,
+        r"multipoles' origin must be fixed",
+    ),
+    (
+        "multipoles x traced intensity",
+        _out_multipoles_of_a_traced_intensity,
+        gfem.NonDifferentiableError,
+        r"multipoles' intensity is static",
+    ),
+    (
+        "current_moments of a traced design",
+        _out_current_moments_of_a_traced_design,
+        gfem.NonDifferentiableError,
+        r"gfem\.current_moments is not differentiable",
     ),
     (
         "heat_flow x node coordinates",

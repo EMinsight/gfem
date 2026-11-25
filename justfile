@@ -48,6 +48,10 @@ sphere-mesh:
 nanosphere-mesh:
     PYTHONPATH=tools uv run python tools/nanosphere_mesh.py docs/tutorials/data
 
+# Rebuild the meta-atom tutorial's mesh, docs/tutorials/data/meta_atom.msh (tools/meta_atom_mesh.py, netgen; a new mesh means re-measuring the tutorial's values).
+meta-atom-mesh:
+    PYTHONPATH=tools uv run python tools/meta_atom_mesh.py docs/tutorials/data
+
 # Rebuild the heater tutorial's cross-sections, docs/tutorials/data/heater_w{2,7p5}.msh, and the thermo-optic recipe's extruded heater_straight.msh (tools/heater_section_mesh.py, gmsh pinned; a new mesh means re-measuring the tutorial's and the recipes' values).
 heater-section-mesh:
     uv run --with gmsh==4.15.2 --no-project python tools/heater_section_mesh.py docs/tutorials/data
@@ -60,6 +64,10 @@ front-page-data:
 bend3d-data work="/tmp/bend3d-run":
     JAX_PLATFORMS=cpu uv run --extra mkl --group docs python tools/bend3d_run.py all --out "{{ work }}"
     JAX_PLATFORMS=cpu uv run --extra mkl --group docs python tools/bend3d_run.py merge --out "{{ work }}" --record docs/tutorials/data
+
+# Rerun the meta-atom design and rewrite its run record, docs/tutorials/data/meta_atom.{json,npz} (tools/meta_atom_run.py): about 10 min on 8 threads, 4 GiB.
+meta-atom-data:
+    JAX_PLATFORMS=cpu uv run --group docs python tools/meta_atom_run.py --out docs/tutorials/data
 
 # Rerun the 3D spiral heater and rewrite its run record, docs/tutorials/data/heater3d.{json,npz} (tools/heater3d_run.py, gmsh pinned): about 30 min on 16 cores; the ladder's finest mesh needs about 14 GiB.
 heater3d-data work="/tmp/heater3d-run":

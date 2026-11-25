@@ -61,6 +61,11 @@ v0.1.
   ({py:obj}`gfem.far_field`), and {py:obj}`gfem.beam_coupling` into a fiber's
   beam ({doc}`recipes/incident-fields`, {doc}`recipes/cross-sections`,
   {doc}`recipes/point-dipoles`, {doc}`recipes/far-field`).
+- **Multipoles**: the electric and magnetic multipoles a scatterer radiates
+  under an incident field, their partial scattering cross sections and the
+  exact dipoles and quadrupoles ({py:obj}`gfem.multipoles`); the
+  long-wavelength and toroidal dipoles of the induced current
+  ({py:obj}`gfem.current_moments`) ({doc}`recipes/multipoles`).
 - **Materials and designs**: {py:obj}`gfem.Material` per region (isotropic, or
   anisotropic: real symmetric tensors on shared principal axes,
   {doc}`recipes/anisotropic-materials`), {py:obj}`gfem.MaterialField` per
@@ -312,6 +317,12 @@ returning a wrong value:
   no layered exterior. A result or job holding an `IncidentField` cannot
   be saved, and the solve cache passes it by. Gradients flow to material
   fields; node coordinates are not differentiable under an incident field.
+- **Multipoles**: incident-field columns, 3D, a homogeneous lossless
+  background and the whole scatterer (no ground plane, mirror half or slab).
+  The induced-current moments take volume currents only (no perfect
+  conductor, sheet, lumped port or magnetic contrast) and are not
+  differentiable; the multipoles are not differentiable by node coordinates.
+  Details: {doc}`recipes/multipoles`.
   Details: {doc}`recipes/incident-fields`, {doc}`recipes/point-dipoles`,
   {doc}`recipes/far-field`.
 - **Unrequested port modes**: a propagating mode that no wave port on its

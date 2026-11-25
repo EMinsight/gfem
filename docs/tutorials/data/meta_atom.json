@@ -1,0 +1,128 @@
+{
+ "profile": "full",
+ "provenance": {
+  "commit": "f3f1d1756f0a0723de20fa5fdb0070d8f20c12a1",
+  "sha256": {
+   "tools/meta_atom_run.py": "0201f8066a6c1208d083d70604ac5fc22b52457554bac5a71e873d777136689a",
+   "tools/meta_atom_mesh.py": "ce6e057de1747eac05a4fa1e42ff6cbff7af77981569e09fca702fa41384ed06"
+  },
+  "start_utc": "2026-11-24T20:28:35+00:00",
+  "end_utc": "2026-11-24T20:29:58+00:00",
+  "command": "python tools/meta_atom_run.py --out out",
+  "environment": {
+   "versions": {
+    "gfem": "0.2.0",
+    "python": "3.12.12",
+    "ngsolve": "6.2.2608",
+    "jax": "0.12.0",
+    "jaxlib": "0.12.0",
+    "numpy": "2.5.4",
+    "optax": "0.2.8",
+    "mkl": "2026.2.0"
+   },
+   "pardiso_available": true,
+   "os": "Red Hat Enterprise Linux 9.6 (Plow)",
+   "kernel": "5.14.0-687.25.1.el9_8.x86_64",
+   "cpu_model": "Intel(R) Xeon(R) Platinum 8480+",
+   "physical_cores": 112,
+   "threads": 16,
+   "memory_limit_bytes": 270105387008,
+   "host": "gs08r2b60"
+  }
+ },
+ "settings": {
+  "wavelength_um": 1.0,
+  "eps_silicon": 12.25,
+  "filter_radius_um": 0.05,
+  "learning_rate": 0.05,
+  "start_density": 0.25,
+  "betas": [
+   1.0,
+   2.0,
+   4.0,
+   8.0,
+   16.0
+  ],
+  "steps": 40,
+  "design_elements": 424,
+  "tetrahedra": 2497,
+  "fd": {
+   "beta": 2.0,
+   "step": 0.01,
+   "adjoint": 0.0013186969774822087,
+   "difference": 0.0013186969778453822,
+   "error": 2.7540327542676425e-10
+  },
+  "order2": {
+   "md": 0.7992173508135009,
+   "ed": 0.15970376735667802,
+   "sum": 1.1212000253172523,
+   "cross_sections": 1.1746007254294162,
+   "dof": 16434,
+   "lmax": 9
+  },
+  "order3": {
+   "md": 0.9185256008167672,
+   "ed": 0.11596465555136971,
+   "sum": 1.2021793848287532,
+   "cross_sections": 1.1924336814264342,
+   "dof": 47466,
+   "lmax": 9
+  },
+  "order_gap": 0.14928135616903937,
+  "sum_gap": 0.008172952134881672,
+  "single_channel_um2": 0.477464829275686,
+  "start_um2": 0.09161090699267457,
+  "final_um2": 0.7992173508135009,
+  "gain": 8.724041460231456
+ },
+ "observations": {
+  "wall_s": 83.2,
+  "steps_s": {
+   "step0_s": 8.7,
+   "step1_s": 1.7,
+   "step2_s": 1.5,
+   "step3_s": 1.5,
+   "step4_s": 1.6,
+   "step5_s": 1.5,
+   "step6_s": 1.5,
+   "step7_s": 1.5,
+   "step8_s": 1.4,
+   "step9_s": 1.5,
+   "step10_s": 1.6,
+   "step11_s": 1.5,
+   "step12_s": 1.5,
+   "step13_s": 1.5,
+   "step14_s": 1.5,
+   "step15_s": 1.5,
+   "step16_s": 1.5,
+   "step17_s": 1.5,
+   "step18_s": 1.5,
+   "step19_s": 1.5,
+   "step20_s": 1.5,
+   "step21_s": 1.6,
+   "step22_s": 1.5,
+   "step23_s": 1.5,
+   "step24_s": 1.5,
+   "step25_s": 1.6,
+   "step26_s": 1.5,
+   "step27_s": 1.6,
+   "step28_s": 1.5,
+   "step29_s": 1.5,
+   "step30_s": 1.5,
+   "step31_s": 1.5,
+   "step32_s": 1.5,
+   "step33_s": 1.5,
+   "step34_s": 1.5,
+   "step35_s": 1.5,
+   "step36_s": 1.5,
+   "step37_s": 1.6,
+   "step38_s": 1.5,
+   "step39_s": 1.5,
+   "fd_s": 6.3,
+   "order2_s": 1.5,
+   "order3_s": 6.1
+  },
+  "peak_rss_bytes": 3753906176
+ }
+}

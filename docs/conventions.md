@@ -854,6 +854,55 @@ accepted and incident power (IEEE 145): a port column is fed
 radar cross section is $4\pi|\mathbf{F}|^2/|E_0|^2$, of its scattered
 field. The module's "Far fields" section has the formulas.
 
+## Multipoles
+
+`gfem.Multipoles` expands the scattered field of an incident-field column about an
+origin (default the model origin) in outgoing vector spherical waves of the
+background, $E_s = E_\text{inc}\sum_{lm}[\alpha_{lm}N^{(2)}_{lm} + \beta_{lm}M^{(2)}_{lm}]$,
+with Condon-Shortley $Y_{lm}$, Jackson's $X_{lm}$ and $h^{(2)}_l$ (outgoing under
+`TIME_DEPENDENCE`). The coefficients are dimensionless and power-normalized: the
+partial scattering cross section of the electric (magnetic) multipole of degree $l$
+is $k^{-2}\sum_m|\alpha_{lm}|^2$ ($k^{-2}\sum_m|\beta_{lm}|^2$), in m², over the
+incident intensity of `cross_sections`. $E_\text{inc}$ is complex: a plane wave's
+`amplitude` (phase at the model origin), a beam's focal field $\sqrt{2\eta I_0}$,
+$\sqrt{2\eta I}$ for an incident-field function with `intensity=`. It is not
+`FarField.incident_amplitude`, the real $|E_0|$ of a plane wave (`None` for a
+beam). Coefficients are stored $l$-major, $m$ ascending, flat index
+$j = l^2 + l + m - 1$; the default degree is Wiscombe's
+$\max(2, \lceil x + 4x^{1/3} + 2\rceil)$ with $x = kR_s$.
+
+For a sphere at the origin under $E_0\hat{x}e^{-ikz}$, with $\bar a_l, \bar b_l$ the
+conjugates of Bohren and Huffman's coefficients,
+$\alpha_{l,\pm1} = \pm(-i)^l\sqrt{\pi(2l+1)}\,\bar a_l$ and
+$\beta_{l,\pm1} = -(-i)^l\sqrt{\pi(2l+1)}\,\bar b_l$, all other $m$ zero.
+
+The exact moments are fixed linear maps of the $l \le 2$ coefficients, in the
+model's $x, y, z$ (with $\hat e_{\pm1} = \mp(\hat x \pm i\hat y)/\sqrt2$,
+$\hat e_0 = \hat z$ and $T_{2M}$ the orthonormal symmetric traceless rank-2 tensors):
+
+- $p = -\sqrt{6\pi}\,\varepsilon E_\text{inc}k^{-3}\sum_m\alpha_{1m}\hat e_m$ (C·m);
+- $m = -i\sqrt{6\pi}\,E_\text{inc}(k^3\eta)^{-1}\sum_m\beta_{1m}\hat e_m$ (A·m²);
+- $Q^e = -12\sqrt{5\pi}\,\varepsilon E_\text{inc}k^{-4}\sum_M\alpha_{2M}T_{2M}$ (C·m²);
+- $Q^m = -12\sqrt{5\pi}\,i\,E_\text{inc}(k^4\eta)^{-1}\sum_M\beta_{2M}T_{2M}$ (A·m³).
+
+Two factor-3 traps: Evlyukhin's and the anapole review's $Q^m$ is $\tfrac13$ of
+this one ($1/(80\pi)$ against $1/(720\pi)$ in $\sigma_{Q^m}$), and a Landau-style
+$Q^e = \int\rho\,(r_\alpha r_\beta - \tfrac13 r^2\delta_{\alpha\beta})\,dV$ is $\tfrac13$
+of this one. The long-wavelength moments of `CurrentMoments`,
+$p_0 = \frac{1}{i\omega}\int J\,dV$ and $T = \frac{1}{10v}\int[(r\cdot J)r - 2r^2J]\,dV$
+with $v = \omega/k$, approximate the exact dipole as $p \approx p_0 - ikT$; the
+anapole review's $T$ (A·m³) is $vT$. The long-wavelength anapole is $p_0 = ikT$, the
+exact one $p = 0$. The first Kerker condition for $\hat k = \hat z$ is
+$p_x = m_y/v$.
+
+From a paper in $e^{-i\omega t}$: conjugate every phasor and material; since
+$\overline{Y_{lm}} = (-1)^m Y_{l,-m}$ and $\overline{X_{lm}} = (-1)^{m+1}X_{l,-m}$, a
+coefficient defined with $Y_{lm}^*$ maps to the conjugate with $m \to -m$ and a
+sign. Grahn's $a_E(l,m)$ is
+$\alpha_{lm} = -(-1)^m(-i)^l\sqrt{\pi(2l+1)}\,\overline{a_E(l,-m)}$, likewise $\beta$;
+Alaee's moments are gfem's with $-1/(i\omega) \to +1/(i\omega)$. The module's
+"Multipoles" section has the formulas.
+
 ## Port waves and beam coupling
 
 A source column's `port_waves` and {py:obj}`gfem.beam_coupling` are
