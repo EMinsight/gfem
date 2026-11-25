@@ -77,9 +77,7 @@ eff.values  # (n_freq, n_rows)
 eff["bottom", (0, 0), "TE"]  # one row, shape (n_freq,)
 eff["bottom", (0, 0)]  # the order's total over TE and TM
 
-circ = dif.efficiencies(
-    res, "top", polarization="RCP", model=cell, basis="circular"
-)
+circ = dif.efficiencies(res, "top", polarization="RCP", model=cell, basis="circular")
 circ["bottom", (0, 0), "LCP"]  # transmitted, opposite handedness
 ```
 
