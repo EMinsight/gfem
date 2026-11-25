@@ -55,7 +55,7 @@ GUIDE_N_EFF, GUIDE_GAMMA = 1.256258769165717, 4.013914625089216e-14
 
 
 def _converges(errors, floor):
-    """Each order at least 5x below the last (measured 90x), the last under ``floor``."""
+    """Each order 5x below the last (measured 90x), the last under ``floor``."""
     assert all(e2 < e1 / 5 for e1, e2 in itertools.pairwise(errors)), errors
     assert errors[-1] < floor, errors
 
