@@ -8,6 +8,12 @@ Optics:
   ($n_2$) and `two_photon_absorption`; `gfem.kerr_nonlinearity` gives a port
   mode's $\gamma_\mathrm{NL}$ on every row of its grid and `gfem.kerr_coupling`
   the tensor between its waves ({doc}`../recipes/waveguide-nonlinearity`).
+- **Second-harmonic generation of a port mode.** Materials take a
+  `second_order_nonlinear_tensor` ($d$, m/V); `gfem.second_harmonic` gives a
+  pump mode's coupling to its harmonic, the phase mismatch, the poling period and
+  the undepleted efficiency of a poled guide, and `gfem.three_wave_coupling`
+  the tensor between the waves of a port
+  ({doc}`../recipes/second-harmonic-generation`).
 
 Measurements:
 

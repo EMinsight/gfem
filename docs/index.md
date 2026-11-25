@@ -80,6 +80,7 @@ recipes/anisotropic-materials
 recipes/dispersive-materials
 recipes/waveguide-dispersion
 recipes/waveguide-nonlinearity
+recipes/second-harmonic-generation
 recipes/fit-measured-data
 recipes/periodic-cell
 recipes/floquet-ports

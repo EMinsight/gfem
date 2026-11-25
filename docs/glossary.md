@@ -106,6 +106,11 @@ Kerr nonlinear coefficient
   field attenuation by $\mathrm{Im}\,\gamma_\mathrm{NL}\,P$ (two-photon
   loss). Short form: nonlinear coefficient.
 
+Normalized efficiency
+  $\eta_\mathrm{norm} = |\kappa|^2$ of a pump mode and its second harmonic, in
+  1/(W m²): the harmonic power is $\eta_\mathrm{norm}P^2L^2$ for a pump of power
+  $P$ in a lossless guide of length $L$ at perfect phase matching.
+
 Resonant mode
   A source-free field of the whole model, found by an
   {term}`eigenmode problem`: its complex angular frequency $\omega$ is found,

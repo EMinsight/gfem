@@ -38,6 +38,7 @@ orphan: true
 - {doc}`dispersive-materials`
 - {doc}`waveguide-dispersion`
 - {doc}`waveguide-nonlinearity`
+- {doc}`second-harmonic-generation`
 - {doc}`fit-measured-data`
 - {doc}`periodic-cell`
 - {doc}`floquet-ports`

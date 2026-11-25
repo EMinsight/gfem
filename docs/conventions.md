@@ -1005,6 +1005,75 @@ formula holds while the attenuation is small against the phase constant.
 The {py:obj}`gfem.conventions` module, "Kerr nonlinearity", gives the same
 formulas, and {doc}`recipes/waveguide-nonlinearity` the calculation.
 
+## Second-order nonlinearity
+
+A material's `second_order_nonlinear_tensor` is the contracted tensor
+$d_{il} = d_{ijk}$ (m/V), with $d = \chi^{(2)}/2$ (the convention of data
+sheets, Boyd and Roberts: half the susceptibility). Rows are the polarization
+$x, y, z$, columns the field pair $xx, yy, zz, yz, xz, xy$ with no factor 2 on
+the shear ones, in the frame of the material's `axes`. For a field $F$,
+$\sum_{jk} d_{ijk}F_jF_k = \sum_l d_{il}V_l$ with $V = (F_x^2, F_y^2, F_z^2,
+2F_yF_z, 2F_xF_z, 2F_xF_y)$. A domain of reversed polarization carries $-d$.
+The tensor is real, constant over the grid, and read by no linear solve.
+
+The coupling between the port modes $a, b, c$ of three waves with
+$\omega_a = \omega_b + \omega_c$ (rows of results, each normalized to 1 W) is
+$\kappa_{abc} = \overline{T_{abc}}$ with
+
+$$
+T_{abc} = \frac{\omega_a\varepsilon_0}{4} \int_S \sum_{ijk} d_{ijk}\,
+\overline{E_{a,i}}\,E_{b,j}\,E_{c,k}\,\mathrm{d}A,
+$$
+
+all three components of each mode. It is reported in the convention of
+coupled-mode tools, $e^{-i\omega t}$, the complex conjugate of the integral in
+gfem's own phasors: the amplitude $A$ of a wave, with $|A|^2$ its power, obeys
+$\mathrm{d}A_a/\mathrm{d}z \ni i\sum_{bc}\kappa_{abc}A_bA_c\,
+e^{-i\Delta\beta_{abc}z}$, $\Delta\beta_{abc} = \beta_a - \beta_b - \beta_c$,
+summed over every ordered pair with no degeneracy factor, so the factor 2 of
+sum-frequency generation against second-harmonic generation comes out of the
+sum. $\kappa_{abc}$ is symmetric in $b, c$ and has units
+1/(W$^{1/2}$ m); on an Ez line port of a 2D model (1 W/m, integral along the
+line) W$^{-1/2}$ m$^{-1/2}$.
+
+For the second harmonic of a pump at $\omega$, $\kappa = \kappa_{hpp}$ with
+$h$ the mode at $2\omega$, and the undepleted harmonic power is
+
+$$
+P_{2\omega}(L) = \eta_\mathrm{norm}\,P_\omega^2L^2\,
+\mathrm{sinc}^2\!\left(\frac{\Delta\beta L}{2}\right),\qquad
+\eta_\mathrm{norm} = |\kappa|^2,
+$$
+
+$\Delta\beta = \beta_{2\omega} - 2\beta_\omega$ in 1/m and
+$\eta_\mathrm{norm}$ in 1/(W m²) (1/(W m) on a line port;
+1 W$^{-1}$m$^{-2}$ is $10^{-2}$ %/(W cm²)). Quasi-phase matching with a
+square-wave poling of period $\Lambda$, duty cycle $D$ and order $m$ multiplies
+$\kappa$ by $G_m = 2\sin(\pi mD)/(\pi m)$ and replaces $\Delta\beta$ by
+$|\Delta\beta| - 2\pi m/\Lambda$, matched at $\Lambda = 2\pi m/|\Delta\beta|$.
+With the loss of the modes, $\alpha = \mathrm{Re}\,\gamma$ and
+$\Delta\alpha = \alpha_{2\omega} - 2\alpha_\omega$,
+
+$$
+\frac{P_{2\omega}}{P_\omega} = |G|^2|\kappa|^2P_\omega\,
+e^{-(\alpha_{2\omega} + 2\alpha_\omega)L}\,
+\frac{\sinh^2(\Delta\alpha L/2) + \sin^2(\delta L/2)}
+{(\Delta\alpha/2)^2 + (\delta/2)^2},
+$$
+
+with $\delta$ the residual mismatch. For difference-frequency generation and
+parametric amplification of a pump $a$ with a signal $b$ and an idler $c$, the
+amplitude of $b$ obeys $\mathrm{d}A_b/\mathrm{d}z \ni i\,(2\omega_b/\omega_a)\,
+\overline{\kappa_{abc}}\,A_a\overline{A_c}\,e^{i\Delta\beta z}$ (and $b
+\leftrightarrow c$): the rule conserves the photon flux when $d$ is symmetric
+in its three indices (Kleinman symmetry), which holds when one $d$ serves
+every process. The sum-frequency power of two waves in the undepleted
+regime is $4|\kappa_{312}|^2P_1P_2L^2\,\mathrm{sinc}^2(\Delta\beta L/2)$.
+The formulas hold while $\alpha \ll \beta$ and for a pump that is not
+depleted. The {py:obj}`gfem.conventions` module, "Second-order nonlinearity",
+gives the same formulas, and {doc}`recipes/second-harmonic-generation` the
+calculation.
+
 ## Thin metals
 
 A {py:obj}`gfem.Conductor` with a thickness describes one face of a film. On
