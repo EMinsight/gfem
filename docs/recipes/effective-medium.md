@@ -80,10 +80,15 @@ transmission through the slab alone.
 
 - `branch=0` is right when $\operatorname{Re}(n)\,k_0 d < \pi$ at the lowest
   frequency, a slab thinner than half a wavelength in its own medium. The rod
-  layer above, $n \approx 2$, has $n k_0 d \approx 2.5\ \mathrm{rad}$ at
-  $0.8\ \mu\mathrm{m}$ and sits on branch 0. A slab of the same material
+  layer above, with $n \le 2$ (an upper estimate: the rods do not fill the
+  cell), has $n k_0 d \le 2.0\ \mathrm{rad}$ at the lowest frequency of the
+  band ($\lambda = 1.25\ \mu\mathrm{m}$) and at most $3\ \mathrm{rad}$
+  across it, below $\pi$, so it sits on branch 0. A slab of the same material
   $0.3\ \mu\mathrm{m}$ thick at a wavelength of $1\ \mu\mathrm{m}$ has
   $n k_0 d \approx 3.8\ \mathrm{rad} > \pi$ and needs `branch=1`.
+- `branch` takes one int for both columns, or a pair `(m_0, m_1)`, one per
+  polarization column, when the two waves are on different sheets (an
+  anisotropic slab). `em.branch` is always the pair.
 - Along a band the phase of $T$ is unwrapped, starting from its principal
   value at the lowest frequency, so one `branch` serves the whole sweep. The
   frequencies must increase strictly, and the grid fine enough that the phase
@@ -100,6 +105,11 @@ transmission through the slab alone.
   condition, or where the cell diffracts, the retrieved
   $\varepsilon$ and $\mu$ are not material constants, only the parameters
   that reproduce $S_{11}$ and $S_{21}$.
+- **Half-wave thickness.** At $n k_0 d = m\pi$ ($m \ge 1$) a slab of low loss
+  reflects nothing and transmits with unit modulus whatever its impedance, so
+  $z$ is undetermined ($S_{11} \to 0$, $S_{21} \to \pm 1$) and
+  $\varepsilon$, $\mu$ and their derivatives lose all accuracy near such
+  frequencies. Keep a band clear of them, or use a thinner slab.
 - **Check with the background.** Retrieving an empty slab gives back the
   permittivity and permeability of the medium behind the faces.
 
@@ -138,14 +148,21 @@ $2\pi$, which have no gradient.
   raise `NotImplementedError`.
 - **Principal axes along the lattice.** The tensor is diagonal in
   $(\hat{\mathbf{e}}_1, \hat{\mathbf{e}}_2)$. A cross-polarized reflection or
-  transmission above 1 % of the co-polarized amplitude warns: align the
-  lattice with the axes of the structure.
+  transmission above 1 % of the co-polarized total
+  $\sqrt{|r_{ii}|^2 + |t_{ii}|^2}$ of the same incident column warns: align
+  the lattice with the axes of the structure. The total, not the block's own
+  co-polarized entry, so a matched slab with a vanishing co-polarized
+  reflection does not warn on round-off.
 - **Symmetric cell.** The inversion assumes the same reflection from both
   sides. When the columns of the other face are excited too, a difference of
   more than 1 % warns that the cell is asymmetric or bianisotropic, and the
   result describes only the wave from the first face.
-- **Planes.** The planes must not meet or cross (`ValueError`), and both
-  polarizations of order $(0, 0)$ need a port on both faces.
+- **Planes.** The two faces must be antiparallel and the planes must not meet
+  or cross (`ValueError`), and both polarizations of order $(0, 0)$ need a
+  port on both faces.
+- **`jax.jit`.** Put the solve inside the jitted function: the retrieval
+  checks normal incidence on the result's wave vector, which a result passed
+  as an argument traces (an error).
 
 ## Next
 

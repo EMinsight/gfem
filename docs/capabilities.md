@@ -75,10 +75,11 @@ v0.1.
   incidence included), emissivity by Kirchhoff's law (directional and
   hemispherical), a cell's response sampled against one meta-atom parameter
   with its derivative, the effective permittivity and permeability of a slab
-  retrieved from its S ({doc}`recipes/effective-medium`), and aperture fields of large metasurfaces in the
-  {term}`locally periodic approximation` with angular-spectrum propagation,
-  differentiable except in the angle ({doc}`recipes/diffraction-efficiency`,
-  {doc}`recipes/emissivity`, {doc}`recipes/metasurface-from-cells`).
+  retrieved from its S ({doc}`recipes/effective-medium`), and aperture fields
+  of large metasurfaces in the {term}`locally periodic approximation` with
+  angular-spectrum propagation, differentiable except in the angle
+  ({doc}`recipes/diffraction-efficiency`, {doc}`recipes/emissivity`,
+  {doc}`recipes/metasurface-from-cells`).
 - **Materials and designs**: {py:obj}`gfem.Material` per region (isotropic, or
   anisotropic: real symmetric tensors on shared principal axes,
   {doc}`recipes/anisotropic-materials`), {py:obj}`gfem.MaterialField` per
