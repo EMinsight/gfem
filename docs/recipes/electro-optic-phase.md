@@ -132,9 +132,9 @@ print(f"V_pi L of arm a: {100 * float(a.v_pi_l):.3f} V cm")
 ```
 
 ```text
-ElectroOpticShift(port 'arm', mode 2, 1.93414e+14 Hz, n_eff 1.907649, delta_n_eff_per_volt -2.41793e-05 /V, v_pi_l 0.0320522 V m)
-arm b / arm a: -1.00332
-V_pi L of arm a: 3.205 V cm
+ElectroOpticShift(port 'arm', mode 2, 1.93414e+14 Hz, n_eff 1.907649, delta_n_eff_per_volt -2.41331e-05 /V, v_pi_l 0.0321136 V m)
+arm b / arm a: -1.00262
+V_pi L of arm a: 3.211 V cm
 ```
 
 - `delta_n_eff_per_volt` is $\partial n_\mathrm{eff}/\partial V$ for 1 V on
@@ -166,8 +166,8 @@ print(f"V_pi over {1e3 * length:.0f} mm: {float(v_pi_l / length):.2f} V")
 ```
 
 ```text
-push-pull V_pi L: 1.600 V cm
-V_pi over 2 mm: 8.00 V
+push-pull V_pi L: 1.604 V cm
+V_pi over 2 mm: 8.02 V
 ```
 
 With several signal terminals, solve once with all of them as terminals: each
@@ -186,9 +186,9 @@ print(f"{1e12 * float(es.capacitance_per_length[0, 0]):.1f} pF/m")
 
 ```text
 ElectrostaticResult(terminals=['signal'], slab capacitance in fF:
-  signal:   0.009713
+  signal:   0.009714
 capacitance per length in pF/m:
-  signal:      97.13)
+  signal:      97.14)
 97.1 pF/m
 ```
 

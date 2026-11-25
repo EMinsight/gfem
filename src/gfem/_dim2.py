@@ -46,6 +46,10 @@ _SHEET = (
     f"its own with a conducting Material; or {SLAB}."
 )
 _GEOMETRY = "Change the geometry in gmsh and read the mesh again."
+_BANDS = (
+    "A 2D photonic crystal runs as a slab one element thick: PEC faces give the "
+    f"Ez bands, natural faces the Hz bands; {SLAB}."
+)
 
 
 def _refusal(what: str, remedy: str) -> NotImplementedError:
@@ -239,6 +243,8 @@ _ENTRIES = {
     "boundary_morph": _GEOMETRY,
     "helmholtz_filter": "Filter the pixels of a LayerGrid instead: "
     "helmholtz_filter(grid, radius=...).",
+    "wave_vector_path": _BANDS,
+    "band_diagram": _BANDS,
 }
 
 

@@ -8,6 +8,26 @@ Jobs and files:
   another gfem version, whose value this version refuses, now says which
   versions are involved and suggests upgrading.
 
+Periodic cells:
+
+- **Band diagrams.** `gfem.wave_vector_path` gives the Bloch wave vectors along
+  straight segments between high-symmetry points: named points for the line,
+  square, rectangular, hexagonal and simple cubic lattices, and
+  `named_points` for any other. `gfem.band_diagram` solves them and returns a
+  `gfem.BandDiagram`: bands in frequency order, the static band at Γ, band
+  connections, `v_g`, `lost` and `anchored` (with `gfem.LostBandWarning` and
+  `gfem.UnanchoredBandWindowWarning`), fields at chosen wave vectors and
+  `to_xarray`. The band frequencies differentiate under `jax.grad`; a band
+  diagram refuses `jax.jit` and `jax.vmap`. `Model.reciprocal_lattice` gives
+  the reciprocal vectors ({doc}`../tutorials/photonic-crystal`,
+  {doc}`../recipes/periodic-cell`).
+- **Band group velocity.** `EigenmodeResult.v_g` gives
+  $\partial\omega/\partial\mathbf{k}$ of a mode under a Bloch wave vector, in
+  m/s. It is not differentiable, and `to_xarray` carries it.
+- **Faster Bloch solves.** After a mesh's second wave vector, a Bloch eigenmode
+  solve builds its operators from a per-mesh template instead of assembling
+  them again.
+
 Thermal:
 
 - **Thermal boundary values differentiate.** A fixed temperature, a
@@ -377,6 +397,23 @@ Circuits:
   a "SAX circuits" section of the conventions and of the verification page, a
   "Circuits" section of the glossary, and a scikit-rf section in "Save and
   export results".
+
+Eigenmode solves:
+
+- **Rerun eigenmode results on lossy models with a target far below the
+  modes.** On a model whose loss varies in space (a lossy region beside a
+  lossless one), with the target well below the nearest mode, `gfem.Eigenmode`
+  could drop that mode without a word and return the next ones. It now
+  returns the modes nearest the target; such results from earlier versions
+  should be rerun.
+
+Meshes:
+
+- Fixed: a cross-section meshed periodically in gmsh (`setPeriodic`) pairs
+  under `gfem.Periodic` whatever its node numbering, on any lattice.
+  `gfem.Mesh.from_gmsh_cross_section` now splits the prisms by node
+  coordinates, not node numbers; values computed on a cross-section move by
+  up to about 4e-4 relative (the tutorials' checked values).
 
 ## 0.2.0 (2026-11-23)
 

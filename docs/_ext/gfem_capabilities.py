@@ -611,6 +611,16 @@ RAISES_LABELS = {
     "Bloch eigenmode x bddc_gmres": (
         '`Eigenmode` with a Bloch `wave_vector` on `linear_solver="bddc_gmres"`'
     ),
+    "eigenmode band group velocity": (
+        "The band group velocity of Bloch eigenmodes (`EigenmodeResult.v_g`, "
+        "`BandDiagram.v_g`), with respect to anything"
+    ),
+    "band_diagram inside jax.jit or jax.vmap": (
+        "`band_diagram` inside `jax.jit` or `jax.vmap` (it runs under `jax.grad`)"
+    ),
+    "band_diagram x wave vectors or target": (
+        "`band_diagram`, with respect to the wave vectors or the target"
+    ),
     "eigenmode backward error": (
         "The backward error of eigenmodes (`EigenmodeResult.error`), with "
         "respect to anything"
@@ -1113,7 +1123,7 @@ REFUSAL_LABELS = {
         "`Periodic` pairs on two or three axes of a `Driven` or an `Eigenmode` "
         "problem; `Electrostatic` on a periodic model"
     ),
-    "bloch": "`Eigenmode(wave_vector=...)`",
+    "bloch": "`Eigenmode(wave_vector=...)` and `band_diagram`",
     "eigenmode_wave_port": "A `WavePort` on an `Eigenmode` problem",
     "floquet_port": "A `FloquetPort` on a `Driven` problem",
     "frequency_workers": "`frequency_workers` above 1, on more than one frequency",

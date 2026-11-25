@@ -323,14 +323,31 @@ def _default_thickness(points: np.ndarray, edges: np.ndarray) -> float:
     )
 
 
-def _split_prisms(tris: np.ndarray, n: int, nodes: np.ndarray) -> np.ndarray:
+def _cut_rank(points: np.ndarray, edges: np.ndarray) -> np.ndarray:
+    """Each section node's place in (x, y) order: by x, then y.
+
+    Coordinates are compared on a grid of a millionth of the shortest edge, so
+    round-off cannot reorder nodes that share an x. The order depends on the
+    coordinates only, and a translation keeps it, so a section meshed
+    periodically cuts its paired edges alike whatever its node numbering.
+    """
+    h = np.linalg.norm(points[edges[:, 0]] - points[edges[:, 1]], axis=1).min()
+    key = np.round(points[:, :2] / (1e-6 * h)).astype(np.int64)
+    rank = np.empty(len(points), dtype=np.int64)
+    rank[np.lexsort((key[:, 1], key[:, 0]))] = np.arange(len(points))
+    return rank
+
+
+def _split_prisms(
+    tris: np.ndarray, n: int, nodes: np.ndarray, rank: np.ndarray
+) -> np.ndarray:
     """Three positive tetrahedra per prism over each triangle, rows per triangle.
 
-    Each quadrilateral side is cut along the diagonal from its lowest-index node
-    (the lowest-index rule), so two prisms that share a side cut it alike and the
-    tetrahedra conform.
+    Each quadrilateral side is cut along the diagonal from its node of lowest
+    ``rank`` (`_cut_rank`), so two prisms that share a side cut it alike and the
+    tetrahedra conform, and two sides that are translates cut alike too.
     """
-    a, b, c = np.sort(tris, axis=1).T
+    a, b, c = np.take_along_axis(tris, np.argsort(rank[tris], axis=1), axis=1).T
     tets = np.stack(
         [
             np.stack([a, b, c, c + n], axis=1),
@@ -346,14 +363,14 @@ def _split_prisms(tris: np.ndarray, n: int, nodes: np.ndarray) -> np.ndarray:
     return tets
 
 
-def _split_quads(lines: np.ndarray, n: int) -> np.ndarray:
+def _split_quads(lines: np.ndarray, n: int, rank: np.ndarray) -> np.ndarray:
     """Two triangles per extruded line, cut as `_split_prisms` cuts the sides.
 
     Each triangle's normal is the line's direction crossed with +z, so a
     consistently oriented 1D group gives a consistently oriented surface.
     """
     p, q = lines.T
-    low = p < q
+    low = rank[p] < rank[q]
     first = np.where(
         low[:, None], np.stack([p, q, q + n], 1), np.stack([p, q, p + n], 1)
     )
@@ -443,8 +460,9 @@ def _read_cross_section(
         thickness = _default_thickness(points, section.edges)
     n = len(points)
     nodes = np.concatenate([points, points + np.array([0.0, 0.0, thickness])])
-    tets = _split_prisms(tris, n, nodes)
-    sides = _split_quads(lines, n)
+    rank = _cut_rank(points, section.edges)
+    tets = _split_prisms(tris, n, nodes, rank)
+    sides = _split_quads(lines, n, rank)
     tag = max((r.tag for r in regions if r.dim == 2), default=0)
     front, back = Region(END_FACES[0], tag + 1, 2), Region(END_FACES[1], tag + 2, 2)
     ends = np.full(len(tris), 1, dtype=np.int64)
@@ -625,11 +643,13 @@ class Mesh:
         The file holds triangles only (format 2.2 ASCII or 4.1), in the xy
         plane. gfem extrudes the section one element thick along +z and
         splits each prism into three tetrahedra, so neighbouring prisms share
-        faces. Every 2D physical group becomes a volume and every 1D physical
-        group a surface, with its gmsh name and number; the end faces are the
-        surfaces ``front`` (the section's plane) and ``back`` (one thickness
-        along +z). Elements outside any physical group, points and other
-        lines are ignored.
+        faces. The split depends on the node coordinates, not their
+        numbering, so a section meshed periodically (gmsh ``setPeriodic``)
+        pairs under `gfem.Periodic` for any lattice. Every 2D physical group
+        becomes a volume and every 1D physical group a surface, with its gmsh
+        name and number; the end faces are the surfaces ``front`` (the
+        section's plane) and ``back`` (one thickness along +z). Elements
+        outside any physical group, points and other lines are ignored.
 
         The thickness is a numerical choice: a z-invariant problem's solution
         does not depend on it, and quantities per unit length divide the slab's

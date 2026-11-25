@@ -12,11 +12,13 @@ read without NGSolve. Meshes are in mm, wave vectors in rad/m.
   the last x cell's y = 0 strip, touching the seam: its Bloch S is far from
   reciprocal.
 - C2, `c2`: an empty parallel-plate cell periodic along x and y; its bands
-  are the empty lattice, `empty_lattice`.
+  are the empty lattice, `empty_lattice`. `c2_square_mesh` makes it square.
 - C3, `c3`: a layered (Bragg) TEM line periodic along x; its bands are the
   transfer-matrix roots, `tmm_frequency`.
 - C4, `c4`: an empty vacuum cube periodic along x, y and z (no other
   boundary); its lowest band is a doublet at `empty_lattice`.
+- `sheared_cell`: a vacuum cell whose two pairs make any angle, the
+  hexagonal (60 or 120 degrees) and oblique lattices, for geometry only.
 - G, `g`: the gradient cell, periodic along x and y, with two lumped
   ports, a PEC ground, an absorbing top, a resistive `gfem.Impedance` sheet
   touching both pairs and a sidewall "wall" crossing the x seam (the
@@ -27,6 +29,13 @@ read without NGSolve. Meshes are in mm, wave vectors in rad/m.
 - F1, `f1`: a Fresnel slab between Floquet ports (meshes in um), its S the
   tangential-E Airy form `f1_airy`; with an air substrate, the Brewster
   cell. F2, `f2`: a lamellar grating between Floquet ports.
+- Rods, `rods_tutorial_mesh`: the photonic-crystal tutorial's square lattice
+  of alumina rods, a committed 2D section read as a slab; its converged
+  bands at Γ, X and M are `ROD_BANDS`, its band group velocities at the
+  path's segment midpoints `ROD_V_G`. `rods_mesh` staircases the same
+  cell on the structured grid, one element thick, and `rods` makes it a
+  model, PEC (TM) or PMC (TE) plates, with loss in the rod only: the loss
+  varies in space.
 
 C1 loaded by its two 50 ohm ports is also a damped Bloch eigen case: its
 complex resonances are the roots of det(Z(f, k) + R) = 0,
@@ -39,9 +48,11 @@ order and mesh.
 """
 
 import math
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
+import rods_mesh as rods_gmsh
 import scipy.constants as const
 import scipy.optimize
 import structured_meshes as sm
@@ -56,10 +67,17 @@ ETA0 = const.mu_0 * const.c
 C1_S_TOL = 1e-5
 #: Relative error of the 4 lowest C2 bands (real part).
 C2_BAND_RTOL = 3e-4
-#: |E_z(p2) / E_z(p1) - exp(-i k·Δr)| on the C2 band with G = 0.
+#: :math:`|E_z(p_2) / E_z(p_1) - e^{-i\mathbf k\cdot\Delta\mathbf r}|` on the
+#: C2 band with G = 0.
 C2_PHASE_TOL = 1e-2
 #: Relative error of a complex C3 frequency.
 C3_FREQ_RTOL = 2e-6
+#: :math:`|v_g - v_\mathrm{exact}|` on the C2 bands, as a fraction of c (6e-4
+#: measured, band 4).
+C2_VG_TOL = 3e-3
+#: :math:`|v_g - v_\mathrm{exact}|` on the C3 bands, as a fraction of c (1.8e-7
+#: measured).
+C3_VG_TOL = 5e-6
 #: Relative error of the lowest C4 doublet.
 C4_RTOL = 1e-4
 #: Relative error of the complex resonance of C1 loaded by its ports
@@ -238,6 +256,14 @@ def c2_gmsh_mesh() -> gfem.Mesh:
     return gfem.Mesh.from_gmsh(path, length_unit="mm")
 
 
+def c2_square_mesh(
+    directory: Path, cells: tuple[int, int, int] = (8, 8, 1)
+) -> gfem.Mesh:
+    """C2's cell made square, ``C2_AX`` along x and y: a square lattice for `c2`."""
+    cell = sm.periodic_cell(_edges((C2_AX, C2_AX, C2_H), cells))
+    return _mesh(directory, "c2_square", cell)
+
+
 def c2(mesh: gfem.Mesh) -> gfem.Model:
     """C2: periodic in x and y (the pairs share the z edges), PEC at z = 0 and h."""
     return gfem.Model(
@@ -296,13 +322,17 @@ def c3_mesh(directory: Path, cells: tuple[int, int, int] = (10, 1, 1)) -> gfem.M
     return _mesh(directory, "c3", cell)
 
 
-def c3(mesh: gfem.Mesh, tan_delta: float = 0.0) -> gfem.Model:
-    """C3: periodic in x, PEC at z = 0 and H, default PMC y walls."""
+def c3(mesh: gfem.Mesh, tan_delta: float | tuple[float, float] = 0.0) -> gfem.Model:
+    """C3: periodic in x, PEC at z = 0 and H, default PMC y walls.
+
+    ``tan_delta``: the loss tangent of both layers, or of (low, high).
+    """
+    low, high = (tan_delta, tan_delta) if np.isscalar(tan_delta) else tan_delta
     return gfem.Model(
         mesh,
         materials={
-            "low": gfem.Material(eps_r=C3_EPS_LOW, tan_delta=tan_delta),
-            "high": gfem.Material(eps_r=C3_EPS_HIGH, tan_delta=tan_delta),
+            "low": gfem.Material(eps_r=C3_EPS_LOW, tan_delta=low),
+            "high": gfem.Material(eps_r=C3_EPS_HIGH, tan_delta=high),
         },
         boundaries=[
             gfem.Periodic(("x_min", "x_max")),
@@ -312,29 +342,80 @@ def c3(mesh: gfem.Mesh, tan_delta: float = 0.0) -> gfem.Model:
     )
 
 
-def tmm_frequency(k: float, guess: complex, tan_delta: float = 0.0) -> complex:
-    """The C3 band frequency (Hz, complex when lossy) nearest ``guess`` at k (rad/m).
+def _tmm_dispersion(
+    tan_delta: float | tuple[float, float],
+) -> tuple[Callable, Callable]:
+    r"""The C3 Rytov function :math:`F(k_0)` of the two layers and its derivative.
 
-    The root of the transfer-matrix (Rytov) dispersion relation of the two
-    layers, cos(n1 k0 d1) cos(n2 k0 d2) - (n1/n2 + n2/n1)/2 sin(n1 k0 d1)
-    sin(n2 k0 d2) = cos(k a), with n = sqrt(eps (1 - i tan_delta)).
+    ``tan_delta``: the loss tangent of both layers, or of (low, high). The
+    band is :math:`F(k_0) = \cos(k a)`, with
+    :math:`n = \sqrt{\varepsilon (1 - i\tan\delta)}`.
     """
     a, d1 = C3_A * MM, C3_D1 * MM
     d2 = a - d1
-    n1 = np.sqrt(C3_EPS_LOW * (1 - 1j * tan_delta))
-    n2 = np.sqrt(C3_EPS_HIGH * (1 - 1j * tan_delta))
+    low, high = (tan_delta, tan_delta) if np.isscalar(tan_delta) else tan_delta
+    n1 = np.sqrt(C3_EPS_LOW * (1 - 1j * low))
+    n2 = np.sqrt(C3_EPS_HIGH * (1 - 1j * high))
+    r = 0.5 * (n1 / n2 + n2 / n1)
+
+    def terms(k0):
+        return (
+            np.cos(n1 * k0 * d1),
+            np.sin(n1 * k0 * d1),
+            np.cos(n2 * k0 * d2),
+            np.sin(n2 * k0 * d2),
+        )
+
+    def value(k0):
+        c1, s1, c2, s2 = terms(k0)
+        return c1 * c2 - r * s1 * s2
+
+    def slope(k0):
+        c1, s1, c2, s2 = terms(k0)
+        return (
+            -n1 * d1 * s1 * c2
+            - n2 * d2 * c1 * s2
+            - r * (n1 * d1 * c1 * s2 + n2 * d2 * s1 * c2)
+        )
+
+    return value, slope
+
+
+def tmm_frequency(
+    k: float, guess: complex, tan_delta: float | tuple[float, float] = 0.0
+) -> complex:
+    r"""The C3 band frequency (Hz, complex when lossy) nearest ``guess`` at k (rad/m).
+
+    The root of the transfer-matrix (Rytov) dispersion relation of the two
+    layers, :math:`\cos(n_1 k_0 d_1)\cos(n_2 k_0 d_2) - \tfrac12 (n_1/n_2 +
+    n_2/n_1)\sin(n_1 k_0 d_1)\sin(n_2 k_0 d_2) = \cos(k a)`, with
+    :math:`n = \sqrt{\varepsilon (1 - i\tan\delta)}`; a pair
+    ``tan_delta`` is the loss of (low, high).
+    """
+    value, _ = _tmm_dispersion(tan_delta)
+    a = C3_A * MM
 
     def residual(fz):
-        k0 = 2 * math.pi * (fz[0] + 1j * fz[1]) / C0
-        r = (
-            np.cos(n1 * k0 * d1) * np.cos(n2 * k0 * d2)
-            - 0.5 * (n1 / n2 + n2 / n1) * np.sin(n1 * k0 * d1) * np.sin(n2 * k0 * d2)
-            - np.cos(k * a)
-        )
+        r = value(2 * math.pi * (fz[0] + 1j * fz[1]) / C0) - np.cos(k * a)
         return [r.real, r.imag]
 
     re, im = scipy.optimize.fsolve(residual, [guess.real, guess.imag], xtol=1e-14)
     return complex(re, im)
+
+
+def tmm_group_velocity(
+    k: float, frequency: complex, tan_delta: float | tuple[float, float] = 0.0
+) -> complex:
+    r"""The C3 band's :math:`\mathrm d\omega/\mathrm dk` (m/s, complex when lossy).
+
+    At the root ``frequency``, by implicit differentiation of the Rytov relation
+    of `tmm_frequency`: :math:`F'(k_0)\,\mathrm dk_0 = -a\sin(k a)\,\mathrm dk`,
+    with :math:`\omega = c k_0` and ``frequency`` (Hz) the root at :math:`k`
+    (rad/m) it returns.
+    """
+    _, slope = _tmm_dispersion(tan_delta)
+    k0 = 2 * math.pi * frequency / C0
+    return C0 * (-C3_A * MM * np.sin(k * C3_A * MM)) / slope(k0)
 
 
 # --- C4: empty cube, three pairs ------------------------------------------------------
@@ -356,6 +437,42 @@ def c4(mesh: gfem.Mesh) -> gfem.Model:
         mesh,
         materials={"cell": gfem.Material()},
         boundaries=[gfem.Periodic((f"{a}_min", f"{a}_max")) for a in "xyz"],
+    )
+
+
+# --- the sheared cell: two pairs at any angle ----------------------------------------
+
+SHEAR_A, SHEAR_H = 10.0, 1.0  # mm
+
+
+def sheared_cell_mesh(
+    directory: Path, angle: float, cells: tuple[int, int, int] = (3, 3, 1)
+) -> gfem.Mesh:
+    """A Kuhn box sheared so that the y pair's translation makes ``angle`` (deg) with x.
+
+    Both pairs' translations are ``SHEAR_A`` long: a1 = (a, 0, 0) and
+    a2 = (a cos(angle), a sin(angle), 0). The faces stay translates of each
+    other, so `sheared_cell` pairs them; 60 and 120 give a hexagonal lattice,
+    other angles an oblique one. For geometry only.
+    """
+    theta = math.radians(angle)
+    nodes, *rest = sm.periodic_cell(
+        _edges((SHEAR_A, SHEAR_A * math.sin(theta), SHEAR_H), cells)
+    )
+    nodes = np.array(nodes, dtype=float)
+    nodes[:, 0] += nodes[:, 1] / math.tan(theta)
+    return _mesh(directory, f"sheared_{angle:g}", (nodes, *rest))
+
+
+def sheared_cell(mesh: gfem.Mesh) -> gfem.Model:
+    """The sheared cell: vacuum, periodic in x and along the sheared y faces."""
+    return gfem.Model(
+        mesh,
+        materials={"cell": gfem.Material()},
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+        ],
     )
 
 
@@ -581,6 +698,123 @@ def coordinate_classes(
     scale = 1e-6 * float(np.ptp(nodes, axis=0).max())
     _, labels = np.unique(np.round(keys / scale), axis=0, return_inverse=True)
     return labels.reshape(-1)
+
+
+# --- Rods: the photonic-crystal tutorial's square lattice of alumina rods -----------
+
+ROD_A = rods_gmsh.CELL  # lattice constant, mm
+ROD_R = rods_gmsh.RADIUS  # rod radius (0.2 ROD_A), mm
+ROD_EPS = 8.9  # alumina
+#: Converged bands of the rod crystal as :math:`\nu = \omega a / 2\pi c`: polarization
+#: ("Ez", E along the rods, PEC front and back faces; "Hz", H along the rods,
+#: natural faces) -> point -> the four lowest bands, a degenerate pair written
+#: twice. Band 1 at Γ is the static field, 0 here and dropped by gfem's static
+#: filter. From a curved order-6 2D FEM on the round rod, cross-checked by a
+#: plane-wave expansion to 1e-5; the Ez gap, from band 1 at M to band 2 at X,
+#: is 31.4 % of its midgap, as published.
+ROD_BANDS = {
+    "Ez": {
+        "Γ": (0.0, 0.582310, 0.627802, 0.627802),
+        "X": (0.274706, 0.442519, 0.635953, 0.772234),
+        "M": (0.322395, 0.548831, 0.548831, 0.693589),
+    },
+    "Hz": {
+        "Γ": (0.0, 0.627812, 0.823528, 0.823528),
+        "X": (0.417567, 0.461676, 0.701194, 0.854966),
+        "M": (0.548843, 0.601899, 0.601899, 0.681160),
+    },
+}
+#: Band group velocities of the rod crystal at the segment midpoints of
+#: Γ-X-M-Γ, :math:`v_g \cdot \hat t / c`` along each segment's direction :math:`\hat t`
+#: (Γ-X at :math:`(1/4, 0)` along +x, X-M at :math:`(1/2, 1/4)` along +y, M-Γ at
+#: :math:`(1/4, 1/4)` along :math:`-(1, 1)/\sqrt 2`, reduced coordinates), bands 1-4 as
+#: in `ROD_BANDS`; central differences of the same 2D FEM with
+#: :math:`\delta\kappa = 10^{-4}`.
+ROD_V_G = {
+    "Ez": {
+        "Γ-X": (0.63165, -0.37635, 0.02559, 0.31346),
+        "X-M": (0.14764, 0.31101, -0.25977, -0.22334),
+        "M-Γ": (-0.53545, 0.08654, 0.17520, -0.21752),
+    },
+    "Hz": {
+        "Γ-X": (0.88428, -0.34209, -0.35509, 0.09746),
+    },
+}
+
+
+def rods_tutorial_mesh(name: str = "rods.msh") -> gfem.Mesh:
+    """The committed rod cell ``name`` of ``rods_gmsh.MESHES``, read as a slab (mm).
+
+    Areas "rod" and "air"; the pairs "x_min" / "x_max" and "y_min" /
+    "y_max"; the slab's end faces "front" and "back".
+    """
+    path = Path(__file__).parents[1] / "docs" / "tutorials" / "data" / name
+    return gfem.Mesh.from_gmsh_cross_section(path, length_unit="mm")
+
+
+def rods_slab(mesh: gfem.Mesh, *, ez: bool = True) -> gfem.Model:
+    """The tutorial's rod cell (`rods_tutorial_mesh`) as a slab of the 2D crystal.
+
+    Periodic in x and y. PEC "front" and "back" faces leave the Ez bands (E
+    along the rods); natural faces (``ez=False``) the Hz bands.
+    """
+    boundaries = [
+        gfem.Periodic(("x_min", "x_max")),
+        gfem.Periodic(("y_min", "y_max")),
+    ]
+    if ez:
+        boundaries += [gfem.PEC("front"), gfem.PEC("back")]
+    return gfem.Model(
+        mesh,
+        materials={
+            "rod": gfem.Material(eps_r=ROD_EPS),
+            "air": gfem.Material(eps_r=1.0),
+        },
+        boundaries=boundaries,
+    )
+
+
+def rods_mesh(directory: Path, cells: int = 8) -> gfem.Mesh:
+    """The rod cell staircased on a ``cells`` x ``cells`` x 1 grid, one element thick.
+
+    A tetrahedron is "rod" when its centroid is within ``ROD_R`` of the
+    cell's centre, "air" otherwise. The thickness is ``ROD_A / cells``.
+    """
+    edges = _edges((ROD_A, ROD_A, ROD_A / cells), (cells, cells, 1))
+
+    def volume(c):
+        inside = math.hypot(c[0] - ROD_A / 2, c[1] - ROD_A / 2) < ROD_R
+        return "rod" if inside else "air"
+
+    cell = sm.periodic_cell(edges, volume, paired="xy")
+    return _mesh(directory, f"rods{cells}", cell)
+
+
+def rods(mesh: gfem.Mesh, *, tan_delta: float = 0.0, tm: bool = True) -> gfem.Model:
+    """`rods_mesh`'s cell: periodic in x and y, loss tangent ``tan_delta`` in the rod.
+
+    PEC z faces leave the z-uniform modes with :math:`E` along z, the 2D TM
+    problem; PMC z faces (``tm=False``) leave the TE one.
+    """
+    wall = gfem.PEC if tm else gfem.PMC
+    return gfem.Model(
+        mesh,
+        materials={
+            "rod": gfem.Material(eps_r=ROD_EPS, tan_delta=tan_delta),
+            "air": gfem.Material(eps_r=1.0),
+        },
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+            wall("z_min"),
+            wall("z_max"),
+        ],
+    )
+
+
+def rods_frequency(nu: float) -> float:
+    r"""The frequency, Hz, of the normalized :math:`\nu = \omega a / 2\pi c`."""
+    return nu * C0 / (ROD_A * MM)
 
 
 # --- F1: Fresnel slab between Floquet ports -----------------------------------------

@@ -100,6 +100,20 @@ def test_lossy_bloch_mode_is_refined_two_sided(c3_mesh):
         eop.free_handle()
 
 
+def test_a_lossy_bloch_cell_returns_its_nearest_band(tmp_path):
+    # loss in the rod only: the seed is not exactly divergence-free, and
+    # refined at a target far below it, it would drift to the static fields
+    mesh = pc.rods_mesh(tmp_path)
+    k = (0.5 * math.pi / (pc.ROD_A * MM), 0.0, 0.0)
+    problem = gfem.Eigenmode(pc.rods_frequency(0.02), n_modes=1, wave_vector=k)
+
+    def omega(tan_delta):
+        model = pc.rods(mesh, tan_delta=tan_delta)
+        return np.asarray(gfem.solve(model, problem).omega)
+
+    np.testing.assert_allclose(omega(0.01).real, omega(0.0).real, rtol=1e-3)
+
+
 def test_a_discretization_keeps_the_spaces_of_eight_bloch_phase_sets(c2_mesh):
     # a band path: every wave vector adds its spaces to the discretization
     model = pc.c2(c2_mesh)
@@ -178,3 +192,71 @@ def test_bloch_eigen_refusals_come_before_assembly(
     monkeypatch.setattr(eigen_rule, "driven_operator", assembled)
     with pytest.raises(error, match=message):
         gfem.solve(pc.c2(c2_mesh), _bloch_c2(), options=gfem.SolverOptions(**options))
+
+
+def test_v_g_is_none_without_a_wave_vector_and_a_complex_vector_with_one(
+    c2_mesh, c3_mesh
+):
+    # the lowest Bloch band of the empty C2 cell: a plane wave along k + G
+    result = gfem.solve(pc.c2(c2_mesh), _bloch_c2())
+    v = np.asarray(result.v_g)
+    assert v.shape == (1, 3)
+    assert v.dtype == np.complex128
+    # lossless: snapped real, and nothing outside the span of the translations
+    assert not v.imag.any()
+    assert v[0, 2] == 0
+    assert np.isfinite(v).all()
+    # the same solve under jit-free eager use gives the dataset a "m/s" variable
+    xarray = pytest.importorskip("xarray")
+    assert isinstance(result.to_xarray(), xarray.Dataset)
+    ds = result.to_xarray()
+    assert ds["v_g"].dims == ("mode", "direction")
+    assert ds["direction"].values.tolist() == ["x", "y", "z"]
+    assert ds["v_g"].attrs["units"] == "m/s"
+    # plain periodicity: no wave vector, no group velocity, no variable
+    plain = gfem.solve(
+        pc.c3(c3_mesh),
+        gfem.Eigenmode(target=pc.C3_PLAIN_TARGET, n_modes=2),
+        options=gfem.SolverOptions(order=pc.C3_ORDER),
+    )
+    assert plain.v_g is None
+    assert "v_g" not in plain.to_xarray()
+
+
+def test_the_codec_writes_v_g_only_when_there_is_one():
+    import gfem.job  # registers the gfem classes
+    from gfem import _codec
+
+    context = _codec.Context(__import__("pathlib").Path())
+
+    def round_trip(result):
+        encoder = _codec.Encoder(context)
+        doc = encoder.encode(result)
+        return doc, _codec.Decoder(context, encoder.arrays).decode(doc)
+
+    plain = gfem.EigenmodeResult(omega=np.array([1e10 + 0j]), error=np.array([1e-12]))
+    doc, back = round_trip(plain)
+    assert "v_g" not in str(doc)
+    assert back.v_g is None
+    with_v = gfem.EigenmodeResult(
+        omega=np.array([1e10 + 0j]),
+        error=np.array([1e-12]),
+        v_g=np.array([[1.5e8, 0.0, 0.0]], dtype=complex),
+    )
+    _, back = round_trip(with_v)
+    np.testing.assert_array_equal(back.v_g, with_v.v_g)
+
+
+def test_v_g_at_order_3_on_two_pairs_matches_the_empty_lattice(c2_mesh):
+    # some rows of P mix two lattice vectors at order 3 with two pairs: the
+    # derivative of P is taken entry by entry
+    periods = (pc.C2_AX * MM, pc.C2_AY * MM, None)
+    exact = pc.empty_lattice(pc.C2_K, periods, pc.C2_EPS, n=1)[0]
+    problem = gfem.Eigenmode(target=0.9 * exact, n_modes=3, wave_vector=pc.C2_K)
+    result = gfem.solve(pc.c2(c2_mesh), problem, options=gfem.SolverOptions(order=3))
+    v = np.asarray(result.v_g)
+    assert np.isfinite(v).all()
+    k = np.asarray(pc.C2_K)
+    want = pc.C0 / math.sqrt(pc.C2_EPS) * k / np.linalg.norm(k)
+    band = int(np.argmin(np.asarray(result.omega).real))
+    assert np.abs(v[band] - want).max() <= 1e-6 * pc.C0

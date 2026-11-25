@@ -417,6 +417,19 @@ def test_a_bloch_solve_gives_the_same_s_after_its_phase_set_was_evicted(c1_mesh)
     assert np.abs(after - before).max() <= 1e-12 * np.abs(before).max()
 
 
+def test_bloch_driven_s_with_the_template_equals_a_fresh_discretization(c1_mesh):
+    # from the second wave vector on, P is the phase template's
+    model = pc.c1(c1_mesh)
+    ks = [(f * pc.C1_K[0], 0.0, 0.0) for f in (1.0, -0.6, 1.7)]
+    cache.release_memory()
+    swept = [_bloch_s(model, k) for k in ks]
+    disc = cache.discretization(model.mesh, model._periodic)
+    assert [t.serves for t in disc.templates.values()] == [True]
+    for k, s in zip(ks, swept, strict=True):
+        cache.release_memory()
+        np.testing.assert_allclose(s, _bloch_s(model, k), rtol=1e-12, atol=0)
+
+
 # --- a first-order absorbing boundary under an oblique wave ---------------------------
 
 OBLIQUE_L, OBLIQUE_A, OBLIQUE_SHEET = 6.0, 1.0, 2.5  # mm

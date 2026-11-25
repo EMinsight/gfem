@@ -205,6 +205,33 @@ class PortModeTrackingWarning(UserWarning):
     """
 
 
+class LostBandWarning(UserWarning):
+    """A band found inside the window has no partner at a neighbouring wave vector.
+
+    `gfem.band_diagram` connects each wave vector's bands to the previous
+    one's by field overlap. A band inside the window that continues into
+    none at a neighbouring wave vector means the path is too coarse there, or
+    that a solve missed a mode; the bands keep frequency order, but beyond
+    that wave vector it may put one band's values in another's place.
+    `gfem.BandDiagram.lost` marks them. Use more ``n_points``, a target
+    nearer the bands, or more ``n_bands``. Filter it with Python's
+    `warnings` module.
+    """
+
+
+class UnanchoredBandWindowWarning(UserWarning):
+    """A band diagram's target is not below half its highest band at a wave vector.
+
+    The bands found there may then not be the lowest, so their order is a
+    rank within the window, not the band number, and a gap read there can
+    be wrong. A window around a high target is a legitimate look at higher
+    bands: filter the warning with Python's `warnings` module. With
+    ``n_bands=1`` on a slab (at most 2 in 3D) it can fire falsely at Γ,
+    where every requested band is static. `gfem.BandDiagram.anchored`
+    marks the wave vectors.
+    """
+
+
 class SkippedPortModeWarning(UserWarning):
     """A port surface skips a port mode below its highest requested mode.
 

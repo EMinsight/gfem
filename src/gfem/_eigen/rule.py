@@ -94,7 +94,7 @@ from gfem._boundaries import (
     LumpedPort,
     WavePort,
 )
-from gfem._eigen import arpack, slepc
+from gfem._eigen import arpack, slepc, velocity
 from gfem._eigen.adjoint import deflated_solve, reshift_offset
 from gfem._eigen.kept import KeptOperator
 from gfem._eigen.operator import EigenOperator
@@ -193,7 +193,7 @@ _CROWDED = 10.0
 _SYMMETRIC_RTOL = 1e-3
 #: A Bloch cluster's ``G = Y^T T' X`` with a condition number above this is
 #: singular: a defective eigenvalue, whose frequency has no derivative.
-_DEFECTIVE = 1e8
+_DEFECTIVE = velocity.DEFECTIVE
 #: A mode with ``|y^T T'(k) x|`` below this times ``|y| |T'(k) x|`` is
 #: defective: the singular system of its mode-field adjoint has no solution.
 _DEFECTIVE_FIELD = 1e-8
@@ -478,6 +478,9 @@ class EigenmodeRule:
                     skip=warned,
                 )
                 outputs, x = self._outputs(model, op, divfree, modes, ports)
+                outputs["v_g"] = self._band_velocity(
+                    model, op, eop, found=found, x=x, stretch=stretch
+                )
                 ks = [m.k for m in modes]
                 self._warn_modes(found, built.scale)
                 lowest = min(k.real for k in ks) * const.c / built.scale
@@ -525,6 +528,40 @@ class EigenmodeRule:
                 if divfree is not None:
                     divfree.free()
         return outputs, entry
+
+    def _band_velocity(
+        self,
+        model: Model,
+        op: DrivenOperator,
+        eop: EigenOperator,
+        *,
+        found: FoundModes,
+        x: np.ndarray,
+        stretch: Stretch | None,
+    ) -> np.ndarray:
+        r"""``(n, 3)`` complex :math:`\partial\omega/\partial\mathbf{k}`, m/s.
+
+        NaN without a wave vector (the result then holds ``None``) and where the
+        phase template does not stand for ``P``: under ranks, or when its
+        build check failed. Snapped real for a mode whose ``omega`` is.
+        """
+        n = len(found.modes)
+        nan = np.full((n, 3), np.nan + 0j)
+        if self.problem.wave_vector is None:
+            return nan
+        if op.expansion is None or op.expansion.lattice_vectors is None:
+            return nan
+        plain = driven_operator(
+            model, self.options.order, paired=False, stretch=stretch
+        )
+        y = np.stack([m.x if m.y is None else m.y for m in found.modes], axis=1)
+        v = velocity.group_velocity(
+            op, plain, eop, ks=np.array(found.ks), x=x, y=y, gaps=found.gaps
+        )
+        for j, k in enumerate(found.ks):
+            if k.imag == 0:
+                v[j] = v[j].real
+        return v
 
     def _ride_duals(
         self,
@@ -1194,6 +1231,7 @@ class EigenmodeRule:
             "sheet": jax.ShapeDtypeStruct((len(self.kinetic), n), jnp.float64),
             "e_field": jax.ShapeDtypeStruct((rows, n), jnp.complex128),
             "cluster": jax.ShapeDtypeStruct((n,), jnp.int64),
+            "v_g": jax.ShapeDtypeStruct((n, 3), jnp.complex128),
         }
 
     def role(self, kind: tuple) -> str:
@@ -1266,9 +1304,14 @@ class EigenmodeRule:
             "Wrap it in jax.lax.stop_gradient to use its value without its derivative."
         )
         if name not in _MODE_FIELD:
+            what = (
+                "the band group velocity, read from the modes"
+                if name == "v_g"
+                else "the backward error of the solve"
+            )
             return (
-                f"{head}: it is the backward error of the solve, which has no "
-                "derivative with respect to anything. " + opt_out
+                f"{head}: it is {what}, which has no derivative with respect "
+                "to anything. " + opt_out
             )
         why = self._solve_refusal()
         refusal = None if why is not None else self._input_refusal(name, kinds)
@@ -1858,6 +1901,11 @@ class EigenmodeRule:
             periodic_surfaces=self._periodic_surfaces,
             cluster=jnp.asarray(outputs["cluster"]),
             pml=self._pml,
+            v_g=(
+                None
+                if self.problem.wave_vector is None
+                else jnp.asarray(outputs["v_g"])
+            ),
         )
 
 

@@ -2435,6 +2435,26 @@ class EigenmodeResult:
             through one member raises `gfem.DegenerateModeError`. Labels
             count from 0 in mode order; a simple mode has a label of its
             own.
+        v_g: The band group velocity :math:`\partial\omega/\partial\mathbf{k}`
+            of each mode of a Bloch solve (``Eigenmode.wave_vector``), m/s,
+            ``(n_modes, 3)`` complex: the Cartesian vector, in the span of the
+            cell's translations (its other components are 0); ``None``
+            without a wave vector. It is the exact derivative of the
+            discrete band, from the mode and its left eigenvector. On a
+            lossy cell it is the derivative of the complex band: the real
+            part is the group velocity of a weakly lossy band, the
+            imaginary part the derivative of its decay rate; on a lossless
+            cell it is real. Modes whose frequencies lie within
+            :math:`10^{-3}` relative of each other form a group: they
+            share one value when their slopes agree (a symmetry doublet at
+            a high-symmetry point), and it is NaN when the bands touch with
+            different slopes (the frequency is not differentiable there),
+            for a group that ``n_modes`` cuts, for a defective group, and
+            (then for every mode) where the expansion's phase template does
+            not stand for the periodic pairs.
+            Not differentiable: a gradient through it raises
+            `gfem.NonDifferentiableError`. The group index is
+            :math:`c / |v_g|`.
     """
 
     omega: jax.Array
@@ -2451,6 +2471,7 @@ class EigenmodeResult:
     periodic_surfaces: tuple[tuple[str, str], ...] = ()
     sheet_participation: dict[str, jax.Array] = dataclasses.field(default_factory=dict)
     pml: PML | None = None
+    v_g: jax.Array | None = None
 
     def __post_init__(self) -> None:
         """Hold fields, materials and pairs as tuples and dict; label simple modes."""
@@ -2506,8 +2527,9 @@ class EigenmodeResult:
         axis for both (NaN where a port has no value), and
         `bulk_participation` over ``("mode", "region")``, and
         `principal_participation` over ``("mode", "anisotropic_region",
-        "axis")`` (axis 0, 1, 2 in each material's ``axes`` order), and
-        `sheet_participation` over ``("mode", "sheet")``. The fields
+        "axis")`` (axis 0, 1, 2 in each material's ``axes`` order),
+        `sheet_participation` over ``("mode", "sheet")``, and `v_g` (m/s)
+        over ``("mode", "direction")`` (x, y, z) of a Bloch solve. The fields
         and materials are not exported. Needs the ``xarray`` extra: ``pip
         install "gfem[xarray]"``.
 
@@ -2558,6 +2580,9 @@ class EigenmodeResult:
                 ("mode", "sheet"),
                 np.stack([np.asarray(v) for v in self.sheet_participation.values()], 1),
             )
+        if self.v_g is not None:
+            coords["direction"] = ["x", "y", "z"]
+            data["v_g"] = _variable(("mode", "direction"), self.v_g, "m/s")
         return xr.Dataset(data, coords=coords)
 
     def __repr__(self) -> str:
@@ -2583,6 +2608,7 @@ register_fields(
         "cluster",
         "principal_participation",
         "sheet_participation",
+        "v_g",
     ),
 )
 

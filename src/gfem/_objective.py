@@ -1197,7 +1197,7 @@ def _curvature(
 # --- the mode-aligned view ------------------------------------------------------------
 
 #: The `EigenmodeResult` attributes with one entry per mode along axis 0.
-_MODE_AXIS = ("omega", "error", "cluster")
+_MODE_AXIS = ("omega", "error", "cluster", "v_g")
 _MODE_MAPS = (
     "q_port",
     "participation",

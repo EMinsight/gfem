@@ -34,6 +34,12 @@ its backward are one visit) takes the most recently returned, so a one-shot
 sweep or gradient keeps one handle. Pooled handles whose mesh
 topology has no discretization left are freed.
 
+**Bloch phase templates** (``Discretization.templates``): a periodic
+expansion or gradient matrix as a function of its Bloch phases
+(`PhaseTemplate`), so that a discretization that meets a second wave vector
+stops converting it (`Discretization.phased`). Phase-independent: kept for
+the life of the discretization, outside ``retain_memory``, as its spaces are.
+
 **Kept discretization state**: a discretization's kept
 fixed parts (`KeptParts` stores among its spaces), its kept wave port couplings
 and port networks (``Discretization.ports``) and its design initial guesses
@@ -91,6 +97,7 @@ from collections.abc import Callable, Collection, Hashable, Iterable
 from typing import Any
 
 import numpy as np
+import scipy.sparse
 
 from gfem import _mpi
 from gfem._engine.mesh import EngineMesh, to_ngsolve
@@ -104,6 +111,7 @@ __all__ = [
     "Discretization",
     "Entry",
     "EntryCache",
+    "PhaseTemplate",
     "default_retain_memory",
     "discretization",
     "memory_limit",
@@ -122,6 +130,131 @@ _MAX_PHASE_SETS = 8
 _MAX_SWEPT_SETS = 2
 #: Design initial guesses a discretization keeps, least recently kept out first.
 _MAX_GUESSES = 4
+#: Each pair's angle :math:`\theta_j` at the conversion a phase template is
+#: decoded from (`PhaseTemplate.decode`): no two exponent vectors of
+#: `_EXPONENTS` (up to three pairs) give angles :math:`\mathbf{n}\cdot
+#: \boldsymbol{\theta}` within 0.023 rad of each other modulo :math:`\pi`,
+#: so each entry has one real coefficient.
+PROBE_ANGLES = (1.8851, 2.9906, 1.633)
+#: The exponents per pair a phase template's entries are decoded from (0 and 1
+#: on every mesh measured).
+_EXPONENTS = range(-2, 3)
+#: The largest gap between a phase template's entries and a conversion it
+#: stands for, relative to the conversion's largest entry (1e-16 to 9e-16
+#: measured).
+TEMPLATE_TOL = 1e-13
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class PhaseTemplate:
+    r"""A Bloch-phased sparse matrix as a function of its phases.
+
+    Each stored entry of a periodic expansion or gradient matrix is
+    :math:`g\,e^{-i\,\mathbf{n}\cdot\boldsymbol{\theta}}`, with :math:`g`
+    real, :math:`\mathbf{n}` one integer exponent per pair and pair
+    :math:`j`'s phase :math:`e^{-i\theta_j}`, :math:`\theta_j = \mathbf{k}
+    \cdot\mathbf{a}_j` (`gfem._periodic.bloch_phases`). Entries of one row
+    may carry different exponents.
+
+    Attributes:
+        shape: The matrix's shape.
+        indptr: Its CSR row pointers.
+        indices: Its CSR column indices.
+        coefficients: :math:`g` per stored entry, in CSR order.
+        exponents: :math:`\mathbf{n}` per stored entry, ``(nnz, pairs)``.
+        fit: The gap (`gap`) to the conversion it was decoded from.
+    """
+
+    shape: tuple[int, int]
+    indptr: np.ndarray
+    indices: np.ndarray
+    coefficients: np.ndarray
+    exponents: np.ndarray
+    fit: float = 0.0
+
+    @classmethod
+    def decode(
+        cls, matrix: scipy.sparse.csr_matrix, angles: tuple[float, ...]
+    ) -> PhaseTemplate:
+        r"""The template of ``matrix``, converted at the phases :math:`e^{-i\theta_j}`.
+
+        Each entry :math:`v` takes the exponent of `_EXPONENTS` that makes
+        :math:`v\,e^{i\,\mathbf{n}\cdot\boldsymbol{\theta}}` nearest to real
+        (``angles`` are the :math:`\theta_j`), and its real part.
+        """
+        matrix = matrix.tocsr(copy=True)
+        matrix.sum_duplicates()
+        values = matrix.data
+        theta = np.asarray(angles, dtype=float)
+        candidates = np.array(list(itertools.product(_EXPONENTS, repeat=len(theta))))
+        best = np.zeros(values.size, dtype=int)
+        residual = np.full(values.size, np.inf)
+        for i, n in enumerate(candidates):
+            off = np.abs((values * np.exp(1j * float(n @ theta))).imag)
+            better = off < residual
+            best[better] = i
+            residual[better] = off[better]
+        exponents = candidates[best].astype(np.int8)
+        coefficients = (values * np.exp(1j * (exponents @ theta))).real
+        template = cls(
+            matrix.shape, matrix.indptr, matrix.indices, coefficients, exponents
+        )
+        phases = tuple(complex(np.exp(-1j * t)) for t in theta)
+        return dataclasses.replace(template, fit=template.gap(matrix, phases))
+
+    def matrix(self, phases: tuple[complex, ...]) -> scipy.sparse.csr_matrix:
+        """The matrix at the Bloch ``phases`` (one unit complex number per pair)."""
+        theta = -np.angle(np.asarray(phases))
+        data = self.coefficients * np.exp(-1j * (self.exponents @ theta))
+        return scipy.sparse.csr_matrix(
+            (data, self.indices.copy(), self.indptr.copy()), shape=self.shape
+        )
+
+    def gap(
+        self, matrix: scipy.sparse.csr_matrix, phases: tuple[complex, ...]
+    ) -> float:
+        """The largest entry of ``matrix - self.matrix(phases)``, relative.
+
+        Entry by entry over the same stored entries, relative to ``matrix``'s
+        largest; infinite when ``matrix`` stores others.
+        """
+        if not (
+            np.array_equal(matrix.indptr, self.indptr)
+            and np.array_equal(matrix.indices, self.indices)
+        ):
+            return np.inf
+        diff = np.abs(matrix.data - self.matrix(phases).data).max(initial=0.0)
+        if not diff:
+            return 0.0
+        return float(diff / np.abs(matrix.data).max())
+
+    def lattice_vectors(
+        self, translations: tuple[tuple[float, ...], ...]
+    ) -> np.ndarray:
+        r"""Each entry's lattice vector, ``(nnz, 3)``.
+
+        :math:`\mathbf{m} = \sum_j n_j\mathbf{a}_j`, with ``translations``
+        the pairs' :math:`\mathbf{a}_j`, in their units: the entry is
+        :math:`g\,e^{-i\,\mathbf{m}\cdot\mathbf{k}}`.
+        """
+        return self.exponents @ np.asarray(translations, dtype=float)
+
+
+@dataclasses.dataclass(eq=False)
+class Templated:
+    """A discretization's phase template of one matrix, and whether it serves.
+
+    Attributes:
+        first: The first phase set the matrix was converted at, ``None``
+            before one.
+        template: The decoded template, ``None`` before it is needed.
+        serves: ``True`` once the template passed its check at a second
+            phase set, ``False`` if it failed it, ``None`` before.
+    """
+
+    first: tuple[complex, ...] | None = None
+    template: PhaseTemplate | None = None
+    serves: bool | None = None
 
 
 @dataclasses.dataclass(eq=False)
@@ -142,6 +275,8 @@ class Discretization:
         guesses: Design initial guesses: a design's solution
             blocks (anything with ``nbytes``), by key, each with what a later
             solve must match to start from it (`guess`).
+        templates: The phase templates of its Bloch-phased matrices
+            (`phased`), by key.
     """
 
     built: EngineMesh
@@ -151,6 +286,7 @@ class Discretization:
     guesses: dict[Hashable, tuple[Hashable, Any]] = dataclasses.field(
         default_factory=dict
     )
+    templates: dict[Hashable, Templated] = dataclasses.field(default_factory=dict)
     _groups: collections.OrderedDict[Hashable, set[Hashable]] = dataclasses.field(
         default_factory=collections.OrderedDict, repr=False
     )
@@ -201,6 +337,55 @@ class Discretization:
                     if not any(old in held for held in other.values()):
                         self.spaces.pop(old, None)
         return self.spaces[key]
+
+    def phased(
+        self,
+        key: Hashable,
+        phases: tuple[complex, ...],
+        direct: Callable[[], scipy.sparse.csr_matrix],
+        convert: Callable[[tuple[complex, ...]], scipy.sparse.csr_matrix],
+    ) -> scipy.sparse.csr_matrix:
+        """The Bloch-phased matrix ``key`` at ``phases``.
+
+        ``direct()`` converts it at ``phases``, on the cached spaces;
+        ``convert(phases)`` converts it at any phase set, on spaces of its
+        own. The first phase set the discretization meets for ``key``
+        converts. The second one converts too, decodes ``key``'s template
+        (`phase_template`) and checks it against that conversion entry by
+        entry (`PhaseTemplate.gap`): within `TEMPLATE_TOL`, every later phase
+        set takes the template's matrix, otherwise every later one converts.
+        So a loop at one wave vector never decodes, and a mesh where an entry
+        mixes two exponents keeps NGSolve's conversion.
+        """
+        state = self.templates.setdefault(key, Templated())
+        if state.serves and state.template is not None:
+            return state.template.matrix(phases)
+        if state.first is None:
+            state.first = phases
+        matrix = direct()
+        if state.serves is None and phases != state.first:
+            template = self.phase_template(key, convert)
+            state.serves = (
+                max(template.fit, template.gap(matrix, phases)) <= TEMPLATE_TOL
+            )
+        return matrix
+
+    def phase_template(
+        self,
+        key: Hashable,
+        convert: Callable[[tuple[complex, ...]], scipy.sparse.csr_matrix],
+    ) -> PhaseTemplate:
+        """The phase template of the matrix ``key`` (`phased`'s ``convert``).
+
+        Decoded on first use from one conversion at `PROBE_ANGLES`, then kept.
+        Whether it stands for the matrix at a phase set is its `gap` there.
+        """
+        state = self.templates.setdefault(key, Templated())
+        if state.template is None:
+            angles = PROBE_ANGLES[: len(self.built.pairs)]
+            probe = convert(tuple(complex(np.exp(-1j * t)) for t in angles))
+            state.template = PhaseTemplate.decode(probe, angles)
+        return state.template
 
     @property
     def phase_sets(self) -> int:

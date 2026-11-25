@@ -34,7 +34,7 @@ def _section():
     h = WIDTH / NX
     x[inner] += rng.uniform(-0.15, 0.15, inner.sum()) * h
     y[inner] += rng.uniform(-0.15, 0.15, inner.sum()) * h
-    # shuffle the node numbers so the lowest-index rule meets every pattern
+    # shuffle the node numbers so the split meets every pattern
     perm = rng.permutation(len(x))
     nodes = np.zeros((len(x), 3))
     nodes[perm, 0], nodes[perm, 1] = x, y
@@ -250,6 +250,123 @@ def test_an_ordinary_mesh_has_no_section_thickness():
     mesh = gfem.Mesh.from_gmsh(TWO_BOX, length_unit="um")
     assert mesh.section_thickness is None
     assert "section_thickness" not in repr(mesh)
+
+
+# --- the split depends on coordinates, not node numbers ------------------------------
+
+CELL = 1.0  # um, the periodic cell's side
+NC = 4  # cells along each side
+SIDES = {"x_min": 11, "x_max": 12, "y_min": 13, "y_max": 14}
+
+
+def _renumbered(path: Path, out: Path, seed: int) -> Path:
+    """The same section with its node numbers shuffled."""
+    raw = meshio.read(path, file_format="gmsh")
+    perm = np.random.default_rng(seed).permutation(len(raw.points))
+    new = np.empty_like(perm)
+    new[perm] = np.arange(len(perm))
+    shuffled = meshio.Mesh(
+        raw.points[perm],
+        [(c.type, new[c.data]) for c in raw.cells],
+        cell_data=raw.cell_data,
+        field_data=raw.field_data,
+    )
+    meshio.write(out, shuffled, file_format="gmsh22", binary=False)
+    return out
+
+
+def write_periodic_cell(path: Path, *, shuffled=False, sheared=False) -> Path:
+    r"""A periodic cell of side `CELL`, numbered as gmsh numbers a periodic mesh.
+
+    Opposite sides hold the same nodes up to the lattice translation, as
+    ``setPeriodic`` meshes them, but gmsh numbers each side along its own
+    direction around the cell: the corners first, then the bottom and right
+    sides forward, the top and left sides backward, then the inner nodes
+    (perturbed, on alternating diagonals). ``shuffled`` shuffles the node
+    numbers; ``sheared`` shears the cell onto a hexagonal lattice, with the
+    lattice vectors :math:`a_1 = (L, 0)` and :math:`a_2 = (L/2, \sqrt{3} L/2)`.
+    """
+    rng = np.random.default_rng(1)
+    order = [(0, 0), (NC, 0), (NC, NC), (0, NC)]
+    order += [(i, 0) for i in range(1, NC)] + [(NC, j) for j in range(1, NC)]
+    order += [(i, NC) for i in range(NC - 1, 0, -1)]
+    order += [(0, j) for j in range(NC - 1, 0, -1)]
+    order += [(i, j) for j in range(1, NC) for i in range(1, NC)]
+    number = {ij: k for k, ij in enumerate(order)}
+    h = CELL / NC
+    nodes = np.array([[i * h, j * h, 0.0] for i, j in order])
+    inner = len(order) - (NC - 1) ** 2
+    nodes[inner:, :2] += rng.uniform(-0.15, 0.15, ((NC - 1) ** 2, 2)) * h
+    if sheared:
+        x, y = nodes[:, 0].copy(), nodes[:, 1].copy()
+        nodes[:, 0], nodes[:, 1] = x + 0.5 * y, y * np.sqrt(3) / 2
+    tris = []
+    for j in range(NC):
+        for i in range(NC):
+            a, b = number[i, j], number[i + 1, j]
+            c, d = number[i + 1, j + 1], number[i, j + 1]
+            tris += [(a, b, c), (a, c, d)] if (i + j) % 2 else [(a, b, d), (b, c, d)]
+    lines = {
+        "x_min": [(number[0, j], number[0, j + 1]) for j in range(NC)],
+        "x_max": [(number[NC, j], number[NC, j + 1]) for j in range(NC)],
+        "y_min": [(number[i, 0], number[i + 1, 0]) for i in range(NC)],
+        "y_max": [(number[i, NC], number[i + 1, NC]) for i in range(NC)],
+    }
+    line_tags = np.repeat([SIDES[k] for k in lines], NC)
+    raw = meshio.Mesh(
+        nodes,
+        [("triangle", np.array(tris)), ("line", np.concatenate(list(lines.values())))],
+        cell_data={
+            "gmsh:physical": [np.ones(len(tris), int), line_tags],
+            "gmsh:geometrical": [np.ones(len(tris), int), line_tags],
+        },
+        field_data={"cell": np.array([1, 2])}
+        | {k: np.array([v, 1]) for k, v in SIDES.items()},
+    )
+    meshio.write(path, raw, file_format="gmsh22", binary=False)
+    return _renumbered(path, path, 2) if shuffled else path
+
+
+def _by_coordinates(mesh, cells):
+    """Each cell as the sorted set of its node coordinates, the cells sorted."""
+    x = np.asarray(mesh.imported_nodes)[cells]
+    return sorted(tuple(sorted(map(tuple, c))) for c in x.tolist())
+
+
+def test_the_split_does_not_depend_on_the_node_numbering(tmp_path):
+    path = write_section(tmp_path / "s.msh")
+    slab = gfem.Mesh.from_gmsh_cross_section(path, length_unit="um")
+    other = gfem.Mesh.from_gmsh_cross_section(
+        _renumbered(path, tmp_path / "r.msh", 3), length_unit="um"
+    )
+    assert _by_coordinates(other, other.tetrahedra) == _by_coordinates(
+        slab, slab.tetrahedra
+    )
+    assert _by_coordinates(other, other.triangles) == _by_coordinates(
+        slab, slab.triangles
+    )
+
+
+@pytest.mark.parametrize("shuffled", [False, True], ids=["gmsh_order", "shuffled"])
+@pytest.mark.parametrize("sheared", [False, True], ids=["square", "hexagonal"])
+def test_a_periodic_section_pairs_whatever_its_node_numbering(
+    tmp_path, shuffled, sheared
+):
+    path = write_periodic_cell(tmp_path / "c.msh", shuffled=shuffled, sheared=sheared)
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh_cross_section(path, length_unit="um"),
+        materials={"cell": gfem.Material()},
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+        ],
+    )
+    a2 = (0.5, np.sqrt(3) / 2) if sheared else (0.0, 1.0)
+    np.testing.assert_allclose(
+        model.periodic_translations,
+        [(CELL * 1e-6, 0.0, 0.0), (a2[0] * CELL * 1e-6, a2[1] * CELL * 1e-6, 0.0)],
+        atol=1e-18,
+    )
 
 
 # --- refusals ------------------------------------------------------------------------

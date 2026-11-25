@@ -217,7 +217,7 @@ Tests: [closed forms and the slab](https://github.com/benvial/gfem/blob/main/tes
 
 ## Periodic cells
 
-Each case compares a periodic solve with a closed form:
+Each case compares a periodic solve with a closed form or a converged reference:
 
 - **A Bloch two-port line.** A lossy parallel-plate line periodic along x,
   with two 50 Ω lumped ports, gives the S of the closed-form Bloch impedance
@@ -234,6 +234,13 @@ Each case compares a periodic solve with a closed form:
   k = 0 with plain periodicity.
 - **An empty cube periodic along x, y and z.** Its lowest band is the
   light-line doublet c|k|/2π.
+- **Band diagrams.** The empty square lattice's bands and band group
+  velocities along Γ-X-M-Γ are the empty-lattice values, with the bands
+  crossing and the static band filled in at Γ. A square lattice of alumina
+  rods gives its Ez and Hz bands at Γ, X and M, its band group velocities and
+  its Ez gap as converged two-dimensional finite-element and plane-wave
+  solutions do. Every wave vector of a diagram equals the same wave vector
+  solved alone, and a lossy crystal's sweep finds every band.
 
 Further checks: a wave vector of (0, 0, 0) gives the solution with no wave
 vector, plain periodic walls give the same S as PMC walls on a field uniform
@@ -242,6 +249,7 @@ the plain line's S matches the direct solver's, SLEPc finds the Bragg line's
 bands, and a Bloch operator is refused.
 
 Tests: [driven](https://github.com/benvial/gfem/blob/main/tests/verification/test_periodic_driven.py),
+[bands](https://github.com/benvial/gfem/blob/main/tests/verification/test_bands.py),
 [eigenmode](https://github.com/benvial/gfem/blob/main/tests/verification/test_periodic_eigen.py),
 [identities, driven](https://github.com/benvial/gfem/blob/main/tests/unit/test_periodic_driven.py),
 [identities, eigenmode](https://github.com/benvial/gfem/blob/main/tests/unit/test_periodic_eigen.py),
