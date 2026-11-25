@@ -319,8 +319,8 @@ added beyond the grating's RCWA reference.
   $+2\psi$ from the top face and $-2\psi$ from the bottom. A PEC mirror gives
   $\mathrm{diag}(1,1,-1,-1)$ and an empty cell the identity. The power
   balance (reflectance, transmittance, absorptance and the power coupled to
-  unreported orders) adds to 1 to rounding for every polarization, and
-  refuses a cell with an unreported propagating order.
+  lumped or wave ports of a fed cell) adds to 1 to rounding for every
+  polarization, and refuses a cell with an unreported propagating order.
 - **Angle sweeps.** One sweep over normal, oblique and conical incidences of
   the slab gives, for each member, the Airy Jones matrix at its own wave
   vector, with the unpolarized efficiencies independent of the azimuth where
@@ -333,8 +333,9 @@ added beyond the grating's RCWA reference.
   $1 - |r|^2$ of the PEC-terminated Airy form, at normal and oblique
   incidence. On a lossy slab between air and glass, the emissivity at each
   node of the hemispherical rule matches $1 - |r|^2 - |t|^2$, and the
-  hemispherical emissivity matches the sum of the weights on the same nodes
-  and the exact integral to about $10^{-4}$. The quadrature rule integrates
+  hemispherical emissivity matches the weighted sum of the closed form on the
+  same nodes to about $10^{-5}$; the rule itself, with eight polar nodes,
+  reproduces the exact integral of that slab to about $10^{-5}$. The quadrature rule integrates
   powers of the cosine exactly and reproduces the unfolded rule on a
   symmetric integrand. Kirchhoff's law is checked on a grating without mirror
   symmetry: the power missing from the row of an outgoing wave equals, to
@@ -343,10 +344,11 @@ added beyond the grating's RCWA reference.
   discriminated.
 - **Cell response.** A response tabulated from a smooth analytic function
   reproduces it to rounding, equals the stored values and derivatives at the
-  samples and is differentiable across them. On a silicon nitride ridge cell
+  samples and is differentiable across them. On a dielectric ridge cell
   with a morphed mesh, Hermite interpolation of the stored value and
   derivative matches solves at held-out widths to a few $10^{-4}$, and the
-  error falls as the fourth power of the sample spacing.
+  error falls close to the fourth power of the sample spacing (a fitted order
+  of about 3.9 between five and nine samples).
 - **Propagation and the locally periodic approximation.** Plane waves
   advance by $e^{-ik_z d}$ in the propagating band and decay in the
   evanescent one. The focus of a one- and a two-dimensional lens matches the
