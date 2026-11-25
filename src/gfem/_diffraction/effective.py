@@ -1,7 +1,7 @@
 r"""Effective permittivity and permeability of a slab from Floquet-port S.
 
 The Nicolson-Ross-Weir retrieval in the robust-sign form, for the
-``e^{+i\omega t}`` convention. `retrieve` is the pure ``jax.numpy`` math;
+:math:`e^{+i\omega t}` convention. `retrieve` is the pure ``jax.numpy`` math;
 `effective_medium` reads the S, the media and the reference planes of a solved
 periodic cell and calls it once per polarization column.
 """
@@ -24,7 +24,7 @@ from gfem._diffraction.outputs import (
     check_surface,
     jones_block,
 )
-from gfem._floquet import C0
+from gfem._floquet import C0, IN_PLANE_SINE
 from gfem._pytree import register_fields
 from gfem.errors import NonDifferentiableError
 
@@ -45,7 +45,7 @@ def retrieve(  # noqa: PLR0917  (the six inputs of the retrieval, called positio
     k0d: jax.Array,
     eps_b: float,
     mu_b: float,
-    branch: int,
+    branch: int | tuple[int, int],
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     r"""Retrieve :math:`(\varepsilon, \mu, n, Z/Z_0)` of a slab from its S.
 
@@ -69,7 +69,8 @@ def retrieve(  # noqa: PLR0917  (the six inputs of the retrieval, called positio
             thickness (rad).
         eps_b: Background relative permittivity.
         mu_b: Background relative permeability.
-        branch: Integer :math:`m` of the phase sheet at the lowest frequency.
+        branch: Integer :math:`m` of the phase sheet at the lowest frequency;
+            a pair gives one per column of a two-column ``s11``.
 
     Returns:
         ``(permittivity, permeability, index, impedance)`` of the shape of
@@ -93,7 +94,8 @@ def retrieve(  # noqa: PLR0917  (the six inputs of the retrieval, called positio
     gamma = (z - 1) / (z + 1)
     t = s21 / (1 - s11 * gamma)
     phase = jnp.unwrap(jnp.angle(t), axis=0)
-    n = (2 * jnp.pi * branch - phase + 1j * jnp.log(jnp.abs(t))) / k0d
+    m = jnp.asarray(branch)
+    n = (2 * jnp.pi * m - phase + 1j * jnp.log(jnp.abs(t))) / k0d
     z_rel = z * jnp.sqrt(mu_b / eps_b)
     return n / z_rel, n * z_rel, n, z_rel
 
@@ -122,7 +124,8 @@ class EffectiveMedium:
             to :math:`Z_0`.
         thickness: The slab thickness between the reference planes, m.
         frequency: ``(n_freq,)`` Hz.
-        branch: The phase sheet used at the lowest frequency.
+        branch: The phase sheet ``(m_0, m_1)`` of each column at the lowest
+            frequency, always a pair.
 
     Raises:
         ValueError: An array field is not ``(n_freq, 2)``, or ``frequency``
@@ -135,7 +138,7 @@ class EffectiveMedium:
     impedance: jax.Array
     thickness: float
     frequency: np.ndarray
-    branch: int
+    branch: tuple[int, int]
 
     def __post_init__(self) -> None:
         frequency = np.atleast_1d(np.asarray(self.frequency, float))
@@ -152,7 +155,7 @@ class EffectiveMedium:
                 )
         object.__setattr__(self, "frequency", frequency)
         object.__setattr__(self, "thickness", float(self.thickness))
-        object.__setattr__(self, "branch", int(self.branch))
+        object.__setattr__(self, "branch", check_branch(self.branch, "EffectiveMedium"))
 
     def __repr__(self) -> str:
         return (
@@ -164,17 +167,33 @@ class EffectiveMedium:
 register_fields(EffectiveMedium, ("permittivity", "permeability", "index", "impedance"))
 
 
-def _check_branch(branch: Any, who: str) -> int:
-    if is_traced(branch):
+def _check_int(branch: Any, who: str) -> int:
+    if isinstance(branch, (bool, np.bool_)) or not isinstance(
+        branch, (int, np.integer)
+    ):
+        raise TypeError(
+            f"{who}: branch must be an int or a pair of ints, got {branch!r}."
+        )
+    return int(branch)
+
+
+def check_branch(branch: Any, who: str) -> tuple[int, int]:
+    """The phase sheet of each column as a pair of ints (an int serves both)."""
+    pair = isinstance(branch, (tuple, list)) or (
+        isinstance(branch, np.ndarray) and branch.ndim == 1
+    )
+    parts = tuple(branch) if pair else (branch,)
+    if is_traced(branch) or any(is_traced(b) for b in parts):
         raise NonDifferentiableError(
             f"{who}: branch is an integer sheet of the phase, a fixed value that "
             "gfem does not differentiate with respect to. Pass a concrete int."
         )
-    if isinstance(branch, (bool, np.bool_)) or not isinstance(
-        branch, (int, np.integer)
-    ):
-        raise TypeError(f"{who}: branch must be an int, got {branch!r}.")
-    return int(branch)
+    if pair and len(parts) != 2:
+        raise TypeError(
+            f"{who}: branch must be an int or a pair of ints, got {branch!r}."
+        )
+    m = tuple(_check_int(b, who) for b in parts)
+    return m if pair else (m[0], m[0])
 
 
 def _check_normal(who: str, cell: Any, names: dict[str, list[str]]) -> None:
@@ -204,7 +223,7 @@ def effective_medium(
     transmitted: str,
     *,
     model: Model,
-    branch: int = 0,
+    branch: int | tuple[int, int] = 0,
 ) -> EffectiveMedium:
     r"""The effective permittivity and permeability of a slab between two faces.
 
@@ -217,23 +236,37 @@ def effective_medium(
     slab faces, and the slab is what lies between the planes (thickness
     :math:`d`). The reflection :math:`S_{11}` and transmission
     :math:`S_{21}` of each column feed a Nicolson-Ross-Weir inversion (see
-    `gfem.diffraction`'s ``e^{+i\omega t}`` convention): the impedance root
+    `gfem.diffraction`'s :math:`e^{+i\omega t}` convention): the impedance root
     :math:`z = \sqrt{((1+S_{11})^2-S_{21}^2)/((1-S_{11})^2-S_{21}^2)}` with
     :math:`\operatorname{Re} z \ge 0` (passivity decides it within
     :math:`5\times10^{-3}` of zero), :math:`T = e^{-i n k_0 d}`, and
     :math:`n = (2\pi m - \arg T + i \ln|T|)/(k_0 d)` with :math:`\arg T`
     unwrapped along frequency from the principal value at the lowest one and
-    :math:`m` = ``branch``. Then :math:`\varepsilon = n / (Z/Z_0)` and
+    :math:`m` = ``branch``, per column. Then :math:`\varepsilon = n / (Z/Z_0)` and
     :math:`\mu = n\,Z/Z_0`.
 
     Both polarizations of the specular order need a Floquet port on both
-    faces and both incident columns must be excited. Several frequencies must
+    faces and both incident columns must be excited. The two faces must be
+    antiparallel (the slab lies between them). Several frequencies must
     increase strictly (the phase is unwrapped along them). Differentiable
-    through S (``jax.grad``, ``jax.jit``).
+    through S (``jax.grad``); ``jax.jit`` applies when the solve is inside the
+    traced function, since a traced result's wave vector cannot be checked for
+    normal incidence and raises.
+
+    At a half-wave thickness, :math:`n k_0 d = m\pi` with
+    :math:`m \ge 1`, a slab of low loss reflects nothing and transmits with
+    unit modulus, whatever its impedance: :math:`S_{11} \to 0` and
+    :math:`S_{21} \to \pm 1` leave :math:`z` undetermined (the quotient of the
+    inversion is :math:`0/0`), and :math:`\varepsilon` and :math:`\mu` lose
+    all accuracy and their derivatives blow up near it. Read the band away
+    from such frequencies, or a thinner slab.
 
     Warns when the cross-polarized reflection or transmission exceeds 1 % of
-    the co-polarized amplitude (the principal axes are not along
-    :math:`\hat e_1, \hat e_2`), and, when the ``transmitted`` columns are
+    the co-polarized total :math:`\sqrt{|r_{ii}|^2 + |t_{ii}|^2}` of the same
+    incident column (the principal axes are not along
+    :math:`\hat e_1, \hat e_2`; the total, not the same block's co-polarized
+    entry, so a matched or half-wave slab whose co-polarized reflection vanishes
+    does not warn on round-off), and, when the ``transmitted`` columns are
     excited too, when :math:`|S_{11} - S_{22}|` exceeds 1e-2 (a bianisotropic
     or asymmetric cell). These are model diagnostics, not accuracy claims. They
     are skipped while S is traced.
@@ -245,22 +278,25 @@ def effective_medium(
         model: The model the result was solved with.
         branch: Integer phase sheet of :math:`n k_0 d` at the lowest
             frequency (0 for a slab thinner than half a wavelength in the
-            medium).
+            medium): one int for both columns, or a pair ``(m_0, m_1)`` for
+            the column of :math:`\mathbf{E}` along :math:`\hat e_1` and that
+            along :math:`\hat e_2`, when their phases are on different sheets.
 
     Returns:
         An `EffectiveMedium`.
 
     Raises:
         TypeError: ``result`` or ``model`` has the wrong type, ``branch`` is
-            not an int.
+            neither an int nor a pair of ints.
         NonDifferentiableError: ``branch`` or the result's wave vectors are
             traced.
         NotImplementedError: The two faces have different media behind them.
         ValueError: An angle sweep (a sequence of results), a wave vector with
             a tangential part (oblique incidence), a face without Floquet
             ports, a missing or unexcited port, ``incident`` equal to
-            ``transmitted``, two orders' ports at different offsets, reference
-            planes that meet or cross, several frequencies not strictly
+            ``transmitted``, the TM and TE ports of a face at different offsets,
+            faces that are not antiparallel, reference planes that meet or
+            cross, several frequencies not strictly
             increasing.
 
     Warns:
@@ -268,7 +304,7 @@ def effective_medium(
             reflection that depends on the side, above the diagnostics above.
     """
     who = "effective_medium"
-    branch = _check_branch(branch, who)
+    branch = check_branch(branch, who)
     cell = cell_of(result, model, who)
     if cell.sequence:
         raise ValueError(
@@ -322,6 +358,12 @@ def effective_medium(
     offset_tr = cell.offsets.get(names[transmitted][0], 0.0)
     plane_in = f_in.origin + offset_in * f_in.normal
     plane_tr = f_tr.origin + offset_tr * f_tr.normal
+    if np.linalg.norm(f_in.normal + f_tr.normal) > IN_PLANE_SINE:
+        raise ValueError(
+            f"{who}: the inward normals of {incident!r} and {transmitted!r} are "
+            "not antiparallel, so the two faces do not bound a slab between "
+            "them. Name two opposite faces of the cell."
+        )
     thickness = float((plane_tr - plane_in) @ f_in.normal)
     if not thickness > 0.0:
         raise ValueError(
@@ -369,18 +411,28 @@ def _diagnose(  # noqa: PLR0917  (internal: labels and the two blocks)
     """Warn on cross-polarization and on side-dependent reflection (concrete S)."""
     if is_traced(refl) or is_traced(trans):
         return
+    # per incident column: the co-polarized total of reflection and transmission
+    scale = np.sqrt(
+        np.stack(
+            [
+                np.abs(np.asarray(refl[:, i, i])) ** 2
+                + np.abs(np.asarray(trans[:, i, i])) ** 2
+                for i in (0, 1)
+            ],
+            axis=1,
+        )
+    )  # (n_freq, 2)
     for label, block in (("reflection", refl), ("transmission", trans)):
         b = np.abs(np.asarray(block))
-        co = np.maximum(b[:, 0, 0], b[:, 1, 1])
-        cross = np.maximum(b[:, 0, 1], b[:, 1, 0])
-        if np.any(cross > _DIAGNOSTIC * co):
+        cross = np.stack([b[:, 1, 0], b[:, 0, 1]], axis=1)  # column i: out 1 - i
+        ratio = cross / np.maximum(scale, np.finfo(float).tiny)
+        if np.any(ratio > _DIAGNOSTIC):
             warnings.warn(
                 f"{who}: the cross-polarized {label} reaches "
-                f"{float(np.max(cross / np.maximum(co, 1e-300))):.2g} of the "
-                "co-polarized amplitude, so the principal axes of the slab are not "
-                "along the lattice vectors e1 and e2 and the diagonal tensor "
-                "describes it only approximately. Align the lattice with the "
-                "principal axes.",
+                f"{float(np.max(ratio)):.2g} of the co-polarized amplitude, so the "
+                "principal axes of the slab are not along the lattice vectors e1 "
+                "and e2 and the diagonal tensor describes it only approximately. "
+                "Align the lattice with the principal axes.",
                 UserWarning,
                 stacklevel=3,
             )

@@ -51,7 +51,7 @@ def test_every_keyword_of_a_diffraction_call_is_a_parameter(page):
 
 
 def test_the_fields_the_page_reads_exist(page):
-    fields = {f for f in re.findall(r"\bem\.(\w+)", page)}
+    fields = set(re.findall(r"\bem\.(\w+)", page))
     assert {"permittivity", "permeability", "index", "impedance"} <= fields
     assert fields <= set(dif.EffectiveMedium.__dataclass_fields__)
 
