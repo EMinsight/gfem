@@ -440,7 +440,7 @@ def aperture_field(
 
     Raises:
         TypeError: ``response`` is not a `CellResponse`.
-        ValueError: ``parameter`` is not one or two axes of at least one cell,
+        ValueError: ``parameter`` is not one or two axes of at least two cells,
             ``amplitude`` does not broadcast to it, a concrete parameter lies
             outside the sampled range, the response was sampled at oblique
             incidence, its lattice is not rectangular, a non-specular order
@@ -464,11 +464,11 @@ def aperture_field(
             "propagate both and average their intensities."
         )
     shape = tuple(np.shape(parameter))
-    if len(shape) not in (1, 2) or 0 in shape:
+    if len(shape) not in (1, 2) or min(shape, default=0) < 2:
         raise ValueError(
             "aperture_field: the parameter map must have one axis (cells along "
-            "ê1) or two (cells along ê1, ê2), with at least one "
-            f"cell, got shape {shape}."
+            "ê1) or two (cells along ê1, ê2), with at least two "
+            f"cells along each, got shape {shape}."
         )
     try:
         broadcast_ok = np.broadcast_shapes(np.shape(amplitude), shape) == shape

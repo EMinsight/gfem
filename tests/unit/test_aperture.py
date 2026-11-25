@@ -436,12 +436,13 @@ def test_l6_the_aperture_messages():
         match=(r"^aperture_field needs a gfem\.diffraction\.CellResponse, got str\.$"),
     ):
         dif.aperture_field("x", [0.3], "z_max", "z_min", polarization="TE")
-    for shape in ((), (2, 2, 2), (0,), (2, 0)):
+    for shape in ((), (2, 2, 2), (0,), (2, 0), (1,), (1, 3)):
         with pytest.raises(
             ValueError,
             match=(
                 r"^aperture_field: the parameter map must have one axis \(cells "
-                r"along ê1\) or two \(cells along ê1, ê2\), with at least one cell, "
+                r"along ê1\) or two \(cells along ê1, ê2\), with at least two "
+                r"cells along each, "
                 rf"got shape {re.escape(str(shape))}\.$"
             ),
         ):
