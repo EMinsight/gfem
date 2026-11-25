@@ -73,7 +73,7 @@ def test_a_material_keeps_its_photoelastic_tensor_beside_the_electro_optic_one()
     [
         (
             {"photoelastic_tensor": P_LN * (1 + 1e-3j)},
-            ["photoelastic_tensor must be real"],
+            ["photoelastic_tensor must be real", "no photoelastic loss is modelled"],
         ),
         (
             {"photoelastic_tensor": P_LN * np.nan},
@@ -116,6 +116,10 @@ def test_a_material_keeps_its_photoelastic_tensor_beside_the_electro_optic_one()
             {"eps_r": _LAW, "axes": None, "electro_optic_tensor": None},
             ["photoelastic_tensor needs a constant eps_r", "PermittivityLaw"],
         ),
+        (
+            {"eps_r": 1.0, "axes": None, "electro_optic_tensor": None},
+            ["photoelastic_tensor needs the crystal's optical eps_r", "n^4"],
+        ),
     ],
     ids=[
         "complex",
@@ -128,6 +132,7 @@ def test_a_material_keeps_its_photoelastic_tensor_beside_the_electro_optic_one()
         "matrix",
         "left-handed",
         "law",
+        "vacuum",
     ],
 )
 def test_every_photoelastic_guard_names_the_remedy(overrides, words):
@@ -224,7 +229,9 @@ def test_jax_grad_reaches_a_field_s_photoelastic_tensor_per_element_and_uniform(
 def test_a_traced_value_is_checked_at_solve_time_and_a_field_checks_its_shape():
     from gfem._materials import check_field_values
 
-    traced = jax.jit(lambda s: gfem.MaterialField(photoelastic_tensor=s * P_LN))(100.0)
+    traced = jax.jit(
+        lambda s: gfem.MaterialField(eps_r=4.0, photoelastic_tensor=s * P_LN)
+    )(100.0)
     with pytest.raises(ValueError, match=r"above 10.*region 'film'"):
         check_field_values({"film": traced})
     with pytest.raises(ValueError, match="same number of values"):
@@ -257,8 +264,12 @@ def test_a_traced_value_is_checked_at_solve_time_and_a_field_checks_its_shape():
             {"photoelastic_tensor": jnp.asarray(P_LN), "axes": _LEFT},
             ["left-handed", "photoelastic_tensor"],
         ),
+        (
+            {"photoelastic_tensor": jnp.asarray(P_LN)},
+            ["photoelastic_tensor needs the crystal's optical eps_r", "n^4"],
+        ),
     ],
-    ids=["shape", "complex", "percent", "beside-stiffness", "left-handed"],
+    ids=["shape", "complex", "percent", "beside-stiffness", "left-handed", "no-eps"],
 )
 def test_material_field_photoelastic_refusals_name_the_remedy(kwargs, words):
     with pytest.raises(ValueError) as e:
@@ -287,7 +298,7 @@ def test_interpolate_blends_the_photoelastic_tensor_linearly_in_the_field_frame(
     # the index scheme blends in the global frame
     h = gfem.MaterialField.interpolate(
         rho,
-        gfem.Material(eps_r=1.0, photoelastic_tensor=np.eye(6) * 0.1),
+        gfem.Material(eps_r=2.0, photoelastic_tensor=np.eye(6) * 0.1),
         gfem.Material(eps_r=4.0, photoelastic_tensor=np.eye(6) * 0.3),
         scheme="index",
     )
@@ -341,7 +352,12 @@ def test_refinement_copies_a_per_element_photoelastic_tensor_to_the_children(tmp
     refined = fine.materials["oxide"]
     assert refined.photoelastic_tensor.shape == (len(fine.mesh.elements("oxide")), 6, 6)
     ratio = np.asarray(refined.photoelastic_tensor[:, 0, 1]) / P_LN[0, 1]
-    assert set(np.round(ratio, 12)) == set(np.round(np.asarray(scale), 12))
+    # each child keeps its parent's scale, to the round-off of one division
+    # (1e-15 relative); every scale is told apart by far more than that
+    wanted = np.asarray(scale)
+    nearest = wanted[np.argmin(np.abs(ratio[:, None] - wanted[None, :]), axis=1)]
+    np.testing.assert_allclose(ratio, nearest, rtol=1e-14, atol=0)
+    np.testing.assert_allclose(np.unique(nearest), np.unique(wanted), rtol=0, atol=0)
 
 
 def test_photoelastic_materials_round_trip_through_the_job_codec(tmp_path):

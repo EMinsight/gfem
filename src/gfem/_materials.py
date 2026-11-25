@@ -244,6 +244,8 @@ def _solid_real(tensor: _SolidTensor, owner: str) -> ValueError:
         if tensor is _STIFFNESS
         else ""
     )
+    if tensor is _PHOTOELASTIC:
+        remedy = "; no photoelastic loss is modelled"
     return ValueError(f"{owner}: {tensor.name} must be real{remedy}.")
 
 
@@ -1527,6 +1529,8 @@ class Material:
         vacuum = np.all(np.asarray(values["eps_r"]) == 1.0)
         if tensor is not None and vacuum:
             raise ValueError(_eo_without_eps_message(owner))
+        if photoelastic is not None and vacuum:
+            raise ValueError(_pe_without_eps_message(owner))
         if piezoelectric is not None and vacuum:
             raise ValueError(_piezoelectric_without_eps_message(owner))
         values, axes = _principal(values, self.axes, owner)
@@ -1580,6 +1584,19 @@ def _eo_without_eps_message(owner: str) -> str:
     """
     return (
         f"{owner}: an electro_optic_tensor needs the crystal's optical eps_r "
+        "at the wavelength, e.g. eps_r=(n_o**2, n_o**2, n_e**2) with axes; "
+        "without it eps_r is 1 and the index shift is n^4 too small."
+    )
+
+
+def _pe_without_eps_message(owner: str) -> str:
+    """Why a photoelastic tensor needs the crystal's optical permittivity.
+
+    The shift scales as :math:`n^4`: an eps_r left at 1 gives a shift many
+    times too small, with no other sign of the omission.
+    """
+    return (
+        f"{owner}: a photoelastic_tensor needs the crystal's optical eps_r "
         "at the wavelength, e.g. eps_r=(n_o**2, n_o**2, n_e**2) with axes; "
         "without it eps_r is 1 and the index shift is n^4 too small."
     )
@@ -2368,6 +2385,8 @@ class MaterialField:
             raise ValueError(_photoelastic_law_message("MaterialField"))
         if self.axes is not None:
             _check_right_handed(self.axes, "MaterialField", "photoelastic_tensor")
+        if self.eps_r is None:
+            raise ValueError(_pe_without_eps_message("MaterialField"))
         return {value.shape[0]} if value.ndim == 3 else set()
 
     def _check_blend(self) -> int | None:
