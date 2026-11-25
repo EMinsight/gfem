@@ -113,11 +113,18 @@ def test_traced_nodes_stay_traced_and_unchecked(mesh):
 
 
 def _capacitance(plate, build):
-    """C of the plate stretched along z by ``s``, its mesh built by ``build``."""
+    """C of the plate stretched along z by ``s``, its mesh built by ``build``.
+
+    One thread: a threaded solve sums in an order that changes from call to
+    call, so two solves of the same model can differ in the last bit, and the
+    comparison below is bitwise.
+    """
+    options = gfem.SolverOptions(threads=1)
 
     def c(s):
         nodes = plate.mesh.nodes * jnp.array([1.0, 1.0, s])
-        return gfem.solve(plate.replace(mesh=build(nodes)), PROBLEM).capacitance[0, 0]
+        model = plate.replace(mesh=build(nodes))
+        return gfem.solve(model, PROBLEM, options=options).capacitance[0, 0]
 
     return c
 
@@ -128,6 +135,8 @@ def test_a_node_map_gradient_through_a_solve_is_the_private_rebuilds(plate):
     private = jax.jit(
         jax.grad(_capacitance(plate, lambda x: gfem.Mesh(x, mesh._topology)))
     )(1.0)
+    # the same arithmetic on both paths, so the same bits: a tolerance would let
+    # the public path add a step (a scale and its inverse) unseen
     assert float(public) == float(private)
     # C = eps0 eps_r A / (s d): dC / ds = -C at s = 1
     c = EPS0 * 3.9 * (4 * UM) * (3 * UM) / (0.5 * UM)
