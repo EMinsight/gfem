@@ -88,6 +88,7 @@ def test_the_page_states_the_option_default_it_quotes(page):
         "{py:obj}`gfem.UnrequestedOrderWarning`",
         "{doc}`../verification`",
         "{doc}`../tutorials/metagrating`",
+        "{doc}`diffraction-efficiency`",
     ],
 )
 def test_the_page_carries(page, text):

@@ -63,3 +63,8 @@ orphan: true
 - {doc}`point-dipoles`
 - {doc}`far-field`
 - {doc}`multipoles`
+
+## Periodic surfaces
+
+- {doc}`diffraction-efficiency`
+- {doc}`emissivity`

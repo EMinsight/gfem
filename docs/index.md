@@ -110,6 +110,14 @@ recipes/multipoles
 
 ```{toctree}
 :hidden:
+:caption: Periodic surfaces
+
+recipes/diffraction-efficiency
+recipes/emissivity
+```
+
+```{toctree}
+:hidden:
 :caption: Capabilities
 
 capabilities

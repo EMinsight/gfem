@@ -8,7 +8,8 @@ cell. You mesh one cell and pair its opposite faces with {py:obj}`gfem.Periodic`
 With no wave vector the fields repeat unchanged from cell to cell
 ({term}`plain periodicity`). With `wave_vector=k` they pick up a
 {term}`Bloch phase` from cell to cell. To light the cell with a plane wave and
-read its diffraction orders, see {doc}`floquet-ports`.
+read its diffraction orders, see {doc}`floquet-ports`, and to sweep its
+angle or read its Jones matrix, {doc}`diffraction-efficiency`.
 
 ## Band diagram of a layered cell
 
@@ -295,6 +296,7 @@ How gfem itself is checked on periodic cells: {doc}`../verification`.
 ## Next
 
 {doc}`../tutorials/photonic-crystal`, {py:func}`gfem.band_diagram`,
-{doc}`floquet-ports`, {py:obj}`gfem.Periodic`, {py:obj}`gfem.conventions`,
+{doc}`floquet-ports`, {doc}`diffraction-efficiency`,
+{py:obj}`gfem.Periodic`, {py:obj}`gfem.conventions`,
 {doc}`eigenmode-gradient`,
 {doc}`shape-gradient`, {doc}`measurements`, {doc}`../capabilities`.
