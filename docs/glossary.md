@@ -811,6 +811,11 @@ Sliding surface
   {term}`boundary morph`. On a {term}`periodic pair`, a node and its partner
   move together.
 
+Sliding port
+  A {term}`wave port` named in `boundary_morph(sliding_ports=...)`: its face is
+  a {term}`sliding surface`, so a shape design reaches the port, while the port
+  keeps its plane and its mode follows the moved section. Other ports are held.
+
 Mesh extension
   The elastic or harmonic solve that carries boundary motion into the mesh
   interior.

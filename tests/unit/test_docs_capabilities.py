@@ -35,8 +35,6 @@ GRID = {
     # the piezoelectric section: principal permittivities and a pitch map are
     # verified; it reads no conductivity, and a sheet field needs a slab
     "piezoelectric": (V, Z, R, V),
-    # the face nodes are not differentiated yet
-    "port_mode": (V, V, V, R),
     "port_mode": (V, V, V, V),
     "driven_periodic_plain": (V, V, V, V),
     "driven_periodic_bloch": (V, V, V, V),
@@ -307,6 +305,18 @@ def test_the_mode_field_rows_link_the_recipe_of_their_outputs(derived):
     assert rows["eigenmode_field"]["recipe"] == "recipes/measurements"
 
 
+def test_the_port_mode_row_links_its_recipe(derived):
+    (row,) = [r for r in derived["rows"] if r["key"] == "port_mode"]
+    assert row["recipe"] == "recipes/port-mode-gradient"
+
+
+def test_cells_at_wave_port_faces_say_so(derived):
+    for column in ("eps_r", "conductivity", "fill", "nodes"):
+        assert _cell(derived, "driven", column)["faces"]
+    assert not _cell(derived, "electrostatic", "eps_r")["faces"]
+    assert not _cell(derived, "port_mode", "eps_r")["faces"]
+
+
 def test_only_the_four_problem_types_are_front_page_rows(derived):
     front = [r["key"] for r in derived["rows"] if r["front"]]
     assert front == list(FRONT)
@@ -417,6 +427,17 @@ def test_unchanged_data_derives(data):
 def test_a_new_problem_in_the_cells_fails(data):
     cells = [*data[0], dataclasses.replace(data[0][0], problem="magnetostatic")]
     with pytest.raises(caps.CapabilitiesError, match="magnetostatic"):
+        _derive(data, cells=cells)
+
+
+def test_a_face_variant_without_wave_ports_fails(data):
+    cells = [
+        *data[0],
+        dataclasses.replace(
+            data[0][0], problem="electrostatic", input="eps_r", variant="face_lossy"
+        ),
+    ]
+    with pytest.raises(caps.CapabilitiesError, match="face_lossy"):
         _derive(data, cells=cells)
 
 

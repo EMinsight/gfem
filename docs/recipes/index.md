@@ -12,6 +12,7 @@ orphan: true
 - {doc}`eigenmode-gradient`
 - {doc}`quantum-metrics`
 - {doc}`shape-gradient`
+- {doc}`port-mode-gradient`
 - {doc}`adaptive-sweep-gradient`
 - {doc}`thermal-gradient`
 - {doc}`electro-optic-gradient`

@@ -97,7 +97,9 @@ the port's mode too. The backward then also differentiates each row's mode
 exactly, on the traces of the reduced solution and adjoint, for every row whose
 outputs have a cotangent; it holds the basis and the samples like the rest, so
 the gradient is exact at the samples. The mode's 2D factors are built during the
-backward and freed after it.
+backward and freed after it. It adds, at each frequency whose output the
+objective reads, a small 2D solve per port mode on that face; on a long
+broadband grid this can cost as much as a few full factorizations.
 
 ## Re-sample with a tight tolerance
 

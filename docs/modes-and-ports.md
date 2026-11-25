@@ -144,3 +144,16 @@ result = gfem.solve(model, gfem.Driven(frequencies, excite="p1"))
 
 Changing `excite=` changes only the right-hand side, never the operator: a
 port that is not excited loads the device exactly as an excited one does.
+
+### When the design reaches a port
+
+A wave port reads S against its own mode, solved on its face. A design that
+reaches the face (a material of the elements on it, a sheet on its edge, or
+the face's nodes) changes that mode, and the port follows: $\gamma$,
+$Z_{PV}$ and the reference impedance move with the design, and S stays in
+the pseudo-waves of the port's new mode. That is the right reference when
+the port's guide is part of the design, a taper's output for instance. When
+the device feeds a fixed external line or guide, the reference must not move:
+renormalize S to that line's impedance, or keep a stretch of the external
+guide's own section between the design and the port
+({doc}`recipes/port-mode-gradient`).

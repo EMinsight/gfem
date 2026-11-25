@@ -431,6 +431,25 @@ Wave ports:
 - **Removed `gfem.PortModeProjectionWarning`.** It has not been emitted since
   0.1.0, when wave-port S became exact on lossy port lines. Delete any
   warning filter that names it.
+- **Designs at wave ports.** A design may reach a wave port face: S, port
+  waves, kept fields, `port_modes` and `z_ref` differentiate with respect to
+  the materials of the face's elements (laws and material fields included),
+  a sheet's fill and an `Impedance` on its edge, and its node coordinates,
+  lone or on a shared port surface, on every driven sweep and solver and
+  across ranks (not under a Bloch wave vector or on a fixed-angle sweep). Line
+  ports of 2D models differentiate their materials the same way
+  ({doc}`../recipes/port-mode-gradient`).
+- **Port modes differentiate.** A `gfem.PortMode` result's `gamma`,
+  `n_eff`, `Z_PV` and field (`e_field.at`) differentiate with respect to
+  the same inputs; `residual` raises `gfem.NonDifferentiableError`.
+- **Sliding ports.** `gfem.shape.boundary_morph(..., sliding_ports=...)`
+  lets the faces of the named wave ports slide in their plane, so a shape
+  design reaches the port.
+- **Polarity reference with gradients.** A port mode's field outputs
+  differentiate exactly when its `WavePort` has a `polarity` reference: the
+  gradient follows the phase the reference fixes.
+- **Voltage path.** A `WavePort` whose `voltage_path` has a point outside the
+  port section now raises `ValueError` in the solve.
 
 ## 0.2.0 (2026-11-23)
 

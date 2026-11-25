@@ -7,7 +7,8 @@ coordinates, `model.mesh.nodes` (metres, shape `(n_nodes, 3)`), for
 electrostatic, driven (uniform sweeps, and adaptive sweeps with frozen
 samples) and eigenmode problems (eigenfrequencies and participation
 ratios). A shape design is a JAX function from a few parameters to moved
-node coordinates, usually through {py:obj}`gfem.shape.boundary_morph`.
+node coordinates, usually through {py:obj}`gfem.shape.boundary_morph`. A wave
+port's face moves too when the morph names the port in `sliding_ports`.
 
 ## Widen a strip
 
@@ -50,16 +51,18 @@ this way, accepting steps on `gfem.shape.quality`.
 
 ## Keep the ports where they are
 
-A port's geometry (its surface, the lumped element's length and width, its
-excitation and voltage) is held fixed by the gradient. The node gradient is
-exact for every displacement that leaves the port surfaces where they were
-imported, and `boundary_morph` holds the model's ports for you.
+A lumped or Floquet port's geometry (its surface, the lumped element's length
+and width, its excitation and voltage) is held fixed by the gradient, and so
+is a wave port's face unless you let it slide. `boundary_morph` holds the
+model's ports for you.
 
-- A moved port node raises {py:obj}`gfem.PortGeometryError` while the gradient
-  is computed; hold the port surfaces fixed in your morph (see
-  {ref}`gradient-errors`).
-- Wave ports follow the same rule: their modes come from the port faces'
-  geometry, which stays as imported.
+- A moved node of a lumped or Floquet port raises
+  {py:obj}`gfem.PortGeometryError` while the gradient is computed; hold those
+  surfaces fixed in your morph (see {ref}`gradient-errors`).
+- Wave ports are held too unless named in `sliding_ports=`, where their faces
+  slide in their plane and the mode follows: a taper's width at its port is a
+  design ({doc}`port-mode-gradient`). Keep the conductors a port's
+  `voltage_path` joins where its ends are.
 - A junction port between two moving pads keeps its imported voltage path,
   width and capacitance. The pad edges move beside it, and the leads that
   join it stretch: the gradient is that of a gap that changes beside a fixed

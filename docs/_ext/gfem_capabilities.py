@@ -44,6 +44,10 @@ mapping below does not know, a grid cell with no outcome or with
 conflicting ones, a missing ``OUT_OF_SCOPE`` row the grid needs, and an
 ``OUT_OF_SCOPE`` row off the grid with no site label (or a label with no row).
 
+A cell whose variant starts with ``face`` puts the design on a wave port
+face; a verified cell with one says so (``faces``), and a face variant on a
+problem without wave ports raises `CapabilitiesError`.
+
 `derive` returns one plain dict (lists, dicts, strings and numbers). The
 directives on docs/capabilities.md (the matrix, the raises list in the site's
 words of ``RAISES_LABELS``) and docs/verification.md (the matrix's provenance
@@ -118,7 +122,11 @@ ROWS = {
     "electrostatic": Row(
         "Electrostatic", "capacitance", recipe="recipes/capacitance-gradient"
     ),
-    "port_mode": Row("Port mode problem", "2D, wave-port modes"),
+    "port_mode": Row(
+        "Port mode problem",
+        "effective index, impedance and field",
+        recipe="recipes/port-mode-gradient",
+    ),
     "piezoelectric": Row(
         "Piezoelectric",
         "admittance and clamped capacitance, 2D",
@@ -1071,6 +1079,15 @@ def _resolve(row, column, *, cells, claimed, labels, ports_of_row) -> dict:
         )
     (status,) = statuses
     ports = [p for p in dict.fromkeys(PROBLEMS[c.problem].ports for c in cells) if p]
+    face_cells = [
+        c for c in cells if c.variant == "face" or c.variant.startswith("face_")
+    ]
+    for c in face_cells:
+        if PROBLEMS[c.problem].ports != "wave":
+            raise CapabilitiesError(
+                f"{where}: face variant {c.variant!r} on problem {c.problem!r}, "
+                "which has no wave ports"
+            )
     forms = sorted({FORMS[c.input] for c in cells if c.input in FORMS})
     note = f"{' and '.join(ports)} ports" if ports and set(ports) < ports_of_row else ""
     label = STATUS_TEXT[status]
@@ -1089,6 +1106,7 @@ def _resolve(row, column, *, cells, claimed, labels, ports_of_row) -> dict:
         "solvers": [SOLVERS[s] for s in dict.fromkeys(c.solver for c in cells)],
         "sweeps": [s for s in dict.fromkeys(c.sweep for c in cells) if s],
         "ports": ports,
+        "faces": bool(face_cells),
         "forms": forms,
         "forms_text": forms_text(forms),
         "source": MATRIX_TEST if cells else RAISE_TEST,
@@ -1769,6 +1787,8 @@ def _directives() -> dict:
                     parts.append(f"{' and '.join(cell['sweeps'])} sweep")
                 if cell["ports"]:
                     parts.append(f"{' and '.join(cell['ports'])} ports")
+                if cell["faces"]:
+                    parts.append("at wave port faces too")
                 out += [
                     nodes.Text(" "),
                     nodes.inline(text=" · ".join(parts), classes=["gfem-detail"]),

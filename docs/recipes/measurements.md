@@ -134,8 +134,11 @@ and a path through the layer raises `ValueError`.
 A driven result holds the mode of each wave port too, so
 `result.port_modes["p1"]` takes the place of `mode`, with or without kept
 fields. Inside `jax.jit`, `jax.grad` or `jax.vmap` a driven result's port
-modes carry no field and the call raises `ValueError`: solve `gfem.PortMode`
-outside the transformation, since port modes are constants of the solve.
+modes carry no field and the call raises `ValueError`.
+`characteristic_impedance` is not differentiable: on a traced `PortMode`
+result it raises `gfem.NonDifferentiableError`. Differentiate `mode.Z_PV`,
+along the port's own `voltage_path`, which follows a design at the port face;
+or call `characteristic_impedance` outside the transformation.
 
 ## Power through a surface
 

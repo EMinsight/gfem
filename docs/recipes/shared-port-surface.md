@@ -165,10 +165,10 @@ How gfem itself is checked on wave ports and shared port surfaces:
 - **Eigenmodes.** {py:obj}`gfem.Eigenmode` takes a shared port surface. Each
   wave port's coupling Q comes from its own mode's amplitude; the cross terms
   between the modes, zero on a lossless section, are dropped.
-- **Designs on a port face.** The port modes are constants of the solve: a
-  design region with elements on a port face raises
-  {py:obj}`gfem.PortGeometryError` under `jax.grad`, naming the surface and
-  its wave ports. Keep the design region off the port faces.
+- **Designs on a port face.** A design with elements on the shared face
+  changes every requested mode, and S between them follows; the modes stay
+  separated by the biorthogonal projection, lossy or not
+  ({doc}`port-mode-gradient`).
 
 ## Next
 
