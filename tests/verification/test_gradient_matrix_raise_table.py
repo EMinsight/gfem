@@ -2441,7 +2441,27 @@ def _case(request, name):
     if name in SINGLE_CASES:
         return SINGLE_CASES[name](request)
     group = request.getfixturevalue(GROUP_OF[name])
-    return group if GROUP_OF[name] in BARE_CASES else group[name]
+    if GROUP_OF[name] in BARE_CASES:
+        return group
+    _check_group_keys(GROUP_OF[name], group)
+    return group[name]
+
+
+def _check_group_keys(fixture, built):
+    """A group fixture builds exactly the cases ``CASE_GROUPS`` lists for it.
+
+    A case a fixture builds that no entry lists would never be requested, so the
+    table would skip it without a word; one listed but not built would be a
+    KeyError far from the cause.
+    """
+    listed = set(CASE_GROUPS[fixture])
+    returned = set(built)
+    if returned != listed:
+        raise AssertionError(
+            f"group fixture {fixture!r} returns cases that differ from CASE_GROUPS: "
+            f"built but not listed {sorted(returned - listed)}, "
+            f"listed but not built {sorted(listed - returned)}"
+        )
 
 
 @pytest.fixture(scope="module")

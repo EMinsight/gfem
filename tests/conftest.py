@@ -25,7 +25,7 @@ mkl extra, only on one thread, so without PARDISO the test runs on one.
 ``--shard i/n`` keeps the i-th (0-based) of n shards of the selected tests, so n CI
 jobs share a tier. Tests are dealt longest first to the least-loaded shard, by the
 seconds recorded in tests/durations.json (see tests/shards.py); a test the file
-does not know costs its median.
+does not know costs the median of the positive recorded times.
 
 A test whose recorded duration is `SLOW_SECONDS` or more, or that carries a hand
 ``@pytest.mark.slow``, is marked ``slow``, so ``-m "not slow"`` leaves it out.
