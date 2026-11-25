@@ -34,13 +34,14 @@ def test_every_output_block_is_what_the_code_prints(ran):
 
 def test_the_arms_respond_alike_and_v_pi_l_is_the_shifts(ran):
     lines = _example(ran, "The shift per volt").printed.splitlines()
-    n_eff, *_, v_pi_l = dp.numbers(lines[0])
-    assert 1.83 < n_eff < 1.85
+    numbers = dp.numbers(lines[0])  # mode, f, n_eff, count, f min, f max, V m min, max
+    assert 1.83 < numbers[2] < 1.85
     (ratio,) = dp.numbers(lines[1])
     # the two ribs differ by the meshes' asymmetry and the strain's gradient (1.3e-2)
     assert ratio == pytest.approx(1.0, abs=3e-2)
     (v_pi_l_cm,) = dp.numbers(lines[2])[-1:]
-    assert 100 * v_pi_l == pytest.approx(v_pi_l_cm, rel=1e-3)
+    # the middle frequency's V_pi L lies between the band's extremes
+    assert 100 * numbers[-2] < v_pi_l_cm < 100 * numbers[-1]
 
 
 def test_the_two_parts_are_of_opposite_sign(ran):
