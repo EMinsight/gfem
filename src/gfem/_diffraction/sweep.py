@@ -110,7 +110,7 @@ register_fields(AngleSweepResult, ("results",))
 
 
 def _flat_angles(theta: Any, phi: Any) -> tuple[np.ndarray, np.ndarray]:
-    """``theta`` and ``phi`` broadcast to one flat list (SW1)."""
+    """``theta`` and ``phi`` broadcast to one flat list."""
     who = "angle_sweep"
     if np.size(theta) == 0:
         raise ValueError(f"{who}: theta is empty: give at least one incidence.")
@@ -152,7 +152,7 @@ def _excited(model: Model, surface: str, excite: Any) -> Any:
 def _unrequested(
     tables: Sequence[dict[str, Any]], labels: Sequence[str]
 ) -> list[tuple[str, tuple[int, int], tuple[str, ...], list[str]]]:
-    """The (surface, order, polarizations) that propagate without a port, W2.
+    """The (surface, order, polarizations) that propagate without a port.
 
     ``labels[i]`` names the incidence of ``tables[i]``; each entry lists the
     incidences where the order propagates at some frequency.
@@ -323,7 +323,7 @@ def angle_sweep(
                 f"{', '.join(map(repr, port_names))}."
             )
 
-    # every excited port propagates everywhere (SW3), before any solve
+    # every excited port propagates everywhere, before any solve
     tables, labels = [], []
     for key, i in first.items():
         problem = problems[key]

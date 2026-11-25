@@ -356,7 +356,7 @@ def _member_key(r: Any) -> tuple[Any, ...]:
 
 
 def cell_of(result: Any, model: Any, who: str) -> Cell:
-    """Validate ``result`` and ``model`` and read the Floquet labels (M1-M4, M13).
+    """Validate ``result`` and ``model`` and read the Floquet labels.
 
     Raises:
         TypeError: ``result`` is not a `DrivenResult` or a sequence of them;
@@ -434,7 +434,7 @@ def cell_of(result: Any, model: Any, who: str) -> Cell:
 
 
 def check_order(order: Any, who: str, arg: str = "order") -> tuple[int, int]:
-    """``order`` as two ints (M11)."""
+    """``order`` as two ints."""
     ok = (
         isinstance(order, (list, tuple))
         and len(order) == 2
@@ -523,7 +523,7 @@ def incidence_of(
     polarization: Any,
     order: tuple[int, int],
 ) -> Incident:
-    """Resolve the incident (surface, order, polarization) (M5-M10).
+    """Resolve the incident (surface, order, polarization).
 
     Raises:
         NonDifferentiableError: ``polarization`` is traced.
@@ -581,7 +581,7 @@ def incidence_of(
 
 
 def check_surface(cell: Cell, surface: str) -> None:
-    """Raise unless ``surface`` carries a Floquet port of the result (M5)."""
+    """Raise unless ``surface`` carries a Floquet port of the result."""
     surfaces = cell.surfaces
     if surface not in surfaces:
         raise ValueError(
@@ -591,7 +591,7 @@ def check_surface(cell: Cell, surface: str) -> None:
 
 
 def check_offsets(cell: Cell, surface: str, order: tuple[int, int]) -> None:
-    """Raise unless an order's TM and TE ports share one offset (M8)."""
+    """Raise unless an order's TM and TE ports share one offset."""
     a, b = (cell.port(surface, order, p) for p in ("TM", "TE"))
     if a is None or b is None:
         return

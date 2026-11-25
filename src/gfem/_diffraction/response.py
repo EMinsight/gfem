@@ -80,7 +80,7 @@ def _vectors(value: Any) -> tuple[tuple[float, float, float], ...] | None:
 
 
 def _check_lattice(who: str, lattice: Mapping[str, Any], surfaces: set[str]) -> dict:
-    """The lattice vectors of every Floquet surface as tuples, or CR9."""
+    """The lattice vectors of every Floquet surface as tuples, else `ValueError`."""
     out = {}
     for surface in sorted(surfaces | set(lattice)):
         vec = _vectors(lattice[surface]) if surface in lattice else None
@@ -96,7 +96,7 @@ def _check_lattice(who: str, lattice: Mapping[str, Any], surfaces: set[str]) -> 
 def _check_direction(
     who: str, direction: Mapping[str, Any], surfaces: set[str]
 ) -> dict:
-    """``direction`` as ints, one +1 or -1 per Floquet surface, or CR9."""
+    """``direction`` as ints, one +1 or -1 per Floquet surface, or `ValueError`."""
     ok = set(direction) == surfaces and all(
         isinstance(h, (int, np.integer))
         and not isinstance(h, (bool, np.bool_))
@@ -405,7 +405,7 @@ def interpolate(
 
 
 def check_range(response: CellResponse, p: ArrayLike) -> None:
-    """Raise CR7 when a concrete ``p`` (scalar or array) leaves the sampled range."""
+    """Raise `ValueError` when a concrete ``p`` (scalar or array) is out of range."""
     arr = np.asarray(p, dtype=float)
     lo, hi = float(response.parameter[0]), float(response.parameter[-1])
     outside = ~((arr >= lo) & (arr <= hi))
@@ -475,7 +475,7 @@ def _signature(model: Model, frequency: np.ndarray, wave_vector: Any) -> _Signat
 
 
 def _differs(a: _Signature, b: _Signature) -> str | None:
-    """What of the cell ``b`` differs from ``a``, in the order of CR5, else ``None``."""
+    """What of the cell ``b`` differs from ``a`` (in checking order), else ``None``."""
     if a.ports != b.ports:
         return "ports"
     if a.lattice.keys() != b.lattice.keys() or any(
@@ -669,7 +669,7 @@ def _resume(  # noqa: PLR0917
     ports: tuple[str, ...],
     sig0: _Signature,
 ) -> CellResponse | None:
-    """The finished samples of ``out``, or ``None``; CR6 if it is another build."""
+    """The finished samples of ``out``, or ``None``; `ValueError` for another build."""
     if out is None or not Path(out).exists():
         return None
     old = CellResponse.from_json(out)

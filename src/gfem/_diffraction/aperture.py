@@ -41,7 +41,7 @@ _CONSTANTS = (
 
 
 def _axis(name: str, value: Any) -> np.ndarray:
-    """A read-only evenly spaced increasing 1D float axis, or a C3 error."""
+    """A read-only evenly spaced increasing 1D float axis, else `ValueError`."""
     arr = np.asarray(value, dtype=float)
     if arr.ndim != 1 or arr.size < 2 or not np.all(np.isfinite(arr)):
         raise ValueError(
@@ -287,7 +287,7 @@ _RECTANGULAR_ATOL = 1e-9
 def _check_lattice_rectangular(
     response: CellResponse, outgoing: str
 ) -> tuple[float, float]:
-    """The pitches along the two lattice vectors of ``outgoing``, or A6."""
+    """The pitches along the two lattice vectors of ``outgoing`` (rectangular only)."""
     a1, a2 = (np.asarray(v, dtype=float) for v in response.lattice[outgoing])
     n1, n2 = float(np.linalg.norm(a1)), float(np.linalg.norm(a2))
     cos = float(a1 @ a2) / (n1 * n2)
@@ -304,7 +304,7 @@ def _check_lattice_rectangular(
 def _check_not_diffracting(
     response: CellResponse, outgoing: str, index: float, pitches: tuple[float, float]
 ) -> None:
-    """Raise A7 if a non-specular order propagates behind ``outgoing``."""
+    """Raise `ValueError` if a non-specular order propagates behind ``outgoing``."""
     freqs = np.asarray(response.frequency, dtype=float)
     k = 2 * np.pi * index * freqs / _C0
     b = 2 * np.pi / np.asarray(pitches)
@@ -332,7 +332,7 @@ def _check_not_diffracting(
 
 
 def _outgoing_ports(cell: Cell, outgoing: str) -> list[str]:
-    """The (0, 0) TM and TE ports of ``outgoing`` (M5, M6, M8)."""
+    """The (0, 0) TM and TE ports of ``outgoing``."""
     check_surface(cell, outgoing)
     names = []
     for pol in ("TM", "TE"):
@@ -350,7 +350,7 @@ def _outgoing_ports(cell: Cell, outgoing: str) -> list[str]:
 
 
 def _check_range(response: CellResponse, parameter: np.ndarray) -> None:
-    """Raise A4 when a concrete parameter map leaves the sampled range."""
+    """Raise `ValueError` when a concrete parameter map leaves the sampled range."""
     lo, hi = float(response.parameter[0]), float(response.parameter[-1])
     outside = ~((parameter >= lo) & (parameter <= hi))
     if np.any(outside):
