@@ -69,6 +69,26 @@ def test_e1_folding_keeps_the_symmetric_azimuths():
     assert abs(folded.weight.sum() - 1) <= 1e-14
 
 
+def test_the_mirror_fold_assumes_the_plane_containing_e1():
+    # e = 1 + 0.5 cos(phi) is mirrored about the plane containing e1: the fold
+    # is exact. e = 1 + 0.5 sin(phi) is mirrored only about the plane
+    # containing e2 (true mean 1): the fold is wrong, so the documented
+    # remedy is mirror=False.
+    full = dif.hemisphere(3, 16)
+    folded = dif.hemisphere(3, 16, mirror=True)
+    for rule, tol in ((full, 1e-14), (folded, 1e-14)):
+        mean = np.sum(rule.weight * (1 + 0.5 * np.cos(rule.phi)))
+        assert abs(mean - 1.0) <= tol
+    assert abs(np.sum(full.weight * (1 + 0.5 * np.sin(full.phi))) - 1.0) <= 1e-14
+    wrong = np.sum(folded.weight * (1 + 0.5 * np.sin(folded.phi)))
+    assert abs(wrong - 1.0) > 0.1
+    # both mirror planes: rotation=2 with mirror=True folds the e2 mirror too
+    both = dif.hemisphere(3, 16, rotation=2, mirror=True)
+    mean = np.sum(both.weight * (1 + 0.5 * np.sin(both.phi) ** 2))
+    ref = np.sum(full.weight * (1 + 0.5 * np.sin(full.phi) ** 2))
+    assert abs(mean - ref) <= 1e-14
+
+
 # --- the messages -------------------------------------------------------------
 
 

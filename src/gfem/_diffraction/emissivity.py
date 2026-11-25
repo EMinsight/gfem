@@ -93,15 +93,22 @@ def hemisphere(
     azimuth dependence. The polar nodes are the roots of the Jacobi
     polynomial :math:`P^{(0,1)}_{n_\theta}`, :math:`\mu_i = (1 + x_i)/2`, with
     weights :math:`w_i/2`: exact for :math:`e` a polynomial of degree
-    :math:`2n_\theta - 2` in :math:`\mu`. The azimuths are
+    :math:`2n_\theta - 1` in :math:`\mu`. The azimuths are
     :math:`2\pi j/n_\varphi` with weight :math:`1/n_\varphi`, exact for the
     harmonics below :math:`n_\varphi`. :math:`\theta = \pi/2` is never a node.
 
     ``rotation`` and ``mirror`` declare the symmetry of the emitter, which is
     yours to assert: ``rotation=r`` (a rotation by :math:`2\pi/r` leaves the
     cell invariant) folds the azimuths onto :math:`[0, 2\pi/r)`, and
-    ``mirror=True`` (a mirror plane through the rotation axis) onto
-    :math:`[0, \pi/r]`. Equal azimuths merge and add their weights.
+    ``mirror=True`` onto :math:`[0, \pi/r]`. ``mirror=True`` asserts the
+    reflection :math:`\varphi \to -\varphi`: a mirror plane that contains the
+    lattice vector :math:`\hat e_1` and the surface normal (with
+    ``rotation=r``, the planes at :math:`\varphi = j\pi/r` follow). A cell
+    mirrored only about another plane, say the one containing
+    :math:`\hat e_2` (:math:`\varphi \to \pi - \varphi`), is folded wrongly and
+    gives a wrong :math:`e_h` without a message: use ``mirror=False``, or
+    ``rotation=2, mirror=True`` when the cell has both mirror planes. Equal
+    azimuths merge and add their weights.
 
     Args:
         n_theta: Polar nodes.

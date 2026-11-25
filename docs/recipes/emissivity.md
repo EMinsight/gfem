@@ -119,8 +119,12 @@ e_h = dif.hemispherical_emissivity(sweep, rule, model=cell)  # (n_freq,)
 ```
 
 **Symmetry folding.** `rotation=r` asserts that the cell is invariant under a
-rotation by $2\pi/r$ about its normal, and `mirror=True` that a mirror plane
-through the axis is a symmetry. The azimuths are folded onto the fundamental
+rotation by $2\pi/r$ about its normal, and `mirror=True` that the reflection
+$\varphi \to -\varphi$ is a symmetry: a mirror plane that contains the lattice
+vector $\hat e_1$ and the normal (with `rotation=r`, the planes at
+$\varphi = j\pi/r$ follow). A cell mirrored only about the plane containing
+$\hat e_2$ is folded wrongly, and silently: give it `mirror=False`, or
+`rotation=2, mirror=True` if it has both mirror planes. The azimuths are folded onto the fundamental
 domain and equal ones merge their weights, so a cell with four-fold rotation and
 mirrors needs 3 of 16 azimuths. The symmetry is your assertion: a rule folded
 by a symmetry the cell lacks is wrong by the asymmetric part. An emitter that
