@@ -66,7 +66,7 @@ from gfem._engine.dispersion import (
 from gfem._engine.domain import em_region, pec_surfaces
 from gfem._engine.fields import fe_space
 from gfem._engine.mesh import EngineMesh
-from gfem._engine.runtime import task_manager
+from gfem._engine.runtime import serial_spaces, task_manager
 from gfem._field import Field
 from gfem.model import PEC, PMC, Conductor, Model
 from gfem.results import DrivenResult, EigenmodeResult, ElectrostaticResult
@@ -116,7 +116,8 @@ class _Projection:
         constrained: Sequence[ngs.ElementId] = (),
     ) -> None:
         self._dx = dx
-        conforming = ngs.Compress(make())
+        with serial_spaces():
+            conforming = ngs.Compress(make())
         free = ngs.BitArray(conforming.FreeDofs())
         for el in constrained:
             for d in conforming.GetDofNrs(el):

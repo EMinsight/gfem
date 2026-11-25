@@ -167,6 +167,7 @@ from gfem._engine import quadrature
 from gfem._engine.cache import discretization
 from gfem._engine.coefficients import element_axes, facet_space, per_axis_elements
 from gfem._engine.domain import boundary_region
+from gfem._engine.runtime import serial_spaces
 from gfem._materials import MaterialField
 from gfem.errors import NonDifferentiableError
 from gfem.model import Model
@@ -1403,7 +1404,8 @@ def _node_pass(
     """
     built = discretization(model.mesh, model._periodic, comm).built  # noqa: SLF001
     n_nodes = len(model.mesh.imported_nodes)
-    space = ngs.VectorH1(built.mesh, order=1)
+    with serial_spaces():
+        space = ngs.VectorH1(built.mesh, order=1)
     w = space.TestFunction()
     form = ngs.LinearForm(space)
     empty = True

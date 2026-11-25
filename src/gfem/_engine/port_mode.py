@@ -47,6 +47,7 @@ from gfem._engine.dispersion import (
     susceptibility,
     susceptibility_taylor,
 )
+from gfem._engine.runtime import serial_spaces
 from gfem._engine.stretch import stretch_factors
 from gfem._engine.taylor import Taylor
 from gfem._engine.terms import _THICK, surface_impedance, surface_impedance_slope
@@ -360,11 +361,12 @@ class PortModeSpace:
         self.order = order
         self.mesh = _build_mesh(section)
         dirichlet = "pec" if len(section.pec_edges) else ""
-        nd = ngs.HCurl(
-            self.mesh, order=order, type1=True, complex=True, dirichlet=dirichlet
-        )
-        h1 = ngs.H1(self.mesh, order=order, complex=True, dirichlet=dirichlet)
-        self.space = ngs.FESpace([nd, h1])
+        with serial_spaces():
+            nd = ngs.HCurl(
+                self.mesh, order=order, type1=True, complex=True, dirichlet=dirichlet
+            )
+            h1 = ngs.H1(self.mesh, order=order, complex=True, dirichlet=dirichlet)
+            self.space = ngs.FESpace([nd, h1])
         self.n_t = nd.ndof
         self.free = np.flatnonzero(free_mask(self.space.FreeDofs(), self.space.ndof))
         if geometry:

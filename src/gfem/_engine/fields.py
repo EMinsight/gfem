@@ -23,6 +23,7 @@ from gfem._engine import quadrature
 from gfem._engine.cache import discretization
 from gfem._engine.coefficients import p0
 from gfem._engine.mesh import EngineMesh, cell_domains, inverse_order
+from gfem._engine.runtime import serial_spaces
 from gfem.mesh import Mesh
 
 if TYPE_CHECKING:
@@ -71,6 +72,11 @@ def support_region(
 
 
 def _build(region: ngs.Region, space: str, order: int) -> ngs.FESpace:
+    with serial_spaces():
+        return _built(region, space, order)
+
+
+def _built(region: ngs.Region, space: str, order: int) -> ngs.FESpace:
     mesh = region.mesh
     if space == "h1":
         fes = ngs.H1(mesh, order=order, definedon=region)
@@ -131,13 +137,14 @@ def dirichlet_h1(
 
     def build() -> ngs.FESpace:
         names = built.mesh.GetBoundaries()
-        space = ngs.H1(
-            built.mesh,
-            order=order,
-            definedon=support_region(built, mesh, regions, excluded),
-            dirichlet=[j + 1 for j, n in enumerate(names) if n in fixed],
-        )
-        return ngs.Compress(space)
+        with serial_spaces():
+            space = ngs.H1(
+                built.mesh,
+                order=order,
+                definedon=support_region(built, mesh, regions, excluded),
+                dirichlet=[j + 1 for j, n in enumerate(names) if n in fixed],
+            )
+            return ngs.Compress(space)
 
     return disc.space(h1_key(physics, regions, excluded, order, fixed), build), built
 

@@ -52,6 +52,7 @@ from gfem._engine.port_mode import (
     omega_of,
     susceptibility_series,
 )
+from gfem._engine.runtime import serial_spaces
 from gfem._engine.taylor import Taylor
 from gfem._linalg.base import free_mask
 from gfem._line_section import LineSection
@@ -154,7 +155,10 @@ class LineModeSpace:
         self.polarization = polarization
         essential, self.quantity, self.unit, self._vacuum = _POLARIZATION[polarization]
         self.mesh, self.element_segment = _build_mesh(section, essential)
-        self.space = ngs.H1(self.mesh, order=order, complex=True, dirichlet="essential")
+        with serial_spaces():
+            self.space = ngs.H1(
+                self.mesh, order=order, complex=True, dirichlet="essential"
+            )
         self.free = np.flatnonzero(free_mask(self.space.FreeDofs(), self.space.ndof))
         self.pencil, self._b_weights, self._b_values = self._assemble()
 

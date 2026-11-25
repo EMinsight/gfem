@@ -13,7 +13,11 @@ import ngsolve as ngs
 from gfem import _mpi
 from gfem._linalg import blas
 
-__all__ = ["available_cpus", "solve_threads", "task_manager"]
+__all__ = ["available_cpus", "serial_spaces", "solve_threads", "task_manager"]
+
+#: The TaskManagers `task_manager` started (not entered inside another one),
+#: innermost last: the one `serial_spaces` stops.
+_STARTED: list[ngs.TaskManager] = []
 
 
 def available_cpus() -> int:
@@ -68,7 +72,8 @@ def task_manager(threads: int | None, comm: Any = None) -> Generator[None]:
         comm: The resolved communicator. The first distributed solve also sets
             each loaded BLAS to the threads the rank runs on.
     """
-    if ngs.GetNumThreads() != 1:  # 1 outside any TaskManager
+    starts = ngs.GetNumThreads() == 1  # 1 outside any TaskManager
+    if not starts:
         threads = ngs.GetNumThreads()
     elif comm is None:
         threads = solve_threads(threads)
@@ -78,5 +83,42 @@ def task_manager(threads: int | None, comm: Any = None) -> Generator[None]:
         ngs.SetNumThreads(threads)
     if comm is not None:
         blas.settle(threads)
-    with ngs.TaskManager():
+    manager = ngs.TaskManager()
+    with manager:
+        if starts:
+            _STARTED.append(manager)
+        try:
+            yield
+        finally:
+            if starts:
+                _STARTED.remove(manager)
+
+
+@contextlib.contextmanager
+def serial_spaces() -> Generator[None]:
+    """Build NGSolve FE spaces here with the TaskManager stopped.
+
+    An FE space colors its elements when it is built (``FinalizeUpdate``), in a
+    parallel loop whose threads raise a shared color count without
+    synchronization (NGSolve 6.2.2608). A count left below the largest color
+    makes the loop write past the end of an array: heap corruption, which
+    aborts or segfaults the process later, at some unrelated allocation. With
+    no TaskManager running the loop runs on one thread. So the TaskManager
+    `task_manager` started is stopped for the block and started again after,
+    on the same thread count; outside it, or inside a TaskManager the caller
+    entered (which this cannot stop), the block runs as it is.
+
+    A space whose elements share no DOFs (an ``L2`` or ``SurfaceL2`` space of
+    order 0, and compounds of them) colors every element 0 and needs no stop.
+    """
+    if not _STARTED or ngs.GetNumThreads() == 1:
         yield
+        return
+    manager, threads = _STARTED[-1], ngs.GetNumThreads()
+    manager.__exit__(None, None, None)
+    try:
+        yield
+    finally:
+        # a solve inside the block may have set another count
+        ngs.SetNumThreads(threads)
+        manager.__enter__()

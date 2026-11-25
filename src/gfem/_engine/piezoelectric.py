@@ -66,7 +66,7 @@ from gfem._engine import quadrature
 from gfem._engine.cache import Entry, discretization, retain_budget
 from gfem._engine.coefficients import element_axes, p0, permittivity
 from gfem._engine.domain import boundary_region, em_region, h1_space, region_domain
-from gfem._engine.runtime import task_manager
+from gfem._engine.runtime import serial_spaces, task_manager
 from gfem._engine.sensitivity import FieldPair, MomentBlock, Tensors, Term
 from gfem._engine.solve_request import SolveRequest
 from gfem._field import FieldMap
@@ -454,7 +454,8 @@ def _terms(rule: PiezoelectricRule, model: Model) -> list[Term]:
     diel = em_region(model, built, "em")
     vu = h1_space(model, built, order, tuple(problem.clamped), physics="mechanical")
     vp = h1_space(model, built, order, rule.electrodes.lines, physics="em")
-    space = ngs.FESpace([vu, vu, vu, vp])
+    with serial_spaces():
+        space = ngs.FESpace([vu, vu, vu, vp])
     forms = _weak_forms(
         _coefficients(model, built, rule.frame), built, order, mech, diel
     )
@@ -1013,7 +1014,8 @@ def _frame_depth(model: Model, built: Any, frame: Any) -> ngs.CoefficientFunctio
     ring = nodes[np.unique(cells[in_frame & mechanical])]
     low = lo - ring.min(axis=0)
     high = ring.max(axis=0) - hi
-    space = ngs.H1(built.mesh, order=1)
+    with serial_spaces():
+        space = ngs.H1(built.mesh, order=1)
     coordinates = []
     for axis in range(2):
         gf = ngs.GridFunction(space)
@@ -1124,7 +1126,8 @@ class PiezoelectricSystem:
             model, built, order, electrodes.lines, physics="em", complex_valued=True
         )
         self.vu, self.vp = vu, vp
-        self.space = space = ngs.FESpace([vu, vu, vu, vp])
+        with serial_spaces():
+            self.space = space = ngs.FESpace([vu, vu, vu, vp])
         self.offset = 3 * vu.ndof
         self.ndof = space.ndof
 
