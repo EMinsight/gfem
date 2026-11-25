@@ -266,7 +266,7 @@ def test_the_gradient_in_the_permittivity_matches_a_central_difference(guide_mes
 
 
 def test_the_pairing_of_the_two_results_is_checked(shg):
-    model, pump, harm, _ = shg
+    model, _, harm, _ = shg
     one = mode_of(model, F[:1])
     with pytest.raises(ValueError, match=r"pump has 1 rows but the harmonic 2"):
         gfem.second_harmonic(model, one, harm)
