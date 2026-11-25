@@ -526,25 +526,40 @@ def test_a_port_mode_solve_agrees_with_one_process(tmp_path, case, ranks):
 def _port_mode_under_jax():
     model = _slab()
     options = gfem.SolverOptions(threads=1)
+    mesh = model.mesh
+    # a point inside a triangle of the port face (m)
+    point = np.asarray(mesh.nodes)[mesh.triangles[mesh.elements("port1")[0]]].mean(0)
 
-    def gamma(eps):
-        n = len(model.mesh.elements("slab"))
+    def solved(eps):
+        n = len(mesh.elements("slab"))
         moved = model.with_material(
             "slab", gfem.MaterialField(eps_r=jax.numpy.full(n, eps))
         )
-        return gfem.solve(moved, gfem.PortMode("p1", 12e9), options=options).gamma
+        return gfem.solve(moved, gfem.PortMode("p1", 12e9), options=options)
+
+    def gamma(eps):
+        return solved(eps).gamma
+
+    def field(eps):
+        # a field cotangent needs the 2D adjoint solve, on rank 0 alone
+        result = solved(eps)
+        return result.gamma.imag.sum() + jax.numpy.sum(
+            jax.numpy.abs(result.e_field.at(point)) ** 2
+        )
 
     value = np.asarray(jax.jit(gamma)(4.0))
     # the 2D adjoint runs on rank 0 alone, and the ranks' sum counts it once
-    grad = float(jax.grad(lambda eps: gamma(eps).real.sum())(4.0))
-    return value, grad
+    grad = float(jax.grad(lambda eps: gamma(eps).imag.sum())(4.0))
+    grad_field = float(jax.grad(field)(4.0))
+    return value, grad, grad_field
 
 
 def test_a_port_mode_under_jax_is_as_on_one_process():
-    value_one, grad_one = _port_mode_under_jax()
-    (value, grad), *_ = on_ranks(_port_mode_under_jax, ranks=3, limit=120)
+    value_one, grad_one, field_one = _port_mode_under_jax()
+    (value, grad, field), *_ = on_ranks(_port_mode_under_jax, ranks=3, limit=180)
     assert abs(value - value_one).max() < 1e-8 * abs(value_one).max()
     assert grad == pytest.approx(grad_one, rel=1e-9)
+    assert field == pytest.approx(field_one, rel=1e-9)
 
 
 def _named_solver(directory):
