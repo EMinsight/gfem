@@ -507,7 +507,8 @@ def aperture_field(
     inc = incidence_of(cell, incident, polarization, (0, 0))
     ((_, pair),) = inc.combos
     cols = [pol for pol, a in zip(JONES_ORDER, pair, strict=True) if a != 0]
-    names = [cell.port(incident, (0, 0), pol) for pol in cols]
+    # `incidence_of` has refused any column without a port
+    names = [str(cell.port(incident, (0, 0), pol)) for pol in cols]
     weights = jnp.asarray([pair[JONES_ORDER.index(pol)] for pol in cols])
     if not is_traced(parameter):
         arr = np.asarray(parameter, dtype=float)
