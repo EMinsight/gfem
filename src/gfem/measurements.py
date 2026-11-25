@@ -1095,10 +1095,11 @@ def optical_force(
             stress shell; the field is not a 3D electric time-harmonic field
             or was not solved on ``model``; it is the incident or the
             scattered part of an incident-field column; the shell is not
-            one homogeneous isotropic lossless medium; a sheet, a port, an
-            absorbing surface, a perfectly matched layer or a periodic pair
-            touches the body or its shell; or a point dipole whose load
-            solved the field is in the shell.
+            one homogeneous isotropic lossless medium; a sheet touches the
+            body without lying on it; a port, an absorbing surface or a
+            perfectly matched layer touches the body or its shell; a body
+            node is on a periodic pair; or a point dipole whose load solved
+            the field is in the shell.
         NotImplementedError: A 2D model.
         gfem.DistributedUnsupportedError: A field across ranks.
         gfem.MeshRefinementUnsupportedError: Under the refinement recorder.
@@ -1123,6 +1124,14 @@ def optical_force(
         _mpi.refuse_feature("optical_force")
     names = _body_names(body)
     around = _origin(origin)
+    if callable(names) and is_traced((field.mesh.nodes, model.mesh.nodes)):
+        raise NonDifferentiableError(
+            "optical_force's body is a predicate on element centroids, which "
+            "needs the node coordinates as numbers, but they are computed "
+            "inside jax.grad, jax.jit or jax.vmap here: name the body's volume "
+            "regions instead, so that its elements are known before the "
+            "transformation runs."
+        )
     if _objective.recording() is not None:
         raise MeshRefinementUnsupportedError(
             "optical_force",
@@ -1137,10 +1146,29 @@ def optical_force(
             "solve a gfem.Driven or gfem.Eigenmode problem."
         )
     force, torque, centroid = evaluate(field, names, model)
-    point = centroid if around is None else around
+    if around is None:
+        return OpticalForce(force=force, torque=torque, origin=centroid)
     return OpticalForce(
-        force=force, torque=torque + jnp.cross(centroid - point, force), origin=point
+        force=force,
+        torque=torque + _shift(centroid - around, force),
+        origin=around,
     )
+
+
+def _shift(arm: jax.Array, force: jax.Array) -> jax.Array:
+    """``arm x force``, NaN only where a NaN force component has a nonzero arm.
+
+    A component of the force that slides on a wall is NaN: it must not reach
+    a torque component it does not multiply (``0 * NaN``).
+    """
+    nan = jnp.isnan(force)
+    shift = jnp.cross(arm, jnp.where(nan, 0.0, force))
+    # component i is arm_{i+1} F_{i+2} - arm_{i+2} F_{i+1}
+    nonzero = arm != 0
+    reach = (jnp.roll(nonzero, -1) & jnp.roll(nan, -2)) | (
+        jnp.roll(nonzero, -2) & jnp.roll(nan, -1)
+    )
+    return jnp.where(reach, jnp.nan, shift)
 
 
 def _body_names(
