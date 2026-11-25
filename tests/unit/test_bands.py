@@ -495,6 +495,16 @@ def test_band_diagram_refusals_come_before_the_first_solve(models, tmp_path, cas
         gfem.band_diagram(model, **arguments)
 
 
+def test_the_suggested_wave_vector_prints_no_round_off_or_negative_zero():
+    # an oblique pair of translations: the projection leaves -5e-17 on y
+    translations = np.array([[0.01, 0.003, 0.0], [0.002, 0.007, 0.0]])
+    with pytest.raises(ValueError, match=r"e\.g\. \(10, 0, 0\) rad/m"):
+        bands._check_span(np.array([[10.0, 0.0, 5.0]]), translations)
+    printable = bands._printable(np.array([10.0, -0.0, -3e-16, 1e-5, -2.5]))
+    assert bands._vec(printable) == "(10, 0, 0, 1e-05, -2.5)"
+    assert bands._vec(bands._printable(np.array([-0.0, 0.0]))) == "(0, 0)"
+
+
 @pytest.fixture(scope="module")
 def eigen_gradient_cell(tmp_path_factory):
     mesh = pc.eigen_cell_mesh(tmp_path_factory.mktemp("eigen_cell"))

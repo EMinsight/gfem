@@ -971,9 +971,22 @@ def _check_span(wave_vectors: np.ndarray, translations: np.ndarray) -> None:
                 f"{off:.6g} rad/m outside the span of the periodic translations "
                 f"{', '.join(_vec(a) for a in translations)} m, which no pair's "
                 "phase reads. Give it in that span, e.g. "
-                f"{_vec(projected)} rad/m (gfem.wave_vector_path builds such "
-                "paths)."
+                f"{_vec(_printable(projected))} rad/m (gfem.wave_vector_path "
+                "builds such paths)."
             )
+
+
+def _printable(x: np.ndarray) -> np.ndarray:
+    r"""``x`` with the round-off a projection leaves set to a plain zero.
+
+    A projection on the span gives the components normal to it as round-off of
+    either sign, which ``.6g`` prints as ``-0`` or ``1e-16``. Components under
+    the six significant digits the largest one prints with,
+    :math:`|x_i| < 5 \cdot 10^{-7} \max_j |x_j|`, print as ``0``.
+    """
+    x = np.asarray(x, dtype=float)
+    small = np.abs(x) < 5e-7 * float(np.max(np.abs(x), initial=0.0))
+    return np.where(small, 0.0, x) + 0.0  # + 0.0 turns -0.0 into 0.0
 
 
 def _vec(x: np.ndarray) -> str:
