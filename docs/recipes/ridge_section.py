@@ -1,4 +1,4 @@
-"""The thin-film lithium niobate ridge of the second-harmonic recipe, meshed with netgen.
+"""The lithium niobate ridge of the second-harmonic recipe, meshed with netgen.
 
 The section in the (x, y) plane, y up, y = 0 at the bottom of the film: a
 film ``"film"`` of ``film`` thickness etched ``etch`` deep into a ridge

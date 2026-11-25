@@ -155,7 +155,9 @@ same mesh, with the crystal's indices at their frequency. Solve the pump's
 fundamental mode:
 
 ```python
-url = "https://raw.githubusercontent.com/benvial/gfem/main/docs/recipes/ridge_section.py"
+url = (
+    "https://raw.githubusercontent.com/benvial/gfem/main/docs/recipes/ridge_section.py"
+)
 urllib.request.urlretrieve(url, "ridge_section.py")
 from ridge_section import ridge_section  # noqa: E402
 
@@ -320,7 +322,9 @@ for lam in wavelength:
     model = guide(f)
     p = gfem.solve(model, gfem.PortMode("wg", np.array([f])), options=options)
     h_model = guide(2 * f)
-    h = gfem.solve(h_model, gfem.PortMode("wg", np.array([2 * f]), mode=3), options=options)
+    h = gfem.solve(
+        h_model, gfem.PortMode("wg", np.array([2 * f]), mode=3), options=options
+    )
     rows.append(gfem.second_harmonic(model, p, h))
 delta_beta = np.array([float(r.delta_beta[0]) for r in rows])
 ratio = np.array([float(r.efficiency(length, power, period=period)[0]) for r in rows])
@@ -398,9 +402,7 @@ symmetric in its two amplitudes: True
   ```python
   film2 = dataclasses.replace(
       lithium_niobate(f0),
-      second_order_nonlinear_tensor=tuple(
-          tuple(2 * v for v in row) for row in d_ln
-      ),
+      second_order_nonlinear_tensor=tuple(tuple(2 * v for v in row) for row in d_ln),
   )
   doubled = guide(f0, film2)
   twice = gfem.second_harmonic(doubled, pump, harmonic)
