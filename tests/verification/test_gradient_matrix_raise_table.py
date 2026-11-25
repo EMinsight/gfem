@@ -2868,7 +2868,7 @@ def _out_line_port_mode_law_parameter(request):
     jax.grad(objective)(4.0)
 
 
-def _out_port_mode_residual(request):
+def _out_port_mode_residual(_request):
     # the backward error of a mode is a diagnostic: its cotangent raises
     def residual(eps):
         mode, _ = _plate_mode(eps)
@@ -2877,7 +2877,7 @@ def _out_port_mode_residual(request):
     jax.make_jaxpr(jax.grad(residual))(4.0)
 
 
-def _out_port_mode_field_at_nodes(request):
+def _out_port_mode_field_at_nodes(_request):
     # `PortModeField.at` reads fixed points: traced nodes are not available
     _, model = _plate_mode(4.0)
 
@@ -2891,7 +2891,7 @@ def _out_port_mode_field_at_nodes(request):
     jax.vmap(jax.grad(field))(jnp.asarray(model.mesh.nodes)[None])
 
 
-def _out_characteristic_impedance_of_a_traced_mode(request):
+def _out_characteristic_impedance_of_a_traced_mode(_request):
     def impedance(eps):
         mode, _ = _plate_mode(eps)
         return jnp.real(
