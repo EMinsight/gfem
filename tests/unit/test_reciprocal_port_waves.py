@@ -12,6 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 import reciprocity_cases as rc
+from gradient_cases import wave_line, wave_mesh
 
 import gfem
 from gfem import _codec
@@ -174,3 +175,47 @@ def test_adaptive_iterations_count_each_right_hand_side(model):
     )
     result = _adaptive(model, 2, excite=("p1",), options=options)
     assert all(len(row) == 2 for row in result.sweep.iterations)
+
+
+#: A dipole in the wave line's "core", off every face of its grid, m.
+CORE_DIPOLE = gfem.ElectricDipole(
+    "d0", position=(2.07e-3, 0.93e-3, 0.27e-3), moment=(0.0, 0.0, 1e-15)
+)
+
+
+@pytest.mark.parametrize("sweep", ["uniform", "adaptive"])
+def test_a_design_at_a_wave_port_face_has_no_reciprocal_gradient(tmp_path, sweep):
+    # the port pass pairs the solved columns with their adjoints, which under
+    # source_fields=False are the ports' own solutions and the dipoles' rows
+    line = wave_line(wave_mesh(tmp_path), "lossless")
+    frequency = (12e9,) if sweep == "uniform" else tuple(np.linspace(11e9, 13e9, 5))
+
+    def driven(**kwargs):
+        return gfem.Driven(
+            frequency,
+            excite=(),
+            sources=[CORE_DIPOLE],
+            sweep=sweep,
+            source_fields=False,
+            **kwargs,
+        )
+
+    problem = driven()
+    if sweep == "adaptive":  # jax.grad runs on a frozen sample set
+        first = gfem.solve(line, problem, options=ADAPTIVE)
+        problem = driven(samples=first.sweep.sampled_frequencies)
+
+    def objective(p):
+        moved = line.with_material("lo", gfem.MaterialField(eps_r=p))
+        moved = moved.replace(mesh=jax.lax.stop_gradient(moved.mesh))
+        result = gfem.solve(moved, problem, options=ADAPTIVE)
+        return jnp.sum(jnp.abs(result.port_waves) ** 2)
+
+    lo = jnp.full(len(line.mesh.elements("lo")), 4.0)
+    assert np.isfinite(objective(lo))
+    # raised on the host: jax.grad hands it on as a JaxRuntimeError
+    with pytest.raises(
+        (NotImplementedError, jax.errors.JaxRuntimeError),
+        match=r"NotImplementedError.*source_fields=False.*wave port face",
+    ):
+        jax.grad(objective)(lo)

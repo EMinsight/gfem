@@ -1876,9 +1876,13 @@ class DrivenRule:
 
         The port pass differentiates a moved face on the uniform and the
         adaptive sweep without a Bloch wave vector; under one the faces stay
-        held.
+        held, and so they do under ``source_fields=False``, whose port waves
+        have no gradient through the port modes
+        (`_refuse_reciprocal_port_pass`).
         """
-        return None if self.problem.wave_vector is None else "bloch"
+        if self.problem.wave_vector is not None:
+            return "bloch"
+        return "reciprocal" if self.reciprocal else None
 
     def lumped_terms(self, model: Model) -> list[Term]:
         """The pieces that move with a lumped value, as the lumped pass reads them.
@@ -3016,6 +3020,14 @@ _WAVE_HOLDERS = {
             "(gfem.shape.boundary_morph(..., sliding_ports=...))."
         ),
     ),
+    "reciprocal": (
+        "Driven(source_fields=False)",
+        (
+            "A gfem.Driven solve with source_fields=True (the default) "
+            "differentiates a moved wave port face "
+            "(gfem.shape.boundary_morph(..., sliding_ports=...))."
+        ),
+    ),
 }
 
 
@@ -3031,8 +3043,8 @@ def check_ports_held(model: Model, *, waves: str | None = "eigenmode") -> None:
     Shape gradients treat a lumped or Floquet port's geometry (its terms,
     excitation and voltage) as frozen: exact for every displacement that
     holds the ports. A wave port's face is held only where ``waves`` names
-    who holds it (``"eigenmode"`` or ``"bloch"``): the driven
-    port pass differentiates a moved face (``None``).
+    who holds it (``"eigenmode"``, ``"bloch"`` or ``"reciprocal"``): the
+    driven port pass differentiates a moved face (``None``).
 
     Raises:
         PortGeometryError: A node of a held port surface has moved.
