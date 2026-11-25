@@ -256,7 +256,10 @@ def solved(model):
 
 
 def test_a_solved_slab_reads_eps_four_and_mu_one_in_both_columns(solved, model):
-    em = dif.effective_medium(solved, TOP, BOT, model=model)
+    # n k0 d = 2 * 2 pi * 0.3 = 3.77 rad exceeds pi: the principal phase has
+    # wrapped, so the slab is on the second sheet (branch 0 returns eps = -2.67)
+    em = dif.effective_medium(solved, TOP, BOT, model=model, branch=1)
+    assert em.branch == 1
     assert em.permittivity.shape == em.permeability.shape == (1, 2)
     assert em.thickness == pytest.approx(pc.F1_H * pc.UM, rel=1e-9)
     # S is within F1_COARSE_TOL of the Airy slab on this mesh; the error of the
@@ -268,7 +271,7 @@ def test_a_solved_slab_reads_eps_four_and_mu_one_in_both_columns(solved, model):
     x = _x_of(jnp.asarray([s11]), jnp.asarray([s21]))
 
     def out(x):
-        e, m = _retrieved(x, k0d, 0, 1.0, 1.0)
+        e, m = _retrieved(x, k0d, 1, 1.0, 1.0)
         return jnp.stack([e.real, e.imag, m.real, m.imag], axis=-1)
 
     jac = np.asarray(jax.jacobian(out)(x))[0, :, 0, :]  # (4, 4)
