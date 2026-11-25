@@ -7,7 +7,8 @@ orders. This module reads those orders, in five areas:
   orders of a surface; `efficiencies` gives the power in each order,
   `power_balance` the reflected, transmitted, coupled and absorbed shares, and
   `jones` the polarization-resolved Jones matrix of one order with its
-  circular and Mueller views.
+  circular and Mueller views. `effective_medium` retrieves the effective
+  permittivity and permeability of a slab between two faces.
 - **Angle sweeps.** `angle_sweep` solves one cell over a grid of incidence
   angles and returns an `AngleSweepResult` that the readers above accept.
 - **Emissivity.** `emissivity` applies Kirchhoff's law to a sweep, and
@@ -29,6 +30,7 @@ tutorial designs a lens from a cell library.
 from __future__ import annotations
 
 from gfem._diffraction.aperture import ApertureField, aperture_field, propagate
+from gfem._diffraction.effective import EffectiveMedium, effective_medium
 from gfem._diffraction.emissivity import (
     Emissivity,
     HemisphereRule,
@@ -52,6 +54,7 @@ __all__ = [
     "AngleSweepResult",
     "ApertureField",
     "CellResponse",
+    "EffectiveMedium",
     "Efficiencies",
     "Emissivity",
     "HemisphereRule",
@@ -60,6 +63,7 @@ __all__ = [
     "angle_sweep",
     "aperture_field",
     "cell_response",
+    "effective_medium",
     "efficiencies",
     "emissivity",
     "floquet_ports",

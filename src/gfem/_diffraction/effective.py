@@ -1,7 +1,7 @@
-"""Effective permittivity and permeability of a slab from Floquet-port S.
+r"""Effective permittivity and permeability of a slab from Floquet-port S.
 
 The Nicolson-Ross-Weir retrieval in the robust-sign form, for the
-``e^{+i\\omega t}`` convention. `retrieve` is the pure ``jax.numpy`` math;
+``e^{+i\omega t}`` convention. `retrieve` is the pure ``jax.numpy`` math;
 `effective_medium` reads the S, the media and the reference planes of a solved
 periodic cell and calls it once per polarization column.
 """
@@ -39,7 +39,7 @@ _SIGN_BAND = 5e-3
 _DIAGNOSTIC = 1e-2
 
 
-def retrieve(
+def retrieve(  # noqa: PLR0917  (the six inputs of the retrieval, called positionally)
     s11: jax.Array,
     s21: jax.Array,
     k0d: jax.Array,
@@ -177,6 +177,27 @@ def _check_branch(branch: Any, who: str) -> int:
     return int(branch)
 
 
+def _check_normal(who: str, cell: Any, names: dict[str, list[str]]) -> None:
+    """Raise unless every port's wave vector is exactly zero (normal incidence)."""
+    for group in names.values():
+        for name in group:
+            wv = cell.info[name].wave_vector
+            if is_traced(wv):
+                raise NonDifferentiableError(
+                    f"{who}: the result's diffraction orders are traced by JAX "
+                    "(the result entered jax.jit or jax.vmap as an argument), so "
+                    "normal incidence cannot be checked; they are constants of "
+                    f"the solve. Call {who} on the result inside the function "
+                    "that calls gfem.solve, or outside the transformation."
+                )
+            if np.any(np.asarray(wv) != 0.0):
+                raise ValueError(
+                    f"{who}: Floquet port {name!r} has a wave vector with a "
+                    "tangential part (oblique incidence); the retrieval is for "
+                    "normal incidence. Solve with Driven(...) without wave_vector."
+                )
+
+
 def effective_medium(
     result: DrivenResult,
     incident: str,
@@ -288,23 +309,7 @@ def effective_medium(
             )
     check_offsets(cell, incident, order)
     check_offsets(cell, transmitted, order)
-    for surface in (incident, transmitted):
-        for name in names[surface]:
-            wv = cell.info[name].wave_vector
-            if is_traced(wv):
-                raise NonDifferentiableError(
-                    f"{who}: the result's diffraction orders are traced by JAX "
-                    "(the result entered jax.jit or jax.vmap as an argument), so "
-                    "normal incidence cannot be checked; they are constants of "
-                    f"the solve. Call {who} on the result inside the function "
-                    "that calls gfem.solve, or outside the transformation."
-                )
-            if np.any(np.asarray(wv) != 0.0):
-                raise ValueError(
-                    f"{who}: Floquet port {name!r} has a wave vector with a "
-                    "tangential part (oblique incidence); the retrieval is for "
-                    "normal incidence. Solve with Driven(...) without wave_vector."
-                )
+    _check_normal(who, cell, names)
     f_in, f_tr = cell.face(incident), cell.face(transmitted)
     if f_in.eps_r != f_tr.eps_r or f_in.mu_r != f_tr.mu_r:
         raise NotImplementedError(
@@ -352,7 +357,7 @@ def effective_medium(
     )
 
 
-def _diagnose(
+def _diagnose(  # noqa: PLR0917  (internal: labels and the two blocks)
     who: str,
     cell: Any,
     names: dict[str, list[str]],

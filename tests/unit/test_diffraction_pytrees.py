@@ -12,6 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from gfem import diffraction as dif
+from gfem._diffraction.effective import EffectiveMedium
 from gfem._diffraction.emissivity import Emissivity
 from gfem._diffraction.outputs import Efficiencies, Jones, PowerBalance
 
@@ -38,6 +39,19 @@ def _jones():
         outgoing=("z_max", (0, 0)),
         incident=("z_max", (0, 0)),
         direction=(1, -1),
+    )
+
+
+def _effective():
+    values = (np.arange(4) + 1.0).reshape(2, 2) * (1 + 0.5j)
+    return EffectiveMedium(
+        permittivity=values,
+        permeability=2 * values,
+        index=3 * values,
+        impedance=4 * values,
+        thickness=1e-7,
+        frequency=FREQ.copy(),
+        branch=0,
     )
 
 
@@ -83,6 +97,7 @@ def test_equal_shaped_objects_share_one_jit_and_map_together():
         _aperture,
         _cell_response,
         _jones,
+        _effective,
         _efficiencies,
         _balance,
         _emissivity,

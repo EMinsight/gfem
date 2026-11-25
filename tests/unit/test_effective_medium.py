@@ -14,7 +14,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-import gfem  # noqa: F401  (turns on double precision)
+import gfem
 from gfem._diffraction.effective import retrieve
 
 EPS = float(np.finfo(float).eps)
@@ -27,7 +27,7 @@ EPS = float(np.finfo(float).eps)
 SAFETY = 64
 
 
-def slab_s(eps, mu, k0d, eps_b=1.0, mu_b=1.0):
+def slab_s(eps, mu, k0d, *, eps_b=1.0, mu_b=1.0):
     """Closed-form (S11, S21) of a slab in a background, exp(+i w t), passive root."""
     n = jnp.sqrt(eps * mu + 0j)
     n = jnp.where(jnp.imag(n) > 0, -n, n)
@@ -52,7 +52,7 @@ def _retrieved(x, k0d, branch, eps_b, mu_b):
     return out[0], out[1]
 
 
-def _bound(s11, s21, k0d, branch=0, eps_b=1.0, mu_b=1.0):
+def _bound(s11, s21, k0d, *, branch=0, eps_b=1.0, mu_b=1.0):
     """Error bound of (eps, mu), per frequency: SAFETY eps_mach sum |J| |x|."""
     x = _x_of(s11, s21)
 
@@ -60,7 +60,9 @@ def _bound(s11, s21, k0d, branch=0, eps_b=1.0, mu_b=1.0):
         e, m = _retrieved(x, k0d, branch, eps_b, mu_b)
         return jnp.stack([e.real, e.imag, m.real, m.imag], axis=-1)  # (n, 4)
 
-    jac = jax.jit(jax.jacobian(parts))(x)  # (n, 4, n, 4); frequencies couple only via unwrap
+    jac = jax.jit(jax.jacobian(parts))(
+        x
+    )  # (n, 4, n, 4); frequencies couple only via unwrap
     n = x.shape[0]
     diag = jnp.stack([jac[i, :, i, :] for i in range(n)])  # (n, 4 out, 4 in)
     err = SAFETY * EPS * jnp.einsum("noi,ni->no", jnp.abs(diag), jnp.abs(x))
@@ -69,11 +71,11 @@ def _bound(s11, s21, k0d, branch=0, eps_b=1.0, mu_b=1.0):
     )
 
 
-def _round_trip(eps, mu, k0d, branch=0, eps_b=1.0, mu_b=1.0):
+def _round_trip(eps, mu, k0d, *, branch=0, eps_b=1.0, mu_b=1.0):
     k0d = jnp.asarray(k0d, float)
-    s11, s21 = slab_s(eps, mu, k0d, eps_b, mu_b)
+    s11, s21 = slab_s(eps, mu, k0d, eps_b=eps_b, mu_b=mu_b)
     got = retrieve(s11, s21, k0d, eps_b, mu_b, branch)
-    tol_e, tol_m = _bound(s11, s21, k0d, branch, eps_b, mu_b)
+    tol_e, tol_m = _bound(s11, s21, k0d, branch=branch, eps_b=eps_b, mu_b=mu_b)
     np.testing.assert_array_less(np.abs(got[0] - eps), np.maximum(tol_e, 1e-300) * 1.0)
     np.testing.assert_array_less(np.abs(got[1] - mu), np.maximum(tol_m, 1e-300) * 1.0)
     return got, (s11, s21, k0d)
@@ -124,7 +126,7 @@ def test_the_background_retrieves_itself():
     k0d = jnp.asarray(K_THIN)
     n_b = math.sqrt(2.25 * 1.2)
     s21 = jnp.exp(-1j * n_b * k0d)
-    e, m, n, z = retrieve(jnp.zeros_like(s21), s21, k0d, 2.25, 1.2, 0)
+    e, m, n, _ = retrieve(jnp.zeros_like(s21), s21, k0d, 2.25, 1.2, 0)
     # S11 = 0: z = 1 exactly, so eps and mu are the background's up to the phase
     np.testing.assert_allclose(e, 2.25, rtol=0, atol=SAFETY * EPS * 4)
     np.testing.assert_allclose(m, 1.2, rtol=0, atol=SAFETY * EPS * 4)
@@ -144,7 +146,7 @@ def test_two_columns_are_retrieved_independently():
         0,
     )
     assert e.shape == m.shape == n.shape == z.shape == (len(K_THIN), 2)
-    ta, ma = _bound(s11a, s21a, k0d)
+    ta, _ = _bound(s11a, s21a, k0d)
     tb, mb = _bound(s11b, s21b, k0d)
     assert np.all(np.abs(e[:, 0] - (4.0 - 0.4j)) < ta)
     assert np.all(np.abs(e[:, 1] - 2.0) < tb)
@@ -171,7 +173,7 @@ def test_gradient_of_the_retrieved_permittivity_is_one(eps0):
 
     def parts(t):
         s11, s21 = slab_s(t - 0.4j, mu, k0d)
-        e, m, *_ = retrieve(s11, s21, k0d, 1.0, 1.0, 0)
+        e, m, _, _ = retrieve(s11, s21, k0d, 1.0, 1.0, 0)
         return jnp.stack([e.real, e.imag, m.real, m.imag])
 
     d = np.asarray(jax.jacfwd(parts)(jnp.asarray(eps0)))  # (4, n)
@@ -207,7 +209,195 @@ def test_a_reactive_impedance_takes_the_passive_root_when_the_principal_one_is_w
     den = 1 - gamma**2 * t**2
     s11, s21 = gamma * (1 - t**2) / den, t * (1 - gamma**2) / den
     assert float(jnp.abs(t[0])) < 1
-    e, m, n_got, z_got = retrieve(s11, s21, k0d, 1.0, 1.0, 0)
+    _, _, n_got, z_got = retrieve(s11, s21, k0d, 1.0, 1.0, 0)
     tol = 1e-10  # |z| = 0.7 and T = 0.4: conditioning of order 1e2 on 1e-16 inputs
     np.testing.assert_allclose(z_got, z, rtol=0, atol=tol)
     np.testing.assert_allclose(n_got, n, rtol=0, atol=tol)
+
+
+# --- the reader on a tiny real cell ----------------------------------------------
+
+import dataclasses  # noqa: E402
+import warnings  # noqa: E402
+
+import periodic_cases as pc  # noqa: E402
+
+from gfem import diffraction as dif  # noqa: E402
+from gfem._diffraction import effective as eff  # noqa: E402
+
+OPTS = gfem.SolverOptions(order=2, threads=2, linear_solver="direct")
+TOP, BOT = "z_max", "z_min"
+F0 = pc.F1_FREQUENCY
+D = pc.F1_D * pc.UM
+
+
+def _ports(offset=D, drop=()):
+    return [
+        dataclasses.replace(p, offset=offset)
+        for p in pc.f1_ports()
+        if p.name not in drop
+    ]
+
+
+@pytest.fixture(scope="module")
+def mesh(tmp_path_factory):
+    return pc.f1_mesh(tmp_path_factory.mktemp("em"))
+
+
+@pytest.fixture(scope="module")
+def model(mesh):
+    # air / eps 4 slab / air, port planes on the slab faces
+    return pc.f1(mesh, ports=_ports(), eps_sub=1.0)
+
+
+@pytest.fixture(scope="module")
+def solved(model):
+    return gfem.solve(model, gfem.Driven([F0]), options=OPTS)
+
+
+def test_a_solved_slab_reads_eps_four_and_mu_one_in_both_columns(solved, model):
+    em = dif.effective_medium(solved, TOP, BOT, model=model)
+    assert em.permittivity.shape == em.permeability.shape == (1, 2)
+    assert em.thickness == pytest.approx(pc.F1_H * pc.UM, rel=1e-9)
+    # S is within F1_COARSE_TOL of the Airy slab on this mesh; the error of the
+    # retrieved value is that times the Jacobian of retrieve at the Airy S, with
+    # a factor 2 for the two entries it reads. A swap eps <-> mu (the TM sign
+    # question) or of the columns moves the value by 3 or more.
+    s11, s21 = pc.f1_airy("TM", eps_sub=1.0)
+    k0d = jnp.asarray([2 * math.pi * F0 / pc.C0 * pc.F1_H * pc.UM])
+    x = _x_of(jnp.asarray([s11]), jnp.asarray([s21]))
+
+    def out(x):
+        e, m = _retrieved(x, k0d, 0, 1.0, 1.0)
+        return jnp.stack([e.real, e.imag, m.real, m.imag], axis=-1)
+
+    jac = np.asarray(jax.jacobian(out)(x))[0, :, 0, :]  # (4, 4)
+    tol = 2 * pc.F1_COARSE_TOL * float(np.max(np.linalg.norm(jac, axis=1)))
+    assert np.all(np.abs(np.asarray(em.permittivity[0]) - 4.0) < tol)
+    assert np.all(np.abs(np.asarray(em.permeability[0]) - 1.0) < tol)
+
+
+def test_an_angle_sweep_is_refused(solved, model):
+    with pytest.raises(ValueError, match="angle sweep"):
+        dif.effective_medium([solved, solved], TOP, BOT, model=model)
+
+
+def test_oblique_incidence_is_refused(model):
+    k = model.bloch_wave_vector(TOP, F0, theta=pc.F1_THETA, phi=pc.F1_PHI)
+    result = gfem.solve(
+        model,
+        gfem.Driven([F0], wave_vector=k, wave_vector_frequency=F0),
+        options=OPTS,
+    )
+    with pytest.raises(ValueError, match="oblique incidence"):
+        dif.effective_medium(result, TOP, BOT, model=model)
+
+
+def test_the_same_face_twice_is_refused(solved, model):
+    with pytest.raises(ValueError, match="both 'z_max'"):
+        dif.effective_medium(solved, TOP, TOP, model=model)
+
+
+def test_an_unknown_face_is_refused(solved, model):
+    with pytest.raises(ValueError, match="carries no Floquet port"):
+        dif.effective_medium(solved, TOP, "x_min", model=model)
+
+
+def test_different_media_behind_the_faces_are_not_implemented(mesh):
+    model = pc.f1(mesh, ports=_ports())  # substrate eps 2.25 under air
+    result = gfem.solve(model, gfem.Driven([F0]), options=OPTS)
+    with pytest.raises(NotImplementedError, match="differ"):
+        dif.effective_medium(result, TOP, BOT, model=model)
+
+
+def test_crossed_reference_planes_are_refused(solved, model):
+    # the faces are 2 D + H = 0.8 um apart: 0.5 um inward from each crosses them
+    crossed = solved.with_offsets(dict.fromkeys(solved.s.ports, 0.5e-6))
+    with pytest.raises(ValueError, match="meeting or crossed"):
+        dif.effective_medium(crossed, TOP, BOT, model=model)
+
+
+def test_frequencies_must_increase(model):
+    result = gfem.solve(model, gfem.Driven([1.05 * F0, F0]), options=OPTS)
+    with pytest.raises(ValueError, match="increase strictly"):
+        dif.effective_medium(result, TOP, BOT, model=model)
+
+
+def test_a_missing_polarization_port_is_refused(mesh):
+    model = pc.f1(mesh, ports=_ports(drop=("T_TM",)), eps_sub=1.0)
+    with pytest.warns(gfem.UnrequestedOrderWarning):
+        result = gfem.solve(model, gfem.Driven([F0]), options=OPTS)
+    with pytest.raises(ValueError, match="no Floquet port reads order"):
+        dif.effective_medium(result, TOP, BOT, model=model)
+
+
+def test_an_unexcited_incident_column_is_refused(model):
+    result = gfem.solve(
+        model, gfem.Driven([F0], excite=["R_TE", "T_TE", "T_TM"]), options=OPTS
+    )
+    with pytest.raises(ValueError, match="was not excited"):
+        dif.effective_medium(result, TOP, BOT, model=model)
+
+
+def test_ports_of_one_order_at_different_offsets_are_refused(solved, model):
+    skew = solved.with_offsets({"R_TE": 0.1e-6})
+    with pytest.raises(ValueError, match="different offsets"):
+        dif.effective_medium(skew, TOP, BOT, model=model)
+
+
+@pytest.mark.parametrize("branch", [1.0, "0", True])
+def test_branch_must_be_an_int(solved, model, branch):
+    with pytest.raises(TypeError, match="branch must be an int"):
+        dif.effective_medium(solved, TOP, BOT, model=model, branch=branch)
+
+
+def test_a_traced_branch_is_not_differentiable(solved, model):
+    with pytest.raises(gfem.NonDifferentiableError, match="branch"):
+        jax.jit(
+            lambda b: dif.effective_medium(solved, TOP, BOT, model=model, branch=b)
+        )(1)
+
+
+def test_the_slab_is_symmetric_and_isotropic_so_nothing_warns(solved, model):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        dif.effective_medium(solved, TOP, BOT, model=model)
+
+
+def test_cross_polarized_transmission_warns(solved, model, monkeypatch):
+    real = eff.jones_block
+
+    def leaky(s, out, inc):
+        block = real(s, out, inc)
+        if out[0] != inc[0]:  # the transmission block: add 5 % TM -> TE
+            block = block.at[:, 1, 0].set(0.05 * block[:, 0, 0])
+        return block
+
+    monkeypatch.setattr(eff, "jones_block", leaky)
+    with pytest.warns(UserWarning, match="cross-polarized transmission"):
+        dif.effective_medium(solved, TOP, BOT, model=model)
+
+
+def test_a_reflection_that_depends_on_the_side_warns(solved, model, monkeypatch):
+    real = eff.jones_block
+
+    def lopsided(s, out, inc):
+        block = real(s, out, inc)
+        if out == inc and out[0].startswith("T"):  # the back-side reflection
+            block = block + 0.05
+        return block
+
+    monkeypatch.setattr(eff, "jones_block", lopsided)
+    with pytest.warns(UserWarning, match="differ by"):
+        dif.effective_medium(solved, TOP, BOT, model=model)
+
+
+def test_effective_medium_checks_its_shapes():
+    ok = np.ones((3, 2), complex)
+    with pytest.raises(ValueError, match="permittivity must have shape"):
+        dif.EffectiveMedium(ok[:, :1], ok, ok, ok, 1e-7, np.arange(3.0), 0)
+    with pytest.raises(ValueError, match="frequency must hold 3"):
+        dif.EffectiveMedium(ok, ok, ok, ok, 1e-7, np.arange(2.0), 0)
+    assert "3 frequencies" in repr(
+        dif.EffectiveMedium(ok, ok, ok, ok, 1e-7, np.arange(3.0), 0)
+    )
