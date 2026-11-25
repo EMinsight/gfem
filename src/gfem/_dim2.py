@@ -226,6 +226,9 @@ def refuse_solve(model: Model, problem: Any, options: SolverOptions, comm: Any) 
 #: Public entries with no 2D path, by name, and their remedies.
 _ENTRIES = {
     "power_flow": f"Read the power through the ports from the S-parameters, or {SLAB}.",
+    "optical_force": "A 2D model has no body to push: pose the bodies on a 3D "
+    "mesh, or read the force per length between two guides from the gradient "
+    "of a port mode's effective index in their separation.",
     "region_mean": f"Read the field at points with Field.at, or {SLAB}.",
     "element_mean": f"Read the field at points with Field.at, or {SLAB}.",
     "electric_energy": f"For the energies, {SLAB}.",

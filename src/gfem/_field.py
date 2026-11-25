@@ -104,6 +104,9 @@ class Field:
     #: m)`` each: a reader of the discrete equations' residual
     #: (`gfem.power_flow`) must keep its element layer off them.
     _point_sources: tuple[tuple[str, tuple[float, float, float]], ...] = ()
+    #: The scattered part of an incident-field column (the kept field minus
+    #: the incident part), which no measurement of the total field may read.
+    _scattered: bool = False
 
     def __post_init__(self) -> None:
         """Check the descriptor against the mesh."""

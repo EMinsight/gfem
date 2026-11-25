@@ -15,6 +15,9 @@ result reloaded with `gfem.load_result`.
 - `power_flow`: the net power a driven field carries out of a set of
   elements, exact for the solved field (a flux of point-sampled
   ``E x H*`` is not, see the measurements recipe).
+- `optical_force`: the time-averaged force and torque a driven or eigenmode
+  field exerts on a body, the exact derivative of the discrete Lagrangian
+  under a rigid motion of the body.
 - `dissipated_power`: the time-averaged power a driven field dissipates
   in each volume region and on each `Conductor` or `Impedance` sheet,
   exact for the solved field.
@@ -101,6 +104,7 @@ __all__ = [
     "FarField",
     "InterfaceParticipation",
     "Multipoles",
+    "OpticalForce",
     "beam_coupling",
     "characteristic_impedance",
     "cross_sections",
@@ -113,6 +117,7 @@ __all__ = [
     "heat_flow_per_length",
     "interface_participation",
     "multipoles",
+    "optical_force",
     "power_flow",
     "purcell_factor",
     "region_mean",
@@ -982,6 +987,185 @@ def _check_estimated_side(names: tuple[str, ...], model: Model) -> None:
             f"dispersive region {odd[0]!r}, where the absorbed-power estimate "
             "was not verified: use gfem.FieldEstimator().",
         )
+
+
+# --- optical force ---------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class OpticalForce:
+    """The force and torque on a body (`gfem.optical_force`).
+
+    Attributes:
+        force: The force, N, ``(3,)``.
+        torque: The torque about ``origin``, N m, ``(3,)``.
+        origin: The point the torque is taken about, m, ``(3,)``.
+    """
+
+    force: jax.Array
+    torque: jax.Array
+    origin: jax.Array
+
+    def __repr__(self) -> str:
+        try:
+            f, t, o = (np.asarray(x) for x in (self.force, self.torque, self.origin))
+        except (TypeError, jax.errors.TracerArrayConversionError):
+            return "OpticalForce(traced)"
+        return f"OpticalForce(force={f} N, torque={t} N m, origin={o} m)"
+
+
+register_fields(OpticalForce, ("force", "torque", "origin"))
+
+
+def optical_force(
+    field: Field,
+    body: str | Sequence[str] | Callable[[np.ndarray], np.ndarray],
+    *,
+    model: Model,
+    origin: Any = None,
+) -> OpticalForce:
+    r"""Time-averaged force and torque a solved field exerts on ``body``.
+
+    ``body`` is a set of elements: a volume region, several (their union), or
+    a predicate ``inside(centroids) -> bool`` on the ``(n_tetrahedra, 3)``
+    element centroids in m, as `power_flow`'s side. A region held out of the
+    electromagnetic solve (``Model(excluded=...)``), such as a meshed metal
+    whose surface carries a `gfem.PEC`, is a body too.
+
+    The force and torque are the derivative of the discrete time-averaged
+    Lagrangian :math:`L = \frac{1}{4}\int (\varepsilon |E|^2 - |B|^2 /
+    \mu)\,dV` of the solved field, at fixed coefficients, under a rigid
+    motion of the body's nodes: the volume form of the Maxwell stress tensor
+    on the stress shell, the solve-domain elements outside the body that share
+    a vertex with it. Another shell would change the number by discretization
+    error only, so there is no argument for it: refine the mesh to check
+    convergence. The result converges with the mesh
+    to the physical force; it is the exact derivative of the discrete
+    Lagrangian, not the residual of the discrete equations (there is no
+    discrete momentum balance).
+
+    A driven field is the peak phasor for 1 W incident at its excited port
+    (a plane wave at its ``amplitude``), so the force scales with the incident
+    power. An eigenmode field is normalized to :math:`1\,\mathrm{J}` of
+    stored energy, so its force equals :math:`-(1\,\mathrm{J}/\omega)\,
+    d\omega/d\xi`, with :math:`\xi` the translation of the body (and the
+    rotation, for the torque); it scales linearly with the stored energy. For
+    a complex :math:`\omega` the real part is read: the identity is exact for
+    a lossless, closed mode.
+
+    The torque is taken about ``origin``, by default the body's volume
+    centroid.
+
+    The shell must be one homogeneous, isotropic, lossless medium
+    (a `gfem.Material` with a real ``eps_r`` and ``mu_r``). The body itself
+    may be anything, lossy, anisotropic, dispersive or a `gfem.MaterialField`.
+    It may touch a `gfem.PEC` or `gfem.PMC` wall, or the domain's natural
+    wall, it does not own: the motions that would slide it along the wall
+    are then not defined, and the force and torque components that move it
+    along that wall are NaN, the others are the force on the body held on the
+    wall. Rotations are about axes through the centroid.
+
+    The total field of an incident-field column (``result.e_field(f,
+    "wave")``) is read; its incident and scattered parts are refused.
+
+    Args:
+        field: A 3D electric field (quantity ``"E"``, in H(curl), complex),
+            of a `gfem.Driven` or `gfem.Eigenmode` solve.
+        body: The volume region name(s), or the centroid predicate.
+        model: The model the field was solved with.
+        origin: The point the torque is taken about, m, ``(3,)``; ``None``
+            for the body's volume centroid. It may be a traced value.
+
+    Returns:
+        An `OpticalForce`.
+
+    Raises:
+        TypeError: ``field`` is not a `gfem.Field`, ``model`` is not a
+            `gfem.Model`, ``body`` is neither names nor a callable, or
+            ``origin`` is not a real value of shape ``(3,)``.
+        RegionNotFoundError: A named region does not exist.
+        ValueError: A name is a surface region; the predicate does not return
+            one boolean per tetrahedron; the body holds no element or has no
+            stress shell; the field is not a 3D electric time-harmonic field
+            or was not solved on ``model``; it is the incident or the
+            scattered part of an incident-field column; the shell is not
+            one homogeneous isotropic lossless medium; a sheet, a port, an
+            absorbing surface, a perfectly matched layer or a periodic pair
+            touches the body or its shell; or a point dipole whose load
+            solved the field is in the shell.
+        NotImplementedError: A 2D model.
+        gfem.DistributedUnsupportedError: A field across ranks.
+        gfem.MeshRefinementUnsupportedError: Under the refinement recorder.
+        NonDifferentiableError: Inside `jax.grad`, `jax.jit` or `jax.vmap`
+            for now.
+    """
+    from gfem._field import Field
+    from gfem._optical_force import evaluate
+    from gfem.model import Model
+
+    refuse_entry(getattr(field, "mesh", None), "optical_force")
+    if not isinstance(field, Field):
+        raise TypeError(
+            f"optical_force needs a gfem.Field, got {type(field).__name__}."
+        )
+    if not isinstance(model, Model):
+        raise TypeError(
+            f"optical_force needs model= a gfem.Model, got {type(model).__name__}."
+        )
+    if field._communicator is not None:  # noqa: SLF001
+        _mpi.refuse_feature("optical_force")
+    names = _body_names(body)
+    around = _origin(origin)
+    if _objective.recording() is not None:
+        raise MeshRefinementUnsupportedError(
+            "optical_force",
+            "The objective reads gfem.optical_force, whose error is not "
+            "estimated in this version: refine on the S-parameters or on "
+            "gfem.power_flow instead, or use gfem.FieldEstimator().",
+        )
+    _check_time_harmonic(field, "optical_force", static="solve a gfem.Driven problem")
+    if not field.is_complex:
+        raise ValueError(
+            "optical_force needs a complex phasor field, got real coefficients: "
+            "solve a gfem.Driven or gfem.Eigenmode problem."
+        )
+    force, torque, centroid = evaluate(field, names, model)
+    point = centroid if around is None else around
+    return OpticalForce(
+        force=force, torque=torque + jnp.cross(centroid - point, force), origin=point
+    )
+
+
+def _body_names(
+    body: Any,
+) -> tuple[str, ...] | Callable[[np.ndarray], np.ndarray]:
+    """``body`` as a tuple of region names or a predicate, or raise."""
+    if isinstance(body, str):
+        return (body,)
+    if callable(body):
+        return body
+    if isinstance(body, Sequence) and body and all(isinstance(b, str) for b in body):
+        return tuple(body)
+    raise TypeError(
+        "optical_force's body must be a volume region name, a sequence of names "
+        f"or a predicate on element centroids, got {body!r}."
+    )
+
+
+def _origin(origin: Any) -> jax.Array | None:
+    """The torque origin as a float ``(3,)`` array, or raise."""
+    if origin is None:
+        return None
+    try:
+        out = jnp.asarray(origin)
+    except (TypeError, ValueError):
+        out = None
+    if out is None or out.shape != (3,) or jnp.iscomplexobj(out) or out.dtype == bool:
+        raise TypeError(
+            "optical_force's origin must be None or three real numbers (m), got "
+            f"{origin!r}."
+        )
+    return out.astype(float)
 
 
 # --- dissipated power -------------------------------------------------------------
