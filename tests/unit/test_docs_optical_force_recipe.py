@@ -40,6 +40,9 @@ LIMITS = {
         "test_a_body_node_on_a_periodic_pair_is_refused",
         "test_a_dipole_in_the_shell_is_refused",
     ),
+    "Sheets on the body or off it": (
+        "test_a_sheet_across_the_body_boundary_is_refused_but_its_own_sheet_is_not",
+    ),
     "Total fields only": (
         "test_the_layer_and_the_parts_of_an_incident_column_are_refused",
     ),

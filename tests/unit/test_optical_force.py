@@ -189,7 +189,7 @@ def test_the_result_is_a_pytree_of_three_float_arrays(cavity):
         got.force = leaves[1]  # ty: ignore[invalid-assignment]
 
 
-def test_a_body_may_have_its_own_sheet_but_not_one_that_it_touches(cavity):
+def test_a_sheet_across_the_body_boundary_is_refused_but_its_own_sheet_is_not(cavity):
     # the interface at x = 0.2 on the block's face lies on the body
     model = cavity.model.replace(
         boundaries=[*cavity.model.boundaries, gfem.Impedance("whole", resistance=50.0)]
@@ -555,6 +555,16 @@ def _fd4(f, x, h):
     return (f(x - 2 * h) - 8 * f(x - h) + 8 * f(x + h) - f(x + 2 * h)) / (12 * h)
 
 
+def _scales(values):
+    """The largest magnitude of the force (N) and of the torque (N m), per output.
+
+    The two differ by the body's size: one scale over the six outputs would
+    gate the torque against a force-sized number.
+    """
+    values = np.abs(np.asarray(values))
+    return np.repeat([values[:3].max(), values[3:].max()], 3)
+
+
 def _check_design_gradient(solve, eps, h, rtol, components):
     """``jax.vjp`` of a design's wrench against the five-point FD of two solves.
 
@@ -562,11 +572,11 @@ def _check_design_gradient(solve, eps, h, rtol, components):
     """
     wrench, pull = jax.vjp(solve, eps)
     fd = _fd4(lambda x: np.asarray(solve(x)), eps, h)
-    scale = np.abs(fd).max()
+    scale = _scales(fd)
     for k in components:
         ct = jnp.zeros(6).at[k].set(1.0)
         (grad,) = pull(ct)
-        assert abs(float(grad) - fd[k]) <= rtol * scale, (k, float(grad), fd[k])
+        assert abs(float(grad) - fd[k]) <= rtol * scale[k], (k, float(grad), fd[k])
     return wrench
 
 
@@ -649,10 +659,11 @@ def test_the_cotangent_of_the_coefficients_is_twice_the_conjugate_of_the_form(ca
     # is round-off of the form, a few eps times the cancellation between its curl
     # and mass parts (the probe measured 3e-14, 1e-12 here).
     exact = (np.asarray(f(1.0)) - np.asarray(f(-1.0))) / 2
+    scale = _scales(exact)  # the force and the torque apart
     for k in range(6):
         (g,) = pull(jnp.zeros(6).at[k].set(1.0))
         assert float(np.real(np.sum(np.asarray(g) * direction))) == pytest.approx(
-            exact[k], abs=1e-12 * np.abs(exact).max()
+            exact[k], abs=1e-12 * scale[k]
         )
 
 
@@ -668,9 +679,52 @@ def test_the_cotangent_of_the_frequency_is_minus_twice_the_curl_force_over_omega
     # the round-off over h is 1e-12.
     _, pull = jax.vjp(f, 1.0)
     fd = _fd4(lambda s: np.asarray(f(s)), 1.0, 1e-2)
+    scale = _scales(fd)
     for k in range(6):
         (g,) = pull(jnp.zeros(6).at[k].set(1.0))
-        assert float(g) == pytest.approx(fd[k], abs=1e-6 * np.abs(fd).max())
+        assert float(g) == pytest.approx(fd[k], abs=1e-6 * scale[k])
+
+
+def test_the_gradient_through_a_conducting_body_is_exact(cube):
+    n_scat = len(cube.mesh.elements("scat"))
+
+    def solve(eps):
+        # the conductivity weight is imaginary in the body, and zero in the shell
+        model = cube.model.replace(
+            materials={
+                **cube.model.materials,
+                "scat": gfem.MaterialField(
+                    eps_r=eps * jnp.ones(n_scat), conductivity=2e4 * jnp.ones(n_scat)
+                ),
+            }
+        )
+        result = gfem.solve(
+            model,
+            gfem.Driven(pc.F0, sources=[cube.wave], keep_fields=True),
+            options=gfem.SolverOptions(order=2, linear_solver="direct"),
+        )
+        got = gfem.optical_force(result.e_field(pc.F0, "pw"), "scat", model=model)
+        return jnp.concatenate([got.force, got.torque])
+
+    # as the lossless cube: the five-point truncation at h = 0.05 sets the gate
+    _check_design_gradient(solve, 4.0, 0.05, 1e-6, components=(2,))
+
+
+def test_the_torque_shift_does_not_spread_a_nan_force_component():
+    from gfem.measurements import _shift
+
+    force = jnp.array([1.0, jnp.nan, 3.0])
+    # no arm: nothing is added, whatever the force holds
+    np.testing.assert_array_equal(_shift(jnp.zeros(3), force), np.zeros(3))
+    # an arm along z multiplies F_x and F_y: only the components it reaches
+    got = np.asarray(jax.jit(_shift)(jnp.array([0.0, 0.0, 2.0]), force))
+    assert np.isnan(got[0])
+    assert got[1] == 2.0
+    assert got[2] == 0.0
+    # finite forces are the plain cross product
+    finite = jnp.array([1.0, 2.0, 3.0])
+    arm = jnp.array([0.5, -1.0, 2.0])
+    np.testing.assert_array_equal(_shift(arm, finite), np.cross(arm, finite))
 
 
 def test_the_wrench_maps_over_fields_and_compiles(cavity):
@@ -723,10 +777,20 @@ def test_the_node_coordinates_the_shell_material_and_a_reduced_field_raise_by_na
         )
         return gfem.optical_force(cavity.field, "block", model=model).force[0]
 
-    with pytest.raises(
-        gfem.NonDifferentiableError, match=r"materials\['gas'\]\.eps_r.*stress shell"
-    ):
-        jax.grad(shell_eps)(1.0)
+    # a design of the shell's medium is refused at trace time, by name, under
+    # jit as under grad (it is a MaterialField, which the shell may not hold)
+    for transform in (jax.grad, jax.jit):
+        with pytest.raises(ValueError, match=r"gas.*MaterialField"):
+            transform(shell_eps)(1.0)
+
+    def predicate(s):
+        model = cavity.model.replace(mesh=cavity.mesh.with_nodes(s * x))
+        return gfem.optical_force(
+            cavity.field, lambda c: c[:, 0] < 0.6e-3, model=model
+        ).force[0]
+
+    with pytest.raises(gfem.NonDifferentiableError, match="predicate"):
+        jax.grad(predicate)(1.0)
 
     reduced = dataclasses.replace(cavity.field, _reduced=True)
 
