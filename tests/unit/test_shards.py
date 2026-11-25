@@ -117,3 +117,14 @@ def test_bad_shard_is_a_usage_error(bad):
     )
     assert run.returncode == 4
     assert "--shard" in run.stderr
+
+
+def test_recorded_zeros_cost_the_floor_and_spread():
+    known = {f"m.a::z{i}": 0.0 for i in range(40)} | {"m.a::big": 10.0}
+    ids = [f"m/a.py::z{i}" for i in range(40)] + ["m/a.py::big"]
+    costs = shards.costs_of(ids, known)
+    assert costs["m/a.py::z0"] == shards.MIN_SECONDS
+    owner = shards.assign(costs, 4)
+    counts = [sum(1 for s in owner.values() if s == k) for k in range(4)]
+    assert counts[0] == 1  # the long test's shard takes nothing else
+    assert sorted(counts[1:]) == [13, 13, 14]

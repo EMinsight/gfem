@@ -12,6 +12,7 @@ import statistics
 from pathlib import Path
 
 DEFAULT_SECONDS = 1.0
+MIN_SECONDS = 0.05
 
 
 def junit_key(nodeid: str) -> str:
@@ -60,7 +61,14 @@ def costs_of(nodeids: list[str], known: dict[str, float]) -> dict[str, float]:
     Recorded zeros (tests under the 0.1 s rounding) are left out of the median, or
     it would be zero and every unknown test would cost nothing. With no positive
     recorded duration at all, an unknown test costs one second.
+
+    A recorded zero costs `MIN_SECONDS`, half the rounding step, so the many
+    sub-0.1 s tests still spread over the shards instead of all joining the
+    least-loaded one.
     """
     positive = [v for v in known.values() if v > 0]
     default = statistics.median(positive) if positive else DEFAULT_SECONDS
-    return {nodeid: known.get(junit_key(nodeid), default) for nodeid in nodeids}
+    return {
+        nodeid: max(known.get(junit_key(nodeid), default), MIN_SECONDS)
+        for nodeid in nodeids
+    }
