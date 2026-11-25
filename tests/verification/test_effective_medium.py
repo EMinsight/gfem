@@ -71,14 +71,8 @@ def slab_s(eps, mu, k0d):
     return g * (1 - t**2) / den, t * (1 - g**2) / den
 
 
-def _jacobian_tolerance(s11, s21, k0d, branch, bound):
-    """2 x bound x the l1 sum over (Re, Im) of S11, S21 of |d value / d x|.
-
-    ``bound`` is the documented |S - reference| per entry; the retrieved
-    value's error is at most the Jacobian of `retrieve` at the reference S
-    times that, factor 2 for the linearization and the second-order terms.
-    Returns the tolerance of (eps, mu) as complex moduli.
-    """
+def _l1_rows(s11, s21, k0d, branch):
+    """|J| of (Re eps, Im eps, Re mu, Im mu) in Re, Im of (S11, S21), shape (4, 4)."""
     from gfem._diffraction.effective import retrieve
 
     x = jnp.asarray([s11.real, s11.imag, s21.real, s21.imag])
@@ -94,8 +88,25 @@ def _jacobian_tolerance(s11, s21, k0d, branch, bound):
         )
         return jnp.stack([e[0].real, e[0].imag, m[0].real, m[0].imag])
 
-    jac = np.abs(np.asarray(jax.jacobian(out)(x)))  # (4, 4)
-    err = 2 * bound * jac.sum(axis=1)
+    return np.abs(np.asarray(jax.jacobian(out)(x)))
+
+
+def _jacobian_tolerance(reference, measured, k0d, branch, bound):
+    """The bound of the error of (eps, mu), as complex moduli, from |S - reference|.
+
+    ``bound`` is the documented |S - reference| per entry, so each real and
+    imaginary part of S11 and S21 is off by at most that. The retrieved value
+    moves by the Jacobian of `retrieve` integrated along the segment from the
+    ``reference`` S to the ``measured`` one; the l1 row sum of |J| times
+    ``bound`` bounds it with the largest |J| on the segment. J is smooth along
+    the segment (it moves by the second-order remainder, relative size
+    ``bound`` times the curvature of `retrieve`, far below one), so the larger
+    of its two endpoint values stands for it.
+    """
+    rows = np.maximum(
+        _l1_rows(*reference, k0d, branch), _l1_rows(*measured, k0d, branch)
+    ).sum(axis=1)
+    err = bound * rows
     return float(np.hypot(err[0], err[1])), float(np.hypot(err[2], err[3]))
 
 
@@ -109,8 +120,13 @@ def test_isotropic_slab_reads_eps_four_and_mu_one(mesh):
         assert abs(complex(s[f"R_{pol}", f"R_{pol}"][0]) - r) <= pc.F1_S_TOL
         assert abs(complex(s[f"T_{pol}", f"R_{pol}"][0]) - t) <= pc.F1_S_TOL
     em = dif.effective_medium(result, TOP, BOT, model=model, branch=1)
-    s11, s21 = airy_on_the_slab("TM")
-    tol_e, tol_m = _jacobian_tolerance(s11, s21, K0D, 1, pc.F1_S_TOL)
+    measured = (
+        complex(result.s["R_TM", "R_TM"][0]),
+        complex(result.s["T_TM", "R_TM"][0]),
+    )
+    tol_e, tol_m = _jacobian_tolerance(
+        airy_on_the_slab("TM"), measured, K0D, 1, pc.F1_S_TOL
+    )
     assert np.all(np.abs(np.asarray(em.permittivity[0]) - 4.0) <= tol_e)
     assert np.all(np.abs(np.asarray(em.permeability[0]) - 1.0) <= tol_m)
 
@@ -134,9 +150,7 @@ def test_anisotropic_magnetic_slab_reads_each_axis_and_each_field(mesh):
     refl = np.asarray(dif.jones(result, TOP, TOP, model=model).values)[0]
     trans = np.asarray(dif.jones(result, BOT, TOP, model=model).values)[0]
     closed = {i: slab_s(*COLUMNS[i], K0D) for i in (0, 1)}
-    branches = {_branch(np.sqrt(complex(e * m))) for e, m in COLUMNS.values()}
-    assert len(branches) == 1  # one phase sheet for both columns
-    (branch,) = branches
+    branch = tuple(_branch(np.sqrt(complex(e * m))) for e, m in COLUMNS.values())
     # F1_S_TOL was measured on eps 4; the magnetic slab (n 1.73 and 1.90, other
     # impedances) is asserted against the same bound first (measured here:
     # 1e-7 to 3e-7 per entry, so the bound is not loosened)
@@ -147,7 +161,10 @@ def test_anisotropic_magnetic_slab_reads_each_axis_and_each_field(mesh):
     eps = np.asarray(em.permittivity[0])
     mu = np.asarray(em.permeability[0])  # (mu_11, mu_22)
     for i, mu_index in ((0, 1), (1, 0)):  # column i reads eps_ii and mu_jj, j != i
-        tol_e, tol_m = _jacobian_tolerance(*closed[i], K0D, branch, pc.F1_S_TOL)
+        measured = (complex(refl[i, i]), complex(trans[i, i]))
+        tol_e, tol_m = _jacobian_tolerance(
+            closed[i], measured, K0D, branch[i], pc.F1_S_TOL
+        )
         assert abs(eps[i] - COLUMNS[i][0]) <= tol_e
         assert abs(mu[mu_index] - COLUMNS[i][1]) <= tol_m
 
@@ -176,8 +193,17 @@ def test_gradient_of_the_retrieved_permittivity_matches_finite_differences(mesh)
 
     eps = jnp.asarray(pc.F1_EPS_SLAB)
     grad = jax.grad(objective)(eps)
-    # d eps_11 / d eps_slab is 1 up to the FEM error of S
-    assert abs(float(grad) - 1.0) < 1e-3
+    # d eps_11 / d eps_slab is 1 up to the derivative of the FEM error of S.
+    # That error is bounded by F1_S_TOL and analytic in the slab permittivity
+    # on the disc of radius R about 4, R the distance to the nearest
+    # half-wave resonance of the slab (n k0 d = pi at eps = (pi / K0D)^2, where
+    # S11 -> 0 and the retrieval is singular); Cauchy's estimate bounds its
+    # derivative by F1_S_TOL / R, and the gradient error by the l1 row of the
+    # Jacobian of Re eps_11 with respect to S times that.
+    radius = abs(pc.F1_EPS_SLAB - (math.pi / K0D) ** 2)
+    ref = airy_on_the_slab("TM")
+    row = _l1_rows(*ref, K0D, 1)[0].sum()
+    assert abs(float(grad) - 1.0) < row * pc.F1_S_TOL / radius
     assert_gradient_matches(
         objective, eps, [np.asarray(1.0)], step=STEP, rel=1e-6, grad=grad
     )
