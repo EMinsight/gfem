@@ -1306,8 +1306,9 @@ def _field_shape(
     ``w``. ``w`` is a ``VectorH1`` order-1 grid function and the terms are
     weighted (``theta_t scale**length_power``). A coefficient that varies in
     position adds no moved-point part: the caller's elements are where it is
-    constant (the shell of a body, away from any stretch). The result is in the units of the form on the
-    mesh: divide by the length unit for a per metre value, as `_node_pass` does.
+    constant (the shell of a body, away from any stretch).
+    The result is in the units of the form on the mesh: divide by the length
+    unit for a per metre value, as `_node_pass` does.
 
     Returns:
         The complex vector of the real and imaginary parts assembled apart.
