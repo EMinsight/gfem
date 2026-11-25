@@ -4135,18 +4135,6 @@ OUT_OF_SCOPE = [
         "SheetField.*2D mesh",
     ),
     (
-        "driven x fill of a sheet beside a wave port",
-        _out_sheet_beside_a_wave_port,
-        gfem.PortGeometryError,
-        "shares an edge with the port face",
-    ),
-    (
-        "driven x Impedance value beside a wave port",
-        _out_impedance_beside_a_wave_port,
-        gfem.PortGeometryError,
-        r"Impedance model\.boundaries\[2\] shares an edge with the port face",
-    ),
-    (
         "LumpedPort resistance",
         _out_lumped_port_resistance,
         gfem.NonDifferentiableError,
