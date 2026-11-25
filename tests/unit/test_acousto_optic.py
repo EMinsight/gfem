@@ -577,6 +577,22 @@ def test_an_offset_that_is_not_two_finite_numbers_raises(model, acoustic, offset
         _shift(model, acoustic, offset=offset)
 
 
+def test_a_port_section_off_the_plane_z_const_raises_before_the_mode_solve(
+    coarse, acoustic
+):
+    # the guide along x: the "left" face is normal to x, the acoustic section
+    # (invariant along z) would be read along one line
+    oxide = gfem.Material(eps_r=N_OX**2)
+    sideways = gfem.Model(
+        coarse,
+        materials={"below": oxide, "film": _film(), "above": oxide},
+        boundaries=[gfem.PEC("front")],
+        ports=[gfem.WavePort("p", "left")],
+    )
+    with pytest.raises(ValueError, match=r"acousto_optic_shift.*plane z = const"):
+        _shift(sideways, acoustic)
+
+
 def test_the_optical_node_coordinates_raise_under_grad(model, acoustic):
     # they move the mode and the points the acoustic fields are read at
     def f(nodes):
@@ -601,6 +617,24 @@ def test_a_traced_optical_permittivity_raises_under_grad_with_the_stop_gradient_
             electro_optic_tensor=jnp.asarray(R_LN),
         )
         return _shift(_optical(coarse, film), acoustic).delta_n_eff_per_volt.real
+
+    with pytest.raises(gfem.NonDifferentiableError, match="acousto-optic shift"):
+        jax.jacrev(f)(jnp.asarray(eo.LN_OPTICAL))
+
+
+def test_a_traced_optical_input_raises_before_the_acoustic_fields_are_read(
+    coarse, acoustic_mesh
+):
+    # the mechanical domain misses the film: reading the strain would raise a
+    # ValueError, so the refusal of the traced eps_r must come first
+    strains, fields = _lateral(np.full(2, STRAIN), np.full(2, FIELD))
+    no_u = _uniform(acoustic_mesh, strains, fields, mechanical=("below",))
+
+    def f(eps):
+        film = gfem.MaterialField(
+            eps_r=eps, axes=X_CUT, photoelastic_tensor=jnp.asarray(P_LN)
+        )
+        return _shift(_optical(coarse, film), no_u).delta_n_eff_per_volt.real
 
     with pytest.raises(gfem.NonDifferentiableError, match="acousto-optic shift"):
         jax.jacrev(f)(jnp.asarray(eo.LN_OPTICAL))
@@ -655,7 +689,9 @@ def test_a_tensor_gradient_matches_finite_differences(
     # threads), so the difference carries 1.5 * 6e-14 / h of it. The perturbation
     # `scale` is ~20% of p13 and ~10% of r33: the objective moves by order 1 over
     # a unit of h, so h = 1 puts the round-off at ~1e-13 against the gate of 1e-6.
-    # Measured relative errors: 2e-15 (p) and 1e-13 (r).
+    # Measured relative errors: 2e-15 (p) and 1e-13 (r). One random direction
+    # suffices: the shift is linear in the tensor, so the gradient is one fixed
+    # linear map whatever the direction.
     rng = np.random.default_rng(21)
     base = {"p": np.asarray(P_LN), "r": np.asarray(R_LN)}
 
@@ -665,7 +701,7 @@ def test_a_tensor_gradient_matches_finite_differences(
         return _objective(_shift(_optical(rough, film), acoustic).delta_n_eff_per_volt)
 
     _assert_gradient_matches(
-        objective, jnp.zeros(shape), fd.unit_directions(rng, shape, 2), step=1.0
+        objective, jnp.zeros(shape), fd.unit_directions(rng, shape, 1), step=1.0
     )
 
 
@@ -742,6 +778,27 @@ def test_the_offset_gradient_matches_finite_differences_in_both_components(
     # and the forward under grad is the plain forward, at the same values
     value, _ = jax.value_and_grad(objective)(jnp.zeros(2))
     np.testing.assert_allclose(value, objective(jnp.zeros(2)), rtol=1e-12, atol=0)
+
+
+def test_a_tuple_offset_with_one_traced_entry_has_the_array_offsets_gradient(
+    rough, piezo_rough
+):
+    # a placement gradient along one axis, written as (dx, y0): the same reading
+    # as the array offset, so the same derivative up to the order of the sums
+    optical = _optical(rough, _film(axes=pc.AXES))
+
+    def by_tuple(dx):
+        shift = _shift(optical, piezo_rough, offset=(dx, WINDOW[1]))
+        return _objective(shift.delta_n_eff_per_volt)
+
+    def by_array(q):
+        shift = _shift(optical, piezo_rough, offset=jnp.asarray(WINDOW) + q)
+        return _objective(shift.delta_n_eff_per_volt)
+
+    got = jax.grad(by_tuple)(0.0)
+    want = jax.grad(by_array)(jnp.zeros(2))[0]
+    assert want != 0
+    np.testing.assert_allclose(got, want, rtol=1e-10, atol=0)
 
 
 def _stretch(nodes, q):

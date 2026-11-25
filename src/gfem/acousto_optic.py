@@ -195,14 +195,53 @@ def _offset(offset: Any) -> jax.Array:
     Raises:
         ValueError: ``offset`` is not two finite numbers.
     """
-    if np.shape(offset) != (2,):
+    traced = is_traced(offset)
+    # a tuple with a traced entry stacks through JAX; NumPy cannot convert it
+    arr = jnp.asarray(offset, dtype=jnp.float64) if traced else np.asarray(offset)
+    if arr.shape != (2,):
         raise ValueError(
             f"{_OWNER}: offset is the (dx, dy) shift in m of the acoustic section "
-            f"against the optical one, shape (2,), got shape {np.shape(offset)}."
+            f"against the optical one, shape (2,), got shape {arr.shape}."
         )
-    if not is_traced(offset) and not np.isfinite(np.asarray(offset, float)).all():
+    if not traced and not np.isfinite(np.asarray(arr, float)).all():
         raise ValueError(f"{_OWNER}: offset must be finite, got {offset!r}.")
-    return jnp.asarray(offset, dtype=jnp.float64)
+    return jnp.asarray(arr, dtype=jnp.float64)
+
+
+def _check_plane(mesh: Any, faces: np.ndarray, port: str) -> None:
+    """Raise unless the port's section lies in a plane :math:`z` = const.
+
+    The acoustic result is invariant along z, and the shift reads it at the
+    section's points projected onto :math:`(x, y)`: another orientation of the
+    section would read the fields along one line, with no error.
+    """
+    z = np.asarray(mesh.nodes, float)[np.asarray(mesh.triangles)[faces]][..., 2]
+    extent = np.ptp(np.asarray(mesh.nodes, float), axis=0).max()
+    if np.ptp(z) > 1e-9 * extent:
+        raise ValueError(
+            f"{_OWNER}: wave port {port!r} is not in a plane z = const: the "
+            "acoustic section is invariant along z, so the guide must run along z."
+        )
+
+
+def _check_optical_fixed(model: Model) -> None:
+    """Raise `NonDifferentiableError` for a traced input of the port mode problem.
+
+    The mode is held constant; the refusal comes before the acoustic fields
+    are read rather than after.
+    """
+    names = ("eps_r", "tan_delta", "mu_r", "conductivity")
+    for material in model.materials.values():
+        for name in names:
+            if is_traced(getattr(material, name, None)):
+                raise NonDifferentiableError(
+                    f"{_OWNER}: gfem cannot differentiate the acousto-optic shift "
+                    f"with respect to the optical model's {name}: the mode is held "
+                    "constant (first order in the acoustic fields). Wrap it in "
+                    "jax.lax.stop_gradient to use its value without its "
+                    "derivative. Differentiate through the acoustic result, the "
+                    "photoelastic_tensor, the electro_optic_tensor or the offset."
+                )
 
 
 def _photoelastic(material: Any, pos: np.ndarray) -> Any:
@@ -298,19 +337,23 @@ def _points(mesh: Any, tets: np.ndarray, order: int) -> tuple[np.ndarray, np.nda
     return np.einsum("qk,nkd->nqd", bary, corners)[..., :2].reshape(-1, 2), weights
 
 
-def _moved(field: Any, offset: jax.Array) -> Any:
+def _moved(field: Any, offset: jax.Array, moved: dict[int, Any]) -> Any:
     r"""``field`` on its mesh translated by ``-offset``.
 
     Reading the translated field at :math:`x` is reading ``field`` at
     :math:`x + \mathrm{offset}`; the points stay fixed numbers and the
     translation is a node map, so the reading's Eulerian node derivative gives
     the exact derivative in ``offset``. A concrete zero offset leaves the field
-    as it is.
+    as it is. ``moved`` holds the translated meshes of this call, so a mesh
+    shared by the fields and the frequencies is translated once.
     """
     if not is_traced(offset) and not np.any(np.asarray(offset)):
         return field
     mesh = field.mesh
-    return dataclasses.replace(field, mesh=mesh.with_nodes(mesh.nodes - offset))
+    if id(mesh) not in moved:
+        # the original is kept in the entry so its id stays unique
+        moved[id(mesh)] = (mesh, mesh.with_nodes(mesh.nodes - offset))
+    return dataclasses.replace(field, mesh=moved[id(mesh)][1])
 
 
 def _read(what: str, owner: str, read: Any) -> Any:
@@ -330,6 +373,7 @@ def _mean_strain(
     *,
     offset: jax.Array,
     owner: str,
+    moved: dict[int, Any],
 ) -> jax.Array:
     r"""The mean engineering strain over each of ``tets``, ``(n_f, n, 6)``, per volt."""
     from gfem._field import FieldMap
@@ -341,7 +385,7 @@ def _mean_strain(
     for f in frequencies:
         read = acoustic.displacement(f, terminal)
         displacement = FieldMap(
-            {k: _moved(v, offset) for k, v in read.items()}, label="component"
+            {k: _moved(v, offset, moved) for k, v in read.items()}, label="component"
         )
         s = _read("strain", owner, lambda d=displacement: strain(d, points))
         out.append(
@@ -359,6 +403,7 @@ def _mean_field(
     *,
     offset: jax.Array,
     owner: str,
+    moved: dict[int, Any],
 ) -> jax.Array:
     r"""The mean :math:`-\nabla\phi` of each of ``tets``, ``(n_f, n, 3)``, V/m/V."""
     from gfem import _probe
@@ -367,7 +412,7 @@ def _mean_field(
     points, weights = _points(mesh, tets, order)
     out = []
     for f in frequencies:
-        potential = _moved(acoustic.potential(f, terminal), offset)
+        potential = _moved(acoustic.potential(f, terminal), offset, moved)
         g = _read("field", owner, lambda v=potential: _probe.gradient_at(v, points))
         mean = -jnp.einsum("q,nqc->nc", weights, g.reshape(len(tets), len(weights), 2))
         out.append(jnp.concatenate([mean, jnp.zeros((len(tets), 1))], axis=1))
@@ -440,6 +485,14 @@ def acousto_optic_shift(
     section (shear polarized along the guide) and an approximation for
     in-plane motion.
 
+    `jax.grad` reaches the ``photoelastic_tensor`` and ``electro_optic_tensor``
+    of a `gfem.MaterialField`, every input of the piezoelectric solve through
+    the kept fields (its materials, geometry and the acoustic node maps of
+    `gfem.Mesh.with_nodes`, which are Eulerian as in `gfem.strain`: the fields
+    are read at fixed optical points), and ``offset``. The optical mode is held
+    constant, so the optical model's own inputs are not reached: the mode part
+    of a waveguide width's derivative is a finite difference over a remesh.
+
     The shift is linear in the fields, so the shifts of several terminals add,
     each times its drive. A push-pull modulator's two arms, ``a`` and ``b``
     (two ports on one acoustic result), give :math:`V_\pi L = \lambda /
@@ -490,13 +543,16 @@ def acousto_optic_shift(
             element of the section has a tensor, or an element lies outside
             the acoustic mechanical domain (with a ``photoelastic_tensor``)
             or the potential's support (with an ``electro_optic_tensor``; the
-            message names the point).
+            message names the point), or the port's section is not in a plane
+            z = const.
         NotImplementedError: The model is on a 2D mesh (a 2D `gfem.PortMode`
             is a line mode) or the section is lossy (a complex ``eps_r``, a
             ``tan_delta`` or ``conductivity`` other than 0, or a permittivity
             law).
-        NonDifferentiableError: Under `jax.grad`, the optical model's node
-            coordinates: the mode is held constant.
+        NonDifferentiableError: Under `jax.grad`, an input of the optical
+            model other than the tensors (its ``eps_r``, ``tan_delta``,
+            ``mu_r``, ``conductivity`` or node coordinates): the mode is held
+            constant.
     """
     refuse_entry(getattr(model, "mesh", None), _OWNER)
     _check_model(model, _OWNER)
@@ -504,7 +560,9 @@ def acousto_optic_shift(
     f = _frequency(frequency, _OWNER)
     shift = _offset(offset)
     faces, tets = _section(model, _wave_port(model, port))
+    _check_plane(model.mesh, faces, port)
     crystal = _crystal(model, port, tets)
+    _check_optical_fixed(model)
     if is_traced(model.mesh.nodes):
         raise NonDifferentiableError(
             f"{_OWNER}: gfem cannot differentiate the acousto-optic shift with "
@@ -520,13 +578,28 @@ def acousto_optic_shift(
     zero = jnp.zeros(n_f, dtype=jnp.complex128)
     pe = er = zero
     mean_s = mean_e = None
+    moved: dict[int, Any] = {}
     if len(ip):
         mean_s = _mean_strain(
-            acoustic, kept, name, model.mesh, tets[rows[ip]], offset=shift, owner=owner
+            acoustic,
+            kept,
+            name,
+            model.mesh,
+            tets[rows[ip]],
+            offset=shift,
+            owner=owner,
+            moved=moved,
         )
     if len(ir):
         mean_e = _mean_field(
-            acoustic, kept, name, model.mesh, tets[rows[ir]], offset=shift, owner=owner
+            acoustic,
+            kept,
+            name,
+            model.mesh,
+            tets[rows[ir]],
+            offset=shift,
+            owner=owner,
+            moved=moved,
         )
     found, n_eff, weights, k0 = _mode_weights(
         model, port, f, mode, faces, tensor=True, rule=_weights_rule()
