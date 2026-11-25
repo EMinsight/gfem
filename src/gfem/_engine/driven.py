@@ -151,7 +151,7 @@ from gfem._engine.port_network import (
     resistance,
     split_cotangent,
 )
-from gfem._engine.port_pass import PortPass
+from gfem._engine.port_pass import PortPass, PortResult
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import (
     FieldPair,
@@ -1932,7 +1932,7 @@ class DrivenRule:
             "its derivative."
         )
 
-    def backward(  # noqa: PLR0912, PLR0915 - one frequency loop with its adjoint columns
+    def backward(  # noqa: PLR0915 - one frequency loop with its adjoint columns
         self,
         model: Model,
         entry: Entry,
@@ -2059,10 +2059,7 @@ class DrivenRule:
                             ct=None if ct_p is None else ct_p[n],
                         )
                     row.advance(frequency=f)
-            if port_pass.active:
-                found = port_pass.finish()
-                port_terms, self._explicit_inputs = found.integrated, found.explicit
-                self._add_port_nodes(found)
+            port_terms = self._finish_ports(port_pass if port_pass.active else None)
         if rebuilt:
             # as a rerun forward's (`gfem._adjoint.solve_vjp`): the kept state
             # this backward built goes down to the budget, no entry evicted
@@ -2240,7 +2237,7 @@ class DrivenRule:
         self._add_port_nodes(found)
         return found.integrated
 
-    def _add_port_nodes(self, found: Any) -> None:
+    def _add_port_nodes(self, found: PortResult) -> None:
         """Add the port pass's face node cotangent to `explicit_nodes`."""
         if found.nodes is None:
             return
