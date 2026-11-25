@@ -1,6 +1,6 @@
 # Estimate fabrication tolerances and yield
 
-A foundry gives a width as "±0.3 µm" and a substrate as "ε_r ± 0.2". How much do
+A foundry gives a width as "±0.3 µm" and a substrate as $\varepsilon_r \pm 0.2$. How much do
 the S-parameters you designed for move under those spreads, which spread
 dominates, and what fraction of devices still meets the specification?
 {py:obj}`gfem.tolerance_report` answers from one solve and one adjoint pass per
