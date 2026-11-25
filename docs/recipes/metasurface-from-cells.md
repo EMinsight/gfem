@@ -460,5 +460,6 @@ the fed cell, its "A fed cell" section) and {doc}`diffraction-efficiency`.
 ## Next
 
 {doc}`diffraction-efficiency`, {doc}`floquet-ports`, {doc}`emissivity`,
-{doc}`shape-gradient`, {doc}`periodic-cell`, {py:obj}`gfem.shape.quality`,
+{doc}`../tutorials/metalens`, {doc}`shape-gradient`, {doc}`periodic-cell`,
+{py:obj}`gfem.shape.quality`,
 {py:obj}`gfem.conventions`, {doc}`../capabilities`.

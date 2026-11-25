@@ -354,6 +354,7 @@ How gfem itself is checked with Floquet ports: {doc}`../verification`.
 ## Next
 
 {doc}`diffraction-efficiency`, {doc}`emissivity`,
-{doc}`metasurface-from-cells`, {doc}`../tutorials/metagrating`, {doc}`periodic-cell`,
+{doc}`metasurface-from-cells`, {doc}`../tutorials/metagrating`, {doc}`../tutorials/metalens`,
+{doc}`periodic-cell`,
 {py:obj}`gfem.FloquetPort`, {py:obj}`gfem.conventions`,
 {doc}`s-parameter-gradient`, {doc}`../capabilities`.

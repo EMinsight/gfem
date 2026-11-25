@@ -27,6 +27,7 @@ tutorials/bend3d
 tutorials/metal-bend
 tutorials/metagrating
 tutorials/photonic-crystal
+tutorials/metalens
 tutorials/nanosphere
 tutorials/meta-atom
 tutorials/grating
