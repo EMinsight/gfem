@@ -1,10 +1,10 @@
 """Emissivity against closed forms and against the reciprocal row deficit.
 
-E4: the lossy slab of F1 in air (the Brewster cell's mesh) at p = 3, swept
+The lossy slab of F1 in air (the Brewster cell's mesh) at p = 3, swept
 over the four Gauss-Jacobi nodes of `hemisphere(4, 1)`, against the Airy
 absorptance per node and the exact hemispherical emissivity.
 
-E5: the lamellar grating F2 with a lossy, asymmetric per-element design: the
+The lamellar grating F2 with a lossy, asymmetric per-element design: the
 emissivity at azimuth pi, the Kirchhoff partner of the incidence at azimuth 0,
 equals the row deficit of the specular row of the fully excited solve at
 azimuth 0, and differs from the absorptance at azimuth 0.
@@ -43,8 +43,8 @@ def _airy_unpolarized(theta):
 
 
 @pytest.fixture(scope="module")
-def e4(tmp_path_factory):
-    mesh = pc.f1_mesh(tmp_path_factory.mktemp("e4"), pc.BREWSTER_CELLS)
+def brewster_sweep(tmp_path_factory):
+    mesh = pc.f1_mesh(tmp_path_factory.mktemp("brewster_sweep"), pc.BREWSTER_CELLS)
     model = pc.f1(mesh, eps_sub=pc.BREWSTER_EPS_SUB).with_material("slab", SLAB)
     rule = dif.hemisphere(4, 1)
     sweep = dif.angle_sweep(
@@ -58,8 +58,8 @@ def e4(tmp_path_factory):
     return model, rule, sweep
 
 
-def test_e4_each_node_matches_airy_and_is_labelled_pi(e4):
-    model, rule, sweep = e4
+def test_each_node_matches_airy_and_is_labelled_pi(brewster_sweep):
+    model, rule, sweep = brewster_sweep
     for pol in ("TE", "TM", "unpolarized"):
         emis = dif.emissivity(sweep, model=model, polarization=pol)
         for i, theta in enumerate(rule.theta):
@@ -72,8 +72,10 @@ def test_e4_each_node_matches_airy_and_is_labelled_pi(e4):
         assert emis.phi == (math.pi,) * len(rule.theta)
 
 
-def test_e4_hemispherical_emissivity_matches_the_node_sum_and_the_exact_value(e4):
-    model, rule, sweep = e4
+def test_hemispherical_emissivity_matches_the_node_sum_and_the_exact_value(
+    brewster_sweep,
+):
+    model, rule, sweep = brewster_sweep
     got = float(dif.hemispherical_emissivity(sweep, rule, model=model)[0])
     same_nodes = sum(
         w * _airy_unpolarized(t) for w, t in zip(rule.weight, rule.theta, strict=True)
@@ -93,10 +95,10 @@ def test_e4_hemispherical_emissivity_matches_the_node_sum_and_the_exact_value(e4
     assert abs(eight - exact) <= 5e-5
 
 
-# --- E5 ------------------------------------------------------------------------
+# --- the emission azimuth ---------------------------------------------------
 
 
-def test_e5_the_emission_azimuth_is_the_reversed_incidence(tmp_path):
+def test_the_emission_azimuth_is_the_reversed_incidence(tmp_path):
     theta = 20 * DEG
     opts = gfem.SolverOptions(order=2, linear_solver="direct")
     mesh = pc.f2_mesh(tmp_path, (4, 2, 2, 2, 2))

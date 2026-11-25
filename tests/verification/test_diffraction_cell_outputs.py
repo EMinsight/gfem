@@ -32,7 +32,7 @@ EFFICIENCY_TOL = 1e-5
 #: (4.6e-7 measured, ten times under the gate).
 MUELLER_TOL = 1e-5
 #: The efficiencies of the 45-degree linear light of the wave plate (closed
-#: form, `test_v2_...`), 1e-5 against FEM (2e-7 measured).
+#: form, the plate test), 1e-5 against FEM (2e-7 measured).
 HANDEDNESS_TOL = 1e-5
 #: The Pancharatnam-Berry phases, rad (4e-7 measured).
 PHASE_TOL = 1e-4
@@ -111,7 +111,7 @@ def _airy_blocks(kt, eps_sub):
 
 
 @pytest.mark.parametrize(("out", "inc", "h_out", "h_in"), BLOCKS)
-def test_v1_the_jones_blocks_match_airy(case, out, inc, h_out, h_in):
+def test_the_jones_blocks_match_airy(case, out, inc, h_out, h_in):
     model, result, kt, eps_sub = case
     ref = _airy_blocks(kt, eps_sub)[out, inc]
     j = dif.jones(result, out, inc, model=model)
@@ -150,7 +150,7 @@ def _expected_rows(ref, surface, pol):
 
 @pytest.mark.parametrize("surface", [TOP, BOT])
 @pytest.mark.parametrize("pol", ["TE", "TM", "RCP", "unpolarized"])
-def test_v1_the_efficiencies_and_the_balance_match_airy(case, surface, pol):
+def test_the_efficiencies_and_the_balance_match_airy(case, surface, pol):
     model, result, kt, eps_sub = case
     rows = _expected_rows(_airy_blocks(kt, eps_sub), surface, pol)
     for basis in ("linear", "circular"):
@@ -170,7 +170,7 @@ def test_v1_the_efficiencies_and_the_balance_match_airy(case, surface, pol):
         assert abs(float(value[0]) - expected) <= EFFICIENCY_TOL
 
 
-def test_v1_the_brewster_cell_reflects_no_tm_and_rcp_reflects_pure_te(brewster):
+def test_the_brewster_cell_reflects_no_tm_and_rcp_reflects_pure_te(brewster):
     model, result, _, _ = brewster
     tm = dif.power_balance(result, TOP, polarization="TM", model=model)
     assert float(tm.reflectance[0]) <= pc.BREWSTER_TOL**2
@@ -219,7 +219,7 @@ def _plate_blocks(psi):
 
 
 @pytest.mark.parametrize(("out", "inc", "h_out", "h_in"), BLOCKS)
-def test_v2_the_plate_jones_circular_and_mueller_match_the_rotated_airy(
+def test_the_plate_jones_circular_and_mueller_match_the_rotated_airy(
     plate, out, inc, h_out, h_in
 ):
     model, result, psi = plate
@@ -233,7 +233,7 @@ def test_v2_the_plate_jones_circular_and_mueller_match_the_rotated_airy(
     assert np.abs(np.asarray(j.mueller)[0] - mueller).max() <= MUELLER_TOL
 
 
-def test_v2_the_plate_is_reciprocal(plate):
+def test_the_plate_is_reciprocal(plate):
     model, result, _ = plate
     down = np.asarray(dif.jones(result, BOT, TOP, model=model).values)[0]
     up = np.asarray(dif.jones(result, TOP, BOT, model=model).values)[0]
@@ -243,7 +243,7 @@ def test_v2_the_plate_is_reciprocal(plate):
         assert np.abs(r - r.T).max() <= RECIPROCITY_TOL
 
 
-def test_v2_45_degree_linear_light_leaves_with_the_handedness_of_the_plate(plate):
+def test_45_degree_linear_light_leaves_with_the_handedness_of_the_plate(plate):
     model, result, psi = plate
     _, j_t = _plate_blocks(psi)
     # 45 degrees from the optic axis, in the lab frame
@@ -270,7 +270,7 @@ def test_v2_45_degree_linear_light_leaves_with_the_handedness_of_the_plate(plate
         assert abs(abs(b[0]) ** 2 - got["RCP"]) <= HANDEDNESS_TOL
 
 
-def test_v2_the_circular_entries_carry_the_pancharatnam_berry_phase(tmp_path_factory):
+def test_the_circular_entries_carry_the_pancharatnam_berry_phase(tmp_path_factory):
     mesh = pc.f1_mesh(tmp_path_factory.mktemp("pb"), pc.F1_FINE_CELLS)
     psi = math.radians(30.0)
     circ = {}

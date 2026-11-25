@@ -1,6 +1,6 @@
 r"""The cell response against held-out solves.
 
-R8: the ridge of `periodic_cases` on one mesh, its width moved by a boundary
+The ridge of `periodic_cases` on one mesh, its width moved by a boundary
 morph; 9 samples of the width over 0.17 to 0.33 um at f0, the substrate's TE
 and TM excited. The 5-sample subset (every other sample) is checked at its
 interval midpoints, the 4 samples it leaves out, against the accuracy bound;
@@ -56,7 +56,7 @@ def ridge(tmp_path_factory):
     return make_cell
 
 
-def test_r8_hermite_interpolation_matches_held_out_solves(ridge):
+def test_hermite_interpolation_matches_held_out_solves(ridge):
     response = dif.cell_response(
         ridge, SAMPLES, frequency=[pc.RIDGE_FREQUENCY], excite=EXCITE, options=OPTIONS
     )

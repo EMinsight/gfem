@@ -1,6 +1,6 @@
 """Gradients of the aperture field and its propagation against finite differences.
 
-G4: an analytic cell response (9 samples of the meta-atom parameter on
+An analytic cell response (9 samples of the meta-atom parameter on
 [0.2, 0.4] um, a smooth S with its exact derivative), a 24 x 24 aperture of
 pitch 0.5 um lit at 1 um by right-handed circular light under a complex
 Gaussian envelope. The objective is the intensity at the centre plus 0.3 times
@@ -69,7 +69,7 @@ def _directions(shape, complex_input):
     return d
 
 
-def test_g4_the_design_map(problem):
+def test_the_design_map(problem):
     response, x, envelope = problem
     assert_gradient_matches(
         lambda q: _objective(response, q, envelope),
@@ -80,7 +80,7 @@ def test_g4_the_design_map(problem):
     )
 
 
-def test_g4_the_envelope(problem):
+def test_the_envelope(problem):
     response, x, envelope = problem
     assert_gradient_matches(
         lambda a: _objective(response, x, a),
@@ -92,7 +92,7 @@ def test_g4_the_envelope(problem):
 
 
 @pytest.mark.parametrize("name", ["values", "derivative"])
-def test_g4_the_stored_response_arrays(problem, name):
+def test_the_stored_response_arrays(problem, name):
     response, x, envelope = problem
     stored = getattr(response, name)
     assert_gradient_matches(

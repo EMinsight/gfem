@@ -24,22 +24,22 @@ DEG = math.pi / 180.0
 PLANAR_CROSS = 1e-4
 CONICAL_CROSS = 1e-2
 
-S7_INCIDENCES = ((0.0, 0.0), (20.0, 30.0), (40.0, 30.0), (40.0, 120.0))
+SWEEP_INCIDENCES = ((0.0, 0.0), (20.0, 30.0), (40.0, 30.0), (40.0, 120.0))
 
 
 @pytest.fixture(scope="module")
 def f1_sweep(tmp_path_factory):
-    mesh = pc.f1_mesh(tmp_path_factory.mktemp("s7"), pc.F1_FINE_CELLS)
+    mesh = pc.f1_mesh(tmp_path_factory.mktemp("f1_sweep"), pc.F1_FINE_CELLS)
     model = pc.f1(mesh)
-    theta = [t * DEG for t, _ in S7_INCIDENCES]
-    phi = [p * DEG for _, p in S7_INCIDENCES]
+    theta = [t * DEG for t, _ in SWEEP_INCIDENCES]
+    phi = [p * DEG for _, p in SWEEP_INCIDENCES]
     return model, dif.angle_sweep(
         model, [F0], surface=TOP, theta=theta, phi=phi, options=OPTS
     )
 
 
 @pytest.mark.parametrize("pol", ["TE", "TM"])
-def test_s7_each_member_matches_airy(f1_sweep, pol):
+def test_each_member_matches_airy(f1_sweep, pol):
     _, sweep = f1_sweep
     other = "TM" if pol == "TE" else "TE"
     for member, theta in zip(sweep, sweep.theta, strict=True):
@@ -55,13 +55,13 @@ def test_s7_each_member_matches_airy(f1_sweep, pol):
         assert abs(1 - np.sum(np.abs(column) ** 2)) <= pc.F1_POWER_TOL
 
 
-def test_s7_power_balance_closes_per_member(f1_sweep):
+def test_power_balance_closes_per_member(f1_sweep):
     model, sweep = f1_sweep
     bal = dif.power_balance(sweep, TOP, polarization="unpolarized", model=model)
     assert np.abs(np.asarray(bal.absorptance)).max() <= pc.F1_POWER_TOL
 
 
-def test_s7_unpolarized_efficiencies_do_not_depend_on_phi(f1_sweep):
+def test_unpolarized_efficiencies_do_not_depend_on_phi(f1_sweep):
     model, sweep = f1_sweep
     eff = dif.efficiencies(sweep, TOP, polarization="unpolarized", model=model)
     # members 2 and 3 are 40 degrees at phi = 30 and 120
@@ -75,7 +75,7 @@ F2_ORDERS = tuple((m, 0) for m in (-2, -1, 0, 1, 2))
 
 @pytest.fixture(scope="module")
 def f2_sweep(tmp_path_factory):
-    mesh = pc.f2_mesh(tmp_path_factory.mktemp("s8"), pc.F2_FINE_CELLS)
+    mesh = pc.f2_mesh(tmp_path_factory.mktemp("f2_sweep"), pc.F2_FINE_CELLS)
     base = pc.f2(mesh)
     theta = [pc.F2_CASES[c][0] * DEG for c in F2_CASE_NAMES]
     phi = [pc.F2_CASES[c][1] * DEG for c in F2_CASE_NAMES]
@@ -96,7 +96,7 @@ def f2_sweep(tmp_path_factory):
 
 @pytest.mark.parametrize("pol", ["TE", "TM"])
 @pytest.mark.parametrize("index", range(len(F2_CASE_NAMES)))
-def test_s8_efficiencies_match_rcwa_and_the_balance_closes(f2_sweep, pol, index):
+def test_efficiencies_match_rcwa_and_the_balance_closes(f2_sweep, pol, index):
     model, sweep = f2_sweep
     case = F2_CASE_NAMES[index]
     eff = dif.efficiencies(sweep, TOP, polarization=pol, model=model)
@@ -112,7 +112,7 @@ def test_s8_efficiencies_match_rcwa_and_the_balance_closes(f2_sweep, pol, index)
 
 
 @pytest.mark.parametrize("index", range(len(F2_CASE_NAMES)))
-def test_s8_the_specular_cross_polarization_is_planar_or_conical(f2_sweep, index):
+def test_the_specular_cross_polarization_is_planar_or_conical(f2_sweep, index):
     model, sweep = f2_sweep
     jones = dif.jones(sweep, TOP, TOP, model=model)
     values = np.asarray(jones.values)[index, 0]

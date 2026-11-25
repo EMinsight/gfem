@@ -30,11 +30,11 @@ def _fake_sweep(theta, phi):
     return dif.AngleSweepResult((None,) * n, tuple(theta), tuple(phi), TOP, (F0,))
 
 
-# --- E1: the rule -------------------------------------------------------------
+# --- the rule -------------------------------------------------------------
 
 
 @pytest.mark.parametrize("n", [1, 2, 4, 7])
-def test_e1_hemisphere_is_exact_on_mu_powers(n):
+def test_hemisphere_is_exact_on_mu_powers(n):
     rule = dif.hemisphere(n, 1)
     mu = np.cos(rule.theta)
     for k in range(2 * n):
@@ -48,7 +48,7 @@ def test_e1_hemisphere_is_exact_on_mu_powers(n):
     assert not rule.weight.flags.writeable
 
 
-def test_e1_folding_keeps_the_symmetric_azimuths():
+def test_folding_keeps_the_symmetric_azimuths():
     folded = dif.hemisphere(5, 16, rotation=4, mirror=True)
     full = dif.hemisphere(5, 16)
     assert len(folded.theta) == 5 * 3
@@ -92,7 +92,7 @@ def test_the_mirror_fold_assumes_the_plane_containing_e1():
 # --- the messages -------------------------------------------------------------
 
 
-def test_h1_h2_h3_texts():
+def test_hemisphere_texts():
     with pytest.raises(
         TypeError, match=r"^hemisphere: n_theta must be an integer, got 2.5\.$"
     ):
@@ -119,7 +119,7 @@ def test_h1_h2_h3_texts():
         dif.hemisphere(2, 7, rotation=4)
 
 
-def test_e1_e2_e3_texts_of_emissivity(f1_model):
+def test_texts_of_emissivity(f1_model):
     with pytest.raises(
         TypeError,
         match=r"^emissivity needs a gfem.diffraction.AngleSweepResult .* got list: "
@@ -147,7 +147,7 @@ def test_e1_e2_e3_texts_of_emissivity(f1_model):
         dif.hemispherical_emissivity(None, dif.hemisphere(1, 1), model=f1_model)
 
 
-def test_e4_e5_texts_of_the_hemispherical_emissivity(f1_model):
+def test_texts_of_the_hemispherical_emissivity(f1_model):
     rule = dif.hemisphere(2, 1)
     with pytest.raises(
         ValueError,
@@ -177,7 +177,7 @@ def test_e4_e5_texts_of_the_hemispherical_emissivity(f1_model):
         )
 
 
-# --- E2: the rule on an analytic emitter --------------------------------------
+# --- the rule on an analytic emitter --------------------------------------
 
 
 def _airy_absorptance(mu, pol):
@@ -200,7 +200,7 @@ def _a(kt, layers, pol):
 
 
 @pytest.mark.parametrize("pol", ["TE", "TM", "unpolarized"])
-def test_e2_six_nodes_integrate_the_airy_emissivity(pol):
+def test_six_nodes_integrate_the_airy_emissivity(pol):
     def e(mu):
         if pol == "unpolarized":
             return 0.5 * (_airy_absorptance(mu, "TE") + _airy_absorptance(mu, "TM"))
@@ -214,7 +214,7 @@ def test_e2_six_nodes_integrate_the_airy_emissivity(pol):
     assert abs(got - reference) <= 2e-5
 
 
-# --- E3: PEC-backed lossy F1 ---------------------------------------------------
+# --- PEC-backed lossy F1 ---------------------------------------------------
 
 
 @pytest.fixture(scope="module")
@@ -241,7 +241,7 @@ def pec_sweep(pec_cell):
 
 
 @pytest.mark.parametrize("pol", ["TE", "TM"])
-def test_e3_pec_backed_emissivity_is_one_minus_r_squared(pec_cell, pec_sweep, pol):
+def test_pec_backed_emissivity_is_one_minus_r_squared(pec_cell, pec_sweep, pol):
     emis = dif.emissivity(pec_sweep, model=pec_cell, polarization=pol)
     bal = dif.power_balance(pec_sweep, TOP, polarization=pol, model=pec_cell)
     assert np.asarray(bal.transmittance).max() == 0
@@ -258,7 +258,7 @@ def test_e3_pec_backed_emissivity_is_one_minus_r_squared(pec_cell, pec_sweep, po
     assert emis.values.shape == (2, 1)
 
 
-def test_e3_an_undeclared_polarization_names_emissivity(pec_cell):
+def test_an_undeclared_polarization_names_emissivity(pec_cell):
     model = gfem.Model(
         pec_cell.mesh,
         materials=pec_cell.materials,
@@ -272,7 +272,7 @@ def test_e3_an_undeclared_polarization_names_emissivity(pec_cell):
         dif.emissivity(sweep, model=model, polarization="TE")
 
 
-def test_e3_the_hemispherical_sum_is_the_weighted_rows(pec_cell):
+def test_the_hemispherical_sum_is_the_weighted_rows(pec_cell):
     rule = dif.hemisphere(1, 1)
     sweep = dif.angle_sweep(
         pec_cell, [F0], surface=TOP, theta=rule.theta, phi=rule.phi, options=OPTS

@@ -47,13 +47,13 @@ def solves(monkeypatch):
     return calls
 
 
-def test_s1_a_bad_angle_at_the_last_position_raises_before_any_solve(f1, solves):
+def test_a_bad_angle_at_the_last_position_raises_before_any_solve(f1, solves):
     with pytest.raises(ValueError, match=r"theta must be in \[-pi/2, pi/2\]"):
         dif.angle_sweep(f1, [F0], surface=TOP, theta=[0.1, 0.2, 2.0], options=OPTS)
     assert solves == []
 
 
-def test_s1_sw1_theta_and_phi_must_make_one_flat_list(f1, solves):
+def test_theta_and_phi_must_make_one_flat_list(f1, solves):
     grid = np.zeros((2, 2))
     with pytest.raises(ValueError, match=r"must broadcast to one flat list.*\(2, 2\)"):
         dif.angle_sweep(f1, [F0], surface=TOP, theta=grid, options=OPTS)
@@ -66,7 +66,7 @@ def test_s1_sw1_theta_and_phi_must_make_one_flat_list(f1, solves):
     assert solves == []
 
 
-def test_s1_sw2_excite_none_needs_a_specular_port_on_the_surface(f1, solves):
+def test_excite_none_needs_a_specular_port_on_the_surface(f1, solves):
     model = f1.replace(ports=[p for p in f1.ports if p.surface != TOP])
     with pytest.raises(ValueError) as error:
         dif.angle_sweep(model, [F0], surface=TOP, theta=[0.1], options=OPTS)
@@ -77,7 +77,7 @@ def test_s1_sw2_excite_none_needs_a_specular_port_on_the_surface(f1, solves):
     assert solves == []
 
 
-def test_s1_sw3_an_excited_port_must_propagate_at_every_incidence(f1, solves):
+def test_an_excited_port_must_propagate_at_every_incidence(f1, solves):
     with pytest.raises(ValueError) as error:
         dif.angle_sweep(f1, [F0], surface=TOP, theta=[0.1, math.pi / 2], options=OPTS)
     text = str(error.value)
@@ -88,13 +88,13 @@ def test_s1_sw3_an_excited_port_must_propagate_at_every_incidence(f1, solves):
     assert solves == []
 
 
-def test_s1_an_unknown_excite_name_raises_before_any_solve(f1, solves):
+def test_an_unknown_excite_name_raises_before_any_solve(f1, solves):
     with pytest.raises(ValueError, match="names port 'nope'"):
         dif.angle_sweep(f1, [F0], surface=TOP, theta=[0.1], excite="nope", options=OPTS)
     assert solves == []
 
 
-def test_r2_a_traced_angle_raises_under_the_sweeps_own_name(f1, solves):
+def test_a_traced_angle_raises_under_the_sweeps_own_name(f1, solves):
     import jax
 
     def objective(t):
@@ -109,7 +109,7 @@ def test_r2_a_traced_angle_raises_under_the_sweeps_own_name(f1, solves):
     assert solves == []
 
 
-def test_s2_one_warning_for_the_grid_and_none_per_solve(f2, solves):
+def test_one_warning_for_the_grid_and_none_per_solve(f2, solves):
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         dif.angle_sweep(
@@ -125,7 +125,7 @@ def test_s2_one_warning_for_the_grid_and_none_per_solve(f2, solves):
     assert len(solves) == 3
 
 
-def test_s3_normal_incidence_and_repeats_are_solved_once(f1, solves):
+def test_normal_incidence_and_repeats_are_solved_once(f1, solves):
     # one thread: a threaded factorization is not bitwise repeatable
     opts = gfem.SolverOptions(order=2, threads=1, linear_solver="direct")
     theta = [0.0, 0.0, 20 * DEG, 20 * DEG]
@@ -142,7 +142,7 @@ def test_s3_normal_incidence_and_repeats_are_solved_once(f1, solves):
     assert np.array_equal(np.asarray(sweep[0].s.values), np.asarray(plain.s.values))
 
 
-def test_s4_an_error_propagates_and_the_rerun_resumes_from_it(
+def test_an_error_propagates_and_the_rerun_resumes_from_it(
     f1, tmp_path, monkeypatch, caplog
 ):
     real = gfem.solve
@@ -183,7 +183,7 @@ def sweep(f1):
     )
 
 
-def test_s5_the_sweep_is_a_sequence_of_results(sweep):
+def test_the_sweep_is_a_sequence_of_results(sweep):
     import collections.abc
 
     assert isinstance(sweep, collections.abc.Sequence)
@@ -199,7 +199,7 @@ def test_s5_the_sweep_is_a_sequence_of_results(sweep):
     assert "40°" in text
 
 
-def test_s5_the_outputs_of_a_sweep_are_the_stacked_member_outputs(sweep, f1):
+def test_the_outputs_of_a_sweep_are_the_stacked_member_outputs(sweep, f1):
     members = list(sweep)
     eff = dif.efficiencies(sweep, TOP, polarization="TE", model=f1)
     bal = dif.power_balance(sweep, TOP, polarization="unpolarized", model=f1)
@@ -214,7 +214,7 @@ def test_s5_the_outputs_of_a_sweep_are_the_stacked_member_outputs(sweep, f1):
     assert eff.values.shape[0] == 3
 
 
-def test_s6_the_specular_angle_is_the_same_at_every_frequency(sweep):
+def test_the_specular_angle_is_the_same_at_every_frequency(sweep):
     for member, theta in zip(sweep, sweep.theta, strict=True):
         order = member.diffraction_orders["R_TE"]
         angle = np.asarray(order.theta)

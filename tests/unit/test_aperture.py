@@ -118,16 +118,16 @@ def _ok(**kw):
         ),
     ],
     ids=[
-        "c1",
-        "c2-x",
-        "c2-y-given",
-        "c2-y-missing",
-        "c3-uneven",
-        "c3-decreasing",
-        "c4-count",
-        "c4-sign",
-        "c5",
-        "c6",
+        "values-shape",
+        "x-length",
+        "y-given",
+        "y-missing",
+        "x-uneven",
+        "x-decreasing",
+        "frequency-count",
+        "frequency-sign",
+        "index",
+        "distance",
     ],
 )
 def test_constructor_messages(kw, error, match):
@@ -136,7 +136,7 @@ def test_constructor_messages(kw, error, match):
 
 
 @pytest.mark.parametrize("name", ["frequency", "x", "index", "distance"])
-def test_constructor_c7_traced_constants(name):
+def test_constructor_traced_constants(name):
     base = {
         "values": np.ones((1, 2, 4), complex),
         "frequency": [F0],
@@ -210,10 +210,10 @@ def test_intensity_and_distance_bookkeeping():
     assert g.values.shape == f.values.shape
 
 
-# --- L2: exact plane-wave factors ---------------------------------------------------
+# --- exact plane-wave factors ---------------------------------------------------
 
 
-def test_l2_uniform_field_padding_one():
+def test_uniform_field_padding_one():
     n, a, d = 16, 0.4 * UM, 7.3e-6
     for index in (1.0, 1.7):
         f = _field(np.full(n, 0.3 - 0.8j), _centres(n, a), index=index)
@@ -222,7 +222,7 @@ def test_l2_uniform_field_padding_one():
         np.testing.assert_allclose(g.values, want, atol=1e-12, rtol=0)
 
 
-def test_l2_grid_plane_wave_and_evanescent_component():
+def test_grid_plane_wave_and_evanescent_component():
     n, a, d = 40, 0.25 * UM, 2.1e-6
     x = _centres(n, a)
     big = n  # padding 1: the window is the aperture
@@ -241,7 +241,7 @@ def test_l2_grid_plane_wave_and_evanescent_component():
         np.testing.assert_allclose(g.values[0, 1], u * want_factor, atol=1e-12, rtol=0)
 
 
-# --- L3: 1D lens --------------------------------------------------------------------
+# --- 1D lens --------------------------------------------------------------------
 
 
 def _rs1d(u0, x0, x, z, k):
@@ -251,7 +251,7 @@ def _rs1d(u0, x0, x, z, k):
 
 
 @pytest.mark.parametrize("na", [0.1, 0.5, 0.8])
-def test_l3_lens_1d(na):
+def test_lens_1d(na):
     lam, a, n = 1.0, 0.5, 2000  # um
     k = 2 * np.pi / lam
     # a grid with a sample on the axis: the focal amplitude is read there
@@ -281,10 +281,10 @@ def test_l3_lens_1d(na):
     assert np.max(np.abs(wide[sel] - ref)) / peak < 4e-5
 
 
-# --- L4: 2D lens --------------------------------------------------------------------
+# --- 2D lens --------------------------------------------------------------------
 
 
-def test_l4_lens_2d():
+def test_lens_2d():
     lam, a, n, na = 1.0, 0.5, 400, 0.5
     k = 2 * np.pi / lam
     x0 = _centres(n, a) + a / 2
@@ -304,11 +304,11 @@ def test_l4_lens_2d():
     assert centre == pytest.approx(sampled, rel=5e-4)
 
 
-# --- L5: deflector ------------------------------------------------------------------
+# --- deflector ------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("deg", [10.0, 30.0, 45.0])
-def test_l5_deflector(deg):
+def test_deflector(deg):
     th = np.radians(deg)
     a, n, z = 0.5, 1000, 300.0  # um; D = 500 um
     k = K0 * UM
@@ -377,7 +377,7 @@ E_IN = [
 
 
 @pytest.mark.parametrize(("pol", "face", "e_in"), E_IN)
-def test_l1_a_uniform_map_gives_the_jones_block_times_the_polarization(pol, face, e_in):
+def test_a_uniform_map_gives_the_jones_block_times_the_polarization(pol, face, e_in):
     r = pc.analytic_response()
     cols = [0, 1] if face == "z_min" else [2, 3]
     out = "z_max"
@@ -399,7 +399,7 @@ def test_l1_a_uniform_map_gives_the_jones_block_times_the_polarization(pol, face
         assert (f.y is None) == (len(shape) == 1)
 
 
-def test_l1_at_the_knots_the_field_is_the_stored_entries_and_the_amplitude_scales():
+def test_at_the_knots_the_field_is_the_stored_entries_and_the_amplitude_scales():
     r = pc.analytic_response()
     f = dif.aperture_field(r, r.parameter, "z_max", "z_min", polarization="TE")
     want = np.asarray(r.values)[:, 0, 2:4, 1]  # (n_p, 2): air rows, sub TE
@@ -424,7 +424,7 @@ def test_l1_at_the_knots_the_field_is_the_stored_entries_and_the_amplitude_scale
     np.testing.assert_allclose(h.y, _centres(3, 0.16 * UM), atol=1e-18)
 
 
-def test_l1_a_reflection_reads_the_incident_face_block():
+def test_a_reflection_reads_the_incident_face_block():
     r = pc.analytic_response()
     f = dif.aperture_field(r, np.full(4, 0.31), "z_max", "z_max", polarization="TM")
     want = np.asarray(r(0.31).values)[0][2:4, 2]
@@ -443,7 +443,7 @@ def _lat(a2=(0.0, 0.16 * UM, 0.0), a1=(0.5 * UM, 0.0, 0.0)):
     return {"z_min": (a1, a2), "z_max": (a1, a2)}
 
 
-def test_l6_the_aperture_messages():
+def test_the_aperture_messages():
     r = pc.analytic_response()
     with pytest.raises(
         TypeError,
@@ -525,7 +525,7 @@ def test_l6_the_aperture_messages():
         _ap(r, polarization="unpolarized")
 
 
-def test_l6_inherited_messages_name_aperture_field():
+def test_inherited_messages_name_aperture_field():
     r = pc.analytic_response()
     with pytest.raises(
         ValueError,
@@ -535,7 +535,7 @@ def test_l6_inherited_messages_name_aperture_field():
         ),
     ):
         _ap(r, outgoing="nope")
-    # M6, the aperture variant: the outgoing order needs both polarizations
+    # the aperture variant: the outgoing order needs both polarizations
     ports = ("sub TM", "sub TE", "air TM")
     one_row = dataclasses.replace(
         r,
@@ -555,7 +555,7 @@ def test_l6_inherited_messages_name_aperture_field():
         ),
     ):
         _ap(one_row)
-    # M7: the incident column was not excited
+    # the incident column was not excited
     sub_te = dataclasses.replace(
         r,
         excited=("sub TE",),
@@ -571,7 +571,7 @@ def test_l6_inherited_messages_name_aperture_field():
         ),
     ):
         _ap(sub_te, polarization="RCP")
-    # M8: the outgoing TM and TE ports read at two offsets
+    # the outgoing TM and TE ports read at two offsets
     skew = pc.analytic_response(
         offsets={
             "sub TM": 0.3 * UM,
@@ -588,12 +588,12 @@ def test_l6_inherited_messages_name_aperture_field():
         ),
     ):
         _ap(skew)
-    # M9: a bad polarization
+    # a bad polarization
     with pytest.raises(
         ValueError, match=r"^aperture_field: polarization must be 'TE', 'TM'"
     ):
         _ap(r, polarization="diagonal")
-    # M10: a traced polarization pair
+    # a traced polarization pair
     with pytest.raises(
         gfem.NonDifferentiableError,
         match=r"^aperture_field: polarization must be fixed numbers",
@@ -603,7 +603,7 @@ def test_l6_inherited_messages_name_aperture_field():
         )
 
 
-def test_l6_a_traced_map_outside_the_range_is_nan_not_an_error():
+def test_a_traced_map_outside_the_range_is_nan_not_an_error():
     r = pc.analytic_response()
     p = jnp.array([0.25, 0.3, 0.5])
 
@@ -618,7 +618,7 @@ def test_l6_a_traced_map_outside_the_range_is_nan_not_an_error():
     assert np.isnan(np.asarray(g)[1])
 
 
-def test_l1_jit_and_vmap_over_designs_match_eager():
+def test_jit_and_vmap_over_designs_match_eager():
     r = pc.analytic_response()
     base = jnp.linspace(0.21, 0.39, 6)
 

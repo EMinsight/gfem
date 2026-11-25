@@ -88,11 +88,11 @@ def _te_column(result, surface):
     return s.values[:, :, s.excited.index(("R" if surface == TOP else "T") + "_TE")]
 
 
-# --- C1: efficiency rows ---------------------------------------------------------
+# --- efficiency rows ---------------------------------------------------------
 
 
 @pytest.mark.parametrize("surface", [TOP, BOT])
-def test_c1_circular_rows_are_the_circular_combinations_of_the_outgoing_waves(
+def test_circular_rows_are_the_circular_combinations_of_the_outgoing_waves(
     cell, surface
 ):
     result, model = cell
@@ -113,7 +113,7 @@ def test_c1_circular_rows_are_the_circular_combinations_of_the_outgoing_waves(
 
 
 @pytest.mark.parametrize("surface", [TOP, BOT])
-def test_c1_rcp_incidence_is_the_documented_combination(normal, model, surface):
+def test_rcp_incidence_is_the_documented_combination(normal, model, surface):
     sign = 1 if surface == TOP else -1
     pre = "R" if surface == TOP else "T"
     s = normal.s
@@ -126,7 +126,7 @@ def test_c1_rcp_incidence_is_the_documented_combination(normal, model, surface):
         assert eff.incidence == (surface, (0, 0), pol)
 
 
-def test_c1_rows_and_lookup(normal, model):
+def test_rows_and_lookup(normal, model):
     eff = dif.efficiencies(normal, TOP, polarization="TE", model=model)
     assert eff.rows == (
         (TOP, (0, 0), "TE"),
@@ -140,12 +140,12 @@ def test_c1_rows_and_lookup(normal, model):
     np.testing.assert_array_equal(eff.frequency, [F0, 1.1 * F0])
 
 
-# --- C2: power balance -----------------------------------------------------------
+# --- power balance -----------------------------------------------------------
 
 
 @pytest.mark.parametrize("surface", [TOP, BOT])
 @pytest.mark.parametrize("polarization", POLARIZATIONS)
-def test_c2_the_power_balance_closes_from_both_faces(cell, surface, polarization):
+def test_the_power_balance_closes_from_both_faces(cell, surface, polarization):
     result, model = cell
     bal = dif.power_balance(result, surface, polarization=polarization, model=model)
     total = bal.reflectance + bal.transmittance + bal.absorptance + bal.coupled
@@ -164,13 +164,13 @@ def test_c2_the_power_balance_closes_from_both_faces(cell, surface, polarization
 
 
 @pytest.mark.parametrize("surface", [TOP, BOT])
-def test_c2_a_lossless_cell_at_normal_incidence_absorbs_nothing(normal, model, surface):
+def test_a_lossless_cell_at_normal_incidence_absorbs_nothing(normal, model, surface):
     for pol in POLARIZATIONS:
         bal = dif.power_balance(normal, surface, polarization=pol, model=model)
         assert float(jnp.abs(bal.absorptance).max()) <= pc.F1_POWER_TOL
 
 
-def test_c2_a_jones_pair_is_normalized(normal, model):
+def test_a_jones_pair_is_normalized(normal, model):
     for fn in (dif.efficiencies, dif.power_balance):
         a, b = (
             fn(normal, BOT, polarization=pair, model=model)
@@ -183,7 +183,7 @@ def test_c2_a_jones_pair_is_normalized(normal, model):
 
 
 @pytest.mark.parametrize("surface", [TOP, BOT])
-def test_c2_unpolarized_is_the_mean_of_te_tm_and_of_rcp_lcp(cell, surface):
+def test_unpolarized_is_the_mean_of_te_tm_and_of_rcp_lcp(cell, surface):
     result, model = cell
 
     def bal(pol):
@@ -196,7 +196,7 @@ def test_c2_unpolarized_is_the_mean_of_te_tm_and_of_rcp_lcp(cell, surface):
             np.testing.assert_allclose(getattr(un, field), mean, rtol=0, atol=EXACT)
 
 
-def test_c2_a_pec_backed_cell_reflects_everything(pec):
+def test_a_pec_backed_cell_reflects_everything(pec):
     model, result = pec
     for pol in ("TE", "TM", "RCP", "unpolarized"):
         bal = dif.power_balance(result, TOP, polarization=pol, model=model)
@@ -204,10 +204,10 @@ def test_c2_a_pec_backed_cell_reflects_everything(pec):
         np.testing.assert_array_equal(bal.transmittance, 0.0)
 
 
-# --- C7: completeness ------------------------------------------------------------
+# --- completeness ------------------------------------------------------------
 
 
-def test_c7_a_missing_polarization_refuses_the_balance_but_not_the_efficiencies(
+def test_a_missing_polarization_refuses_the_balance_but_not_the_efficiencies(
     partial,
 ):
     partial, result = partial
@@ -232,7 +232,7 @@ def test_c7_a_missing_polarization_refuses_the_balance_but_not_the_efficiencies(
 
 
 @pytest.mark.filterwarnings("ignore::gfem.UnrequestedOrderWarning")
-def test_c7_an_undeclared_order_that_opens_in_the_band_is_listed(model):
+def test_an_undeclared_order_that_opens_in_the_band_is_listed(model):
     ports = dif.floquet_ports(model, TOP, [F0]) + dif.floquet_ports(model, BOT, [F0])
     cell = model.replace(ports=ports)
     result = gfem.solve(cell, gfem.Driven([F0, 3 * F0]), options=OPTS)
@@ -242,7 +242,7 @@ def test_c7_an_undeclared_order_that_opens_in_the_band_is_listed(model):
         dif.power_balance(result, TOP, polarization="TE", model=cell)
 
 
-# --- C8: jit ----------------------------------------------------------------------
+# --- jit ----------------------------------------------------------------------
 
 
 def _slab(model, eps):
@@ -251,7 +251,7 @@ def _slab(model, eps):
     return model.with_material("slab", gfem.MaterialField(eps_r=jnp.full(n, eps)))
 
 
-def test_c8_power_balance_under_jit_equals_eager(model):
+def test_power_balance_under_jit_equals_eager(model):
     problem = gfem.Driven([F0, 1.1 * F0])
 
     def balance(eps):
@@ -265,9 +265,7 @@ def test_c8_power_balance_under_jit_equals_eager(model):
     np.testing.assert_array_equal(jitted.frequency, eager.frequency)
 
 
-def test_c8_a_result_entering_jit_serves_efficiencies_but_not_power_balance(
-    normal, model
-):
+def test_a_result_entering_jit_serves_efficiencies_but_not_power_balance(normal, model):
     def eff(result):
         return dif.efficiencies(result, TOP, polarization="RCP", model=model)
 
@@ -288,7 +286,7 @@ def test_c8_a_result_entering_jit_serves_efficiencies_but_not_power_balance(
         jax.jit(bal)(normal)
 
 
-def test_c8_the_outputs_differentiate_through_s(model):
+def test_the_outputs_differentiate_through_s(model):
     problem = gfem.Driven([F0])
 
     def loss(eps):
@@ -303,10 +301,10 @@ def test_c8_the_outputs_differentiate_through_s(model):
     assert abs(float(jax.grad(loss)(eps)) - float(fd)) <= 1e-6 * abs(float(fd))
 
 
-# --- C9: sequences and messages ----------------------------------------------------
+# --- sequences and messages ----------------------------------------------------
 
 
-def test_c9_a_sequence_is_the_stack_of_the_per_result_outputs(normal, oblique, model):
+def test_a_sequence_is_the_stack_of_the_per_result_outputs(normal, oblique, model):
     both = [normal, oblique]
     eff = dif.efficiencies(both, TOP, polarization="RCP", model=model)
     bal = dif.power_balance(both, BOT, polarization=(0.6, 0.8j), model=model)
@@ -335,9 +333,7 @@ def one_excited(model):
 
 
 @pytest.mark.parametrize("name", ["efficiencies", "power_balance"])
-def test_c9_the_messages_of_the_inputs(
-    name, normal, other_frequency, one_excited, model
-):
+def test_the_messages_of_the_inputs(name, normal, other_frequency, one_excited, model):
     fn = getattr(dif, name)
 
     def call(result=normal, surface=TOP, **kw):
@@ -456,7 +452,7 @@ def test_c9_the_messages_of_the_inputs(
     )
 
 
-def test_c9_a_basis_other_than_linear_or_circular_is_refused(normal, model):
+def test_a_basis_other_than_linear_or_circular_is_refused(normal, model):
     with pytest.raises(
         ValueError,
         match=re.escape("efficiencies: basis must be 'linear' or 'circular', got 'x'."),
@@ -464,7 +460,7 @@ def test_c9_a_basis_other_than_linear_or_circular_is_refused(normal, model):
         dif.efficiencies(normal, TOP, polarization="TE", model=model, basis="x")
 
 
-def test_c9_a_circular_basis_needs_both_polarizations_of_every_order(partial):
+def test_a_circular_basis_needs_both_polarizations_of_every_order(partial):
     partial, result = partial
     with pytest.raises(
         ValueError,
@@ -480,9 +476,7 @@ def test_c9_a_circular_basis_needs_both_polarizations_of_every_order(partial):
         )
 
 
-def test_c9_the_two_polarizations_of_a_coherent_combination_share_an_offset(
-    normal, model
-):
+def test_the_two_polarizations_of_a_coherent_combination_share_an_offset(normal, model):
     result, cell = normal.with_offsets({"R_TM": 1e-7}), model
     message = (
         "Floquet ports 'R_TM' and 'R_TE' read order (0, 0) on 'z_max' at "
@@ -500,7 +494,7 @@ def test_c9_the_two_polarizations_of_a_coherent_combination_share_an_offset(
     dif.efficiencies(result, TOP, polarization="unpolarized", model=cell)
 
 
-def test_c9_a_result_without_floquet_ports_is_refused(tmp_path):
+def test_a_result_without_floquet_ports_is_refused(tmp_path):
     mesh = pc.c1_mesh(tmp_path)
     model = pc.c1(mesh)
     result = gfem.solve(
@@ -517,7 +511,7 @@ def test_c9_a_result_without_floquet_ports_is_refused(tmp_path):
             getattr(dif, name)(result, "x", polarization="TE", model=model)
 
 
-def test_c9_a_traced_jones_pair_raises(normal, model):
+def test_a_traced_jones_pair_raises(normal, model):
     def f(a):
         return dif.efficiencies(
             normal, TOP, polarization=(a, 1j), model=model
@@ -531,7 +525,7 @@ def test_c9_a_traced_jones_pair_raises(normal, model):
             transform(f)(1.0)
 
 
-def test_c9_efficiency_keys_raise_named_errors(normal, model, partial):
+def test_efficiency_keys_raise_named_errors(normal, model, partial):
     eff = dif.efficiencies(normal, TOP, polarization="TE", model=model)
     rows = ", ".join(map(repr, eff.rows))
     with pytest.raises(
@@ -684,7 +678,7 @@ PAULI_SWAP = np.array([[0.0, 1.0], [1.0, 0.0]])
 
 
 @pytest.mark.parametrize(("out", "inc", "h_out", "h_in"), BLOCKS)
-def test_c1_jones_circular_columns_are_the_documented_combinations(
+def test_jones_circular_columns_are_the_documented_combinations(
     cell, out, inc, h_out, h_in
 ):
     result, model = cell
@@ -710,7 +704,7 @@ def test_c1_jones_circular_columns_are_the_documented_combinations(
 
 
 @pytest.mark.parametrize(("out", "inc"), SURFACES)
-def test_c1_jones_values_are_the_tm_te_block_of_s(cell, out, inc):
+def test_jones_values_are_the_tm_te_block_of_s(cell, out, inc):
     result, model = cell
     j = dif.jones(result, out, inc, model=model)
     pre_out, pre_in = ("R" if out == TOP else "T"), ("R" if inc == TOP else "T")
@@ -724,7 +718,7 @@ def test_c1_jones_values_are_the_tm_te_block_of_s(cell, out, inc):
 
 
 @pytest.mark.parametrize(("out", "inc", "h_out", "h_in"), BLOCKS)
-def test_c3_mueller_is_the_stokes_measured_matrix(cell, out, inc, h_out, h_in):
+def test_mueller_is_the_stokes_measured_matrix(cell, out, inc, h_out, h_in):
     result, model = cell
     j = dif.jones(result, out, inc, model=model)
     m = np.asarray(j.mueller)
@@ -741,7 +735,7 @@ def test_c3_mueller_is_the_stokes_measured_matrix(cell, out, inc, h_out, h_in):
 
 
 @pytest.mark.parametrize(("out", "inc"), SURFACES)
-def test_c3_the_third_stokes_parameter_is_the_circular_power_difference(cell, out, inc):
+def test_the_third_stokes_parameter_is_the_circular_power_difference(cell, out, inc):
     result, model = cell
     j = dif.jones(result, out, inc, model=model)
     circ, m = np.asarray(j.circular), np.asarray(j.mueller)
@@ -794,7 +788,7 @@ def pec_jones(request, tmp_path_factory):
     return model, gfem.solve(model, gfem.Driven([F0], wave_vector=k), options=options)
 
 
-def test_c4_a_pec_mirror_reflects_with_minus_one_and_swaps_the_handedness(pec_jones):
+def test_a_pec_mirror_reflects_with_minus_one_and_swaps_the_handedness(pec_jones):
     model, result = pec_jones
     j = dif.jones(result, TOP, TOP, model=model)
     assert j.direction == (1, -1)
@@ -817,7 +811,7 @@ def empty(request, mesh):
     return model, gfem.solve(model, problem, options=OPTS), k
 
 
-def test_c5_an_empty_cell_transmits_the_phase_and_keeps_the_handedness(empty):
+def test_an_empty_cell_transmits_the_phase_and_keeps_the_handedness(empty):
     model, result, k = empty
     length = (2 * pc.F1_D + pc.F1_H) * pc.UM
     k0 = 2 * math.pi * F0 / pc.C0
@@ -843,7 +837,7 @@ def plate(mesh):
     return model, gfem.solve(model, gfem.Driven([F0], wave_vector=k), options=OPTS)
 
 
-def test_c6_a_uniaxial_slab_is_admitted_and_conserves_power_on_a_coarse_mesh(plate):
+def test_a_uniaxial_slab_is_admitted_and_conserves_power_on_a_coarse_mesh(plate):
     model, result = plate
     values = np.asarray(result.s.values)[0]
     defect = np.abs(1 - np.sum(np.abs(values) ** 2, axis=0))
@@ -854,7 +848,7 @@ def test_c6_a_uniaxial_slab_is_admitted_and_conserves_power_on_a_coarse_mesh(pla
             assert float(jnp.abs(bal.absorptance).max()) <= 1e-3
 
 
-def test_c6_the_wave_plate_converts_handedness_in_the_circular_view(plate):
+def test_the_wave_plate_converts_handedness_in_the_circular_view(plate):
     model, result = plate
     j = dif.jones(result, BOT, TOP, model=model)
     circ = np.asarray(j.circular[0])
@@ -1138,7 +1132,7 @@ def fed(tmp_path_factory):
 
 
 @pytest.mark.parametrize("polarization", ["TE", "TM", "RCP", "LCP", "unpolarized"])
-def test_c2_a_fed_cell_counts_the_power_into_its_feed(fed, polarization):
+def test_a_fed_cell_counts_the_power_into_its_feed(fed, polarization):
     model, result = fed
     bal = dif.power_balance(result, "x_max", polarization=polarization, model=model)
     total = bal.reflectance + bal.transmittance + bal.coupled + bal.absorptance
@@ -1160,7 +1154,7 @@ def test_c2_a_fed_cell_counts_the_power_into_its_feed(fed, polarization):
     np.testing.assert_array_equal(bal.transmittance, 0.0)
 
 
-def test_c2_the_feed_of_a_fed_cell_takes_power_in_one_polarization(fed):
+def test_the_feed_of_a_fed_cell_takes_power_in_one_polarization(fed):
     model, result = fed
     bal = dif.power_balance(result, "x_max", polarization="TE", model=model)
     assert float(bal.coupled[0]) > 0.1

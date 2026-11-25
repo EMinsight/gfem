@@ -270,7 +270,7 @@ def test_a_declared_order_missing_one_polarization_warns(f1_mesh):
     )
 
 
-def test_c8_diffraction_orders_are_concrete_under_jit(f1_mesh):
+def test_diffraction_orders_are_concrete_under_jit(f1_mesh):
     model = pc.f1(f1_mesh)
     problem = gfem.Driven([pc.F1_FREQUENCY], excite=["R_TE"])
     seen = {}

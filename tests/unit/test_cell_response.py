@@ -65,7 +65,7 @@ def _response(grid=GRID, **over):
     return dif.CellResponse(**kw)
 
 
-def test_r5_the_cubic_is_reproduced_exactly_on_a_non_uniform_grid():
+def test_the_cubic_is_reproduced_exactly_on_a_non_uniform_grid():
     r = _response()
     for p in np.linspace(GRID[0], GRID[-1], 50):
         np.testing.assert_allclose(r(p).values, _cubic(p)[0], rtol=0, atol=1e-13)
@@ -75,7 +75,7 @@ def test_r5_the_cubic_is_reproduced_exactly_on_a_non_uniform_grid():
     assert r(0.3).excited == EXCITED
 
 
-def test_r5_the_gradient_at_the_knots_is_the_stored_derivative_and_is_continuous():
+def test_the_gradient_at_the_knots_is_the_stored_derivative_and_is_continuous():
     r = _response()
 
     def d(p):
@@ -92,7 +92,7 @@ def test_r5_the_gradient_at_the_knots_is_the_stored_derivative_and_is_continuous
     np.testing.assert_allclose(g, np.sum(r.derivative[2].real), atol=1e-13)
 
 
-def test_r6_out_of_range_raises_when_concrete_and_is_nan_when_traced():
+def test_out_of_range_raises_when_concrete_and_is_nan_when_traced():
     r = _response()
     with pytest.raises(ValueError, match=r"1 of 1 parameter values lie outside"):
         r(0.5)
@@ -112,7 +112,7 @@ def test_r6_out_of_range_raises_when_concrete_and_is_nan_when_traced():
         r(np.array([0.2, 0.3]))
 
 
-def test_r6_json_round_trip_is_bitwise(tmp_path):
+def test_json_round_trip_is_bitwise(tmp_path):
     r = _response()
     path = r.to_json(tmp_path / "sub" / "r.json")
     back = dif.CellResponse.from_json(path)
@@ -149,7 +149,7 @@ def test_r6_json_round_trip_is_bitwise(tmp_path):
         gfem.Job.from_json(path)
 
 
-def test_r6_the_block_extractor_on_the_response_is_the_jones_of_the_stored_values():
+def test_the_block_extractor_on_the_response_is_the_jones_of_the_stored_values():
     r = _response()
     out, inc = ("sub TM", "sub TE"), ("sub TM", "sub TE")
     p = GRID[3]
@@ -295,7 +295,7 @@ def _build(make_cell, samples, **kw):
     )
 
 
-def test_r7_one_sample_equals_the_solve_and_a_rerun_solves_nothing(
+def test_one_sample_equals_the_solve_and_a_rerun_solves_nothing(
     ridge_cell, tmp_path, solves
 ):
     make_cell = ridge_cell
@@ -350,7 +350,7 @@ def test_r7_one_sample_equals_the_solve_and_a_rerun_solves_nothing(
     assert solves == []
 
 
-def test_r7_a_sample_that_changes_the_substrate_medium_raises_cr5(ridge_cell, solves):
+def test_a_sample_that_changes_the_substrate_medium_raises(ridge_cell, solves):
     make_cell = ridge_cell
 
     def changing(p, dp):
@@ -364,7 +364,7 @@ def test_r7_a_sample_that_changes_the_substrate_medium_raises_cr5(ridge_cell, so
     assert len(solves) == 1  # sample 0; the check precedes sample 1's solve
 
 
-def test_r7_a_traced_design_or_sample_raises_before_any_solve(ridge_cell, solves):
+def test_a_traced_design_or_sample_raises_before_any_solve(ridge_cell, solves):
     make_cell = ridge_cell
     with pytest.raises(gfem.NonDifferentiableError, match="cell's design is traced"):
         jax.jit(lambda p: _build(make_cell, [p]).values)(W0)
@@ -386,7 +386,7 @@ def test_r7_a_traced_design_or_sample_raises_before_any_solve(ridge_cell, solves
     assert solves == []
 
 
-def test_r7_input_refusals(ridge_cell, tmp_path, solves):
+def test_input_refusals(ridge_cell, tmp_path, solves):
     make_cell = ridge_cell
     with pytest.raises(
         TypeError,
@@ -413,7 +413,7 @@ def test_r7_input_refusals(ridge_cell, tmp_path, solves):
             dif.cell_response(
                 make_cell, [W0], frequency=[pc.RIDGE_FREQUENCY], excite=bad
             )
-    # CR6: an out file with other samples
+    # an out file with other samples
     out = tmp_path / "other.json"
     _response(grid=GRID).to_json(out)
     with pytest.raises(
