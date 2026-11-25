@@ -151,7 +151,7 @@ def mode_pass(  # noqa: PLR0912, PLR0915
         has_path and ct_z_pv is not None and np.any(ct_z_pv)
     )
     x_bar = np.zeros_like(x)
-    pairs_forms: list = []
+    pairs_forms: list[Any] = []
     planar = isinstance(space, PortModeSpace)
     shape = ShapeForm(space) if nodes and planar else None
     points = len(space.section.points) if shape is not None else 0

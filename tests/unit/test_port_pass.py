@@ -381,9 +381,9 @@ def test_a_bloch_wave_vector_holds_the_face_nodes_and_runs_no_node_pass(line):
     system, ports = rule.system(line)
     wanted = frozenset({("nodes",)})
     free = port_pass.PortPass(rule, line, system, ports, wanted)
-    assert free.nodes
+    assert free.wants_nodes
     assert free.active
     rule.problem = gfem.Driven(frequency=FREQUENCIES, wave_vector=(1.0, 0.0, 0.0))
     held = port_pass.PortPass(rule, line, system, ports, wanted)
-    assert not held.nodes
+    assert not held.wants_nodes
     assert not held.active

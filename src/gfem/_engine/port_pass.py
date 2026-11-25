@@ -462,7 +462,7 @@ class PortPass:
         self.wanted = wanted
         #: Whether the node coordinates are wanted: every face's nodes are
         #: inputs, unless the rule holds the faces (a Bloch wave vector).
-        self.nodes = (
+        self.wants_nodes = (
             wanted is None or ("nodes",) in wanted
         ) and rule.wave_faces_held is None
         self.width = len(rule.excite)
@@ -476,7 +476,9 @@ class PortPass:
             space = surface.ports[0].sweep.space
             names = [c.port.name for c in surface.ports]
             planar = isinstance(space, PortModeSpace)
-            if not (rule.port_design.reads(wanted, names) or (self.nodes and planar)):
+            if not (
+                rule.port_design.reads(wanted, names) or (self.wants_nodes and planar)
+            ):
                 continue
             lead = [c.port for c in surface.ports].index(surface.lead.port)
             index = [c.index for c in surface.ports]
@@ -506,7 +508,7 @@ class PortPass:
                 )
             )
         self.rows: dict[int, _Row] = {}
-        self.mu = wanted is None or any(
+        self.wants_mu = wanted is None or any(
             k[0] == "material" and k[2] == "mu_r" for k in wanted
         )
 
@@ -761,7 +763,7 @@ class PortPass:
                 who=lambda k, line=line: _who(line, k),
             )
             integrated_all.append(line_integrated(line.space.section, cot, n_tets))
-        return _pack(integrated_all, explicit, report if self.nodes else None)
+        return _pack(integrated_all, explicit, report if self.wants_nodes else None)
 
     def _face(
         self, position: int, face: _Face
@@ -774,7 +776,11 @@ class PortPass:
         space, section = face.space, face.space.section
         total = SectionCotangents.zeros(section)
         laws: dict[tuple, float] = {}
-        shapes = {ROBIN: ShapeForm(space), REST: ShapeForm(space)} if self.nodes else {}
+        shapes = (
+            {ROBIN: ShapeForm(space), REST: ShapeForm(space)}
+            if self.wants_nodes
+            else {}
+        )
         eulerian = np.zeros((len(section.points), 2))
         fields = FullReduction(space)
         context = _Context(
@@ -808,10 +814,10 @@ class PortPass:
                 impedance=row.impedance[face.index],
             )
             bars = pullback_row(
-                face.forms, modes, inputs, explicit=self.mu or self.nodes
+                face.forms, modes, inputs, explicit=self.wants_mu or self.wants_nodes
             )
             pairs = list(bars.pairs)
-            material_pairs = list(pairs) if self.mu else []
+            material_pairs = list(pairs) if self.wants_mu else []
             triples = []
             for k, st in enumerate(state):
                 nv = self._normalization(context, k, st, bars, row.omega)
@@ -854,19 +860,23 @@ class PortPass:
             points[REST] = points[REST] + eulerian
         return total, laws, points
 
-    def _rule(self, space, c) -> tuple[np.ndarray, np.ndarray] | None:
+    def _rule(
+        self, space: PortModeSpace, c: Any
+    ) -> tuple[np.ndarray, np.ndarray] | None:
         """The voltage path's plane points and weights of a port, if it has one."""
         path = c.port.voltage_path
         if path is None:
             return None
         return _voltage_rule(space.section, np.asarray(path, float), c.port.name)
 
-    def _volts(self, space, c) -> np.ndarray | None:
+    def _volts(self, space: PortModeSpace, c: Any) -> np.ndarray | None:
         """The voltage functional of a mode on the full field coordinates."""
         rule = self._rule(space, c)
         return None if rule is None else _voltage_row(space, rule)
 
-    def _normalization(self, context, k, state, bars, omega):
+    def _normalization(
+        self, context: _Context, k: int, state: _Mode, bars: RowBars, omega: float
+    ) -> Any:
         """The pullback of mode ``k``'s normalization: its raw pair's cotangents."""
         field_bar = bars.field[:, k]
         return normalize_vjp(
@@ -883,7 +893,9 @@ class PortPass:
             reference=state.reference,
         )
 
-    def _modes(self, context, n, row, pencil, factor):
+    def _modes(
+        self, context: _Context, n: int, row: _Row, pencil: Any, factor: Any
+    ) -> tuple[ModeValues, list[_Mode]]:
         """The surface's modes at frequency ``n``, polished where reduced.
 
         Each mode's stored pair is a solve of the reduced model unless the

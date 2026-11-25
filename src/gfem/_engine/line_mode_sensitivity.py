@@ -30,6 +30,7 @@ from __future__ import annotations
 import dataclasses
 import math
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import ngsolve as ngs
 import numpy as np
@@ -37,6 +38,9 @@ import numpy as np
 from gfem._engine.line_mode import LineModeSpace, LineReduction
 from gfem._engine.port_mode_normalization import NormalizationCotangents, Normalized
 from gfem._engine.sensitivity import Integrated
+
+if TYPE_CHECKING:
+    from gfem._line_section import LineSection
 
 __all__ = [
     "LineCotangents",
@@ -202,7 +206,9 @@ def _absorbing_ends(space: LineModeSpace) -> list[tuple[int, int]]:
     return out
 
 
-def line_integrated(section, cot: LineCotangents, n_elements: int) -> Integrated:
+def line_integrated(
+    section: LineSection, cot: LineCotangents, n_elements: int
+) -> Integrated:
     """The segment cotangents as per-element integrals of the 2D operator's terms.
 
     ``stiffness`` takes the weight's, ``mass`` the mass coefficient's (a law
