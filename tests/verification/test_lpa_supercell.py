@@ -39,10 +39,10 @@ SAMPLES = [0.16, 0.18, 0.24, 0.26, 0.32, 0.34]
 SLOW8 = [0.34, 0.32, 0.26, 0.18, 0.16, 0.18, 0.26, 0.32]
 UNIFORM4 = [0.24] * 4
 #: Largest |S_m - LPA| over the transmitted TE orders of the slowly varying
-#: supercell (phase steps up to 40 degrees). Measured 0.014.
+#: supercell (phase steps up to 40 degrees). Measured 0.0144.
 SLOW_TOL = 0.03
 #: The same for a uniform supercell, where the approximation is exact up to
-#: solver round-off. Measured 7e-15.
+#: solver round-off. Measured 8e-15.
 UNIFORM_TOL = 1e-10
 
 
