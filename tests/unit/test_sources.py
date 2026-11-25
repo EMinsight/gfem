@@ -338,3 +338,28 @@ def test_sources_refuse_a_periodic_pair(tmp_path):
     model = _line(tmp_path, periodic=True)
     with pytest.raises(NotImplementedError, match=r"ElectricDipole 'd'.*periodic"):
         gfem.solve(model, gfem.Driven(5e9, sources=DIPOLE))
+
+
+# --- source_fields -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value", [0, 1, "False", None, np.bool_(False)])
+def test_source_fields_takes_true_or_false(value):
+    with pytest.raises(TypeError, match=r"Driven.source_fields takes True or False"):
+        gfem.Driven(5e9, sources=DIPOLE, source_fields=value)
+
+
+def test_source_fields_false_without_a_source_is_refused():
+    with pytest.raises(ValueError, match=r"source_fields=False.*no source.*sources="):
+        gfem.Driven(5e9, source_fields=False)
+
+
+def test_an_adaptive_incident_field_is_refused_before_source_fields():
+    with pytest.raises(NotImplementedError, match="adaptive sweep cannot take"):
+        gfem.Driven(
+            (5e9, 6e9, 7e9), sources=WAVE, sweep="adaptive", source_fields=False
+        )
+
+
+def test_source_fields_defaults_to_true():
+    assert gfem.Driven(5e9, sources=DIPOLE).source_fields is True

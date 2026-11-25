@@ -258,3 +258,14 @@ def test_a_model_background_round_trips_through_a_job(tmp_path):
     text = bare.to_json(tmp_path / "bare.json").read_text()
     assert "background" not in text
     assert "sources" not in text
+
+
+def test_source_fields_is_written_only_when_false():
+    default = gfem.Driven(F, excite=(), sources=DIPOLE)
+    doc, _ = _round_trip(default)
+    assert "source_fields" not in doc
+    problem = gfem.Driven(F, excite=(), sources=DIPOLE, source_fields=False)
+    doc, back = _round_trip(problem)
+    assert "source_fields" in json.dumps(doc)
+    assert back == problem
+    assert back.source_fields is False

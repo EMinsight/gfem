@@ -46,6 +46,7 @@ import warnings
 from collections.abc import Callable, Sequence
 
 import numpy as np
+import scipy.sparse
 
 from gfem import _progress
 from gfem.errors import SweepNotConvergedWarning, SweepRankDeficientWarning
@@ -60,26 +61,30 @@ DROP = 1e-10
 MRI_RANK = 1e-12
 
 
+#: A block of full-length vectors: dense, or sparse when it is a few entries per column.
+Block = np.ndarray | scipy.sparse.csc_matrix
+
+
 @dataclasses.dataclass(frozen=True, eq=False)
 class AffineTerm:
     """A block of full-length vectors and its coefficient matrix over ω.
 
     Attributes:
-        vectors: ``(N, m)``.
+        vectors: ``(N, m)``, dense or a ``scipy.sparse`` matrix.
         coefficients: ``ω -> (m, n_excitations)`` for an excitation term,
             ``ω -> (n_outputs, m)`` for an output term.
         conjugate: The block is ``conj(vectors)``, read on the fly so a
             wave port's couplings are held once.
     """
 
-    vectors: np.ndarray
+    vectors: Block
     coefficients: Callable[[float], np.ndarray]
     conjugate: bool = False
 
     def project(
         self,
         x: np.ndarray,
-        pair: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None,
+        pair: Callable[[Block, np.ndarray], np.ndarray] | None = None,
     ) -> np.ndarray:
         """``Lᵀ x`` for the block ``L``; ``pair(a, b)`` is ``a.T @ b`` by default."""
         if pair is None:
@@ -99,7 +104,7 @@ class AffineTerm:
         return np.conj(out, out=out)
 
 
-def _transpose_product(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+def _transpose_product(a: Block, b: np.ndarray) -> np.ndarray:
     return a.T @ b
 
 
@@ -120,6 +125,13 @@ class AffineSystem:
         adjoint_loads: ``ω -> (N, q)``: loads solved at each sample with the
             excitations (``q`` may be 0), their solutions added to the basis
             (see the module docstring); ``None`` for none.
+        measure_loads: The loads' solutions count as measured columns, like
+            the excitations': in the sample error, in the interpolation
+            snapshots, and with a reduced guess to start from. Without it the
+            sweep only spans them.
+        size: ``N``, the full system's size (read when there is no
+            excitation term: no port is excited and the sources are read by
+            reciprocity).
     """
 
     thetas: Sequence[Callable[[float], complex]]
@@ -129,9 +141,13 @@ class AffineSystem:
     solve: Callable[[float, np.ndarray, np.ndarray | None], np.ndarray]
     corrections: Sequence[AffineTerm] = ()
     adjoint_loads: Callable[[float], np.ndarray] | None = None
+    measure_loads: bool = False
+    size: int = 0
 
     def rhs(self, omega: float) -> np.ndarray:
         """The right-hand sides at ω, ``(N, n_excitations)``."""
+        if not self.excitation:
+            return np.zeros((self.size, 0), complex)
         return sum(
             t.vectors @ np.asarray(t.coefficients(omega)) for t in self.excitation
         )
@@ -143,7 +159,9 @@ class ReducedModel:
     def __init__(self, system: AffineSystem) -> None:
         """An empty model of ``system``."""
         self.system = system
-        n_rows = system.excitation[0].vectors.shape[0]
+        n_rows = (
+            system.excitation[0].vectors.shape[0] if system.excitation else system.size
+        )
         #: The orthonormal basis V, ``(N, n)`` real.
         self.basis = np.zeros((n_rows, 0))
         #: Vᵀ A_k V per piece.
@@ -176,21 +194,28 @@ class ReducedModel:
             snapshot.shape[0], -1
         )
         old = self.basis
-        basis = old
+        n_old = old.shape[1]
+        # one buffer for the snapshot's columns, so the basis is rebuilt once
+        # instead of once per kept column
+        buffer = np.empty((old.shape[0], n_old + columns.shape[1]))
+        buffer[:, :n_old] = old
+        count = n_old
         for column in columns.T:
             norm = np.linalg.norm(column)
             if norm == 0:
                 continue
             w = column.copy()
             for _ in range(2):
-                w -= basis @ (basis.T @ w)
+                w -= buffer[:, :count] @ (buffer[:, :count].T @ w)
             remaining = np.linalg.norm(w)
             if remaining <= DROP * norm:
                 continue
-            basis = np.column_stack([basis, w / remaining])
-        new = basis[:, old.shape[1] :]
-        if not new.shape[1]:
+            buffer[:, count] = w / remaining
+            count += 1
+        if count == n_old:
             return 0
+        basis = buffer[:, :count].copy()
+        new = basis[:, n_old:]
         for k, reduced in enumerate(self.operators):
             product = np.asarray(self.system.apply(k, new))
             top = old.T @ product
@@ -212,6 +237,10 @@ class ReducedModel:
         self.basis = basis
         return new.shape[1]
 
+    def load_coordinates(self, omega: float, loads: np.ndarray) -> np.ndarray:
+        """Reduced solutions of the full-length ``loads`` ``(N, q)``, ``(n, q)``."""
+        return np.linalg.solve(self.matrix(omega), self.basis.T @ loads)
+
     def matrix(self, omega: float) -> np.ndarray:
         """The reduced operator ``Vᵀ A(ω) V``, ``(n, n)``, low-rank terms included."""
         system = self.system
@@ -226,6 +255,8 @@ class ReducedModel:
     def coordinates(self, omega: float) -> np.ndarray:
         """Reduced solution at ω, ``(n, n_excitations)``: V y is the field."""
         system = self.system
+        if not system.excitation:
+            return np.zeros((self.size, 0), complex)
         matrix = self.matrix(omega)
         rhs = sum(
             r @ np.asarray(t.coefficients(omega))
@@ -314,14 +345,18 @@ def adaptive_sweep(
         guess = None
         if model.size:
             guess = model.basis @ model.coordinates(omega)
-        x, duals = _solve_sample(system, omega, guess)
+        x, duals, load_guess = _solve_sample(system, omega, guess, model)
         error = math.inf
-        if measure and guess is not None:
-            error = _error(x, guess)
+        measured, solved = x, guess
+        if system.measure_loads and duals is not None:
+            measured = np.concatenate([x, duals], axis=1)
+            solved = None if guess is None else np.concatenate([guess, load_guess], 1)
+        if measure and solved is not None:
+            error = _error(measured, solved)
         model.extend(x)
         if duals is not None:
             model.extend(duals)
-        snapshots.append(model.basis.T @ x)
+        snapshots.append(model.basis.T @ (measured if system.measure_loads else x))
         chosen.append(i)
         errors.append(error)
         # an unmeasured sample (no model yet to compare with) shows no error
@@ -386,22 +421,32 @@ def adaptive_sweep(
 
 
 def _solve_sample(
-    system: AffineSystem, omega: float, guess: np.ndarray | None
-) -> tuple[np.ndarray, np.ndarray | None]:
-    """The full solution at ``omega`` from ``guess``, and the adjoint loads' duals."""
+    system: AffineSystem,
+    omega: float,
+    guess: np.ndarray | None,
+    model: ReducedModel,
+) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
+    """The full solution at ``omega`` from ``guess``, the loads' duals and guess.
+
+    The loads' guess is the reduced model's solution of them when the system
+    measures them (``None`` otherwise, and from a zero guess).
+    """
     rhs = system.rhs(omega)
     width = rhs.shape[1]
     loads = None
     if system.adjoint_loads is not None:
         loads = np.asarray(system.adjoint_loads(omega))
     if loads is None or not loads.shape[1]:
-        return np.asarray(system.solve(omega, rhs, guess)), None
-    # one solve: the loads are extra columns, from a zero guess
+        return np.asarray(system.solve(omega, rhs, guess)), None, None
+    # one solve: the loads are extra columns
     x0 = None
+    load_guess = np.zeros(loads.shape, complex)
     if guess is not None:
-        x0 = np.concatenate([guess, np.zeros(loads.shape, complex)], axis=1)
+        if system.measure_loads:
+            load_guess = model.basis @ model.load_coordinates(omega, loads)
+        x0 = np.concatenate([guess, load_guess], axis=1)
     both = np.asarray(system.solve(omega, np.concatenate([rhs, loads], axis=1), x0))
-    return both[:, :width], both[:, width:]
+    return both[:, :width], both[:, width:], load_guess
 
 
 def _error(x: np.ndarray, guess: np.ndarray) -> float:
@@ -425,7 +470,9 @@ def _next_sample(
         flat = padded.reshape(-1)
         columns.append(np.concatenate([flat, 1j * z[i] * flat]))
     u = np.column_stack(columns)
-    _, sigma, vh = np.linalg.svd(u)
+    # thin factors: the full left factor is a dense square of the stacked height
+    # (one column per source), and only the right one is read
+    _, sigma, vh = np.linalg.svd(u, full_matrices=False)
     sigma = np.concatenate([sigma, np.zeros(len(chosen) - len(sigma))])
     m = len(chosen) - 1
     while m > 0 and sigma[m] < MRI_RANK * sigma[0]:

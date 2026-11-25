@@ -417,3 +417,14 @@ def test_a_field_on_a_mesh_in_other_units_is_not_read_back_on_the_model_mesh(
     back, _, _ = store.read(key, model)
     assert all(f.mesh is not model.mesh for f in back.potential.values())
     assert all(f.mesh.length_unit == "mm" for f in back.potential.values())
+
+
+def test_source_fields_true_keeps_the_solve_key(stack):
+    model, _, _ = stack
+    dipole = gfem.ElectricDipole("d", position=(0, 0, 0), moment=(0, 0, 1e-30))
+    plain = gfem.Driven(5e9, excite=(), sources=dipole)
+    explicit = gfem.Driven(5e9, excite=(), sources=dipole, source_fields=True)
+    read = gfem.Driven(5e9, excite=(), sources=dipole, source_fields=False)
+    keys = [solve_key(model, p, OPTIONS)[0] for p in (plain, explicit, read)]
+    assert keys[0] == keys[1]
+    assert keys[2] != keys[0]

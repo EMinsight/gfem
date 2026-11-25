@@ -1036,7 +1036,10 @@ _codec.register(
 _codec.register(Blend, to_args=_unset_omitted(Blend, others=(), pixels=None))
 _codec.register(PixelGeometry)
 _codec.register(SolverOptions, to_args=_options_args)
-_codec.register(Driven, to_args=_unset_omitted(Driven, polarization=None, sources=()))
+_codec.register(
+    Driven,
+    to_args=_unset_omitted(Driven, polarization=None, sources=(), source_fields=True),
+)
 _codec.register(PortMode, to_args=_unset_omitted(PortMode, polarization=None))
 _codec.register(
     PortModeResult, to_args=_unset_omitted(PortModeResult, h_field=None, pml=None)

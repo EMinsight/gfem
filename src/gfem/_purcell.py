@@ -86,7 +86,8 @@ def purcell_factor(result: DrivenResult, name: str, *, model: Model) -> jax.Arra
         KeyError: ``name`` is not a point dipole of the result (a port, or
             not a source).
         ValueError: ``name`` is an incident-field source, which has no
-            emitted power.
+            emitted power, or a dipole of a ``Driven(source_fields=False)``
+            solve, whose own field was not solved.
     """
     sources = result.sources
     source = sources.get(name)
@@ -103,6 +104,9 @@ def purcell_factor(result: DrivenResult, name: str, *, model: Model) -> jax.Arra
             "of its own: the Purcell factor is a point dipole's (gfem."
             "ElectricDipole or gfem.MagneticDipole)."
         )
+    result._refuse_unsolved_source(  # noqa: SLF001
+        name, "so it has no emitted power and no Purcell factor", remedy="them"
+    )
     material = model.materials[_region(model, source)]
     omega = 2 * math.pi * np.asarray(result.frequency)
     eps = material.eps_r

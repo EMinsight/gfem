@@ -1028,16 +1028,20 @@ Scatterer
 Source
   A {term}`driven problem`'s excitation that is not a {term}`port`: an
   {term}`incident field` or a {term}`point dipole` (`Driven(sources=...)`). It
-  adds a column to the solve and is never part of the device.
+  adds a column to the solve (a point dipole adds none under
+  `Driven(source_fields=False)`, which reads its {term}`port waves <Port wave>`
+  by reciprocity) and is never part of the device.
 
 Excitation
-  An {term}`excited port` or a {term}`source`: one column of a driven solve,
-  whose name labels its kept fields and its results.
+  An {term}`excited port` or a {term}`source`: one column of a driven solve (or,
+  for a dipole under `Driven(source_fields=False)`, a name with port waves and
+  no column), whose name labels its kept fields and its results.
 
 Port wave
   The outgoing wave at a {term}`port` in a {term}`source`'s column, in √W
   (`DrivenResult.port_wave`); its squared modulus is the power the source sends
-  into the port.
+  into the port. Under `Driven(source_fields=False)` it is read by reciprocity
+  from the port's own solution, without solving the source: the same value.
 
 Point dipole
   An electric or magnetic point current at one position

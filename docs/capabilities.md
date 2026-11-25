@@ -54,7 +54,9 @@ v0.1.
   past the critical angle too), {py:obj}`gfem.GaussianBeam` (an exact beam
   carrying 1 W) or {py:obj}`gfem.IncidentField` (a field you give as a
   function); and point dipoles, {py:obj}`gfem.ElectricDipole` and
-  {py:obj}`gfem.MagneticDipole`. Results: the total, scattered and
+  {py:obj}`gfem.MagneticDipole`. With `Driven(source_fields=False)` a
+  dipole's port waves are read from the ports' own solutions by reciprocity,
+  one solve per port for any number of positions. Results: the total, scattered and
   incident fields, {py:obj}`gfem.cross_sections`, `emitted_power`,
   {py:obj}`gfem.purcell_factor`, port waves, the far field with the IEEE
   145 antenna quantities and the radar cross section
@@ -326,7 +328,12 @@ returning a wrong value:
   are constant, isotropic materials whose planes no tetrahedron crosses. A
   dipole sits inside one lossless, isotropic material (not a
   `MaterialField`), off interfaces, boundary faces, ports and the layer;
-  node gradients take electric dipoles only. Cross sections need a lossless background and a
+  node gradients take electric dipoles only. `source_fields=False` takes
+  dipoles only and needs a port with a defined wave; it gives no emitted
+  power, Purcell factor, kept field or far field of them, and its adaptive
+  gradients are exact at the samples and to the sweep's field error between,
+  with one full-size adjoint per port at each frequency carrying a cotangent.
+  Cross sections need a lossless background and a
   {term}`truncation layer` of background only; the far field needs a
   {term}`far-field layer` in one lossless, isotropic exterior medium, and
   no layered exterior. A result or job holding an `IncidentField` cannot

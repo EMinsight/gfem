@@ -280,12 +280,13 @@ def far_field(
             is neither names, a predicate nor ``None``.
         KeyError: ``name`` is neither an excited port nor a source.
         RegionNotFoundError: A named region does not exist.
-        ValueError: No field of ``name`` was kept; the model has no
-            background, no PML layer and no `gfem.Absorbing` face, or
-            `gfem.Periodic` pairs; ``theta`` and ``phi`` do not broadcast or
-            are not finite; the side selects nothing or everything; its
-            outside layer is not the exterior medium (another material, a
-            `gfem.MaterialField`, the perfectly matched layer); a dipole,
+        ValueError: No field of ``name`` was kept, or ``name`` is a dipole of
+            a ``Driven(source_fields=False)`` solve, whose field was not
+            solved; the model has no background, no PML layer and no
+            `gfem.Absorbing` face, or `gfem.Periodic` pairs; ``theta`` and
+            ``phi`` do not broadcast or are not finite; the side selects nothing
+            or everything; its outside layer is not the exterior medium (another
+            material, a `gfem.MaterialField`, the perfectly matched layer); a dipole,
             port, sheet, wall or scatterer is in that layer or outside the
             side; the layer meets a boundary of the solve domain that is not
             one flat PEC or PMC ground plane; a direction points below the
@@ -319,6 +320,9 @@ def far_field(
             f"{name!r} is neither an excited port nor a source of the result; its "
             f"columns are {columns}."
         )
+    result._refuse_unsolved_source(  # noqa: SLF001
+        name, "so it has no far field"
+    )
     background = model.background
     if background is None:
         raise ValueError(

@@ -8,6 +8,7 @@ worker, checked before any worker starts; the solve cache keys the built-in
 sources and passes a user function by with a warning that names it.
 """
 
+import dataclasses
 import logging
 import sys
 
@@ -213,3 +214,33 @@ def test_a_split_sweep_that_solved_nothing_keeps_the_source_widths():
     assert outputs.s.shape == (0, 1, 1)
     assert outputs.port_waves.shape == (0, 1, 2)
     assert outputs.emitted_power.shape == (0, 1)
+
+
+def test_two_workers_read_reciprocal_port_waves_as_one_process(model):
+    problem = gfem.Driven(GRID, excite=(), sources=DIPOLE, source_fields=False)
+    one = gfem.solve(model, problem, options=_options(1))
+    two = gfem.solve(model, problem, options=_options(2))
+    assert one.emitted_power == two.emitted_power == {}
+    assert _relative(two.port_waves, one.port_waves) < WORKER_GATE
+    columns = gfem.solve(
+        model, gfem.Driven(GRID, excite=(), sources=DIPOLE), options=_options(1)
+    )
+    assert _relative(two.port_waves, columns.port_waves) < WORKER_GATE
+
+
+def test_a_split_sweep_under_the_flag_keeps_the_source_widths_without_power(model):
+    from gfem._engine.driven import DrivenRule
+
+    problem = gfem.Driven(GRID, sources=DIPOLE, source_fields=False)
+    rule = DrivenRule(model, problem, _options(2))
+    split = SweepSplit.of(rule)
+    assert split is not None
+    assert split.n_sources == 1
+    assert split.n_dipoles == 0
+    split = dataclasses.replace(split, runner=_Missed(), blocks=([0, 1],))
+    request = SolveRequest(keeps_partial=True)
+    with pytest.raises(gfem.LinearSolverConvergenceError) as caught:
+        split.forward(model, keep=False, request=request)
+    outputs = caught.value._partial.outputs
+    assert outputs.port_waves.shape == (0, 1, 1)
+    assert outputs.emitted_power is None

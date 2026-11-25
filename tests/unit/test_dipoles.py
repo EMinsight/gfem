@@ -5,6 +5,7 @@ emitted power is within a few percent of the bulk power there; the
 closed-form gates at 3 % live in tests/verification/test_dipoles.py.
 """
 
+import eigen_cases as ec
 import free_space_cases as fsc
 import numpy as np
 import pml_cases
@@ -378,3 +379,64 @@ def test_a_saved_dipole_field_keeps_its_dipole(line, tmp_path):
     with pytest.raises(ValueError, match="holds the dipole 'd'"):
         gfem.power_flow(field, "slab", model=line)
     np.testing.assert_array_equal(loaded.emitted_power["d"], result.emitted_power["d"])
+
+
+# --- port waves alone: Driven(source_fields=False) ----------------------------------
+
+
+def test_source_fields_false_refuses_an_incident_field():
+    wave = gfem.PlaneWave("w", theta=0.2, phi=0.1, polarization="TM")
+    dipole = gfem.ElectricDipole("d", position=INSIDE, moment=(0, 0, 1e-30))
+    with pytest.raises(NotImplementedError, match=r"point dipoles only.*'w'"):
+        gfem.Driven(fsc.F0, sources=[dipole, wave], source_fields=False)
+
+
+def _capacitive_line(tmp_path):
+    mesh = ec.line_mesh(tmp_path, (20, 1, 1))
+    return ec.line(
+        mesh,
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z", capacitance=1e-12),
+            gfem.LumpedPort("p2", "port2", "+z", capacitance=1e-12),
+        ],
+    )
+
+
+@pytest.mark.parametrize("ported", ["none", "capacitive"])
+def test_source_fields_false_needs_a_port_with_a_defined_wave(box, tmp_path, ported):
+    if ported == "none":
+        model, position = _vacuum(box), INSIDE
+        pattern = r"model has no port"
+    else:
+        model, position = _capacitive_line(tmp_path), (3e-3, 1e-3, 0.5e-3)
+        pattern = r"no port of the model has a defined wave"
+    dipole = gfem.ElectricDipole("d", position=position, moment=(0, 0, 1e-15))
+    problem = gfem.Driven(5e9, excite=(), sources=dipole, source_fields=False)
+    with pytest.raises(ValueError, match=pattern):
+        gfem.solve(model, problem, options=ORDER2)
+
+
+def test_source_fields_false_without_an_excited_port_refuses_keep_fields():
+    dipole = gfem.ElectricDipole("d", position=INSIDE, moment=(0, 0, 1e-30))
+    for keep in (True, [fsc.F0]):
+        with pytest.raises(ValueError, match=r"excite=\(\).*keep_fields"):
+            gfem.Driven(
+                fsc.F0,
+                excite=(),
+                sources=dipole,
+                keep_fields=keep,
+                source_fields=False,
+            )
+
+
+def test_a_dipole_without_its_field_refuses_purcell_e_field_and_far_field(line):
+    result = _line_solve(line, sources=LINE_DIPOLE, source_fields=False)
+    assert result.emitted_power == {}
+    with pytest.raises(KeyError):
+        result.emitted_power["d"]
+    with pytest.raises(ValueError, match=r"source_fields=False"):
+        gfem.purcell_factor(result, "d", model=line)
+    with pytest.raises(ValueError, match=r"source_fields=False"):
+        result.e_field(fsc.F0, "d")
+    with pytest.raises(ValueError, match=r"source_fields=False"):
+        gfem.far_field(result, "d", model=line, theta=0.0, phi=0.0)

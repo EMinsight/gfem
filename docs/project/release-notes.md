@@ -228,6 +228,18 @@ Free space:
   into each port (beta factors) and the split of their power between ports,
   the layer and lossy materials ({doc}`../recipes/point-dipoles`). They also
   run on the adaptive sweep.
+- **Port waves of many dipoles by reciprocity.** `Driven(source_fields=False)`
+  reads each point dipole's port waves from the ports' own solutions, one
+  point overlap per dipole instead of one solve, so a coupling map over many
+  positions costs one solve per port, on uniform and adaptive sweeps, with
+  gradients. The dipoles' loads are stored sparse. Their emitted power, Purcell factor, kept fields and far fields
+  are not computed, and those readers raise `ValueError`. A job with
+  `source_fields=False` does not load in gfem 0.2.0 or earlier
+  ({doc}`../recipes/point-dipoles`).
+- **Many dipoles on an adaptive sweep.** The adaptive sweep no longer builds a
+  matrix that grows with the square of its snapshot columns, and its reduced
+  basis grows without copying, so many dipoles fit in memory. Samples and
+  results are unchanged, to rounding.
 - **Far fields and beam coupling.** `gfem.far_field` returns a
   `gfem.FarField` with the IEEE 145 antenna quantities (intensity,
   directivity, gain, realized gain, efficiency, circular components, axial

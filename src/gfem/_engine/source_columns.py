@@ -162,6 +162,48 @@ class SourceColumns:
                 return positions, loads
         return None
 
+    def port_waves(self, omega: float, z: np.ndarray) -> np.ndarray:
+        """``(n_ports, n_sources)``: the sources' port waves from the ports' solutions.
+
+        ``z`` is ``(N, n_ports)`` (`PortSolutions.solutions`); a dipole's
+        wave is one point overlap with it (`PointLoads.port_waves`). Only
+        point dipoles are read this way.
+        """
+        out = np.zeros((z.shape[1], len(self.names)), complex)
+        found = self.dipoles
+        if found is not None:
+            positions, loads = found
+            out[:, positions] = loads.port_waves(omega, z)
+        return out
+
+    def reduced_port_waves(
+        self, omega: float, projected: np.ndarray, coordinates: np.ndarray
+    ) -> np.ndarray:
+        r"""`port_waves` from the ports' reduced solutions ``(n, n_ports)``.
+
+        ``projected`` is :math:`B^\mathsf{T} V`, ``(n_dipoles, n)``, with
+        :math:`B` = `PointLoads.vectors` and :math:`V` the real basis.
+        """
+        out = np.zeros((coordinates.shape[1], len(self.names)), complex)
+        found = self.dipoles
+        if found is not None:
+            positions, loads = found
+            out[:, positions] = loads.reduced_port_waves(omega, projected, coordinates)
+        return out
+
+    def port_wave_loads(self, omega: float, weights: np.ndarray) -> np.ndarray:
+        """``(N, r)``: the dipoles' loads summed with each row of ``weights``.
+
+        ``weights`` ``(r, n_sources)``, the cotangent rows of `port_waves`
+        de-embedded: the adjoint loads of their backward
+        (`PointLoads.weighted`).
+        """
+        found = self.dipoles
+        if found is None:
+            return np.zeros((self.ndof, len(weights)), complex)
+        positions, loads = found
+        return loads.port_wave_loads(omega, np.asarray(weights)[:, positions])
+
     def emitted_power(self, omega: float, x: np.ndarray) -> np.ndarray:
         """``(n_dipoles,)`` W from the source columns' solutions ``(N, n_sources)``."""
         found = self.dipoles
@@ -199,10 +241,10 @@ class SourceColumns:
     def reduced_power(
         self, omega: float, projected: np.ndarray, coordinates: np.ndarray
     ) -> np.ndarray:
-        """``(n_dipoles,)`` W from the sources' reduced coordinates ``(n, n_sources)``.
+        r"""``(n_dipoles,)`` W from the sources' reduced coordinates ``(n, n_sources)``.
 
-        ``projected`` is ``Vᵀ`` `PointLoads.vectors`, ``(n, n_dipoles)``, on
-        the real basis V.
+        ``projected`` is :math:`V^\mathsf{T} B` (dense), ``(n, n_dipoles)``,
+        with :math:`B` = `PointLoads.vectors` and :math:`V` the real basis.
         """
         found = self.dipoles
         if found is None:

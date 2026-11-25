@@ -42,6 +42,7 @@ from typing import Any
 import ngsolve as ngs
 import numpy as np
 import scipy.constants as const
+import scipy.sparse
 
 from gfem import _mpi
 from gfem._boundaries import (
@@ -79,8 +80,9 @@ class PointLoads:
         names: The dipoles' names, in column order.
         moments: ``(n, 3)`` complex, :math:`p` (C m) or :math:`m` (A m²).
         magnetic: ``(n,)``, whether each dipole is magnetic.
-        vectors: ``(N, n)`` complex, the fixed parts: dipole k's load at ω
-            is ``coefficients(ω)[k] * vectors[:, k]``, zero on fixed DOFs.
+        vectors: ``(N, n)`` complex ``scipy.sparse`` CSC matrix (a column holds
+            the DOFs of one element), the fixed parts: dipole k's load at ω is
+            ``coefficients(ω)[k] * vectors[:, k]``, zero on fixed DOFs.
         located: Each dipole's element and barycentric coordinates.
         scale: The metres per file unit.
         layout: The DOF layout of the loads (``DISTRIBUTED`` columns).
@@ -89,7 +91,7 @@ class PointLoads:
     names: tuple[str, ...]
     moments: np.ndarray
     magnetic: np.ndarray
-    vectors: np.ndarray
+    vectors: scipy.sparse.csc_matrix
     located: Located
     scale: float
     layout: DofLayout = ONE_PROCESS
@@ -100,12 +102,89 @@ class PointLoads:
         return unit * np.where(self.magnetic, -1j * omega, omega**2)
 
     def rhs(self, omega: float) -> np.ndarray:
-        """The loads at ω, ``(N, n)``."""
-        return self.vectors * self.coefficients(omega)[None, :]
+        """The loads at ω, ``(N, n)`` dense."""
+        return (self.vectors @ scipy.sparse.diags(self.coefficients(omega))).toarray()
 
     def __call__(self, omega: float) -> np.ndarray:
         """`rhs`: the loads of a source kind as `SourceColumns` reads them."""
         return self.rhs(omega)
+
+    def port_waves(self, omega: float, z: np.ndarray) -> np.ndarray:
+        r"""``(n_ports, n)``: :math:`c_k\, b_k^\mathsf{T} z_i` by reciprocity.
+
+        ``z`` ``(N, n_ports)`` holds each port's own solution :math:`z_i =
+        A^{-1} g_i`; the dipole's load is :math:`c_k b_k`
+        (`coefficients`, `vectors`), so the product is :math:`g_i^\mathsf{T}
+        A^{-1} c_k b_k` for a complex symmetric :math:`A`: the port wave
+        before de-embedding, without solving the dipole.
+        """
+        pairs = np.asarray(self.layout.pair(self.vectors, z))
+        return (pairs * self.coefficients(omega)[:, None]).T
+
+    def reduced_port_waves(
+        self, omega: float, projected: np.ndarray, coordinates: np.ndarray
+    ) -> np.ndarray:
+        r"""``(n_ports, n)``: `port_waves` from the ports' reduced solutions.
+
+        ``projected`` is :math:`B^\mathsf{T} V` (`vectors` on the real basis
+        :math:`V`, dense, read once for all frequencies) and ``coordinates``
+        ``(n_basis, n_ports)`` the ports' solutions on :math:`V`.
+        """
+        pairs = projected @ coordinates
+        return (pairs * self.coefficients(omega)[:, None]).T
+
+    def port_wave_loads(self, omega: float, weights: np.ndarray) -> np.ndarray:
+        r"""``(N, r)``: :math:`\sum_k w_{jk}\, c_k b_k`, one column per row ``j``.
+
+        ``weights`` is ``(r, n)``. The backward of port waves read by
+        reciprocity loads port :math:`i`'s adjoint column with its cotangent
+        row, de-embedded: one column per port, whatever the number of dipoles.
+        """
+        scaled = self.coefficients(omega)[:, None] * np.asarray(weights).T
+        return np.asarray(self.vectors @ scaled)
+
+    def port_wave_nodes(
+        self,
+        mesh: Mesh,
+        layout: Layout,
+        omega: float,
+        *,
+        solutions: np.ndarray,
+        weights: np.ndarray,
+        comm: Any = None,
+    ) -> np.ndarray:
+        r"""The node term of port waves read by reciprocity at ω, ``(n_nodes, 3)``.
+
+        `nodes` with dipole :math:`k`'s adjoint :math:`\lambda_k = \sum_i
+        w_{ik} z_i`, read at the dipoles' positions from the ports' own
+        solutions ``solutions`` ``(N, n_ports)`` (one jet per port with a
+        nonzero row of ``weights`` ``(n_ports, n)``, the cotangent
+        de-embedded), and no power term: no dipole is solved.
+        """
+        out = np.zeros((len(mesh.nodes), 3))
+        rows = np.flatnonzero(np.any(weights != 0, axis=1))
+        electric = np.flatnonzero(~self.magnetic)
+        if not rows.size or not electric.size:
+            return out
+        probed = probe(mesh, layout, self.located, comm)
+        values = np.zeros((len(self.names), 3), complex)
+        gradients = np.zeros((len(self.names), 3, 3), complex)
+        for i in rows:
+            value, gradient = probed.jet(solutions[:, i])
+            values += weights[i][:, None] * value
+            gradients += weights[i][:, None, None] * gradient
+        coefficients = self.coefficients(omega)
+        for k in electric:
+            vertices, moved = transport(
+                mesh,
+                self.located,
+                int(k),
+                values=values[k][None],
+                gradients=gradients[k][None],
+                weight=(coefficients[k] * self.moments[k])[None],
+            )
+            np.add.at(out, vertices, np.real(moved[0]))
+        return out
 
     def power_scale(self, omega: float) -> float:
         r"""Emitted power per :math:`-\operatorname{Im}(b^H x)`, in W."""
@@ -393,16 +472,12 @@ def point_loads(
     """
     located = check_positions(model, sources, layout, frequency, comm)
     probed = probe(model.mesh, layout, located, comm)
-    n = len(sources)
     moments = np.array([s.moment for s in sources], complex)
     magnetic = np.array([isinstance(s, MagneticDipole) for s in sources])
-    vectors = np.zeros((probed.width, n), complex)
-    for k in range(n):
-        g = np.zeros((1, n, 3), complex)
-        g[0, k] = moments[k]
-        vectors[:, k] = probed.transpose(g, curl=bool(magnetic[k]))[0]
-    vectors = vectors[: space.ndof]
-    vectors[~free_mask(space.FreeDofs(), space.ndof)] = 0.0
+    # one shape-function pass for all dipoles; a column holds only its element's DOFs
+    vectors = probed.columns(moments, magnetic).astype(complex).tocsr()
+    free = free_mask(space.FreeDofs(), space.ndof)
+    vectors = (scipy.sparse.diags(free.astype(float)) @ vectors[: space.ndof]).tocsc()
     return PointLoads(
         names=tuple(s.name for s in sources),
         moments=moments,

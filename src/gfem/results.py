@@ -21,7 +21,7 @@ from gfem._checks import is_traced, static_float
 from gfem._circuit_ports import Circuit, check_circuit, circuit_ports, circuit_z0
 from gfem._field import Field, FieldMap, ReducedFields
 from gfem._pytree import register_fields
-from gfem._sources import INCIDENT, Source
+from gfem._sources import DIPOLES, INCIDENT, Source
 from gfem._text import hertz, hertz_band
 from gfem.errors import NonDifferentiableError
 
@@ -1836,9 +1836,11 @@ class SweepInfo:
         sample_errors: For each sampled frequency, the relative l2 error of
             the reduced model's field against the full solve there, measured
             before the sample joined the model (the largest over the excited
-            ports); ``inf`` where there was no model to compare with yet
-            (the two band edges the greedy starts from, the first frozen
-            sample, and every frequency of a uniform sweep).
+            ports and, with ``Driven(source_fields=False)``, over the port
+            solutions the port waves are read from); ``inf`` where there was
+            no model to compare with yet (the two band edges the greedy
+            starts from, the first frozen sample, and every frequency of a
+            uniform sweep).
         converged: Whether the last ``SolverOptions.adaptive_memory`` sample
             errors are below the tolerance (or every frequency was solved).
             Always True for a uniform sweep. An adaptive greedy that stops at
@@ -1848,8 +1850,11 @@ class SweepInfo:
             sweep, ``None`` for a uniform one.
         basis_size: The number of reduced basis vectors (0 for uniform).
         iterations: For each sampled frequency (in solve order), the Krylov
-            iterations of each excited port's solve; ``()`` for a direct
-            solve on fresh factors.
+            iterations of each right-hand side of the sample's solve (the
+            excited ports' columns, then the sources' columns and the loads
+            the sweep spans, every port's own load with
+            ``Driven(source_fields=False)``); ``()`` for a direct solve on
+            fresh factors.
         preconditioner_reused: For each sampled frequency, whether its
             solve ran on a preconditioner built for another matrix (a BDDC
             or p-multigrid preconditioner built at an earlier frequency, or
@@ -1999,7 +2004,8 @@ class DrivenResult:
         sources: The problem's sources (``Driven(sources=...)``) by name, in
             column order: what a measurement reads of them (a direction, an
             amplitude, a position). Static; empty without sources.
-        port_waves: The outgoing wave at each port for each source column,
+        port_waves: The outgoing wave at each port for each source (its column, or
+            by reciprocity under ``Driven(source_fields=False)``),
             ``(n_freq, n_ports, n_sources)``, √W, with every port terminated
             in its reference impedance (`gfem.conventions`, Incident fields):
             on a real ``z_ref``, :math:`|b|^2` is the power the source sends
@@ -2007,7 +2013,8 @@ class DrivenResult:
             like S. ``None`` without sources or without ports.
         emitted_power: The time-averaged power each point dipole gives the
             field, W, ``(n_freq,)``, by source name (`gfem.conventions`,
-            Point dipoles). Empty without dipoles.
+            Point dipoles). Empty without dipoles, or with
+            ``Driven(source_fields=False)``.
 
     On a 2D model (a mesh of dimension 2, `gfem.conventions`) every port is
     fed 1 W/m time-averaged incident power per metre along :math:`z`, and S is
@@ -2144,8 +2151,10 @@ class DrivenResult:
         Raises:
             ValueError: No field was kept at ``frequency``, ``excite`` is
                 needed, ``part`` is unknown or is not ``"total"`` for a port
-                or a dipole, or the result is a 2D model's Hz solve (read
-                `h_field`).
+                or a dipole, the result is a 2D model's Hz solve (read
+                `h_field`), or ``excite`` is a dipole of a
+                ``Driven(source_fields=False)`` solve, whose field was not
+                solved.
             KeyError: ``excite`` is neither an excited port nor a source.
         """
         if part not in _PARTS:
@@ -2157,6 +2166,10 @@ class DrivenResult:
             raise ValueError(
                 "This result solved the Hz polarization of a 2D model: its kept "
                 "field is Hz, read result.h_field(frequency, excite)."
+            )
+        if excite is not None:
+            self._refuse_unsolved_source(
+                excite, "so no field of it is kept", why="its field was not solved"
             )
         field = self._kept_field(self.e_fields, frequency, excite)
         if part == "total":
@@ -2171,6 +2184,32 @@ class DrivenResult:
                 f"only part is the total field; got part={part!r}."
             )
         return _incident_part(field, name, part)
+
+    def _refuse_unsolved_source(
+        self,
+        name: str,
+        consequence: str,
+        *,
+        why: str = (
+            "its port waves were read by reciprocity and its own field was not solved"
+        ),
+        remedy: str = "it",
+    ) -> None:
+        """Raise for a dipole of a ``source_fields=False`` solve.
+
+        Such a dipole is among the sources but has no emitted power: gfem
+        reads its port waves by reciprocity and never solves its field.
+
+        Raises:
+            ValueError: ``name`` is a point dipole without an emitted power.
+        """
+        source = self.sources.get(name)
+        if isinstance(source, DIPOLES) and name not in self.emitted_power:
+            raise ValueError(
+                f"{name!r} was solved with Driven(source_fields=False): {why}, "
+                f"{consequence}. Solve with source_fields=True (the default) "
+                f"for {remedy}."
+            )
 
     def h_field(self, frequency: float, excite: str | None = None) -> Field:
         """The kept Hz field of a 2D model's Hz solve at ``frequency``.
@@ -2204,7 +2243,11 @@ class DrivenResult:
                 "This result keeps no fields: solve with Driven(..., "
                 "keep_fields=True) or keep_fields=[frequencies] to keep them."
             )
-        columns = self._excitations
+        # a dipole read by reciprocity was never solved: it is no column
+        kept = {port for _, port in self.kept}
+        columns = tuple(c for c in self._excitations if c in kept) or tuple(
+            self._excitations
+        )
         if excite is None:
             if len(columns) > 1:
                 what = "Ports" if not self.sources else "Excitations"

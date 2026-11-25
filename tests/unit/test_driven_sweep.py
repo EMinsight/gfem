@@ -53,6 +53,7 @@ def _rule(frequency=SIX, *, workers=1, fixed_angle=False, wave_ports=()):
         stretch=None,
         sources=(),
         dipoles=(),
+        emitting=(),
     )
     if fixed_angle:
         rule.children = FixedAngleChildren(rule)

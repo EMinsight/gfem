@@ -171,6 +171,7 @@ class FrequencyWorkers:
                 wave_vector_frequency=self.problem.wave_vector_frequency,
                 polarization=self.problem.polarization,
                 sources=self.problem.sources,
+                source_fields=self.problem.source_fields,
             )
             for block in indices
         ]
@@ -490,7 +491,7 @@ class SweepSplit:
             polarization=rule.problem.polarization,
             stretch=rule.stretch,
             n_sources=len(rule.sources),
-            n_dipoles=len(rule.dipoles),
+            n_dipoles=len(rule.emitting),
         )
 
     def forward(

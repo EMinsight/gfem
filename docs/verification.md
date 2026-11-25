@@ -503,6 +503,12 @@ obey, and against finite differences:
   form, and the guided powers add up to the emitted power.
 - **A dipole's power split.** What the ports carry away, what the layer takes
   and what lossy materials absorb add up to the emitted power, to round-off.
+- **Port waves by reciprocity.** With `source_fields=False`, the port waves
+  of dipoles on a lumped-port line and in a wave-port guide equal those of
+  the dipoles' solved source fields (to round-off on the line and in the
+  guide), on uniform and adaptive sweeps; gradients match theirs (uniform)
+  and are exact at the samples and to the sweep's field error between
+  (adaptive).
 - **The far field of a Hertzian dipole.** Its pattern matches the closed
   form, the intensity integrated over the sphere is the radiated power, the
   peak directivity is 1.5, and two crossed dipoles in quadrature radiate
@@ -535,6 +541,7 @@ half-space against Sommerfeld's reflection integrals. The checks across
 ranks need the {term}`MPI PETSc stack` and run twice a week.
 
 Tests: [spheres](https://github.com/benvial/gfem/blob/main/tests/verification/test_free_space_mie.py),
+[port waves by reciprocity](https://github.com/benvial/gfem/blob/main/tests/verification/test_reciprocal_port_waves.py),
 [far fields of spheres](https://github.com/benvial/gfem/blob/main/tests/verification/test_far_field_mie.py),
 [layered substrate](https://github.com/benvial/gfem/blob/main/tests/verification/test_layered.py),
 [stack fields](https://github.com/benvial/gfem/blob/main/tests/unit/test_transfer_matrix.py),

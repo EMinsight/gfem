@@ -13,6 +13,7 @@ import math
 
 import numpy as np
 import pytest
+from adaptive_reference import per_column_extend, reference_next_sample
 
 import gfem
 from gfem._sweep.adaptive import (
@@ -293,3 +294,52 @@ def test_a_rank_deficient_interpolation_warns_with_its_own_class():
     assert issubclass(gfem.SweepRankDeficientWarning, UserWarning)
     assert not issubclass(gfem.SweepRankDeficientWarning, gfem.SweepNotConvergedWarning)
     assert issubclass(gfem.UnsampledPixelsWarning, UserWarning)
+
+
+@pytest.mark.parametrize(
+    ("rows", "chosen"),
+    [(40, [0, 50, 100, 150, 200]), (2, [0, 40, 80, 120, 160, 200])],
+    ids=["wide", "narrow"],
+)
+def test_the_next_sample_is_the_full_svd_s_choice(rows, chosen):
+    # wide: rows 2np far above the samples; narrow: fewer rows than samples, so
+    # the thin V^H has fewer rows and the padded sigma path runs
+    import warnings
+
+    rng = np.random.default_rng(3)
+    z = 1j * GRID
+    snapshots = [
+        rng.standard_normal((rows, 2)) + 1j * rng.standard_normal((rows, 2))
+        for _ in chosen
+    ]
+    expected, deficient = reference_next_sample(z, chosen, snapshots, rows)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        got = _next_sample(z, chosen, snapshots, rows)
+    warned = any(issubclass(w.category, gfem.SweepRankDeficientWarning) for w in caught)
+    assert got == expected
+    assert warned == deficient
+
+
+def test_a_block_extend_builds_the_per_column_basis():
+    system, _, _ = _system(correction=True)
+    rng = np.random.default_rng(5)
+    first = rng.standard_normal((N, 2)) + 1j * rng.standard_normal((N, 2))
+    # an exact duplicate column, a column inside DROP of the span, a zero
+    # column and independent columns
+    second = np.zeros((N, 5), complex)
+    second[:, 0] = first[:, 0]
+    second[:, 1] = first[:, 1] + 1e-13 * rng.standard_normal(N)
+    second[:, 3] = rng.standard_normal(N) + 1j * rng.standard_normal(N)
+    second[:, 4] = rng.standard_normal(N)
+    new, ref = ReducedModel(system), ReducedModel(system)
+    for snapshot in (first, second):
+        assert new.extend(snapshot) == per_column_extend(ref, snapshot)
+    assert new.size == ref.size
+    scale = lambda a: np.abs(a).max()  # noqa: E731
+    pairs = [(new.basis, ref.basis)]
+    for name in ("operators", "excitation", "outputs", "corrections"):
+        pairs += list(zip(getattr(new, name), getattr(ref, name), strict=True))
+    for a, b in pairs:
+        assert a.shape == b.shape
+        assert scale(a - b) <= 1e-13 * scale(b)
