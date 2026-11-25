@@ -967,10 +967,12 @@ def _renamed_density_from_args(cls: type) -> _codec.FromArgs:
 for _cls in (Material, MaterialField):
     _codec.register(
         _cls,
-        # no electro-optic tensor and no solid: written as an older gfem
-        # wrote it, so the file and its solve key are unchanged
+        # no electro-optic tensor, no solid and no Kerr property: written as
+        # an older gfem wrote it, so the file and its solve key are unchanged
         to_args=_unset_omitted(
             _cls,
+            nonlinear_index=None,
+            two_photon_absorption=None,
             electro_optic_tensor=None,
             stiffness=None,
             piezoelectric_tensor=None,

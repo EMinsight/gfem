@@ -55,9 +55,14 @@ PROPERTIES: tuple[_Property, ...] = (
         "thermo_optic_coefficient", "1/K", "thermal", None, strict=False, bounded=False
     ),
     _Property("mechanical_quality_factor", "1", "mechanical", None, strict=True),
+    _Property("nonlinear_index", "m^2/W", "em", None, strict=False, bounded=False),
+    _Property("two_photon_absorption", "m/W", "em", None, strict=False),
 )
 PROPERTY_NAMES = tuple(p.name for p in PROPERTIES)
 _BY_NAME = {p.name: p for p in PROPERTIES}
+
+# the Kerr properties: read by the nonlinear coefficients of a port mode only
+_NONLINEAR = ("nonlinear_index", "two_photon_absorption")
 
 _TRACED_REMEDY = (
     "To differentiate with respect to a region's material, assign "
@@ -523,7 +528,7 @@ def _bound_error(
 ) -> ValueError:
     """The passivity error; ``axis`` names a principal axis for a tensor value."""
     bound = "> 0" if prop.strict else ">= 0"
-    if prop.physics != "em":
+    if prop.physics != "em" or prop.name in _NONLINEAR:
         unit = "" if prop.unit == "1" else f" {prop.unit}"
         return ValueError(f"{owner}: {prop.name} must be {bound}{unit}, got {value}.")
     if axis is None:
@@ -1368,6 +1373,17 @@ class Material:
         thermo_optic_coefficient: dn/dT, the change of the refractive index
             with temperature, in 1/K: one real number of any sign.
             ``None`` means the index does not change with temperature.
+        nonlinear_index: The Kerr index :math:`n_2`, the change of the
+            refractive index per unit intensity
+            (:math:`\delta n = n_2 I`), in m^2/W: one real number of any
+            sign, isotropic. Read by `gfem.kerr_nonlinearity` and
+            `gfem.kerr_coupling` only, never by a solve. ``None`` means no
+            Kerr effect.
+        two_photon_absorption: The two-photon absorption coefficient
+            :math:`\beta_\mathrm{TPA}`, the intensity-dependent loss
+            :math:`\delta\alpha = \beta_\mathrm{TPA} I`, in m/W: one real
+            number, :math:`\ge 0`. Read by `gfem.kerr_nonlinearity` and
+            `gfem.kerr_coupling` only. ``None`` means none.
         electro_optic_tensor: The linear electro-optic (Pockels) tensor
             :math:`r_{Ik}` in m/V, contracted to a 6x3 matrix: rows
             :math:`I` in the order xx, yy, zz, yz, xz, xy, columns
@@ -1433,12 +1449,13 @@ class Material:
             beside a `PermittivityLaw`, a nonzero `tan_delta`, `axes`, or a
             tensor `mu_r` or `conductivity`; a law or term as `mu_r` (only
             eps_r depends on frequency); a thermal property <= 0; a
-            thermal property or `thermo_optic_coefficient` that is not one
-            real number; an `electro_optic_tensor` that is not a real,
-            finite 6x3 matrix, has an entry above 1e-8 m/V (a value in
-            pm/V), or sits beside a matrix property, left-handed `axes`, a
-            `PermittivityLaw` or an `eps_r` of 1 (the crystal's optical
-            permittivity left out); a `stiffness` that is not a real,
+            thermal property, `thermo_optic_coefficient` or `nonlinear_index`
+            that is not one real number; a `two_photon_absorption` < 0; an
+            `electro_optic_tensor` that is not a real, finite 6x3 matrix, has
+            an entry above 1e-8 m/V (a value in pm/V), or sits beside a
+            matrix property, left-handed `axes`, a `PermittivityLaw` or an
+            `eps_r` of 1 (the crystal's optical permittivity left out); a
+            `stiffness` that is not a real,
             finite, symmetric positive definite 6x6 matrix, or whose largest
             entry is below 1e5 Pa (a value in GPa); a `piezoelectric_tensor`
             that is not a real, finite 3x6 matrix, or whose nonzero largest
@@ -1471,6 +1488,8 @@ class Material:
     mass_density: float | None = None
     specific_heat: float | None = None
     thermo_optic_coefficient: float | None = None
+    nonlinear_index: float | None = None
+    two_photon_absorption: float | None = None
     electro_optic_tensor: tuple[tuple[float, float, float], ...] | None = None
     stiffness: tuple[tuple[float, ...], ...] | None = None
     piezoelectric_tensor: tuple[tuple[float, ...], ...] | None = None
@@ -2161,6 +2180,19 @@ def _blend_solid(void: Material, solid: Material, axes: Any, w: Any) -> dict:
     return out
 
 
+def _check_kerr_ends(void: Material, solid: Material) -> None:
+    """Raise if one end only gives a Kerr property: the blend is linear in it."""
+    for name in _NONLINEAR:
+        given = [getattr(m, name) is not None for m in (void, solid)]
+        if any(given) and not all(given):
+            which = "void" if not given[0] else "solid"
+            raise ValueError(
+                f"MaterialField.interpolate: the other end has a {name} but the "
+                f"{which} end has none: the blend is linear in it, so give both "
+                "ends one (0 for a material without the effect)."
+            )
+
+
 def _blend_eo(void: Material, solid: Material, axes: Any, w: Any) -> Any:
     """The electro-optic tensor blended by weight ``w`` in the frame of ``axes``.
 
@@ -2210,6 +2242,9 @@ class MaterialField:
     (`thermal_conductivity`, `mass_density`, `specific_heat`) and
     `thermo_optic_coefficient` (:math:`dn/dT`, 1/K, any sign) are real, in the units
     of `Material`; ``density=`` is the deprecated name of `mass_density`.
+    `nonlinear_index` (:math:`n_2`, m^2/W, any sign) and `two_photon_absorption`
+    (:math:`\beta_\mathrm{TPA}`, m/W, :math:`\ge 0`) are real too; only
+    `gfem.kerr_nonlinearity` and `gfem.kerr_coupling` read them.
 
     With `axes`, the field is an anisotropic material field: each of
     `eps_r`, `mu_r`, `tan_delta` and `conductivity` holds three principal
@@ -2285,6 +2320,8 @@ class MaterialField:
     mass_density: jax.Array | None = None
     specific_heat: jax.Array | None = None
     thermo_optic_coefficient: jax.Array | None = None
+    nonlinear_index: jax.Array | None = None
+    two_photon_absorption: jax.Array | None = None
     electro_optic_tensor: jax.Array | None = None
     stiffness: jax.Array | None = None
     piezoelectric_tensor: jax.Array | None = None
@@ -2541,11 +2578,13 @@ class MaterialField:
                 ``"index"`` or beside a law; an electro-optic end under a
                 layer density or beside a law; one end only a solid (with a
                 `stiffness`) or with a `mechanical_quality_factor`; a solid
-                end under a layer density.
+                end under a layer density; one end only with a
+                `nonlinear_index` or a `two_photon_absorption`.
             NonDifferentiableError: An end's law is computed inside
                 `jax.grad`, `jax.jit` or `jax.vmap`: differentiate a law on a
                 `Material` region instead.
         """
+        _check_kerr_ends(void, solid)
         if scheme not in _ALL_SCHEMES:
             raise ValueError(
                 f"Unknown interpolation scheme {scheme!r}; use one of "
