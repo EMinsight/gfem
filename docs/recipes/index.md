@@ -64,6 +64,7 @@ orphan: true
 
 - {doc}`incident-fields`
 - {doc}`cross-sections`
+- {doc}`optical-force`
 - {doc}`point-dipoles`
 - {doc}`far-field`
 - {doc}`multipoles`

@@ -804,9 +804,9 @@ def _transient_from_args(args: dict[str, Any], _: _codec.Context) -> TransientTh
 def _field_args(field: Any, _: _codec.Context) -> dict[str, Any]:
     """A field's arguments: a communicator is not part of what it is.
 
-    A layer's reference frequency, an incident column's incident part and
-    the point dipoles are written only when set, so that a field without
-    them encodes as before.
+    A layer's reference frequency, an incident column's incident part, the
+    point dipoles and the scattered flag are written only when set, so that
+    a field without them encodes as before.
     """
     out = {
         f.name: getattr(field, f.name)
@@ -818,6 +818,8 @@ def _field_args(field: Any, _: _codec.Context) -> dict[str, Any]:
             del out[name]
     if not out.get("_point_sources", 0):
         out.pop("_point_sources", None)
+    if not out.get("_scattered", 1):
+        del out["_scattered"]
     return out
 
 

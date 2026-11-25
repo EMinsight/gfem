@@ -654,6 +654,36 @@ Tests: [spheres](https://github.com/benvial/gfem/blob/main/tests/verification/te
 [dipole over glass](https://github.com/benvial/gfem/blob/main/tests/reference/test_layered_dipole.py),
 [across ranks](https://github.com/benvial/gfem/blob/main/tests/mpi/test_free_space.py).
 
+## Optical forces
+
+The force and torque of a solved field on a body are checked at orders 2 and 3
+against closed forms, against an identity the physics must obey, and against
+finite differences:
+
+- **The exact derivative.** On an eigenmode at 1 J the force and the torque
+  equal $-(1\,\mathrm{J}/\omega)\,\mathrm{d}\omega/\mathrm{d}\xi$, read from
+  the gradient of the eigenfrequency through a node map that translates or
+  rotates the body, to the eigensolver's tolerance; moving the torque's origin
+  adds the moment of the force.
+- **A cavity wall.** The force of the TE101 mode of a perfectly conducting
+  rectangular cavity on its end wall, held by a metal slab, matches
+  $1\,\mathrm{J}/[a(1 + (a/d)^2)]$, and its components along the walls the
+  slab slides on are NaN.
+- **Spheres under a plane wave.** The radiation-pressure efficiency of a
+  lossless and a lossy sphere lit at 30° in TE and TM matches the Mie series
+  $Q_\mathrm{ext} - g\,Q_\mathrm{sca}$ at the radius of the sphere of equal
+  volume, and a lossless cube is pushed along the wave.
+- **Two waveguides.** The gradient of the effective index of a port mode
+  through a node map that moves one of two silicon slabs matches the dispersion relation of the two slabs, differentiated in the gap,
+  at gaps of 100 and 300 nm.
+- **Refusals.** Every unsupported body, field or surrounding is a test of its
+  own.
+
+All of these run on every change to gfem.
+
+Tests: [force and torque](https://github.com/benvial/gfem/blob/main/tests/unit/test_optical_force.py),
+[closed forms](https://github.com/benvial/gfem/blob/main/tests/verification/test_optical_force.py).
+
 ## Multipoles
 
 The multipole decomposition of a scatterer's field is checked at order 3

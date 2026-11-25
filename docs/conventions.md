@@ -1162,6 +1162,17 @@ $\alpha_{lm} = -(-1)^m(-i)^l\sqrt{\pi(2l+1)}\,\overline{a_E(l,-m)}$, likewise $\
 Alaee's moments are gfem's with $-1/(i\omega) \to +1/(i\omega)$. The module's
 "Multipoles" section has the formulas.
 
+## Optical force
+
+{py:obj}`gfem.optical_force` is the time-averaged force and torque on a body,
+from peak phasors: the derivative of $L = \tfrac14\int(\varepsilon|E|^2 -
+|B|^2/\mu)\,dV$ of the solved field under a rigid motion of the body. A driven
+field is per solved excitation (1 W incident at its port, a plane wave at its
+`amplitude`), so the force in N scales with the incident power; an eigenmode
+field is at 1 J of stored energy and its force is
+$-(1\,\mathrm{J}/\omega)\,\mathrm{d}\omega/\mathrm{d}\xi$. The torque is about
+the body's volume centroid unless `origin=` says otherwise, in N m.
+
 ## Port waves and beam coupling
 
 A source column's `port_waves` and {py:obj}`gfem.beam_coupling` are

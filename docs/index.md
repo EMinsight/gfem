@@ -109,6 +109,7 @@ recipes/gsim
 
 recipes/incident-fields
 recipes/cross-sections
+recipes/optical-force
 recipes/point-dipoles
 recipes/far-field
 recipes/multipoles

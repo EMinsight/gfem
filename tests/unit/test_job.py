@@ -1,5 +1,6 @@
 """gfem.Job and gfem.load_result: the job.json / result.json bundles."""
 
+import dataclasses
 import json
 import shutil
 import warnings
@@ -1431,3 +1432,21 @@ def test_thermo_optic_shift_and_route_traces_round_trip_in_a_thermal_job(tmp_pat
         problem.traces["shift"]._sample(None, steady.rise),
         rtol=1e-13,  # the same weights; the sum's order is not fixed
     )
+
+
+def test_a_field_writes_its_scattered_flag_only_when_set(model):
+    from gfem.job import _field_args
+
+    field = gfem.Field(
+        coefficients=np.zeros(3, complex),
+        mesh=model.mesh,
+        quantity="E",
+        unit="V/m",
+        space="hcurl",
+        order=2,
+        support=(),
+        omega=1.0,
+    )
+    # a field of 0.2.0 has no such key: it must encode as it did
+    assert "_scattered" not in _field_args(field, None)
+    assert _field_args(dataclasses.replace(field, _scattered=True), None)["_scattered"]

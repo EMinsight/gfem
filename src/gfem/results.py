@@ -2487,7 +2487,10 @@ def _incident_part(field: Field, name: str, part: str) -> Field:
     incident = jnp.asarray(incident_coefficients(field, reference))
     if part == "scattered":
         return dataclasses.replace(
-            field, coefficients=field.coefficients - incident, _incident=None
+            field,
+            coefficients=field.coefficients - incident,
+            _incident=None,
+            _scattered=True,
         )
     # marked, so that power_flow refuses it (its flux balances no load)
     marked = dataclasses.replace(reference, is_incident=True)

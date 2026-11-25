@@ -9,6 +9,16 @@ Optics:
   mode's $\gamma_\mathrm{NL}$ on every row of its grid and `gfem.kerr_coupling`
   the tensor between its waves ({doc}`../recipes/waveguide-nonlinearity`).
 
+Measurements:
+
+- **Optical force and torque.** `gfem.optical_force` gives the time-averaged
+  force and torque of a solved 3D electric field, driven or eigenmode, on a
+  body: a volume region, several, or a predicate on element centroids, in N and
+  N m, about the body's centroid or an `origin`. An eigenmode is at 1 J, so its
+  force is $-(1\,\mathrm{J}/\omega)\,\mathrm{d}\omega/\mathrm{d}\xi$. The force is
+  differentiable. The result is a `gfem.OpticalForce`
+  ({doc}`../recipes/optical-force`).
+
 Jobs and files:
 
 - **A refused value names both versions.** A job or result bundle written by

@@ -162,6 +162,7 @@ METHOD_KEYS = (
     "element_mean",
     "electric_energy",
     "dissipated_power",
+    "optical_force",
     "electromagnetic_heating",
     "error_estimate",
     "mesh_refinement",
