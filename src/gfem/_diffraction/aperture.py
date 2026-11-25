@@ -17,7 +17,6 @@ from gfem._diffraction.outputs import (
     check_offsets,
     check_surface,
     incidence_of,
-    unitary,
 )
 from gfem._pytree import readonly, register_fields
 from gfem._text import hertz
@@ -525,7 +524,9 @@ def aperture_field(
     field = jnp.einsum("cfrk,k->cfr", per_cell, weights)
     field = jnp.moveaxis(field, 0, -1).reshape(field.shape[1], 2, *shape)
     field = field * jnp.broadcast_to(jnp.asarray(amplitude), shape)
-    axes = [(np.arange(n) - (n - 1) / 2) * a for n, a in zip(shape, pitches, strict=False)]
+    axes = [
+        (np.arange(n) - (n - 1) / 2) * a for n, a in zip(shape, pitches, strict=False)
+    ]
     return ApertureField(
         field,
         response.frequency,

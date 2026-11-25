@@ -1550,7 +1550,73 @@ def analytic_response(
         "lattice": {"z_min": lat, "z_max": lat},
         "direction": {"z_min": -1, "z_max": 1},
         "wave_vector": None,
-        "offsets": {n_: 0.3 * UM for n_ in ANALYTIC_PORTS},
+        "offsets": dict.fromkeys(ANALYTIC_PORTS, 0.3 * UM),
     }
     kw.update(over)
     return dif.CellResponse(**kw)
+
+
+def ridge_supercell_mesh(directory: Path, widths) -> gfem.Mesh:
+    """A row of ridges of the given widths (um), each meshed as its single cell.
+
+    The lateral grid of every cell is `ridge_mesh`'s at its width (shifted by
+    the cell's position), so a supercell differs from its single cells by the
+    coupling between neighbours only. Periodic in x over ``len(widths)``
+    pitches and in y; faces and regions as `ridge_mesh`.
+    """
+    widths = [float(w) for w in widths]
+    n = len(widths)
+
+    def lateral(w):
+        lo, hi = RIDGE_PITCH / 2 - w / 2, RIDGE_PITCH / 2 + w / 2
+        return np.concatenate(
+            [
+                np.linspace(0, lo, 3),
+                np.linspace(lo, hi, 4)[1:],
+                np.linspace(hi, RIDGE_PITCH, 3)[1:],
+            ]
+        )
+
+    ex = np.concatenate(
+        [lateral(widths[0])]
+        + [j * RIDGE_PITCH + lateral(w)[1:] for j, w in enumerate(widths) if j]
+    )
+    ey = np.array([0.0, 0.08, 0.16])
+    zs = [
+        0.0,
+        RIDGE_SUB,
+        RIDGE_SUB + RIDGE_HEIGHT,
+        RIDGE_SUB + RIDGE_HEIGHT + RIDGE_AIR,
+    ]
+    ez = [0.0]
+    for z0, z1 in itertools.pairwise(zs):
+        ez += list(np.linspace(z0, z1, max(1, round((z1 - z0) / 0.1)) + 1)[1:])
+    ez = np.array(ez)
+    eps = 1e-9
+    top = RIDGE_SUB + RIDGE_HEIGHT
+
+    def volume(c):
+        if c[2] < RIDGE_SUB:
+            return "substrate"
+        j = min(int(c[0] // RIDGE_PITCH), n - 1)
+        inside = abs(c[0] - (j + 0.5) * RIDGE_PITCH) < widths[j] / 2
+        return "atom" if inside and c[2] < top else "air"
+
+    def surface(c):
+        for axis, (a, b) in enumerate(((0, n * RIDGE_PITCH), (0, ey[-1]), (0, ez[-1]))):
+            if abs(c[axis] - a) < eps:
+                return "xyz"[axis] + "_min"
+            if abs(c[axis] - b) < eps:
+                return "xyz"[axis] + "_max"
+        if abs(c[2] - RIDGE_SUB) < eps:
+            return "base"
+        if abs(c[2] - top) < eps:
+            return "atom_top"
+        return "sidewall"
+
+    name = "_".join(f"{w:.4f}" for w in widths)
+    path = sm.write_msh22(
+        directory / f"ridge_super_{name}.msh",
+        sm.structured((ex, ey, ez), volume, surface),
+    )
+    return gfem.Mesh.from_gmsh(path, length_unit="um")
