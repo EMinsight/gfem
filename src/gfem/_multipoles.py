@@ -39,7 +39,8 @@ from gfem._background import Background, lossless
 from gfem._boundaries import PMC, WavePort, surfaces_of
 from gfem._checks import check_fixed, is_traced
 from gfem._dim2 import refuse_entry
-from gfem._far_field import _measure, engine
+from gfem._far_field import _measure
+from gfem._field_kernels import engine
 from gfem._power_flow import concrete_field
 from gfem._pytree import readonly, register_fields
 from gfem._sources import INCIDENT, PlaneWave
@@ -658,7 +659,7 @@ def _expand(
 ) -> tuple[jax.Array, jax.Array]:
     """Absolute coefficients (V/m) of ``fields``' radiation about ``origin``."""
     pf = importlib.import_module("gfem._engine.power_flow")
-    ff = engine()
+    ff = engine("far_field")
     n_theta = math.ceil(wavenumbers.max() * _layer_radius(model, layer, origin))
     grid = _gauss_grid(n_theta + lmax + 4)
     theta, phi = grid.theta.reshape(-1), grid.phi.reshape(-1)
@@ -678,7 +679,7 @@ def _expand(
 def _build_layer(fields: list[Field], model: Model, incident: bool) -> Layer:
     """The far-field layer on its default side (the layer touching the truncation)."""
     concrete = concrete_field(fields[0])
-    return engine().exterior_layer(
+    return engine("far_field").exterior_layer(
         concrete,
         model,
         None,
