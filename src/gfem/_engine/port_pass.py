@@ -214,7 +214,7 @@ class RowBars:
     Attributes:
         field: ``(n_free, nk)`` of the normalized fields.
         gamma: ``(nk,)`` of the propagation constants (all that reads
-            :math:`\gamma$ itself).
+            :math:`\gamma` itself).
         voltage: ``(nk,)`` of the voltages.
         phase: ``(nk,)`` of the power phases.
         pairs: The cotangents of the coupling forms' :math:`\nu` (the

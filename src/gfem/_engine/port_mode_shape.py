@@ -120,7 +120,10 @@ class ShapeForm:
 
     @staticmethod
     def _transport(coef: Any, a: Any, b: Any) -> Any:
-        """The tensor ``(Ca.b) I - a (x) C^T b - b (x) Ca`` that contracts with G."""
+        r"""The tensor that contracts with G.
+
+        :math:`(C a \cdot b) I - a \otimes C^T b - b \otimes C a`.
+        """
         ident = ngs.Id(2)
         if len(getattr(coef, "dims", (1,))) == 2:
             ca, ctb = coef * a, coef.trans * b

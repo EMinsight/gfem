@@ -227,7 +227,7 @@ def _quality_message(
 
 
 class BoundaryMorph:
-    """A fixed linear map from normal displacements of surface nodes to a mesh.
+    r"""A fixed linear map from normal displacements of surface nodes to a mesh.
 
     Build it with `boundary_morph`. Calling it with ``t``, one normal
     displacement in metres per parameter, returns the moved `Mesh`::
@@ -249,7 +249,7 @@ class BoundaryMorph:
             parameter ``i`` moves node ``i`` (and its tie class) by
             ``t[i] * normals[i]``. A node on the face of a sliding wave port
             (``sliding_ports``) has the normal projected into the face's
-            plane and scaled to keep ``n . d = t``: ``n_t / |n_t|**2``.
+            plane and scaled to keep :math:`n \cdot d = t`: :math:`n_t / |n_t|^2`.
         surface: The moving surface's name.
         extension: ``"elastic"`` or ``"laplace"``.
     """

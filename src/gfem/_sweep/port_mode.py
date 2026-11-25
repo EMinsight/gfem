@@ -164,7 +164,7 @@ _Z0 = scipy.constants.mu_0 * scipy.constants.c
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class PortModeSweep:
-    """One wave port's mode over a frequency grid.
+    r"""One wave port's mode over a frequency grid.
 
     The field at ``frequency[i]`` is ``basis @ coords[i]`` (full coefficient
     vector of ``(E_t, E_n)`` on ``space``, V/m at 1 W). The basis is real and
@@ -186,7 +186,7 @@ class PortModeSweep:
             V; NaN without one.
         power: ``(n_f,)`` complex power of the mode through the port, W, of
             modulus 1.
-        lam: ``(n_f,)`` the eigenvalue ``gamma**2`` of each frequency's pencil
+        lam: ``(n_f,)`` the eigenvalue :math:`\gamma^2` of each frequency's pencil
             pair, per local unit squared; ``None`` on a sweep rebuilt from
             arrays that lack it.
         y: ``(n_f, m)`` the pencil vector of each frequency in the reduced
@@ -1642,7 +1642,7 @@ def planar(space: ModeSpace) -> PortModeSpace:
 def _voltage_functional(
     space: PortModeSpace, basis: np.ndarray, rule: tuple[np.ndarray, np.ndarray]
 ) -> np.ndarray:
-    """``V = int E . dl`` along the voltage path for each basis column."""
+    r""":math:`V = \int E \cdot dl` along the voltage path for each basis column."""
     pts, wts = rule
     e = space.evaluate(basis.T, pts)
     return np.einsum("kpc,pc->k", e, wts)
@@ -1749,7 +1749,10 @@ def _polarity_row(space: ModeSpace, arrow: tuple[np.ndarray, np.ndarray]) -> np.
 def _voltage_row(
     space: PortModeSpace, rule: tuple[np.ndarray, np.ndarray]
 ) -> np.ndarray:
-    """``V = int E . dl`` as a vector on the free DOFs (`_voltage_functional`'s row)."""
+    r""":math:`V = \int E \cdot dl` as a vector on the free DOFs.
+
+    The row of `_voltage_functional`.
+    """
     pts, wts = rule
     dofs, weights = space.point_columns(pts)
     row = np.zeros(space.space.ndof, complex)
@@ -1873,7 +1876,9 @@ def path_voltage(
     *,
     subject: str = "WavePort",
 ) -> np.ndarray:
-    """``V = int E . dl`` along ``path`` (m) of each field ``basis @ coords[i]``.
+    r""":math:`V = \int E \cdot dl` along ``path`` (m) of each field.
+
+    The field of row ``i`` is ``basis @ coords[i]``.
 
     ``name`` is the wave port the field belongs to and ``subject`` what
     reads it, for messages.

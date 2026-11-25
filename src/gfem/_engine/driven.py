@@ -1,4 +1,4 @@
-"""Driven rule: time-harmonic E field in complex Nédélec elements, lumped ports.
+r"""Driven rule: time-harmonic E field in complex Nédélec elements, lumped ports.
 
 At each frequency the operator ``A(ω) = Σ θ_k(ω) A_k`` (see
 `gfem._engine.terms`) is assembled and prepared once, and every excited
@@ -29,12 +29,12 @@ single-frequency rule of its own, with its Bloch space, operator,
 factorization and transposed system at ±k(f).
 
 S is read from each port's outgoing wave: a lumped port's is the power wave
-``V_i / sqrt(2 R_i)`` with reference impedance R_i; a wave port's is its
+:math:`V_i / \sqrt{2 R_i}` with reference impedance :math:`R_i`; a wave port's is its
 pseudo-wave, the biorthogonal modal amplitude on its surface's modes times
 the port's pseudo-wave factor (`gfem._engine.wave_ports`), at the complex
 ``Z_PV`` when it has a ``voltage_path``. The excited port is fed an incident
 wave of amplitude 1 (1 W on a lossless line), and ``S_ij`` is port i's
-outgoing wave minus ``δ_ij``. The solution
+outgoing wave minus :math:`\delta_{ij}`. The solution
 itself (volts per mesh file unit) is that 1 W field's peak phasor in the
 `gfem.Field` coefficient convention, so kept fields are the solution
 columns as they are.
@@ -1955,7 +1955,7 @@ class DrivenRule:
         below differentiates). Without a Bloch
         wave vector ``A`` is complex symmetric, and when ``f_i`` is parallel
         to port i's excitation (every lumped port and every wave port, lossy
-        or not), ``A^-T f_i`` is port i's own solution scaled (no solve).
+        or not), :math:`A^{-T} f_i` is port i's own solution scaled (no solve).
         The remaining loads (kept-field cotangents, rows of ports that were
         not excited, and every row under a Bloch wave vector) take one
         multi-column adjoint solve, on the transposed system (-k) under a

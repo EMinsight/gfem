@@ -816,7 +816,7 @@ class SectionReduction:
     def forms(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """The power forms ``G`` and ``T`` and the gauge ``l_n`` and ``l_t``.
 
-        On the field coordinates (``w^T G w`` and so on).
+        On the field coordinates (:math:`w^T G w` and so on).
         """
         return self._g, self._t, self._ln, self._lt
 
