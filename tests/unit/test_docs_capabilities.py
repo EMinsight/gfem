@@ -391,7 +391,7 @@ def _derive(data, cells=None, expected=None, out_of_scope=None):
 
 
 def test_unchanged_data_derives(data):
-    assert len(_derive(data)["rows"]) == 21
+    assert len(_derive(data)["rows"]) == 22
 
 
 def test_a_new_problem_in_the_cells_fails(data):
