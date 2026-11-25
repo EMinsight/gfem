@@ -2001,6 +2001,7 @@ class DrivenRule:
         nodes = bool(self.dipoles) and (wanted is None or ("nodes",) in wanted)
         self._explicit_nodes = None
         self._explicit_inputs = {}
+        self._port_nodes_report = {}
         pairs: list[FieldPair | None] = [None] * len(frequencies)
         port_terms: list[Integrated] = []
         rebuilt = not isinstance(entry.handle, _Kept)  # frequency workers keep none
@@ -2152,6 +2153,7 @@ class DrivenRule:
         ct_p = cotangents.get("emitted_power")
         nodes = bool(self.dipoles) and (wanted is None or ("nodes",) in wanted)
         self._explicit_nodes = None
+        self._port_nodes_report = {}
         accumulated: dict[str, np.ndarray] = {}
         with task_manager(self.options.threads):
             op = self.operator(model)
@@ -2239,6 +2241,7 @@ class DrivenRule:
 
     def _add_port_nodes(self, found: PortResult) -> None:
         """Add the port pass's face node cotangent to `explicit_nodes`."""
+        self._port_nodes_report = found.report
         if found.nodes is None:
             return
         held = self._explicit_nodes

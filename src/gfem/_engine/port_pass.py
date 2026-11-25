@@ -88,6 +88,10 @@ __all__ = [
 ]
 
 MU0 = scipy.constants.mu_0
+#: The tag of the Robin term's `FormPair`, which the node report keeps apart,
+#: and of everything else in the port pass's node cotangent.
+ROBIN = "robin"
+REST = "rest"
 #: A ``Z_PV`` whose imaginary part is below this fraction of its modulus is
 #: cast to real in ``z_ref`` (`WavePortCoupling.z_ref`).
 _REAL_Z = 1e-12
@@ -316,7 +320,7 @@ def pullback_row(  # noqa: PLR0915
                 FormPair("coupling_t", s_bar[:, k], field[:, k], 1.0),
             ]
         pairs += [
-            FormPair("coupling_t", a[:, j], u_free[:, j], -gam0)
+            FormPair("coupling_t", a[:, j], u_free[:, j], -gam0, tag=ROBIN)
             for j in range(a.shape[1])
         ]
     return RowBars(field_bar, gamma_bar, voltage_bar, phase_bar, pairs)
@@ -339,11 +343,15 @@ class PortResult:
             (permittivity laws, sheet fills, `Impedance` values), rank 0 only.
         nodes: The face nodes' cotangent, ``(n_nodes, 3)`` per metre, rank 0
             only; ``None`` when the node coordinates are not wanted.
+        report: The same, by the part of the port pass it comes from:
+            ``"robin"`` (the Robin term on the traced fields) and ``"rest"``
+            (the modes, the normalization and the coupling forms).
     """
 
     integrated: list[Integrated]
     explicit: dict[tuple, Any]
     nodes: np.ndarray | None = None
+    report: dict[str, np.ndarray] = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass(eq=False)
@@ -672,13 +680,13 @@ class PortPass:
         explicit: dict[tuple, Any] = {}
         n_tets = len(self.model.mesh.volume_elements)
         mesh = self.model.mesh
-        nodes = np.zeros((len(mesh.imported_nodes), 3))
+        report = {tag: np.zeros((len(mesh.imported_nodes), 3)) for tag in (ROBIN, REST)}
         for position, face in enumerate(self.faces):
             total, laws, points = self._face(position, face)
             section = face.space.section
-            if points is not None:
-                nodes += chain_to_nodes(
-                    section, mesh.triangles, points, len(mesh.imported_nodes)
+            for tag, cot in points.items():
+                report[tag] += chain_to_nodes(
+                    section, mesh.triangles, cot, len(mesh.imported_nodes)
                 )
             item, kinds = section_inputs(self.model, section, total, n_tets)
             integrated_all.append(item)
@@ -695,20 +703,24 @@ class PortPass:
                 who=lambda k, line=line: _who(line, k),
             )
             integrated_all.append(line_integrated(line.space.section, cot, n_tets))
-        return _pack(integrated_all, explicit, nodes if self.wants_nodes else None)
+        return _pack(integrated_all, explicit, report if self.wants_nodes else None)
 
     def _face(
         self, position: int, face: _Face
-    ) -> tuple[SectionCotangents, dict[tuple, float], np.ndarray | None]:
+    ) -> tuple[SectionCotangents, dict[tuple, float], dict[str, np.ndarray]]:
         """The section cotangents of one surface, summed over rows and modes.
 
-        Also the cotangent of the section's points (``n_points, 2``) when the
-        node coordinates are wanted, else ``None``.
+        Also the cotangent of the section's points (``n_points, 2``), by part
+        (`ROBIN`, `REST`), when the node coordinates are wanted.
         """
         space, section = face.space, face.space.section
         total = SectionCotangents.zeros(section)
         laws: dict[tuple, float] = {}
-        shape = ShapeForm(space) if self.wants_nodes else None
+        shapes = (
+            {ROBIN: ShapeForm(space), REST: ShapeForm(space)}
+            if self.wants_nodes
+            else {}
+        )
         eulerian = np.zeros((len(section.points), 2))
         fields = FullReduction(space)
         context = _Context(
@@ -762,8 +774,8 @@ class PortPass:
                     who=_who(face, k),
                 )
                 triples.append((q, st.x, st.lam))
-                if shape is not None:
-                    shape.add_pencil(q, st.x, st.lam, space.pencil.theta(k0))
+                if shapes:
+                    shapes[REST].add_pencil(q, st.x, st.lam, space.pencil.theta(k0))
                     rule = context.rules[k]
                     if rule is not None and bars.voltage[k] != 0:
                         # the path's points stay put while the mesh moves
@@ -773,9 +785,9 @@ class PortPass:
                             *rule,
                             bars.voltage[k],
                         )
-            if shape is not None:
+            if shapes:
                 for pair in pairs:
-                    shape.add_pair(pair)
+                    shapes[ROBIN if pair.tag == ROBIN else REST].add_pair(pair)
             kernel_row = kernel.at(k0)
             cot = kernel_row.cotangents(triples)
             if material_pairs:
@@ -784,7 +796,9 @@ class PortPass:
             if len(section.laws):
                 for key, value in law_cotangents(section, cot, row.omega).items():
                     laws[key] = laws.get(key, 0.0) + value
-        points = None if shape is None else shape.result() + eulerian
+        points = {tag: form.result() for tag, form in shapes.items()}
+        if points:
+            points[REST] = points[REST] + eulerian
         return total, laws, points
 
     def _rule(
@@ -888,12 +902,12 @@ def _who(face: _Surface, k: int) -> str:
 def _pack(
     items: list[Integrated],
     explicit: dict[tuple, Any],
-    nodes: np.ndarray | None = None,
+    report: dict[str, np.ndarray] | None = None,
 ) -> dict[str, np.ndarray]:
     """The pass's terms as named arrays (what `gfem._mpi.on_root` sends)."""
     out: dict[str, np.ndarray] = {"n": np.array(len(items))}
-    if nodes is not None:
-        out["nodes"] = np.asarray(nodes)
+    for tag, value in (report or {}).items():
+        out[f"r/{tag}"] = np.asarray(value)
     for i, item in enumerate(items):
         for name, v in item.values.items():
             out[f"v{i}/{name}"] = np.asarray(v)
@@ -922,4 +936,6 @@ def _unpack(arrays: Mapping[str, np.ndarray]) -> PortResult:
         if k[0] == "k" and "/" in k:
             kind = ast.literal_eval(k.split("/", 1)[1])
             explicit[kind] = v if v.ndim else v.item()
-    return PortResult(items, explicit, arrays.get("nodes"))
+    report = {k[2:]: v for k, v in arrays.items() if k.startswith("r/")}
+    nodes = np.sum(list(report.values()), axis=0) if report else None
+    return PortResult(items, explicit, nodes, report)
