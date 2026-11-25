@@ -205,9 +205,7 @@ x_cells = jnp.zeros(n)  # the design variable, one number per cell
 
 def field_at(x, distance):
     parameter = width_of(x)
-    field = dif.aperture_field(
-        response, parameter, "top", "bottom", polarization="TE"
-    )
+    field = dif.aperture_field(response, parameter, "top", "bottom", polarization="TE")
     return dif.propagate(field, distance)
 
 
