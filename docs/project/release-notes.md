@@ -2,8 +2,19 @@
 
 ## Unreleased
 
+Jobs and files:
+
+- **A refused value names both versions.** A job or result bundle written by
+  another gfem version, whose value this version refuses, now says which
+  versions are involved and suggests upgrading.
+
 Thermal:
 
+- **Thermal boundary values differentiate.** A fixed temperature, a
+  convection's coefficient and ambient, and a heat flux may be traced by
+  `jax.grad` in steady and transient solves, through the temperature, the
+  traces, the heat flow and the heat-out traces, instead of raising
+  ({doc}`../recipes/thermal-gradient`).
 - **Electromagnetic heating.** `gfem.electromagnetic_heating(result,
   model=, frequency=, incident_power=)` turns the kept fields of a driven
   result at one frequency into a `gfem.HeatSource`, with no new solve: the
@@ -15,6 +26,17 @@ Thermal:
   `incident_power_per_length=`. A perfectly matched layer, absorbing faces,
   ports and lumped port loads give no heat
   ({doc}`../recipes/electromagnetic-heating`).
+- **Thermal and DC conduction designs reuse plans and factors.** An
+  optimization that solves one `gfem.SteadyThermal`, `gfem.TransientThermal` or
+  `gfem.DCConduction` problem per design on `linear_solver="direct"` plans the
+  factorization once and refactorizes it with each design's values, as driven
+  solves do. A design that leaves the operator unchanged (a heat-source
+  amount, the drive) solves on the held factors, and a gradient with respect to
+  the conductivity and the boundary temperatures factorizes the operator once
+  per design instead of twice. `retain_memory=0` turns it off.
+- **Heat of a law blend.** `gfem.dissipated_power` and
+  `gfem.electromagnetic_heating` accept a metal-dielectric blend with a
+  permittivity law, and their gradients flow to the blend's density.
 - **Dissipated power.** `gfem.dissipated_power(field, model=)` gives a
   driven field's loss per volume region and per sheet, in W per 1 W
   incident. With real port references it sums to
@@ -130,6 +152,11 @@ Piezoelectric acoustics:
 
 Linear solvers:
 
+- **Fewer stale iterations across a frequency sweep.** A reused BDDC or
+  p-multigrid preconditioner is now set up again before a step an octave from
+  the frequency it was set up at, and when a reused step costs as much as the
+  mean per step since the setup, instead of after one slow step.
+
 - **A p-multigrid linear solver.** `SolverOptions(linear_solver="pmg_gmres")`
   solves driven problems with GMRES on a two-level p-multigrid
   preconditioner: the lowest-order unknowns, and every unknown of a cell in a
@@ -234,6 +261,15 @@ Material data:
   its push-pull $V_\pi L$ moves from 1.61 to 1.62 V·cm.
 
 Design:
+
+- **The electric energy differentiates.** `gfem.electric_energy` may be
+  traced by `jax.grad`, `jax.jit` and `jax.vmap`, instead of raising, in the
+  field's coefficients (a driven field or an eigenmode's), the permittivity
+  of a region without a law (a scalar, per element or per axis), a
+  permittivity law's parameters, a mode field's frequency and the node
+  coordinates. The field of an adaptive sweep is read but raises
+  `gfem.NonDifferentiableError`; solve with `sweep="uniform"`
+  ({doc}`../recipes/measurements`).
 
 - **Minimum width and spacing in the gradient.**
   `gfem.design.length_scale_constraints(blur, min_width=..., min_spacing=...)`

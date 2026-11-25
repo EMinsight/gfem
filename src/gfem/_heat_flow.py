@@ -14,6 +14,10 @@ gives it the solve's JAX semantics:
   :math:`\partial Q / \partial k_e = s \int_e \nabla w \cdot \nabla T`
   on the side's elements (:math:`s` the mesh scale), contracted by the
   sensitivity kernel's material pass;
+- a thermal boundary value (a convection coefficient or ambient, a flux):
+  differentiable through the explicit terms of the affine flow
+  (`gfem._engine.heat_flow.BoundaryTerms`); a fixed temperature reaches it
+  through the temperature's coefficients alone, an exact zero here;
 - the node coordinates: read, not differentiable;
 - every other model leaf: unread, an exact zero.
 
@@ -113,11 +117,14 @@ def heat_flow(
 def _model_role(kind: tuple, rule: SteadyThermalRule) -> Role:
     """The role of a model leaf, by its `input_kind`."""
     from gfem._adjoint.solve_vjp import _describe
-    from gfem._engine.sensitivity import unsupported
+    from gfem._engine.sensitivity import is_thermal_value, unsupported
 
     described = _describe(kind)
     if kind[0] == "nodes":
         return Role("read", NODES_REASON, described)
+    if is_thermal_value(kind) and rule.role(kind) == "read":
+        # the measured flow reads the boundary values itself, outside the solve
+        return Role("read", None, described)
     if kind[0] == "material" and rule.role(kind) == "read":
         return Role("read", unsupported(rule.form, kind), described)
     return Role("unread", None, described)
@@ -183,7 +190,7 @@ class _HeatFlowKernel(RoleKernel):
         cotangents: dict[str, np.ndarray],
         wanted: tuple[str, ...],
     ) -> dict[str, np.ndarray]:
-        from gfem._engine.sensitivity import sensitivity
+        from gfem._engine.sensitivity import is_thermal_value, sensitivity
 
         model, rule, balance = self._host(values)
         ct = float(np.asarray(cotangents["flow"]))
@@ -194,9 +201,17 @@ class _HeatFlowKernel(RoleKernel):
             out["heat"] = ct * balance.source[self.heat_order]
         if "face_heat" in wanted:
             out["face_heat"] = ct * balance.face_source
-        materials = {n: self.kinds[n] for n in wanted if n in self.kinds}
+        wanted_kinds = {n: self.kinds[n] for n in wanted if n in self.kinds}
+        t = np.asarray(values["temperature"], dtype=float)
+        boundary = {n: k for n, k in wanted_kinds.items() if is_thermal_value(k)}
+        materials = {n: k for n, k in wanted_kinds.items() if n not in boundary}
+        if boundary:
+            terms = engine("heat_flow").boundary_terms(rule, model, self.weights)
+            for name, kind in boundary.items():
+                out[name] = np.asarray(
+                    ct * terms.derivative(model, kind[1], kind[2], t)
+                )
         if materials:
-            t = np.asarray(values["temperature"], dtype=float)
             pair = balance.conductivity(rule, model, t)
             grads = sensitivity(
                 model,

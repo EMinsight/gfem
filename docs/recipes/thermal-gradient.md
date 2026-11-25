@@ -214,7 +214,11 @@ largest |d(out)/dk|: 0.0
 
 ## What differentiates
 
-- **Inputs**: per-element `thermal_conductivity`, `conductivity` (through
+- **Inputs**: a fixed temperature, a convection's coefficient and ambient and
+  a heat flux (`FixedTemperature.temperature`, `Convection.coefficient`,
+  `Convection.ambient`, `HeatFlux.flux`; the rise reads only the
+  coefficient, so its gradient with respect to the others is exactly zero);
+  per-element `thermal_conductivity`, `conductivity` (through
   the DC solve), `thermo_optic_coefficient`, and, in a transient solve,
   `mass_density` and `specific_heat`; the amount of a
   {py:meth}`gfem.HeatSource.uniform`; the drive of `joule_heating`
@@ -245,10 +249,8 @@ Rather than return a wrong value, these raise:
 - {py:func}`gfem.rise_time` and {py:func}`gfem.time_constant` of a traced
   trace: they are crossing times of a sampled curve; differentiate the trace
   itself, or a value of it, instead;
-- boundary temperatures, ambients, convection coefficients and heat fluxes,
-  `duration`, `steps`, the waveform's start times and `initial_temperature`:
-  they are fixed numbers, and a traced one raises when the boundary or the
-  problem is built.
+- `duration`, `steps`, the waveform's start times and `initial_temperature`:
+  they are fixed numbers, and a traced one raises when the problem is built.
 
 ## Limits
 

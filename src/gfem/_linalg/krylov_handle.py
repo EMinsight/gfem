@@ -14,17 +14,21 @@ Across a sweep the handle keeps its preconditioner (`KrylovHandle.refactorize`)
 once a solve on it measured a reference iteration count, solves on the reused
 preconditioner to a tolerance `REUSED_TOLERANCE` times tighter, caps every
 warm solve there from that count, and sets it up again when GMRES iterations
-grow past one setup's worth. A GMRES solve without an initial guess on a
-preconditioner reused across a sweep's frequencies (an adjoint solve of a
-multi-frequency backward) runs that warm path from a zero guess;
-after a refactorization at no stated frequency (an eigen reshift) it sets
-the preconditioner up at the new operator first. A handle prepared without
-reuse sets it up at each `KrylovHandle.refactorize`.
+grow past one setup's worth. A frequency sweep also sets it up again before a
+step an octave from its setup's frequency, and when a reused step costs as
+much as the mean per step since the setup (`_chain_ended`). A GMRES solve
+without an initial guess on a preconditioner reused across a sweep's
+frequencies (an adjoint solve of a multi-frequency backward) runs that warm
+path from a zero guess; after a refactorization at no stated frequency (an
+eigen reshift) it sets the preconditioner up at the new operator first. A
+handle prepared without reuse sets it up at each `KrylovHandle.refactorize`.
 
 `KrylovHandle.last_action` and `last_reason` say what the last step did and
 why (`gfem._linalg.report`): ``factorized`` (set up: ``first``,
-``rebuild rule``, or ``cold solve`` for a CG solve, or a GMRES solve after
-an eigen reshift, on a reused preconditioner), ``reused``, or ``reused,
+``rebuild rule``, ``octave`` (a sweep step an octave from the setup's
+frequency), ``chain`` (a reused step as costly as the mean since the setup), or
+``cold solve`` for a CG solve, or a GMRES solve after an eigen reshift, on a reused
+preconditioner), ``reused``, or ``reused,
 capped, refactorized`` (``capped``: a warm column set the preconditioner up
 inside the solve).
 
@@ -60,6 +64,13 @@ SETUP_ITERATIONS = 30
 #: (up to 1.1e-5 against 3e-7 to 6e-7). One more decade gave fresh accuracy
 #: for about 10 more iterations per column.
 REUSED_TOLERANCE = 0.1
+#: A preconditioner is set up again before a sweep step at a frequency this
+#: factor above, or its inverse below, the one it was set up at. The penalty
+#: of a stale preconditioner grows with the change in electrical size (about
+#: its square), not with the relative step, so no fixed relative threshold
+#: serves both an electrically small and a large model; two to three
+#: wavelengths of change cost about 4x a fresh solve at the factor 2.
+OCTAVE = 2.0
 
 
 def _slack(columns: int) -> int:
@@ -79,6 +90,22 @@ def _reused_reference(n_ref: int, measured: float, tolerance: float) -> int:
         return n_ref
     scale = math.log(REUSED_TOLERANCE * tolerance) / math.log(measured)
     return math.ceil(n_ref * max(scale, 1.0))
+
+
+def _chain_ended(costs: list[float]) -> bool:
+    """Whether a chain of steps on one preconditioner has run its course.
+
+    ``costs`` are the Krylov iterations per column of the steps since the
+    last setup (columns differ from step to step: a forward and an adjoint
+    solve), the first on the fresh preconditioner, which also counts its
+    setup, `SETUP_ITERATIONS` shared by its columns. The chain ends when the
+    last reused step costs at least the mean per step: setting up again then
+    lowers the mean cost, the amortized rule of the direct solver in
+    iterations.
+    """
+    if len(costs) < 2:
+        return False
+    return costs[-1] * len(costs) >= sum(costs)
 
 
 class Preconditioner(Protocol):
@@ -206,6 +233,13 @@ class KrylovHandle(NgsHandle):
         self._matrix = form.mat
         self._solver = self._krylov(form.mat, preconditioner)
         self._reused = False
+        #: Iterations per column of the steps since this setup, the first
+        #: counting the setup too (`_chain_ended`), and of the open step.
+        self._chain: list[float] = []
+        self._step_iterations = 0
+        self._step_columns = 0
+        #: The frequency (Hz) this preconditioner was set up at, if known.
+        self._built_at = self._frequency
         #: Whether the reuse came from a refactorization at a sweep's frequency.
         self._swept = False
         self._reference_iterations: int | None = None
@@ -315,7 +349,11 @@ class KrylovHandle(NgsHandle):
         at the prepared tolerance, went past ``n_ref + Δ`` iterations per
         column (``n_ref`` scaled to the reused solve's tighter tolerance,
         `_reused_reference`), with ``Δ`` `SETUP_ITERATIONS` shared by the
-        solve's columns. So every warm solve on a reused preconditioner is
+        solve's columns. A frequency ``sweep`` step also sets it up again here
+        before its solve, when its frequency is `OCTAVE` times above or below
+        the setup's (reason ``octave``), or when the last reused step's
+        iterations reach the mean per step since the setup (`_chain_ended`,
+        reason ``chain``). So every warm solve on a reused preconditioner is
         capped (see `_warm`). A GMRES solve without an initial guess on a
         reused preconditioner runs that warm path from zero when this
         refactorization is a frequency ``sweep``'s; otherwise (an eigen
@@ -336,8 +374,15 @@ class KrylovHandle(NgsHandle):
             if solves is not None:
                 self._expected_columns = self._columns_per_setup(solves)
             self._frequency = operator.frequency
+            self._close_step()
+            reason = None
             if self._rebuild or not self.reuse or self._reference_iterations is None:
                 reason = "rebuild rule" if self.reuse and self._rebuild else "first"
+            elif sweep and self._octave_away():
+                reason = "octave"
+            elif sweep and _chain_ended(self._chain):
+                reason = "chain"
+            if reason is not None:
                 self._build(form)
                 self.last_action, self.last_reason = "factorized", reason
                 return
@@ -349,6 +394,34 @@ class KrylovHandle(NgsHandle):
             self._reused = True
             self._swept = sweep
             self.last_action, self.last_reason = "reused", None
+
+    def _octave_away(self) -> bool:
+        """Whether the held operator's frequency is an octave from the setup's."""
+        built, now = self._built_at, self._frequency
+        if not built or not now:
+            return False
+        ratio = now / built
+        return ratio >= OCTAVE or ratio <= 1 / OCTAVE
+
+    def _count_step(self, iterations: list[int]) -> None:
+        """Add a solve's per-column ``iterations`` to the open step."""
+        self._step_iterations += sum(iterations)
+        self._step_columns += len(iterations)
+
+    def _close_step(self) -> None:
+        """Add the step that ended to the chain: a fresh one opens a chain."""
+        spent, self._step_iterations = self._step_iterations, 0
+        columns, self._step_columns = self._step_columns, 0
+        if not columns:
+            return
+        if self._reused and self._chain:
+            self._chain.append(spent / columns)
+        else:
+            # a first step from a good initial guess (the previous design's
+            # solution) takes fewer iterations than the reference ``n_ref``:
+            # the chain counts the reference, or every reused step would end it
+            reference = (self._reference_iterations or 0) * columns
+            self._chain = [(SETUP_ITERATIONS + max(spent, reference)) / columns]
 
     def _converged(
         self, solver, reference: float | None, tolerance: float | None = None
@@ -449,6 +522,8 @@ class KrylovHandle(NgsHandle):
                 )
                 # a cold solve runs on a fresh preconditioner
                 self._set_reference(counts, measure=measure)
+                if measure:
+                    self._count_step(counts)
                 return out, tuple(counts)
             finally:
                 solver.tol = self.tolerance = prepared
@@ -569,6 +644,10 @@ class KrylovHandle(NgsHandle):
             self._set_reference(fresh, measure=measure)
             if measure and self._reused and max(stale) > n_ref + slack:
                 self._rebuild = True
+            if measure:
+                # a column that capped set up at this matrix: the step's
+                # iterations are those on the preconditioner it ends on
+                self._count_step(stale if self._reused else fresh)
         return (out[:, 0] if flat else out), tuple(counts)
 
     @property

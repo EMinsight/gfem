@@ -19,7 +19,6 @@ from unit.test_cross_section_mesh import write_section
 
 import gfem
 from gfem import _codec
-from gfem.errors import NonDifferentiableError
 
 DATA = Path(__file__).parent / "data"
 SI = gfem.Material(eps_r=11.7, name="si", thermal_conductivity=148.0)
@@ -179,13 +178,12 @@ def test_thermal_values_are_checked():
         lambda v: gfem.HeatFlux("s", flux=v),
     ],
 )
-def test_a_traced_thermal_value_raises(build):
+def test_a_traced_thermal_value_builds(build):
     def f(v):
         build(v)
         return v
 
-    with pytest.raises(NonDifferentiableError, match="fixed value"):
-        jax.grad(f)(300.0)
+    assert float(jax.grad(f)(300.0)) == 1.0
 
 
 def test_a_thermal_condition_on_a_thermal_only_surface_is_accepted(mesh):

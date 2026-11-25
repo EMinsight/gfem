@@ -286,8 +286,7 @@ What raises, each with its remedy (the full list is on
 - The ends of a blend are not design inputs: a law built inside the
   differentiated function and passed to `interpolate` raises
   `gfem.NonDifferentiableError`. Differentiate the law on a `Material` region.
-- {py:obj}`gfem.electric_energy` and the port mode problem are not
-  differentiable.
+- The port mode problem is not differentiable.
 
 ## Check your results
 

@@ -39,6 +39,11 @@ LAW = gfem.PermittivityLaw(
     ],
 )
 
+#: A Drude metal mild enough to resolve on the line (plasma 30 GHz).
+DRUDE = gfem.PermittivityLaw(
+    eps_inf=1.0, terms=[gfem.Drude(plasma_frequency=30 * GHZ, damping=8 * GHZ)]
+)
+
 
 @pytest.fixture(scope="module")
 def mesh(tmp_path_factory):
@@ -99,6 +104,18 @@ def _cores(mesh):
             gfem.Material(eps_r=6.0, tan_delta=0.1),
             scheme="index",
         ),
+        "law blend index": gfem.MaterialField.interpolate(
+            index_rho,
+            gfem.Material(eps_r=1.0),
+            gfem.Material(eps_r=LAW),
+            scheme="index",
+        ),
+        "law blend linear": gfem.MaterialField.interpolate(
+            index_rho,
+            gfem.Material(eps_r=1.0),
+            gfem.Material(eps_r=LAW),
+            scheme="linear",
+        ),
     }
 
 
@@ -111,6 +128,8 @@ def _cores(mesh):
         "complex eps_r",
         "law",
         "index blend",
+        "law blend index",
+        "law blend linear",
     ],
 )
 def test_a_region_dissipates_what_power_flow_says_enters_it(mesh, case):
@@ -259,17 +278,6 @@ def test_a_complex_mu_r_is_refused_by_region(mesh):
     )
     e = _solve(model).e_field(F)
     with pytest.raises(NotImplementedError, match=r"'core' has a complex mu_r"):
-        gfem.dissipated_power(e, model=model)
-
-
-def test_a_law_blend_is_refused(mesh):
-    n = _core_elements(mesh)
-    blend = gfem.MaterialField.interpolate(
-        np.full(n, 0.5), gfem.Material(eps_r=2.0), gfem.Material(eps_r=LAW)
-    )
-    model = _line(mesh, blend)
-    e = _solve(model).e_field(F)
-    with pytest.raises(NotImplementedError, match="dissipated_power"):
         gfem.dissipated_power(e, model=model)
 
 
@@ -437,6 +445,32 @@ def test_gradient_by_a_non_law_index_blend_density(mesh):
         )
 
     _check(_core_loss(mesh, blend), rho, step=1e-2)
+
+
+def test_gradient_by_a_law_blend_density(mesh):
+    # a law blend's density scales its susceptibility parts' coefficients:
+    # the heat reads it as a leaf, or its explicit term is silently zero
+    n = _core_elements(mesh)
+    rho = np.random.default_rng(6).uniform(0.2, 0.8, n)
+
+    def index_drude(p):
+        return gfem.MaterialField.interpolate(
+            p,
+            gfem.Material(eps_r=1.0),
+            gfem.Material(eps_r=DRUDE),
+            scheme="index",
+        )
+
+    def linear_law(p):
+        return gfem.MaterialField.interpolate(
+            p,
+            gfem.Material(eps_r=1.0),
+            gfem.Material(eps_r=LAW),
+            scheme="linear",
+        )
+
+    _check(_core_loss(mesh, index_drude), rho, step=1e-2)
+    _check(_core_loss(mesh, linear_law), rho, step=1e-2)
 
 
 def _sheet_loss(mesh, sheet):

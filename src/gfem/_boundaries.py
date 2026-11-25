@@ -282,22 +282,83 @@ class Periodic:
         object.__setattr__(self, "surfaces", (value[0], value[1]))
 
 
-_THERMAL_FIXED = (
-    "Thermal boundary values (a fixed temperature, an ambient, a heat transfer "
-    "coefficient, a flux) are not design inputs: keep it a plain number, or "
-    "wrap it in jax.lax.stop_gradient."
-)
+#: The attribute names of the thermal boundary values (the pytree leaves).
+THERMAL_VALUES = ("temperature", "coefficient", "ambient", "flux")
 
 
 def _temperature(value: Any, what: str) -> float:
     """An absolute temperature: a finite host float > 0 K."""
-    out = static_float(value, what, _THERMAL_FIXED)
+    out = static_float(value, what, "")
     if out <= 0:
         raise ValueError(
             f"{what} must be > 0 K, got {out}: temperatures are absolute, in "
             "kelvin (for example 293.15 for 20 degrees Celsius), not a rise."
         )
     return out
+
+
+def _coefficient(value: Any, what: str) -> float:
+    """A heat transfer coefficient: a finite host float > 0."""
+    out = static_float(value, what, "")
+    if out <= 0:
+        raise ValueError(
+            f"{what} must be > 0 W/(m^2 K), got {out}; leave the surface "
+            "without a thermal condition for an insulated one."
+        )
+    return out
+
+
+def _flux(value: Any, what: str) -> float:
+    """A heat flux: a finite host float of any sign."""
+    return static_float(value, what, "")
+
+
+#: The check of each thermal value, by attribute name.
+_THERMAL_CHECKS = {
+    "temperature": _temperature,
+    "ambient": _temperature,
+    "coefficient": _coefficient,
+    "flux": _flux,
+}
+
+
+def _set_thermal(obj: Any, owner: str) -> None:
+    """Check the thermal values of ``obj``; a traced one is checked per forward.
+
+    A concrete value is checked and stored as a host float. A traced one (under
+    `jax.grad`, `jax.jit` or `jax.vmap`) is kept as it is: its value is checked on
+    the host, on every forward (`check_thermal_values`).
+    """
+    for name in THERMAL_VALUES:
+        if not hasattr(obj, name):
+            continue
+        value = getattr(obj, name)
+        if is_traced(value):
+            continue
+        object.__setattr__(obj, name, _THERMAL_CHECKS[name](value, f"{owner}.{name}"))
+
+
+def check_thermal_values(item: Any) -> None:
+    """Raise unless every thermal value of ``item`` is a valid host number.
+
+    The constructor checks concrete values; a value built under a JAX
+    transformation reaches the host unchecked, so every thermal forward checks
+    the values it reads here.
+
+    Raises:
+        ValueError: A value is not finite, a temperature is not > 0 K, or a
+            heat transfer coefficient is not > 0.
+    """
+    owner = type(item).__name__
+    for name in THERMAL_VALUES:
+        if hasattr(item, name):
+            value = getattr(item, name)
+            out = np.asarray(value)
+            if out.shape or np.iscomplexobj(out):
+                raise ValueError(
+                    f"{owner}.{name} must be a real number, got {value!r}."
+                )
+            _THERMAL_CHECKS[name](out.item(), f"{owner}.{name}")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -312,7 +373,10 @@ class FixedTemperature:
 
     Attributes:
         surface: The surface region's name.
-        temperature: The temperature, absolute, in K (> 0).
+        temperature: The temperature, absolute, in K (> 0). May be traced by
+            JAX: the gradient of a thermal result with respect to it is the
+            adjoint's reaction on the surface. Two touching surfaces with one
+            traced value give the gradient of that common value.
     """
 
     surface: str
@@ -322,11 +386,7 @@ class FixedTemperature:
 
     def __post_init__(self) -> None:
         _surface_name(self.surface, "FixedTemperature")
-        object.__setattr__(
-            self,
-            "temperature",
-            _temperature(self.temperature, "FixedTemperature.temperature"),
-        )
+        _set_thermal(self, "FixedTemperature")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -340,7 +400,9 @@ class Convection:
     Attributes:
         surface: The surface region's name.
         coefficient: The heat transfer coefficient h, W/(m^2 K), > 0.
-        ambient: The ambient temperature, absolute, in K (> 0).
+        ambient: The ambient temperature, absolute, in K (> 0). Both
+            ``coefficient`` and ``ambient`` may be traced by JAX; the rise
+            reads only ``coefficient``.
     """
 
     surface: str
@@ -351,16 +413,7 @@ class Convection:
 
     def __post_init__(self) -> None:
         _surface_name(self.surface, "Convection")
-        h = static_float(self.coefficient, "Convection.coefficient", _THERMAL_FIXED)
-        if h <= 0:
-            raise ValueError(
-                f"Convection.coefficient must be > 0 W/(m^2 K), got {h}; leave the "
-                "surface without a thermal condition for an insulated one."
-            )
-        object.__setattr__(self, "coefficient", h)
-        object.__setattr__(
-            self, "ambient", _temperature(self.ambient, "Convection.ambient")
-        )
+        _set_thermal(self, "Convection")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -373,7 +426,8 @@ class HeatFlux:
 
     Attributes:
         surface: The surface region's name.
-        flux: W/m^2, any sign, positive into the thermal domain.
+        flux: W/m^2, any sign, positive into the thermal domain. May be
+            traced by JAX, also at 0; the rise does not read it.
     """
 
     surface: str
@@ -383,9 +437,7 @@ class HeatFlux:
 
     def __post_init__(self) -> None:
         _surface_name(self.surface, "HeatFlux")
-        object.__setattr__(
-            self, "flux", static_float(self.flux, "HeatFlux.flux", _THERMAL_FIXED)
-        )
+        _set_thermal(self, "HeatFlux")
 
 
 def _set_rlc(obj: Any, owner: str, traced: tuple[str, ...]) -> None:
@@ -431,8 +483,11 @@ def check_lumped_values(item: LumpedPort | Impedance) -> None:
             )
 
 
-for _cls in (PEC, PMC, Absorbing, Periodic, FixedTemperature, Convection, HeatFlux):
+for _cls in (PEC, PMC, Absorbing, Periodic):
     jax.tree_util.register_static(_cls)
+register_fields(FixedTemperature, ("temperature",))
+register_fields(Convection, ("coefficient", "ambient"))
+register_fields(HeatFlux, ("flux",))
 register_fields(Conductor, ("fill",))
 register_fields(Impedance, ("resistance", "inductance", "capacitance", "fill"))
 

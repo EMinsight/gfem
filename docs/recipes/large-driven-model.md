@@ -92,7 +92,8 @@ budget and the p-multigrid's estimate.
 
 ## Check your results
 
-- **A tighter tolerance.** Solve again with `tolerance=1e-8` and compare S.
+- **A tighter tolerance.** Solve again with `tolerance=1e-8` and compare the
+  quantity you read (S, or B or power flow at low frequency), not only S.
   A change well below what you need says the default was enough.
 - **Against the direct solver on a shorter model.** Cut the guide to a length
   that `linear_solver="direct"` solves, solve it with both, and compare S.

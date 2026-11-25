@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 import structured_meshes as sm
 from anisotropy import turned
+from finite_differences import assert_gradient_matches, unit_directions
 
 import gfem
 from gfem.conventions import MODE_ENERGY
@@ -204,19 +205,254 @@ def test_electric_energy_needs_the_model_the_field_was_solved_on(line, cell):
         gfem.electric_energy(e, model=cell)
 
 
-def test_electric_energy_is_not_differentiable(line):
+# --- gradients ---------------------------------------------------------------------
+
+STEP = 1e-2
+CORE_WEIGHT = 2.3
+LINE_NODE_SHIFT = 1e-6  # m per unit of the node parameter (the mesh is in metres)
+
+
+def _lumped_line(mesh, core, dielectric=None):
+    dielectric = dielectric or gfem.Material(eps_r=4.0)
+    return gfem.Model(
+        mesh,
+        materials={"dielectric": dielectric, "core": core},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z"),
+        ],
+    )
+
+
+def _weighted(energy):
+    weights = {"dielectric": 1.0, "core": CORE_WEIGHT}
+    return 1e15 * sum(weights[r] * energy[r] for r in energy)
+
+
+def _driven_energy(model):
+    problem = gfem.Driven(frequency=F0, excite="p1", keep_fields=True)
+    options = gfem.SolverOptions(order=2, linear_solver="direct")
+    e = gfem.solve(model, problem, options=options).e_field(F0)
+    return gfem.electric_energy(e, model=model)
+
+
+def _check(objective, p, rng, *, step=STEP, n=2):
+    directions = unit_directions(rng, np.shape(p), n)
+    assert_gradient_matches(objective, p, directions, step=step)
+
+
+@pytest.fixture(scope="module")
+def lumped_mesh(slab_mesh):
+    return slab_mesh
+
+
+def test_the_energy_gradient_of_a_scalar_and_a_per_element_permittivity(lumped_mesh):
+    n_core = len(lumped_mesh.elements("core"))
+
+    def scalar(p):
+        core = gfem.MaterialField(eps_r=p[0], tan_delta=0.02, region="core")
+        diel = gfem.MaterialField(eps_r=p[1], region="dielectric")
+        return _weighted(_driven_energy(_lumped_line(lumped_mesh, core, diel)))
+
+    def per_element(p):
+        core = gfem.MaterialField(eps_r=p, tan_delta=0.02)
+        return _weighted(_driven_energy(_lumped_line(lumped_mesh, core)))
+
+    rng = np.random.default_rng(1)
+    _check(scalar, jnp.array([9.0, 4.0]), rng)
+    p = 9.0 + 0.5 * rng.random(n_core)
+    _check(per_element, jnp.asarray(p), rng)
+
+
+def test_the_energy_gradient_of_the_permittivity_axes(lumped_mesh):
+    base = gfem.MaterialField.uniform(
+        "core",
+        gfem.Material(eps_r=(3.0, 5.0, 9.0), axes=turned(0, 35), tan_delta=0.02),
+    )
+
+    def objective(v):
+        core = dataclasses.replace(base, eps_r=v)
+        return _weighted(_driven_energy(_lumped_line(lumped_mesh, core)))
+
+    _check(objective, jnp.array([3.0, 5.0, 9.0]), np.random.default_rng(3))
+
+
+def test_the_loss_tangent_moves_the_energy_through_the_field_only(lumped_mesh):
+    def objective(tan):
+        core = gfem.MaterialField(eps_r=9.0, tan_delta=tan, region="core")
+        return _weighted(_driven_energy(_lumped_line(lumped_mesh, core)))
+
+    _check(objective, jnp.asarray(0.02), np.random.default_rng(4), step=1e-3, n=1)
+
+
+def test_the_energy_gradient_of_the_node_coordinates(lumped_mesh):
+    nodes0 = jnp.asarray(lumped_mesh.nodes)
+    x = np.asarray(lumped_mesh.nodes)[:, 0]
+    shift = np.zeros(nodes0.shape)
+    shift[:, 0] = np.sin(math.pi * x / np.ptp(x))
+    shift *= LINE_NODE_SHIFT / np.linalg.norm(shift)
+    structure = jax.tree_util.tree_structure(lumped_mesh)
+
+    def objective(t):
+        moved = jax.tree_util.tree_unflatten(structure, [nodes0 + t * shift])
+        core = gfem.MaterialField(eps_r=9.0, tan_delta=0.02, region="core")
+        return _weighted(_driven_energy(_lumped_line(moved, core)))
+
+    _check(objective, jnp.asarray(0.0), np.random.default_rng(5), step=2e-2, n=1)
+
+
+def test_the_energy_gradient_of_a_permittivity_law(lumped_mesh):
+    def objective(p):
+        law = gfem.PermittivityLaw(
+            eps_inf=p[0],
+            terms=[
+                gfem.Lorentz(
+                    delta_eps=p[1],
+                    resonance_frequency=p[2] * 1e12,
+                    damping=p[3] * 1e11,
+                )
+            ],
+        )
+        model = _lumped_line(lumped_mesh, gfem.Material(eps_r=law))
+        return _weighted(_driven_energy(model))
+
+    _check(objective, jnp.array([4.0, 2.0, 3.0, 2.0]), np.random.default_rng(6))
+
+
+def test_the_energy_is_jittable_and_equals_its_forward(line):
     model, e = line
+    plain = gfem.electric_energy(e, model=model)
 
     def of_the_field(scale):
         field = dataclasses.replace(e, coefficients=scale * e.coefficients)
-        return gfem.electric_energy(field, model=model)["core"]
+        return gfem.electric_energy(field, model=model)
 
-    def of_the_model(eps):
-        n = len(model.mesh.elements("core"))
-        fill = gfem.MaterialField(eps_r=jnp.full(n, eps))
-        changed = model.with_material("core", fill)
-        return gfem.electric_energy(e, model=changed)["core"]
+    jitted = jax.jit(of_the_field)(1.0)
+    for region, value in plain.items():
+        assert float(jitted[region]) == pytest.approx(float(value), rel=1e-14)
 
-    for objective, at in ((of_the_field, 1.0), (of_the_model, 9.0)):
-        with pytest.raises(gfem.NonDifferentiableError, match="electric_energy"):
-            jax.grad(objective)(at)
+
+def test_the_energy_is_quadratic_in_the_field_scale(line):
+    model, e = line
+
+    def objective(scale):
+        field = dataclasses.replace(e, coefficients=scale * e.coefficients)
+        return 1e15 * gfem.electric_energy(field, model=model)["core"]
+
+    got = float(jax.grad(objective)(1.0))
+    assert got == pytest.approx(2 * float(objective(1.0)), rel=1e-12)
+
+
+def test_the_energy_gradient_of_a_material_field_on_the_wave_port_line(line):
+    model, _ = line
+    n = len(model.mesh.elements("core"))
+
+    def objective(eps):
+        core = gfem.MaterialField(eps_r=jnp.full(n, eps), tan_delta=TAN_DELTA)
+        changed = model.with_material("core", core)
+        return 1e15 * gfem.electric_energy(_field(changed), model=changed)["core"]
+
+    _check(objective, jnp.asarray(9.0), np.random.default_rng(7), n=1)
+
+
+def test_inputs_the_energy_does_not_read_have_an_exact_zero_gradient(lumped_mesh):
+    # the energy reads the permittivity, not the loss tangent: on a fixed
+    # field the loss tangent's gradient is exactly zero
+    model = _lumped_line(lumped_mesh, gfem.MaterialField(eps_r=9.0, region="core"))
+    field = _driven_energy_field(model)
+
+    def objective(tan):
+        core = gfem.MaterialField(eps_r=9.0, tan_delta=tan, region="core")
+        changed = model.with_material("core", core)
+        return 1e15 * gfem.electric_energy(field, model=changed)["core"]
+
+    assert float(jax.grad(objective)(0.02)) == 0.0
+
+
+def _driven_energy_field(model):
+    problem = gfem.Driven(frequency=F0, excite="p1", keep_fields=True)
+    options = gfem.SolverOptions(order=2, linear_solver="direct")
+    return gfem.solve(model, problem, options=options).e_field(F0)
+
+
+def test_the_energy_of_an_adaptive_sweeps_field_has_no_gradient(lumped_mesh):
+    model = _lumped_line(lumped_mesh, gfem.MaterialField(eps_r=9.0, region="core"))
+    problem = gfem.Driven(
+        frequency=(1.8e12, 2.0e12, 2.2e12),
+        sweep="adaptive",
+        samples=(1.8e12, 2.2e12),
+        keep_fields=2.0e12,
+        excite="p1",
+    )
+    options = gfem.SolverOptions(order=2, linear_solver="direct")
+    field = gfem.solve(model, problem, options=options).e_field(2.0e12)
+    forward = gfem.electric_energy(field, model=model)
+    assert float(forward["core"]) > 0
+
+    def objective(scale):
+        scaled = dataclasses.replace(field, coefficients=scale * field.coefficients)
+        return gfem.electric_energy(scaled, model=model)["core"]
+
+    with pytest.raises(gfem.NonDifferentiableError, match='sweep="uniform"'):
+        jax.grad(objective)(1.0)
+
+
+def test_the_recorder_says_the_energy_error_is_not_estimated(line, monkeypatch):
+    from gfem import measurements
+
+    model, e = line
+    monkeypatch.setattr(measurements._objective, "recording", object)
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as raised:
+        gfem.electric_energy(e, model=model)
+    assert "cotangent" not in str(raised.value)
+    assert "not estimated" in str(raised.value)
+
+
+# --- the energy of a mode field ----------------------------------------------------
+
+GHZ = 1e9
+
+
+@pytest.fixture(scope="module")
+def layered_mesh(tmp_path_factory):
+    path = tmp_path_factory.mktemp("layered") / "layered.msh"
+    layers = (("low", 0.3), ("high", 0.7))
+    sm.write_msh22(path, sm.strip_line(10.0, 2.0, 1.0, (10, 1, 1), layers=layers))
+    return gfem.Mesh.from_gmsh(path, length_unit="mm")
+
+
+@pytest.mark.parametrize("cover", ["constant", "lorentz"])
+def test_the_energy_gradient_of_a_mode_field(layered_mesh, cover):
+    # with a lossless Lorentz cover the Brillouin weight moves with the mode's
+    # frequency, so the energy also differentiates through the mode's omega
+    if cover == "lorentz":
+        high = gfem.Material(
+            eps_r=gfem.PermittivityLaw(
+                eps_inf=2.0,
+                terms=[
+                    gfem.Lorentz(
+                        delta_eps=1.0, resonance_frequency=30 * GHZ, damping=0.0
+                    )
+                ],
+            )
+        )
+    else:
+        high = gfem.Material(eps_r=2.0)
+    options = gfem.SolverOptions(linear_solver="direct", eigen_tolerance=1e-12)
+    weights = {"low": 1.0, "high": 3.1}
+
+    def objective(eps):
+        model = gfem.Model(
+            layered_mesh,
+            materials={
+                "low": gfem.MaterialField(eps_r=eps, region="low"),
+                "high": high,
+            },
+            boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        )
+        modes = gfem.solve(model, gfem.Eigenmode(target=8 * GHZ), options=options)
+        energy = gfem.electric_energy(modes.e_field(0), model=model)
+        return 1e12 * sum(weights[r] * energy[r] for r in energy)
+
+    _check(objective, jnp.asarray(4.0), np.random.default_rng(8), n=1)

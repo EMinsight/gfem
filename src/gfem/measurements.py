@@ -767,7 +767,11 @@ def power_flow(
     The power comes from the residual of the discrete equations on the
     outside element layer, not from an integral of
     :math:`\frac{1}{2} \mathrm{Re}(E \times H^*)`, so
-    it is exact for the solved field (to the solver's residual) and the
+    it is exact for the solved field (to the solver's residual; with
+    ``"bddc_gmres"`` or ``"pmg_gmres"`` that is the true residual, not the
+    preconditioned one ``SolverOptions.tolerance`` bounds, and at low
+    frequency it divides by a small :math:`\omega`, see
+    `SolverOptions.tolerance`) and the
     same through every surface that encloses the same ports and losses.
     In lossy media it is the power entering ``side`` through its ports,
     minus what its elements and faces absorb (dielectric loss,
@@ -1015,8 +1019,7 @@ def dissipated_power(field: Field, *, model: Model) -> dict[str, jax.Array]:
             coefficients), or was not solved on ``model``; or a name is
             both a volume region and a sheet surface.
         NotImplementedError: A region has a complex ``mu_r`` (magnetic loss
-            is not heat in this version), the model holds a
-            metal-dielectric blend with a permittivity law, or the model is
+            is not heat in this version), or the model is
             2D (pose the driven solve on the slab of
             `gfem.Mesh.from_gmsh_cross_section`).
         gfem.MeshRefinementUnsupportedError: Called while an objective is
@@ -1059,11 +1062,10 @@ def check_heat_field(field: Any, model: Any, who: str) -> None:
             `gfem.Model`.
         ValueError: Not a driven electric field, or a name that is both a
             volume region and a sheet surface.
-        NotImplementedError: A 2D model, or a law blend.
+        NotImplementedError: A 2D model.
         gfem.MeshRefinementUnsupportedError: Under the refinement recorder.
         gfem.DistributedUnsupportedError: A field across ranks.
     """
-    from gfem._engine.dispersion import refuse_blends
     from gfem._engine.heat import sheet_surfaces
     from gfem._field import Field
     from gfem.model import Model
@@ -1082,7 +1084,6 @@ def check_heat_field(field: Any, model: Any, who: str) -> None:
             "this version: refine on the S-parameters or on gfem.power_flow "
             "instead.",
         )
-    refuse_blends(model, f"gfem.{who}")
     _check_time_harmonic(field, who, static="solve a gfem.Driven problem")
     if jnp.iscomplexobj(field.omega):
         raise ValueError(
@@ -1962,7 +1963,15 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
     The integral is exact for the solved field and the model's element-wise
     permittivity. A field of an adaptive sweep (`gfem.ReducedFields`) is
     exact at the solved frequencies and accurate to the sweep's tolerance in
-    between. Not differentiable in this version.
+    between.
+
+    Differentiable with respect to the field's coefficients, the
+    permittivity of a region without a law (a scalar, per element or per
+    axis), a permittivity law's parameters, a mode field's frequency and the
+    node coordinates. The loss tangent, conductivity and permeability are
+    not read: only the field carries them. The coefficients of an adaptive
+    sweep's field are read but have no gradient (solve with
+    ``sweep="uniform"`` at the frequency you differentiate).
 
     Args:
         field: A time-harmonic electric field (quantity ``"E"``, in H(curl),
@@ -1988,9 +1997,8 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
             (`MaterialField.interpolate` with a permittivity law), which is
             supported on the driven uniform sweep only.
         gfem.DistributedUnsupportedError: The field is a piece across ranks.
-        NonDifferentiableError: ``field`` or ``model`` is computed inside
-            `jax.grad`, `jax.jit` or `jax.vmap` from their arguments; call
-            `electric_energy` outside them.
+        NonDifferentiableError: The field's coefficients, formed from an
+            adaptive sweep, are differentiated.
     """
     from gfem._field import Field
     from gfem.model import Model
@@ -2011,26 +2019,20 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
     if _objective.recording() is not None:
         raise MeshRefinementUnsupportedError(
             "electric_energy",
-            "The objective reads gfem.electric_energy, which has no field "
-            "cotangent, so its error is not estimated. Read the energy of an "
-            "electrostatic result from result.energy.",
+            "The error of gfem.electric_energy is not estimated in this "
+            "version. Read the energy of an electrostatic result from "
+            "result.energy.",
         )
     refuse_blends(model, "electric_energy")
-    if is_traced(field) or is_traced(model):
-        raise NonDifferentiableError(
-            "gfem.electric_energy is not differentiable in this version: its "
-            "field and model must be fixed values, not computed inside jax.grad, "
-            "jax.jit or jax.vmap. Call it outside the function JAX transforms."
-        )
     _check_time_harmonic(
         field,
         "electric_energy",
         static="an electrostatic result has its energy per region in result.energy",
     )
-    engine = importlib.import_module("gfem._engine.energy")
+    energy = importlib.import_module("gfem._energy")
     return {
-        region: jnp.asarray(energy, dtype=float)
-        for region, energy in engine.electric_energy(field, model).items()
+        region: jnp.asarray(value, dtype=float)
+        for region, value in energy.electric_energy(field, model).items()
     }
 
 

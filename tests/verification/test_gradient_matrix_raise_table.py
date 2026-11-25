@@ -203,6 +203,17 @@ TABLE_LAW = gfem.PermittivityLaw(
         gfem.DjordjevicSarkar(delta_eps=1.1, low_frequency=1e3, high_frequency=1e12),
     ],
 )
+#: `TABLE_LAW` with the pole off the heat cases' frequency: the energy is
+#: undefined inside a pole's linewidth.
+ENERGY_LAW = dataclasses.replace(
+    TABLE_LAW,
+    terms=[
+        dataclasses.replace(t, resonance_frequency=30e9)
+        if isinstance(t, gfem.Lorentz)
+        else t
+        for t in TABLE_LAW.terms
+    ],
+)
 LAW_KINDS = [
     ("law", "core", "eps_inf"),
     *(
@@ -924,10 +935,24 @@ EXPECTED |= {
 # and is an exact zero for every other material property and the sheet
 # fill; the node coordinates raise (the forms have no shape terms), for
 # every output, since the solve itself is traced.
+#: The thermal boundary values of the thermal and DC cases (a fixed
+#: temperature, a convection's coefficient and ambient, a heat flux). Steady
+#: thermal reads them (the temperature reads all four, the rise only the
+#: coefficient); DC conduction does not read them (exact zeros); transient
+#: thermal reads them as steady does (the rises only the coefficient, the
+#: source-free temperature all four).
+THERMAL_VALUE_KINDS = [
+    ("boundary", 1, "temperature"),
+    ("boundary", 2, "coefficient"),
+    ("boundary", 2, "ambient"),
+    ("boundary", 3, "flux"),
+]
+_T_FIXED, _H, _T_AMBIENT, _FLUX = THERMAL_VALUE_KINDS
 THERMAL_KINDS = [
     ("nodes",),
     *(("material", "lower", p) for p in ALL_PROPERTIES),
     ("boundary", 0, "fill", "fill"),
+    *THERMAL_VALUE_KINDS,
 ]
 _K = ("material", "lower", "thermal_conductivity")
 _RHO_CP = (
@@ -939,9 +964,9 @@ SCALES = ("problem", "._scales")
 #: Per problem: each result leaf's inputs read (GRADIENT), the rest ZERO.
 THERMAL_READS = {
     "steady_thermal": {
-        "temperature.coefficients": {_K, AMOUNT},
+        "temperature.coefficients": {_K, AMOUNT, _T_FIXED, _H, _T_AMBIENT, _FLUX},
         "temperature.mesh.nodes": set(),
-        "rise.coefficients": {_K, AMOUNT},
+        "rise.coefficients": {_K, AMOUNT, _H},
         "rise.mesh.nodes": set(),
         "heat.coefficients": {AMOUNT},
         "heat.mesh.nodes": set(),
@@ -949,9 +974,9 @@ THERMAL_READS = {
     },
     "transient_thermal": {
         "time": set(),
-        "traces.upper": {_K, *_RHO_CP, AMOUNT, SCALES},
-        "_rises": {_K, *_RHO_CP, AMOUNT, SCALES},
-        "_source_free.coefficients": {_K},
+        "traces.upper": {_K, *_RHO_CP, AMOUNT, SCALES, _T_FIXED, _H, _T_AMBIENT, _FLUX},
+        "_rises": {_K, *_RHO_CP, AMOUNT, SCALES, _H},
+        "_source_free.coefficients": {_K, _T_FIXED, _H, _T_AMBIENT, _FLUX},
         "_source_free.mesh.nodes": set(),
         "power": {AMOUNT},
     },
@@ -969,7 +994,11 @@ _PROBLEM_KINDS = {
 }
 EXPECTED |= {
     (name, out, kind): (
-        RAISES if kind == ("nodes",) else GRADIENT if kind in reads else ZERO
+        RAISES
+        if kind == ("nodes",) and not name.startswith("electric_energy")
+        else GRADIENT
+        if kind in reads or kind == ("nodes",)
+        else ZERO
     )
     for name, leaves in THERMAL_READS.items()
     for out, reads in leaves.items()
@@ -1081,6 +1110,7 @@ HEAT_KINDS = [
     *(("material", "lower", p) for p in ALL_PROPERTIES),
     *(("boundary", 2, v) for v in ("resistance", "inductance", "capacitance")),
     ("boundary", 2, "fill", "fill"),
+    ("boundary", 3, "temperature"),
 ]
 #: The drive's leaves: the incident powers and p2's phase.
 DRIVE_KINDS = [
@@ -1088,19 +1118,31 @@ DRIVE_KINDS = [
     ("drive", "power", "p2"),
     ("drive", "phase", "p2"),
 ]
+#: The heat sink's fixed temperature: only the temperature reads it (the
+#: electromagnetic solve and the rise do not).
+_SINK = HEAT_KINDS[-1]
 _EM_READS = {
     *(("material", "lower", p) for p in EM_PROPERTIES),
-    *HEAT_KINDS[-4:],
+    *HEAT_KINDS[-5:-1],
 }
 _HEATING_READS = _EM_READS | set(DRIVE_KINDS)
 #: ``dissipated_power_law``: the upper half a permittivity law (`TABLE_LAW`).
 HEAT_LAW_KINDS = [("law", "upper", *k[2:]) for k in LAW_KINDS]
 _LAW_READS = _EM_READS | set(HEAT_LAW_KINDS)
+#: ``dissipated_power_blend``: the upper half an index blend of a constant end
+#: and `TABLE_LAW`; its density moves the loss.
+HEAT_BLEND_KINDS = [("material", "upper", p) for p in ("mu_r", "conductivity", "blend")]
+_BLEND_READS = _EM_READS | set(HEAT_BLEND_KINDS)
 HEAT_READS = {
     "dissipated_power": {"lower": _EM_READS, "upper": set(), "sheet": _EM_READS},
     "dissipated_power_law": dict.fromkeys(("lower", "upper", "sheet"), _LAW_READS),
+    "dissipated_power_blend": dict.fromkeys(("lower", "upper", "sheet"), _BLEND_READS),
+    # the energy of every region reads the solve's inputs through the field
+    # and its own permittivity (a law's weight in JAX), and has node terms
+    "electric_energy": dict.fromkeys(("lower", "upper"), _EM_READS),
+    "electric_energy_law": dict.fromkeys(("lower", "upper"), _LAW_READS),
     "electromagnetic_heating": {
-        "temperature.coefficients": _HEATING_READS | {_K},
+        "temperature.coefficients": _HEATING_READS | {_K, _SINK},
         "temperature.mesh.nodes": set(),
         "rise.coefficients": _HEATING_READS | {_K},
         "rise.mesh.nodes": set(),
@@ -1112,14 +1154,23 @@ HEAT_READS = {
 }
 EXPECTED |= {
     (name, out, kind): (
-        RAISES if kind == ("nodes",) else GRADIENT if kind in reads else ZERO
+        RAISES
+        if kind == ("nodes",) and not name.startswith("electric_energy")
+        else GRADIENT
+        if kind in reads or kind == ("nodes",)
+        else ZERO
     )
     for name, leaves in HEAT_READS.items()
     for out, reads in leaves.items()
     for kind in [
         *HEAT_KINDS,
         *(DRIVE_KINDS if name == "electromagnetic_heating" else ()),
-        *(HEAT_LAW_KINDS if name == "dissipated_power_law" else ()),
+        *(
+            HEAT_LAW_KINDS
+            if name in ("dissipated_power_law", "electric_energy_law")
+            else ()
+        ),
+        *(HEAT_BLEND_KINDS if name == "dissipated_power_blend" else ()),
     ]
 }
 
@@ -1586,9 +1637,9 @@ def thermal_problem_cases(sheet_mesh):
     """The steady, transient and DC conduction problems on the sheet line.
 
     Every material property on the lower half (conducting, the heat source
-    there), a sheet fill between the halves, a fixed temperature and a
+    there), a sheet fill between the halves, a fixed temperature, a
     convection with another ambient (so the source-free temperature is not
-    uniform: its own adjoint pair enters).
+    uniform: its own adjoint pair enters) and a heat flux through an end.
     """
     mesh = sheet_mesh
     fill = gfem.SheetField(fill=np.linspace(0.2, 0.9, len(mesh.elements("sheet"))))
@@ -1602,6 +1653,7 @@ def thermal_problem_cases(sheet_mesh):
             gfem.Conductor("sheet", 100.0, 1e-6, fill=fill),
             gfem.FixedTemperature("plate1", temperature=300.0),
             gfem.Convection("plate2", coefficient=1e3, ambient=290.0),
+            gfem.HeatFlux("port1", flux=50.0),
         ],
     )
     heat = gfem.HeatSource.uniform("lower", power=1e-3)
@@ -1844,9 +1896,30 @@ def heat_cases(sheet_mesh):
     law = model.with_material(
         "upper", gfem.Material(eps_r=TABLE_LAW, thermal_conductivity=1.0)
     )
+    n_upper = len(sheet_mesh.elements("upper"))
+    blend = model.with_material(
+        "upper",
+        gfem.MaterialField.interpolate(
+            jnp.linspace(0.3, 0.7, n_upper),
+            gfem.Material(eps_r=2.0),
+            gfem.Material(eps_r=TABLE_LAW),
+            scheme="index",
+        ),
+    )
+
+    def stored(model, _drive):
+        field = gfem.solve(model, problem).e_field(HEAT_FREQUENCY, "p1")
+        return gfem.electric_energy(field, model=model)
+
+    energy_law = model.with_material(
+        "upper", gfem.Material(eps_r=ENERGY_LAW, thermal_conductivity=1.0)
+    )
     return {
+        "electric_energy": (model, stored),
+        "electric_energy_law": (energy_law, stored),
         "dissipated_power": (model, lost),
         "dissipated_power_law": (law, lost),
+        "dissipated_power_blend": (blend, lost),
         "electromagnetic_heating": (model, heated),
     }
 
@@ -2661,16 +2734,21 @@ def _out_probe_in_the_node_coordinates(request):
     jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
 
 
-def _out_electric_energy_of_a_traced_field(request):
-    # forward only: the measurement takes fixed fields and models
-    model = request.getfixturevalue("driven_model")
-    problem = gfem.Driven(frequency=5e9, keep_fields=True)
-    eps = model.materials["dielectric"].eps_r
+def _out_electric_energy_of_a_reduced_field(request):
+    # an adaptive sweep's basis holds no adjoint of the energy
+    model = request.getfixturevalue("wave_model")
+    problem = gfem.Driven(
+        frequency=(18e9, 20e9, 22e9),
+        sweep="adaptive",
+        samples=(18e9, 22e9),
+        keep_fields=20e9,
+    )
+    eps = model.materials["core"].eps_r
 
     def objective(e):
-        m = model.with_material("dielectric", gfem.MaterialField(eps_r=e))
-        field = gfem.solve(m, problem).e_field(5e9, "p1")
-        return gfem.electric_energy(field, model=m)["dielectric"]
+        m = model.with_material("core", gfem.MaterialField(eps_r=e))
+        field = gfem.solve(m, problem).e_field(20e9, "p1")
+        return gfem.electric_energy(field, model=m)["core"]
 
     jax.make_jaxpr(jax.grad(objective))(eps)
 
@@ -3424,13 +3502,6 @@ def _out_route_phase_by_the_window_nodes(request):
     jax.make_jaxpr(jax.grad(objective))(jnp.asarray(mesh.nodes))
 
 
-def _out_traced_boundary(build):
-    def call(_request):
-        jax.make_jaxpr(jax.grad(lambda x: build(x).value))(300.0)
-
-    return call
-
-
 def _transient(**overrides):
     kwargs = {"duration": 1e-6, "steps": 4} | overrides
     return gfem.TransientThermal(**kwargs)
@@ -3674,10 +3745,10 @@ OUT_OF_SCOPE = [
         r"mesh node coordinates.*stop_gradient",
     ),
     (
-        "electric energy of a field",
-        _out_electric_energy_of_a_traced_field,
+        "electric energy of an adaptive sweep's field",
+        _out_electric_energy_of_a_reduced_field,
         gfem.NonDifferentiableError,
-        r"gfem\.electric_energy is not differentiable",
+        r"adaptive sweep.*frozen reduced basis.*sweep=\"uniform\"",
     ),
     (
         "cross_sections x design in the truncation layer",
@@ -3932,29 +4003,6 @@ OUT_OF_SCOPE = [
         _out_periodic_eigenmode_by_a_law_parameter,
         gfem.NonDifferentiableError,
         r"eps_r\.eps_inf.*periodic eigenmode",
-    ),
-    *(
-        (
-            f"thermal boundary {what}",
-            _out_traced_boundary(build),
-            gfem.NonDifferentiableError,
-            rf"{what}\b.*fixed value",
-        )
-        for what, build in (
-            (
-                "FixedTemperature.temperature",
-                lambda x: gfem.FixedTemperature("bottom", temperature=x),
-            ),
-            (
-                "Convection.coefficient",
-                lambda x: gfem.Convection("top", coefficient=x, ambient=290.0),
-            ),
-            (
-                "Convection.ambient",
-                lambda x: gfem.Convection("top", coefficient=10.0, ambient=x),
-            ),
-            ("HeatFlux.flux", lambda x: gfem.HeatFlux("top", flux=x)),
-        )
     ),
     (
         "TransientThermal duration",

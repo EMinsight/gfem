@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import jax.numpy as jnp
@@ -67,6 +66,7 @@ from gfem.mesh import Mesh
 
 if TYPE_CHECKING:
     from gfem._background import Background
+    from gfem._engine.sides import SideSpec
     from gfem._field import Field
     from gfem.model import Model
 
@@ -263,7 +263,7 @@ def _sum(
 def exterior_layer(
     field: Field,
     model: Model,
-    side: tuple[str, ...] | Callable[[np.ndarray], np.ndarray] | None,
+    side: SideSpec | None,
     background: Background,
     *,
     nodes: np.ndarray,

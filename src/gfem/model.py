@@ -532,7 +532,10 @@ class Model:
         self._check_fixed_temperatures()
 
     def _check_fixed_temperatures(self) -> None:
-        """Two `FixedTemperature` surfaces with different values share no node."""
+        """Two `FixedTemperature` surfaces with different values share no node.
+
+        A traced value is compared on the host, on every thermal forward.
+        """
         fixed = [b for b in self.boundaries if isinstance(b, FixedTemperature)]
         mesh = self.mesh
         nodes = {
@@ -541,6 +544,8 @@ class Model:
         }
         for i, b in enumerate(fixed):
             for a in fixed[:i]:
+                if is_traced((a.temperature, b.temperature)):
+                    continue
                 if a.temperature == b.temperature:
                     continue
                 shared = np.intersect1d(nodes[a.surface], nodes[b.surface]).size

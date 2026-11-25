@@ -162,7 +162,7 @@ import ngsolve as ngs
 import numpy as np
 
 from gfem import _mpi
-from gfem._boundaries import Conductor, Impedance
+from gfem._boundaries import THERMAL_VALUES, Conductor, Impedance
 from gfem._engine import quadrature
 from gfem._engine.cache import discretization
 from gfem._engine.coefficients import element_axes, facet_space, per_axis_elements
@@ -603,6 +603,11 @@ def is_lumped(kind: tuple) -> bool:
     return len(kind) == 3 and kind[2] in _LUMPED.get(kind[0], ())
 
 
+def is_thermal_value(kind: tuple) -> bool:
+    """Whether input ``kind`` is a thermal boundary value (a temperature, an h...)."""
+    return kind[0] == "boundary" and len(kind) == 3 and kind[2] in THERMAL_VALUES
+
+
 def law_key(name: str, parameter: tuple) -> str:
     """The weight key of dθ/dp of piece ``name`` by a law parameter.
 
@@ -623,6 +628,13 @@ def unsupported(form: str, kind: tuple) -> str | None:  # noqa: PLR0911
             return (
                 None if read else f"the {form} forms of this version do not read {what}"
             )
+    if is_thermal_value(kind):
+        if form in LOAD_FORMS:
+            return None
+        return (
+            "gradients with respect to thermal boundary values are not available "
+            f"for {form} results in this version of gfem"
+        )
     if kind[0] == "material":
         if kind[2] in PROPERTIES.get(form, frozenset()):
             return None

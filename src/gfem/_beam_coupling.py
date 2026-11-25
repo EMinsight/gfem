@@ -29,11 +29,19 @@ import jax.numpy as jnp
 import numpy as np
 
 from gfem._adjoint.measure import measure
-from gfem._adjoint.solve_vjp import input_kind
 from gfem._checks import is_traced
 from gfem._dim2 import refuse_entry
-from gfem._far_field import field_role
-from gfem._power_flow import _Role, concrete_field, side_names
+from gfem._field_kernels import (
+    Role,
+    RoleKernel,
+    engine,
+    field_inputs,
+    field_role,
+    model_inputs,
+    rebuild,
+    reduced_reason,
+)
+from gfem._power_flow import concrete_field, side_names
 from gfem._sources import INCIDENT, GaussianBeam, IncidentField
 from gfem.errors import NonDifferentiableError
 from gfem.mesh import Mesh
@@ -46,7 +54,6 @@ if TYPE_CHECKING:
 
 __all__ = ["beam_coupling"]
 
-_FIELD_INPUTS = {"coefficients": "coefficients", "mesh": "nodes", "omega": "omega"}
 #: A `gfem.GaussianBeam` seen with less power than this through the side is
 #: clipped by it: part of the beam misses the layer.
 CLIPPED = 0.999
@@ -62,11 +69,6 @@ LAYER_REASON = (
     "the side, which must be a constant material: move the design one element "
     "away from the side's surface, or wrap the material in jax.lax.stop_gradient"
 )
-
-
-def engine() -> Any:
-    """The NGSolve beam-coupling module, imported on first use."""
-    return importlib.import_module("gfem._engine.beam_coupling")
 
 
 def beam_coupling(
@@ -214,12 +216,12 @@ def beam_coupling(
     for field, frequency in zip(fields, frequencies, strict=True):
         concrete = concrete_field(field)
         nodes = np.asarray(concrete.mesh.nodes)
-        layer = engine().coupling_layer(
+        layer = engine("beam_coupling").coupling_layer(
             concrete, model, names, beam, frequency, nodes=nodes, incident=incident
         )
         reference = None
         if isinstance(beam, IncidentField):
-            reference = engine().frozen_reference(
+            reference = engine("beam_coupling").frozen_reference(
                 concrete,
                 model,
                 layer=layer,
@@ -227,9 +229,9 @@ def beam_coupling(
                 frequency=frequency,
                 order=field.order,
             )
-        kernel = _kernel(field, model, layer, beam, reference)
+        kernel, inputs = _kernel(field, model, layer, beam, reference)
         _check_power(kernel, layer, nodes, frequency, beam)
-        out.append(_measure(kernel, field, model))
+        out.append(measure(kernel, inputs)["coupling"])
     return jnp.stack(out)
 
 
@@ -291,22 +293,28 @@ def _kernel(
     layer: CouplingLayer,
     beam: GaussianBeam | IncidentField,
     reference: tuple[np.ndarray, np.ndarray] | None,
-) -> _CouplingKernel:
-    f_paths, f_def = jax.tree_util.tree_flatten_with_path(field)
-    m_paths, m_def = jax.tree_util.tree_flatten_with_path(model)
-    roles: dict[str, _Role] = {}
-    names: list[str] = []
-    for path, _ in f_paths:
-        key = _FIELD_INPUTS[path[0].name]
-        roles[key] = field_role(key, field)
-    for path, _ in m_paths:
-        key = "model" + jax.tree_util.keystr(tuple(path))
-        names.append(key)
-        roles[key] = _model_role(input_kind(path, "model"), model, layer)
-    return _CouplingKernel(
+) -> tuple[_CouplingKernel, dict[str, Any]]:
+    """The kernel of one field and its named inputs."""
+    inputs: dict[str, Any] = {}
+    roles: dict[str, Role] = {}
+    field_def = field_inputs(
+        field,
+        inputs,
+        roles,
+        lambda name: field_role(
+            name,
+            field,
+            reduced=reduced_reason("far field"),
+            nodes=None,
+        ),
+    )
+    model_def, _ = model_inputs(
+        model, inputs, roles, lambda kind: _model_role(kind, model, layer)
+    )
+    kernel = _CouplingKernel(
         roles=roles,
-        field_def=(f_def, tuple(_FIELD_INPUTS[p[0].name] for p, _ in f_paths)),
-        model_def=(m_def, tuple(names)),
+        field_def=field_def,
+        model_def=model_def,
         topology=field.mesh._topology,  # noqa: SLF001
         layer=layer,
         beam=beam,
@@ -316,38 +324,29 @@ def _kernel(
         model=model,
         comm=field._communicator,  # noqa: SLF001
     )
+    return kernel, inputs
 
 
-def _measure(kernel: _CouplingKernel, field: Field, model: Model) -> jax.Array:
-    """The coupling of one field."""
-    inputs: dict[str, Any] = {}
-    for path, leaf in jax.tree_util.tree_flatten_with_path(field)[0]:
-        inputs[_FIELD_INPUTS[path[0].name]] = leaf
-    for path, leaf in jax.tree_util.tree_flatten_with_path(model)[0]:
-        inputs["model" + jax.tree_util.keystr(tuple(path))] = leaf
-    return measure(kernel, inputs)["coupling"]
-
-
-def _model_role(kind: tuple[Any, ...], model: Model, layer: CouplingLayer) -> _Role:
+def _model_role(kind: tuple[Any, ...], model: Model, layer: CouplingLayer) -> Role:
     """The role of a model leaf, by its `input_kind`."""
     if kind[0] == "nodes":
-        return _Role("read", None, "the mesh node coordinates (model.mesh.nodes)")
+        return Role("read", None, "the mesh node coordinates (model.mesh.nodes)")
     if kind[0] == "material":
         region = kind[1]
         described = f"model.materials[{region!r}].{kind[2]}"
         mesh = model.mesh
         if np.isin(mesh.elements(region), layer.tetrahedra).any():
-            return _Role(
+            return Role(
                 "read",
                 f"region {region!r} has elements in the element layer just "
                 f"outside the side; {LAYER_REASON}",
                 described,
             )
-        return _Role("unread", None, described)
-    return _Role("unread", None, "model." + ".".join(str(k) for k in kind))
+        return Role("unread", None, described)
+    return Role("unread", None, "model." + ".".join(str(k) for k in kind))
 
 
-class _CouplingKernel:
+class _CouplingKernel(RoleKernel):
     """The coupling of one field into one beam through one layer.
 
     Under ranks (``comm``) a collective host call: the coefficients are a
@@ -365,7 +364,7 @@ class _CouplingKernel:
     def __init__(
         self,
         *,
-        roles: dict[str, _Role],
+        roles: dict[str, Role],
         field_def: tuple[Any, tuple[str, ...]],
         model_def: tuple[Any, tuple[str, ...]],
         topology: Any,
@@ -389,23 +388,7 @@ class _CouplingKernel:
         self.imported = imported
         self.model = model
 
-    def role(self, name: str) -> str:
-        return self.roles[name].role
-
-    def unsupported(self, name: str) -> str | None:
-        return self.roles[name].unsupported
-
-    def describe(self, name: str) -> str:
-        return self.roles[name].description
-
     # --- host -------------------------------------------------------------------
-
-    def _unflatten(self, values: dict[str, np.ndarray]) -> tuple[Field, Model]:
-        f_def, f_names = self.field_def
-        m_def, m_names = self.model_def
-        field = jax.tree.unflatten(f_def, [values[n] for n in f_names])
-        model = jax.tree.unflatten(m_def, [values[n] for n in m_names])
-        return field, model
 
     def _probe(self, nodes: np.ndarray, field: Field) -> Any:
         from gfem._engine import far_field as ff
@@ -418,7 +401,7 @@ class _CouplingKernel:
         return probe.probe(mesh, layout(field), located, self.comm)
 
     def _test(self, omega: float) -> Callable[[Any, Any], tuple[Any, Any]]:
-        bc = engine()
+        bc = engine("beam_coupling")
         if self.reference is not None:
             return bc.frozen_test(*self.reference)
         return bc.gaussian_test(self.beam, self.layer, omega / (2 * math.pi))
@@ -429,7 +412,7 @@ class _CouplingKernel:
         """``(c(corners, E, curl E), corners at the nodes)``."""
         from gfem._engine import far_field as ff
 
-        bc = engine()
+        bc = engine("beam_coupling")
         tets = np.asarray(Mesh(nodes, self.topology).tetrahedra)[self.layer.tetrahedra]
         corners0 = np.asarray(nodes, float)[tets]
         chi = self.layer.chi[tets]
@@ -450,7 +433,7 @@ class _CouplingKernel:
         """The beam's power through the side's layer, W."""
         from gfem._engine import far_field as ff
 
-        bc = engine()
+        bc = engine("beam_coupling")
         tets = np.asarray(Mesh(nodes, self.topology).tetrahedra)[self.layer.tetrahedra]
         corners = jnp.asarray(np.asarray(nodes, float)[tets])
         bary, weights = ff.rule(self.order)
@@ -469,7 +452,7 @@ class _CouplingKernel:
     def _check_frozen(self, nodes: np.ndarray) -> None:
         if self.reference is None:
             return
-        n, d = engine().moved_layer(self.layer, self.model, nodes)
+        n, d = engine("beam_coupling").moved_layer(self.layer, self.model, nodes)
         if n:
             raise ValueError(
                 f"beam_coupling reads the IncidentField {self.beam.name!r} as "
@@ -483,7 +466,10 @@ class _CouplingKernel:
     def _values(
         self, values: dict[str, np.ndarray]
     ) -> tuple[Field, np.ndarray, float, np.ndarray]:
-        field, model = self._unflatten(values)
+        field, model = (
+            rebuild(self.field_def, values),
+            rebuild(self.model_def, values),
+        )
         pf = importlib.import_module("gfem._engine.power_flow")
         pf.check_nodes(field, model)
         nodes = np.asarray(values["nodes"], float)

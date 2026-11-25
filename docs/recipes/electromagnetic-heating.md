@@ -326,9 +326,6 @@ The full table is on {doc}`../capabilities`.
 
 - **Magnetic loss** is not heat in this version: a region with a complex
   `mu_r` raises `NotImplementedError`, naming it.
-- **Metal-dielectric blends with a permittivity law**, such as gold
-  interpolated with a dielectric by a design density, raise: give the design
-  plain materials.
 - **Eigenmodes** have no drive: an eigenmode result raises `TypeError`.
 - **A port mode** is a line, not a device: a port mode result raises. For the
   loss of a line per length, use

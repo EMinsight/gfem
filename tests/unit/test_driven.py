@@ -30,7 +30,7 @@ from gfem._engine.cache import ENTRIES
 from gfem._engine.driven import DrivenRule
 from gfem._engine.solve_request import SolveRequest
 from gfem._engine.system_operator import SystemOperator
-from gfem._linalg import KRYLOV_KINDS, bddc, pardiso, prepare
+from gfem._linalg import KRYLOV_KINDS, bddc, krylov_handle, pardiso, prepare
 from gfem._linalg.base import PlannedHandle, same_pattern
 from gfem._linalg.direct import DirectHandle
 from gfem._linalg.krylov_handle import KrylovHandle
@@ -372,6 +372,26 @@ def test_the_iterative_tolerance_is_the_preconditioned_residual(
     np.testing.assert_allclose(s, direct, rtol=0, atol=10 * tolerance)
 
 
+@pytest.mark.parametrize("linear_solver", KRYLOV_KINDS)
+def test_a_tighter_tolerance_recovers_b_and_power_flow_at_low_frequency(
+    line, linear_solver
+):
+    # at 500 kHz B and the residual-based power flow divide by omega and lose
+    # more digits than S at the stop; a tighter tolerance brings both back to
+    # the gauged direct solve's (the default's drift is not pinned here)
+    problem = gfem.Driven(frequency=5e5, keep_fields=True)
+
+    def read(**options):
+        field = _s(line, problem, **options).e_fields[0]
+        power = gfem.power_flow(field, lambda c: c[:, 0] < 5e-3, model=line)
+        return float(power), np.asarray(field.b().coefficients)
+
+    power, b = read(gauge="auto")
+    power_it, b_it = read(linear_solver=linear_solver, tolerance=1e-10)
+    assert abs(power_it - power) < 1e-6
+    assert np.linalg.norm(b_it - b) <= 1e-5 * np.linalg.norm(b)
+
+
 def _count_prepares(monkeypatch) -> list[int]:
     """Spy on the driven sweep's `prepare`: one entry per base handle."""
     calls = []
@@ -483,6 +503,9 @@ def test_a_reused_bddc_preconditioner_solves_as_accurately_as_fresh_setups(
 
 
 def test_a_reused_solve_at_its_cap_rebuilds_and_converges(line, monkeypatch):
+    # under an octave a step on this short line never caps, so the rule that
+    # sets up before an octave step is off here to reach the cap
+    monkeypatch.setattr(krylov_handle, "OCTAVE", math.inf)
     # 1.5 GHz sets the reference; 30 GHz would take ~90 iterations per port
     problem = gfem.Driven(frequency=(1e9, 1.5e9, 30e9))
     direct = np.asarray(_s(line, problem).s.values)
@@ -493,7 +516,8 @@ def test_a_reused_solve_at_its_cap_rebuilds_and_converges(line, monkeypatch):
     np.testing.assert_allclose(s, direct, rtol=0, atol=1e-5)
 
 
-def test_a_bddc_sweep_rebuilds_at_the_same_iterations_every_run(line):
+def test_a_bddc_sweep_rebuilds_at_the_same_iterations_every_run(line, monkeypatch):
+    monkeypatch.setattr(krylov_handle, "OCTAVE", math.inf)  # reach the cap
     # the rebuild rule counts iterations, never times: runs repeat exactly
     # (each from no kept state: the second would start from the first's
     # solution)
@@ -624,6 +648,27 @@ def _bddc_forward(model, problem):
     return outputs
 
 
+def test_a_bddc_sweep_sets_up_before_a_step_an_octave_away(line, monkeypatch):
+    # 2.5x the setup's frequency: set up before the solve, so the step costs
+    # what a fresh solve there does, not a capped stale one plus a setup
+    problem = gfem.Driven(frequency=(1e9, 2.5e9))
+    builds = count_preconditioners(monkeypatch)
+    gfem.release_memory()
+    out = _bddc_forward(line, problem)
+    assert len(builds) == 2
+    monkeypatch.undo()
+    gfem.release_memory()
+    cold = max(_bddc_forward(line, gfem.Driven(frequency=2.5e9))["iterations"][0])
+    assert max(out["iterations"][1]) <= cold + bddc._slack(2)
+
+
+def test_a_three_frequency_sweep_within_one_percent_sets_up_once(line, monkeypatch):
+    problem = gfem.Driven(frequency=(10e9, 10.05e9, 10.1e9))
+    builds = count_preconditioners(monkeypatch)
+    _bddc_forward(line, problem)
+    assert len(builds) == 1
+
+
 @pytest.mark.parametrize("model", ["line", "fine_line"])
 def test_a_bddc_sweep_caps_the_first_warm_solve_after_a_large_jump(
     model, request, monkeypatch
@@ -632,6 +677,7 @@ def test_a_bddc_sweep_caps_the_first_warm_solve_after_a_large_jump(
     # GMRES iterations on the fine line: 60 GHz stops at n_ref + 2 delta, sets
     # BDDC up, and goes on from the partial iterate
     model = request.getfixturevalue(model)
+    monkeypatch.setattr(krylov_handle, "OCTAVE", math.inf)  # an octave sets up first
     problem = gfem.Driven(frequency=(1e9, 60e9))
     direct = np.asarray(_s(model, problem).s.values)
     builds = count_preconditioners(monkeypatch)

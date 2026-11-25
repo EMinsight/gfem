@@ -622,6 +622,10 @@ def _heat_cells() -> list[Cell]:
     ]
     cells.append(Cell("dissipated_power", "conductivity", "bddc_gmres"))
     cells += [
+        Cell("dissipated_power", "blend", "direct", variant=scheme)
+        for scheme in ("index", "linear")
+    ]
+    cells += [
         Cell("electromagnetic_heating", name, "direct")
         for name in ("eps_r", "conductivity", "lumped", "drive", "thermal_conductivity")
     ]
@@ -646,6 +650,32 @@ def _heat_cells() -> list[Cell]:
                 for w in ("amount", "waveform")
             ]
     return cells
+
+
+def _energy_cells() -> list[Cell]:
+    """The electric energy per region of a field, on ``direct``.
+
+    ``electric_energy``: the driven line's energy in the permittivity (and its
+    principal values), the conductivity, the loss tangent, a sheet's fill, the
+    node coordinates of its interface and the parameters of a permittivity law
+    (whose Brillouin weight is in JAX). ``electric_energy_eigenmode``: the
+    energy of mode 0's field on fixture J in the sub layer's permittivity,
+    plain and beside the cover's lossy Lorentz law (the weight moves with the
+    mode's frequency). ``electric_energy_periodic``: the energy of the
+    periodic cell G's field in its permittivity.
+    """
+    key = "electric_energy"
+    return [
+        *(
+            Cell(key, name, "direct")
+            for name in ("eps_r", "eps_r_axes", "conductivity", "tan_delta", "nodes")
+        ),
+        Cell(key, "law", "direct", variant="poles"),
+        *(Cell(key, "fill", "direct", variant=s) for s in ("conductor", "impedance")),
+        Cell("electric_energy_eigenmode", "eps_r", "direct", variant="probe"),
+        Cell("electric_energy_eigenmode", "eps_r", "direct", variant="lorentz"),
+        Cell("electric_energy_periodic", "eps_r", "direct", "uniform"),
+    ]
 
 
 def _source_cells() -> list[Cell]:
@@ -703,6 +733,7 @@ CELLS = [
     *_electrostatic_law_cells(),
     *_thermal_cells(),
     *_heat_cells(),
+    *_energy_cells(),
 ]
 #: The PETSc stack's cells, one per path its solves take: electrostatic,
 #: driven on both sweeps, the adjoint through a wave port operator's
@@ -2949,11 +2980,16 @@ def _with_thermal(model: gfem.Model, sink: str, k=None) -> gfem.Model:
     )
 
 
-def _loss(model: gfem.Model, result, frequencies) -> jax.Array:
-    """The weighted dissipated power of p1's fields at ``frequencies``."""
+def _loss(model: gfem.Model, result, frequencies, measure=None) -> jax.Array:
+    """The weighted dissipated power (or ``measure``) of p1's fields.
+
+    ``measure(field, model=model)``: a per-region measurement, the dissipated
+    power by default.
+    """
+    measure = gfem.dissipated_power if measure is None else measure
     total = 0.0
     for i, f in enumerate(frequencies):
-        lost = gfem.dissipated_power(result.e_field(f, "p1"), model=model)
+        lost = measure(result.e_field(f, "p1"), model=model)
         total = total + (1 + 0.3 * i) * sum(
             LOSS_WEIGHTS.get(name, 0.9) * value for name, value in lost.items()
         )
@@ -2982,13 +3018,25 @@ def _heated_rise(model: gfem.Model, result, frequency, drive=None) -> jax.Array:
 HEAT_THERMAL = gfem.SolverOptions(order=2, linear_solver="direct")
 
 
+#: The per-region measurements of the loss cells, by problem key. The energy
+#: is in pJ-scale joules: ``ENERGY_SCALE`` makes its objective O(1).
+ENERGY_SCALE = 1e12
+LOSSES = {
+    "dissipated_power": gfem.dissipated_power,
+    "electric_energy": lambda field, model: {
+        k: ENERGY_SCALE * v for k, v in gfem.electric_energy(field, model=model).items()
+    },
+}
+
+
 def _heat_value(
     cell: Cell, model: gfem.Model, options, frequencies, kind, *, drive=None
 ):
     """The cell's heat objective of a model: its loss, or its heated rise."""
-    if cell.problem == "dissipated_power":
+    if cell.problem in LOSSES:
         problem = gfem.Driven(frequency=frequencies, excite="p1", keep_fields=True)
-        return _loss(model, gfem.solve(model, problem, options=options), frequencies)
+        result = gfem.solve(model, problem, options=options)
+        return _loss(model, result, frequencies, LOSSES[cell.problem])
     sink = "bottom" if kind == "line" else "plate1"
     excite = None if drive is not None else "p1"
     f = HEAT_FREQUENCY[kind]
@@ -3097,6 +3145,115 @@ def _heat_law(d: Designs, _cell: Cell, options, seed: int) -> Case:
         return _loss(model, gfem.solve(model, problem, options=options), frequencies)
 
     return _law_case(objective, law, seed)
+
+
+def _energy_law(d: Designs, _cell: Cell, options, seed: int) -> Case:
+    """The strip line's energy per region in its core's law parameters (``poles``)."""
+    mesh, law = d.dispersive, LAWS["poles"]
+    frequencies = LAW_FREQUENCIES["poles"]
+    problem = gfem.Driven(frequency=frequencies, excite="p1", keep_fields=True)
+
+    def objective(t):
+        model = dispersive_line(mesh, scaled_law(law, t))
+        result = gfem.solve(model, problem, options=options)
+        return _loss(model, result, frequencies, LOSSES["electric_energy"])
+
+    return _law_case(objective, law, seed)
+
+
+def _energy_nodes(d: Designs, _cell: Cell, options, seed: int) -> Case:
+    """The shape line's energy per region; its interface moves (as `_driven_nodes`).
+
+    The field and the model move together: the energy is defined where their
+    meshes are one.
+    """
+    line = d.shape_line
+    n, moved = interface_move(line)
+    problem = gfem.Driven(frequency=SHAPE_FREQUENCIES, excite="p1", keep_fields=True)
+
+    def objective(t):
+        model = line.replace(mesh=moved(t))
+        result = gfem.solve(model, problem, options=options)
+        return _loss(model, result, SHAPE_FREQUENCIES, LOSSES["electric_energy"])
+
+    return Case(
+        objective,
+        jnp.zeros(n),
+        np.random.default_rng(seed),
+        step=STEPS["nodes"],
+        taylor=2e-4,
+        taylor_ratio=2.0,
+        taylor_at=jnp.full(n, 1e-5),
+    )
+
+
+def _energy_eigen(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """The energy per region of mode 0's field on fixture J, in the sub layer's eps_r.
+
+    Plain (variant ``probe``), or beside the cover's lossy Lorentz law
+    (``lorentz``): the Brillouin weight then moves with the mode's frequency.
+    """
+    mesh = d.junction
+    values = junction_values(mesh)
+    problem = gfem.Eigenmode(target=JUNCTION_TARGET)
+
+    def objective(p):
+        if cell.variant == "lorentz":
+            model = junction_law_line(mesh, p)
+        else:
+            moved = {r: dict(v) for r, v in values.items()}
+            moved["sub"]["eps_r"] = p
+            model = junction_line(mesh, "resistive", moved)
+        result = gfem.solve(model, problem, options=options)
+        energy = gfem.electric_energy(result.e_fields[0], model=model)
+        return ENERGY_SCALE * sum(
+            LOSS_WEIGHTS.get(name, 0.9) * value for name, value in energy.items()
+        )
+
+    return Case(
+        objective,
+        values["sub"]["eps_r"],
+        np.random.default_rng(seed),
+        step=STEPS["eps_r"],
+        taylor=1e-1,
+    )
+
+
+def _energy_periodic(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """The energy per region of G's p1 field in the per-element eps_r of its floor."""
+    mesh = d.periodic
+    rng = np.random.default_rng(10 + seed)
+    n = len(mesh.elements("core")) + len(mesh.elements("sub"))
+    eps = jnp.asarray(rng.uniform(2.0, 6.0, n) * (1 - 0.02j))
+    problem, _ = _periodic_sweep(dataclasses.replace(cell, variant="field"))
+
+    def objective(p):
+        model = pc.g(mesh, eps_r=p)
+        result = gfem.solve(model, problem, options=options)
+        return _loss(model, result, [pc.G_FREQUENCIES[1]], LOSSES["electric_energy"])
+
+    return Case(objective, eps, rng, step=STEPS["eps_r"], taylor=3e-1)
+
+
+def _heat_blend(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """The strip line's core loss in its blend's density (the scheme the variant)."""
+    mesh = d.dispersive
+    rng = np.random.default_rng(seed)
+    rho = jnp.asarray(rng.uniform(0.2, 0.8, len(mesh.elements("core"))))
+    problem = gfem.Driven(frequency=BLEND_FREQUENCIES, excite="p1", keep_fields=True)
+
+    def objective(p):
+        core = gfem.MaterialField.interpolate(
+            p, BLEND_DIELECTRIC, BLEND_METAL, scheme=cell.variant
+        )
+        model = dispersive_line(mesh, BLEND_DIELECTRIC.eps_r).with_material(
+            "core", core
+        )
+        return _loss(
+            model, gfem.solve(model, problem, options=options), BLEND_FREQUENCIES
+        )
+
+    return Case(objective, rho, rng, step=STEPS["blend"], taylor=3e-2)
 
 
 #: The heat-flow cells' top convection, W/(m^2 K): the top takes about half
@@ -3245,9 +3402,19 @@ BUILDERS = {
         ("dissipated_power", name): _heat_material
         for name in ("eps_r", "conductivity", "tan_delta_axes")
     },
+    **{
+        ("electric_energy", name): _heat_material
+        for name in ("eps_r", "eps_r_axes", "conductivity", "tan_delta")
+    },
+    ("electric_energy", "fill"): _heat_fill,
+    ("electric_energy", "law"): _energy_law,
+    ("electric_energy", "nodes"): _energy_nodes,
+    ("electric_energy_eigenmode", "eps_r"): _energy_eigen,
+    ("electric_energy_periodic", "eps_r"): _energy_periodic,
     ("dissipated_power", "fill"): _heat_fill,
     ("dissipated_power", "lumped"): _heat_lumped,
     ("dissipated_power", "law"): _heat_law,
+    ("dissipated_power", "blend"): _heat_blend,
     **{
         ("electromagnetic_heating", name): _heat_material
         for name in ("eps_r", "conductivity", "drive", "thermal_conductivity")
@@ -3353,6 +3520,7 @@ VARIANT_BUILDERS = {
         for name in ("eps_r", "lumped", "nodes")
     },
     ("eigenmode_field", "eps_r", "lorentz"): _junction_beside_law,
+    ("electric_energy_eigenmode", "eps_r", "lorentz"): _energy_eigen,
 }
 
 
