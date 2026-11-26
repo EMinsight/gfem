@@ -636,6 +636,54 @@ on an Ez line port of a 2D model (1 W/m, integral along the line). The
 isotropic scalar :math:`n_2` is real and constant over the grid, and the
 formula holds while :math:`\alpha \ll \beta`.
 
+Second-order nonlinearity
+-------------------------
+A material's ``second_order_nonlinear_tensor`` is the contracted
+:math:`d_{il} = d_{ijk}` in m/V, :math:`d = \chi^{(2)}/2`: rows the polarization
+:math:`x, y, z`, columns the field pair :math:`xx, yy, zz, yz, xz, xy` with no
+factor 2 on the shear ones, in the frame of the material's ``axes``. A domain
+of reversed polarization carries :math:`-d`. For port modes :math:`a, b, c` of
+1 W with :math:`\omega_a = \omega_b + \omega_c`, :math:`\kappa_{abc} =
+\overline{T_{abc}}` with
+
+.. math::
+
+    T_{abc} = \frac{\omega_a \varepsilon_0}{4} \int_S \sum_{ijk} d_{ijk}\,
+    \overline{E_{a,i}}\, E_{b,j}\, E_{c,k}\, \mathrm{d}A,
+
+all three components of each mode. It is reported in the convention of
+coupled-mode tools, :math:`e^{-i\omega t}`, the complex conjugate of the
+integral in gfem's own phasors: :math:`\mathrm{d}A_a/\mathrm{d}z \ni i
+\sum_{bc} \kappa_{abc} A_b A_c\, e^{-i\Delta\beta_{abc} z}`, with
+:math:`|A|^2` a power, :math:`\Delta\beta_{abc} = \beta_a - \beta_b -
+\beta_c`, summed over all ordered pairs with no degeneracy factor.
+:math:`\kappa_{abc}` is symmetric in :math:`b, c`; units 1/(:math:`\sqrt{\mathrm{W}}`
+m), and W\ :sup:`-1/2` m\ :sup:`-1/2` on an Ez line port. For the second
+harmonic, :math:`\kappa = \kappa_{hpp}`, :math:`\eta_\mathrm{norm} =
+|\kappa|^2` in 1/(W m²) (:math:`10^{-2}` %/(W cm²) per unit), the undepleted
+harmonic power is :math:`\eta_\mathrm{norm} P_\omega^2 L^2
+\mathrm{sinc}^2(\Delta\beta L/2)` with :math:`\Delta\beta = \beta_{2\omega} -
+2\beta_\omega`, and quasi-phase matching of period :math:`\Lambda`, duty cycle
+:math:`D` and order :math:`m` multiplies :math:`\kappa` by :math:`G_m =
+2\sin(\pi m D)/(\pi m)` and replaces :math:`\Delta\beta` by
+:math:`|\Delta\beta| - 2\pi m/\Lambda`. With the loss of the modes,
+
+.. math::
+
+    \frac{P_{2\omega}}{P_\omega} = |G|^2 |\kappa|^2 P_\omega\,
+    e^{-(\alpha_{2\omega} + 2\alpha_\omega) L}\,
+    \frac{\sinh^2(\Delta\alpha L/2) + \sin^2(\delta L/2)}
+    {(\Delta\alpha/2)^2 + (\delta/2)^2},
+
+:math:`\alpha = \mathrm{Re}\,\gamma`, :math:`\Delta\alpha = \alpha_{2\omega}
+- 2\alpha_\omega`, :math:`\delta` the residual mismatch. A pump :math:`a` with
+a signal :math:`b` and an idler :math:`c` (:math:`\omega_a = \omega_b +
+\omega_c`) obeys :math:`\mathrm{d}A_b/\mathrm{d}z \ni i (2\omega_b/\omega_a)
+\overline{\kappa_{abc}} A_a \overline{A_c}\, e^{i\Delta\beta z}`, which
+conserves the photon flux when :math:`d` is symmetric in its three indices
+(Kleinman symmetry). The formulas hold while :math:`\alpha \ll \beta` and for
+an undepleted pump.
+
 Incident fields
 ---------------
 A `gfem.PlaneWave` or `gfem.GaussianBeam` travels along

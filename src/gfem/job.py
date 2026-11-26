@@ -980,6 +980,7 @@ for _cls in (Material, MaterialField):
             piezoelectric_tensor=None,
             mechanical_quality_factor=None,
             photoelastic_tensor=None,
+            second_order_nonlinear_tensor=None,
         ),
         from_args=_renamed_density_from_args(_cls),
         # "density": the mass density as gfem 0.1 wrote it (a read alias)

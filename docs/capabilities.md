@@ -163,6 +163,12 @@ v0.1.
   cross-phase modulation and four-wave mixing), from the materials'
   `nonlinear_index` and `two_photon_absorption`
   ({doc}`recipes/waveguide-nonlinearity`).
+- **Second-order nonlinearity**: {py:obj}`gfem.second_harmonic` (a pump mode
+  and its harmonic: $\kappa$, $\Delta\beta$, poling period, undepleted
+  efficiency of a poled guide) and {py:obj}`gfem.three_wave_coupling` (the
+  tensor between the waves of a port, for sum- and difference-frequency
+  generation), from a material's `second_order_nonlinear_tensor`
+  ({doc}`recipes/second-harmonic-generation`).
 - **Broadband models and time responses**:
   `NetworkParameters.fit_rational` (a passive {term}`rational model` of S,
   written as a SPICE subcircuit or a Verilog-A module) and

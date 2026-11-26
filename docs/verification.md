@@ -258,6 +258,49 @@ Tests: [unit checks](https://github.com/benvial/gfem/blob/main/tests/unit/test_k
 [closed forms, orders and gradients](https://github.com/benvial/gfem/blob/main/tests/verification/test_kerr.py),
 [recipe](https://github.com/benvial/gfem/blob/main/tests/unit/test_docs_waveguide_nonlinearity_recipe.py).
 
+## Second-order nonlinearity
+
+The overlap $\kappa$ of a pump mode and its second harmonic, the normalized
+efficiency $\eta_\mathrm{norm} = |\kappa|^2$, the phase mismatch and the
+poling period are checked against closed forms, against identities and against
+a finite difference:
+
+- **Closed forms, and the element order.** The TE10 mode of a filled
+  rectangular guide at $\omega$ coupled to its TE10 at $2\omega$ through one
+  entry of $d$ has $\eta_\mathrm{norm} = 2k_0^2d^2Z_0/(n_{\mathrm{eff},\omega}^2
+  n_{\mathrm{eff},2\omega}A_\mathrm{eff})$ with $A_\mathrm{eff} = (9\pi^2/128)\,ab$
+  and the discrete effective indices; the TE mode of a filled slab on a line
+  port of a 2D model has the same form per unit height. The error falls with the
+  element order, as the fields' does, and the phase mismatch and the poling
+  period $2\pi/\Delta\beta$ are those of the discrete indices.
+- **Selection rules.** The pump's TE10 squared drives only the odd TE$m$0 modes
+  at $2\omega$, with the overlap $-4a/(\pi m(m^2-4))$ of the sine profiles: the
+  TE20 mode at $2\omega$ is uncoupled, to rounding.
+- **Gauge.** On a lossless section the overlap of the closed-form cases is
+  real: $\mathrm{Im}\,\kappa$ vanishes to rounding in the gauge where the
+  transverse field is real.
+- **The tensor between waves.** It is symmetric in its two amplitudes, and the
+  entry of the second harmonic is `second_harmonic`'s $\kappa$.
+- **The efficiency.** `efficiency` has the sinc$^2$, lossy and
+  quasi-phase-matched forms, finite at zero mismatch, and its limits at zero
+  loss.
+- **Gradients.** The overlap differentiates with respect to $d$, matching a
+  central finite difference, with the step and the tolerance derived from the
+  round-off and the truncation of the difference.
+- **Refusals.** A region without the tensor, a tensor beside a stiffness, an
+  Hz line port, traced node coordinates, a result without a field, waves of
+  different ports and a left-handed frame each raise the error that names them.
+
+Not checked: a measured conversion efficiency, and any literature value of $d$
+or of a device's efficiency: the tensor is an input. The recipe
+{doc}`recipes/second-harmonic-generation` prints the figures of a thin-film
+lithium niobate ridge beside the ideal theory of the paper it follows, as an
+observation.
+
+Tests: [unit checks](https://github.com/benvial/gfem/blob/main/tests/unit/test_three_wave.py),
+[closed forms, orders and gradients](https://github.com/benvial/gfem/blob/main/tests/verification/test_three_wave.py),
+[recipe](https://github.com/benvial/gfem/blob/main/tests/unit/test_docs_second_harmonic_recipe.py).
+
 ## Eigenmodes with wave ports
 
 Each case solves an eigenmode problem with wave ports and compares it with an
